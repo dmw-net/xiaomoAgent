@@ -1,0 +1,118 @@
+<!doctype html>
+<!-- 首帧前执行，防主题闪白 -->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" type="image/png" href="/icon.png">
+<title>小茉</title>
+<script>(function(){
+  var KEY = "xiaomo.theme";
+  var AKEY = "xiaomo.accent";
+  var SKEY = "xiaomo.themeStyle";
+  var STYLES = ["warm", "classic", "night", "paper"];
+  function resolve(mode){
+    if (mode === 'light' || mode === 'dark') return mode;
+    try {
+      return window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    } catch (e) { return 'light'; }
+  }
+  function hex2rgb(h){
+    h = h.replace('#','');
+    return [parseInt(h.slice(0,2),16), parseInt(h.slice(2,4),16), parseInt(h.slice(4,6),16)];
+  }
+  function mix(a,b,t){
+    var x=hex2rgb(a), y=hex2rgb(b), o='#';
+    for (var i=0;i<3;i++){ var v=Math.round(x[i]+(y[i]-x[i])*t); o+=('0'+v.toString(16)).slice(-2); }
+    return o;
+  }
+  function chan(v){ v = v/255; return v <= 0.03928 ? v/12.92 : Math.pow((v+0.055)/1.055, 2.4); }
+  function wlum(h){ var c = hex2rgb(h); return 0.2126*chan(c[0]) + 0.7152*chan(c[1]) + 0.0722*chan(c[2]); }
+  function cr(a, b){
+    var x = wlum(a), y = wlum(b), t;
+    if (x < y) { t = x; x = y; y = t; }
+    return (x + 0.05) / (y + 0.05);
+  }
+  // 强调色同时当两个角色用：填充（上面压按钮文字）与文字（页面底/卡片底上）。
+  // 旧实现把 sRGB 通道线性平均当亮度、阈值写死 0.62，琥珀/青瓷都被判成白字，
+  // 实测只有 2.9:1。这里按 WCAG 真对比度同时校两个角色，不达标就往
+  // 「压深(浅底) / 提亮(深底)」方向挪 —— 两个角色会同时变好。
+  function adapt(hex, dark){
+    var ink = dark ? '#23130a' : '#ffffff';
+    var bg  = dark ? '#171310' : '#efe7da';
+    var dir = dark ? '#ffffff' : '#000000';
+    var h = hex, t = 0;
+    while (t < 0.78 && (cr(h, ink) < 4.5 || cr(h, bg) < 4.5)) {
+      t += 0.06; h = mix(hex, dir, t);
+    }
+    return { accent: h, ink: ink };
+  }
+  function getAccent(){
+    try {
+      var v = localStorage.getItem(AKEY) || '';
+      return /^#[0-9a-fA-F]{6}$/.test(v) ? v : '';
+    } catch(e){ return ''; }
+  }
+  // 自定义色系：四个强调色变量整套覆盖；深浅模式下派生色不同，所以换主题要重算
+  function applyAccent(hex){
+    var s = document.documentElement.style;
+    if (!hex) {
+      s.removeProperty('--accent'); s.removeProperty('--accent-hover');
+      s.removeProperty('--accent-soft'); s.removeProperty('--accent-text'); s.removeProperty('--accent-ink');
+      s.removeProperty('--accent-glow');
+      return;
+    }
+    var dark = document.documentElement.getAttribute('data-theme') === 'dark';
+    var a = adapt(hex, dark);
+    s.setProperty('--accent', a.accent);
+    s.setProperty('--accent-hover', mix(a.accent, dark ? '#ffffff' : '#000000', dark ? 0.18 : 0.12));
+    s.setProperty('--accent-soft', mix(a.accent, dark ? '#2a221c' : '#fffdfa', dark ? 0.85 : 0.88));
+    s.setProperty('--accent-text', a.ink);
+    s.setProperty('--accent-ink', dark ? a.accent : mix(a.accent, '#26211b', 0.35));
+    // 选中态那圈同色辉光跟着自定义色走，否则换色后（比如换成湖蓝）还亮着赤陶的光
+    s.setProperty('--accent-glow', 'color-mix(in srgb, ' + a.accent + ' 22%, transparent)');
+  }
+  // 主题风格（材质与配色家族）。属性必须首帧前就挂上，否则先按暖房铺一遍再跳到
+  // 夜航——那一下整屏闪白/闪暖，比不做主题还难看。
+  function getStyle(){
+    try {
+      var v = localStorage.getItem(SKEY) || 'warm';
+      return STYLES.indexOf(v) >= 0 ? v : 'warm';
+    } catch(e){ return 'warm'; }
+  }
+  function applyStyle(style){
+    var s2 = STYLES.indexOf(style) >= 0 ? style : 'warm';
+    document.documentElement.setAttribute('data-theme-style', s2);
+    // 自定义强调色是"叠加在主题之上"的：soft/ink/glow 这些派生色要按当前主题重算
+    applyAccent(getAccent());
+    try { localStorage.setItem(SKEY, s2); } catch(e) {}
+  }
+  function apply(mode){
+    document.documentElement.setAttribute('data-theme', resolve(mode));
+    document.documentElement.setAttribute('data-theme-mode', mode);
+    applyAccent(getAccent());
+    try { localStorage.setItem(KEY, mode); } catch (e) {}
+  }
+  document.documentElement.setAttribute('data-theme-style', getStyle());
+  var saved = 'system';
+  try { saved = localStorage.getItem(KEY) || 'system'; } catch (e) {}
+  apply(saved);
+  // 暴露给页面脚本，供主题切换控件调用
+  window.__setThemeMode = apply;
+  window.__setThemeAccent = applyAccent;
+  window.__setThemeStyle = applyStyle;
+  // 跟随系统时要响应系统切换
+  try {
+    window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
+      var mode = document.documentElement.getAttribute('data-theme-mode');
+      if (mode === 'system') apply('system');
+    });
+  } catch (e) {}
+})();</script>
+</head>
+<body>
+<div id="root"></div>
+<script type="module" src="/src/main.tsx"></script>
+</body>
+</html>

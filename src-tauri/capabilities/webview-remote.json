@@ -1,0 +1,24 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "webview-remote",
+  "description": "桌面窗口在后端报到后 navigate 到 http://127.0.0.1:端口（lib.rs 的 window.navigate）。那已经是**远程 origin**，而 capability 默认只覆盖本地 origin（local 缺省 true、remote 缺省不设）——不补这一张，页面里任何插件 IPC 都会被权限层挡掉，「关于」里的外链点了没反应就是这么来的。这张只开门禁级能力：外链、原生选目录（dialog:allow-open）、重启应用（process:allow-restart）——后两者供「数据存储位置」设置用；检查更新（updater:default）供「关于」里的更新入口用，它只能拉配置里写死的那一个端点、装之前还要过 minisign 公钥校验；在文件管理器里露出技能目录（opener:allow-reveal-item-in-dir）供「技能」设置用，它只能定位路径、不能用任意程序打开任意路径，所以比 allow-open-path 小一档；shell（能起任意 sidecar）仍不给远程 origin。",
+  "windows": ["main"],
+  "local": false,
+  "remote": {
+    "urls": ["http://127.0.0.1:*", "http://localhost:*"]
+  },
+  "platforms": ["macOS", "windows", "linux"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "notification:default",
+    "dialog:allow-open",
+    "process:allow-restart",
+    "updater:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
+    },
+    "opener:allow-reveal-item-in-dir"
+  ]
+}

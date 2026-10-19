@@ -1,0 +1,53 @@
+{
+  "name": "xiaomo-ai",
+  "version": "0.2.1",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "description": "陪伴型 Agent 的 MVP 骨架：Web 通道先行，IM 通道可插拔，Tauri 支持桌面",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "config": {
+    "xiaomoPassFile": "D:\\xiaomo-key-backup\\xiaomo-pass.tmp"
+  },
+  "scripts": {
+    "help": "node scripts/help.mjs",
+    "ver": "node scripts/version.mjs",
+
+    "dev": "npm --prefix frontend run build -- --mode fast && node --experimental-sqlite --env-file=.env --env-file=.env.dev src/index.ts",
+    "app": "npm run desktop",
+    "pack": "npm run build:local",
+    "ship": "node scripts/ship.mjs release",
+    "check": "npm run typecheck && npm --prefix frontend run typecheck",
+    "doctor": "node --experimental-sqlite --env-file=.env --env-file=.env.dev src/doctor.ts",
+    "pass": "node scripts/secret.mjs status",
+    "pass:set": "node scripts/secret.mjs set",
+
+    "smoke": "node --experimental-sqlite scripts/smoke.ts",
+    "verify-context": "node --experimental-sqlite scripts/verify-context.ts",
+    "hooks:test": "node scripts/test-uninstall-hooks.mjs",
+    "proactive:once": "node --experimental-sqlite --env-file=.env src/index.ts --proactive-once",
+
+    "start": "npm --prefix frontend run build && node --experimental-sqlite --env-file=.env src/index.ts",
+    "desktop": "npm --prefix frontend run build -- --mode fast && node scripts/stage-sidecar.mjs && node scripts/make-manifest.mjs --unsigned && node scripts/tauri.mjs dev",
+    "desktop:build": "node scripts/stage-sidecar.mjs && node scripts/bundle-backend.mjs && node scripts/cjk-encode.test.mjs && npm --prefix frontend run build && node scripts/verify-bundle.mjs && node scripts/make-manifest.mjs && node scripts/tauri.mjs build && node scripts/verify-staged.mjs",
+    "release": "node scripts/publish-release.mjs",
+    "build:local": "node scripts/ship.mjs build",
+    "pass:status": "node scripts/secret.mjs status",
+
+    "typecheck": "tsc --noEmit",
+    "stage-sidecar": "node scripts/stage-sidecar.mjs",
+    "bundle:backend": "node scripts/bundle-backend.mjs",
+    "manifest": "node scripts/make-manifest.mjs",
+    "verify:staged": "node scripts/verify-staged.mjs",
+    "cjk:test": "node scripts/cjk-encode.test.mjs",
+    "verify:bundle": "node scripts/verify-bundle.mjs",
+    "tauri": "node scripts/tauri.mjs",
+    "fe:build": "npm --prefix frontend run build"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.7.0"
+  }
+}

@@ -1,0 +1,32 @@
+# 依赖与本地数据
+node_modules/
+data/
+.env
+.env.*
+!.env.example
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# 本地探测与临时文件
+_probe/
+*.tmp.cjs
+*.tmp.mjs
+git_status_out.txt
+
+# 构建产物（都可再生成）
+frontend/dist/
+dist-desktop/
+dist-apk/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/
+
+# 本地 AI 工具目录
+.claude/
+.agnes/
+.gstack/
+.workbuddy/
+.workbuddy-screens/

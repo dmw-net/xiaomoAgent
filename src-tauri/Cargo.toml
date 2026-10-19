@@ -1,0 +1,77 @@
+[package]
+name = "xiaomo-ai"
+version = "0.2.1"
+description = "小茉 AI —— 陪伴型 Agent"
+authors = ["小茉 AI"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+# 移动端（Android/iOS）要求 crate 以库形式暴露入口。
+name = "xiaomo_ai_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+# build.rs 要读 tauri.conf.json 里的更新公钥，生成 lib.rs 用的 RESOURCE_PUBKEY_B64。
+# 提成直接依赖才 use 得到；包本来就在 lock 里（普通依赖那份），不会多拉一个。
+serde_json = "1"
+
+[dependencies]
+# tray-icon feature：托盘常驻（关窗后留在托盘，从托盘打开/退出）。桌面用，移动端不注册。
+tauri = { version = "2", features = ["tray-icon"] }
+# 用 shell plugin 的"externalBin"能力启动 Node sidecar。
+tauri-plugin-shell = "2"
+# 桌面 WebView 里 target=_blank 会被拦掉，外链要交给系统浏览器。
+tauri-plugin-opener = "2"
+# 设置里选数据存储目录要原生文件夹选择器。
+tauri-plugin-dialog = "2"
+# 系统通知：应用不在前台时，联系人主动开口 / 新消息到达也看得到。
+tauri-plugin-notification = "2"
+# 改完数据目录后一键重启应用。
+tauri-plugin-process = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 单实例只在桌面三家用：Cargo 的目标条件只认 rustc 自带的 cfg（os/arch/family），
+# 不认 tauri-build 给代码设的 `cfg(desktop)`——写成 cfg(desktop) 会让整节被静默丢弃，
+# 实测就是这样把 serde 弄丢过一次。
+[target.'cfg(any(target_os = "macos", target_os = "windows", target_os = "linux"))'.dependencies]
+# 双击第二次图标时不再起一个后端，而是把已有窗口唤回前台。
+# 没有它：两个 sidecar 共用同一个 SQLite（WAL + busy_timeout 挡住了写冲突，两份主动性
+# 定时器与两条 IM 长轮询靠库里的 instance_lease 租约也不会重复发信），但窗口和内存
+# 是实打实双份，而且用户看到的是"点了没反应"。
+tauri-plugin-single-instance = "2"
+# 开机自动启动：写当前 exe 到系统登录项（Windows 是 HKCU 的 Run 键）。
+tauri-plugin-autostart = "2"
+# 应用内检查更新：签名走 minisign（与 Authenticode 无关，不需要买证书）。
+tauri-plugin-updater = "2"
+
+# 资源完整性校验（verify_resources）：启动前用发版那把 minisign 私钥的**公钥**
+# 验 backend/manifest.json 的签名，再逐个比对 sha256。
+# 三个都在 lock 里（updater 的传递依赖），这里只是把它们提成直接依赖才能 use。
+# 边界：挡的是「改包重分发」，挡不住 patch 本地 exe —— 见 lib.rs 里 verify_resources 的注释。
+sha2 = "0.10"
+base64 = "0.22"
+minisign-verify = "0.3"
+
+[features]
+# 这个 feature 是 Tauri 官方在桌面/移动共用一份 src-tauri 时的标准做法。
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.dev]
+# debug = 2（默认）会让整棵 Tauri 依赖树的编译内存翻倍。2026-10-17 实测：
+# 12 核并行 + 可用提交内存只剩 4.2 GB 时，rustc 直接 "memory allocation failed" /
+# "页面文件太小 (os error 1455)"，并留下半截 rmeta，导致后续一堆
+# E0786/E0460/E0463（那些是 OOM 的连带伤害，不是依赖冲突）。
+# 降到 1 = 只保留行号表：backtrace 仍有文件和行号，变量值看不了——日常开发够用。
+# 想恢复完整调试信息就把这行删掉，同时把 CARGO_BUILD_JOBS 调到 2~4。
+debug = 1
+
+[profile.release]
+# 移动端包体敏感，开体积优化。
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

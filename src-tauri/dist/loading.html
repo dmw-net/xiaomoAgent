@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>小茉</title>
+<style>
+  /* 启动页：和后端聊天页共用同一套配色，切换时不会有突兀的闪白。
+     这段样式刻意写死在这里——它还加载不到 theme.ts，必须自包含。 */
+  :root {
+    --bg: #faf9f7;
+    --fg: #2b2724;
+    --muted: #8d857d;
+    --accent: #8a6a4f;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #161412;
+      --fg: #e8e4df;
+      --muted: #948b83;
+      --accent: #c2a184;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0;
+    height: 100%;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    overflow: hidden;
+  }
+  .wrap {
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 22px;
+  }
+  /* 呼吸中的小芽：表示"正在醒来"，比转圈圈更贴合这个人设 */
+  .sprout {
+    width: 46px;
+    height: 46px;
+    animation: breathe 2.4s ease-in-out infinite;
+  }
+  @keyframes breathe {
+    0%, 100% { opacity: .45; transform: scale(.94); }
+    50%      { opacity: 1;   transform: scale(1); }
+  }
+  .name {
+    font-size: 15px;
+    letter-spacing: .12em;
+    color: var(--muted);
+  }
+  /* 尊重系统的"减少动态效果"设置 */
+  @media (prefers-reduced-motion: reduce) {
+    .sprout { animation: none; opacity: .8; }
+  }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <svg class="sprout" viewBox="0 0 32 32" fill="none" aria-hidden="true">
+      <path d="M16 28V13" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>
+      <path d="M16 15c0-3.3 2.7-6 6-6 0 3.3-2.7 6-6 6Z" fill="var(--accent)"/>
+      <path d="M16 19c0-2.8-2.2-5-5-5 0 2.8 2.2 5 5 5Z" fill="var(--accent)" opacity=".6"/>
+    </svg>
+    <div class="name">正在醒来…</div>
+  </div>
+</body>
+</html>

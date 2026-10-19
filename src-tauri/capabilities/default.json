@@ -1,0 +1,30 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "桌面端默认权限：只允许启动内置后端，不开放任意命令执行。",
+  "windows": ["main"],
+  "platforms": ["macOS", "windows", "linux"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-set-theme",
+    "notification:default",
+    "dialog:allow-open",
+    "process:allow-restart",
+    {
+      "identifier": "shell:allow-execute",
+      "allow": [
+        {
+          "name": "node-sidecar",
+          "cmd": "binaries/node-sidecar",
+          "args": true
+        }
+      ]
+    },
+    "shell:allow-spawn",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [{ "url": "https://*" }, { "url": "http://*" }, { "url": "mailto:*" }]
+    },
+    "opener:allow-reveal-item-in-dir"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "小茉",
+  "version": "0.2.1",
+  "identifier": "app.xiaomo.ai",
+  "build": {
+    "frontendDist": "../src-tauri/dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; frame-src 'none'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis",
+      "dmg",
+      "appimage",
+      "deb"
+    ],
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns",
+      "icons/icon.ico"
+    ],
+    "externalBin": [
+      "binaries/node-sidecar"
+    ],
+    "createUpdaterArtifacts": true,
+    "windows": {
+      "nsis": {
+        "installerHooks": "nsis/uninstall-hooks.nsh"
+      }
+    },
+    "resources": {
+      "../src-tauri/dist/loading.html": "loading.html",
+      "../dist-desktop/server.mjs": "backend/src/server.mjs",
+      "../dist-desktop/manifest.json": "backend/manifest.json",
+      "../dist-desktop/manifest.json.sig": "backend/manifest.json.sig",
+      "../frontend/dist": "backend/frontend/dist"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEU2NjRDMTY0NDVGQTRFN0YKUldSL1R2cEZaTUZrNXNpY2I3Rm1EdkJlL0JuV1R2TDBVNXMrK0Ixb2twbnYxK3B3cjFRbDlubWsK",
+      "endpoints": [
+        "https://github.com/dmw-net/xiaomoAgent/releases/latest/download/latest.json"
+      ],
+      "windows": {
+        "installMode": "passive"
+      }
+    }
+  }
+}

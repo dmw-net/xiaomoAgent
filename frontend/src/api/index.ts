@@ -1,0 +1,20 @@
+/** API 层统一出口。按后端域拆分，组件不要直接用 fetch。 */
+export * from "./client";
+export * as chatApi from "./chat";
+export * as contactsApi from "./contacts";
+export * as memoryApi from "./memory";
+export * as settingsApi from "./settings";
+export * as skillsApi from "./skills";
+export * as proactiveApi from "./proactive";
+export * as usageApi from "./usage";
+export * as assistantApi from "./assistant";
+export * as artifactApi from "./artifacts";
+export * as contentApi from "./content";
+export type { ContentAsset, ContentFilter } from "./content";
+export * from "./assistant";
+export * as wechatApi from "./wechat";
+export * as avatarApi from "./avatar";
+export * as qqApi from "./qq";
+export type { QQBindingView, QQStatus } from "../types";
+export * as searchApi from "./search";
+export type { WeChatLink } from "./wechat";

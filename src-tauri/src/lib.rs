@@ -399,6 +399,19 @@ fn verify_resources(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
+    // 逃生口（2026-10-19）：硬失败会误伤正常用户——杀软隔离/清理工具删掉 manifest、
+    // 或用户手动动过安装目录里的文件，应用就直接打不开且没有任何自愈路径。
+    // 约定：在 %APPDATA%\app.xiaomo.ai 下建一个名为 allow-unsigned 的空文件，
+    // 本次启动跳过校验（每次启动都会重新检查，删掉标记立即恢复严格模式）。
+    // 安全边界：这个标记在用户的 AppData 里，改包分发者无法随安装包预置；
+    // 它救的是"自己机器上被误删"的场景，不是给盗版开的门。
+    if let Ok(anchor) = app.path().app_data_dir() {
+        if anchor.join("allow-unsigned").exists() {
+            println!("[verify] 检测到 allow-unsigned 标记：本次启动跳过资源完整性校验（不推荐长期保留）");
+            return Ok(());
+        }
+    }
+
     let res = app
         .path()
         .resource_dir()
@@ -453,7 +466,72 @@ fn verify_resources(app: &tauri::AppHandle) -> Result<(), String> {
             return Err(format!("安装文件被修改：{rel}"));
         }
     }
+
+    // 反向校验：安装目录里 backend/ 下的每个文件都必须在清单里。
+    // 只验「清单 → 磁盘」的话，升级残留或塞进来的多文件是查不到的——
+    // 2026-10-19 实测覆盖安装会把上一版的前端 chunk 原样留下（134 个文件、
+    // 清单只认 24 个），那些残留不在签名保护范围内。
+    // 清单自身两项是例外：manifest 不能包含自己的签名，和构建期 verify-staged.mjs 同一套口径。
+    let mut found = 0usize;
+    let mut queue = vec![res.join("backend")];
+    while let Some(dir) = queue.pop() {
+        for entry in std::fs::read_dir(&dir).map_err(|e| format!("读安装目录失败：{e}"))? {
+            let entry = entry.map_err(|e| format!("读安装目录失败：{e}"))?;
+            let path = entry.path();
+            if path.is_dir() {
+                queue.push(path);
+                continue;
+            }
+            let rel = path
+                .strip_prefix(&res)
+                .map_err(|_| "安装目录布局异常".to_string())?
+                .to_string_lossy()
+                .replace('\\', "/");
+            if rel.ends_with("manifest.json") || rel.ends_with("manifest.json.sig") {
+                continue;
+            }
+            if !files.contains_key(&rel) {
+                return Err(format!(
+                    "发现清单之外的文件：{rel}\n安装目录与官方清单不一致，请重新安装"
+                ));
+            }
+            found += 1;
+        }
+    }
+    let listed = files.len();
+    if found != listed {
+        return Err(format!(
+            "安装文件不完整：清单 {listed} 项，磁盘只找到 {found} 项，请重新安装"
+        ));
+    }
     Ok(())
+}
+
+/// 还原 build.rs 混淆过的资产密钥：hex → XOR 0xA5 → base64 原文。
+/// build.rs 那头是 `format!("{:02x}", byte ^ 0xA5)`，这里做精确的逆。
+/// 常量由 build.rs 保证存在且配对，解错只可能发生在两边不同步（编译期就炸），运行期不校验。
+#[cfg(desktop)]
+fn deobfuscate_asset_key(hex_input: &str) -> String {
+    fn hex_val(b: u8) -> Option<u8> {
+        match b {
+            b'0'..=b'9' => Some(b - b'0'),
+            b'a'..=b'f' => Some(b - b'a' + 10),
+            b'A'..=b'F' => Some(b - b'A' + 10),
+            _ => None,
+        }
+    }
+    let bytes = hex_input.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len() / 2);
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        let (hi, lo) = match (hex_val(bytes[i]), hex_val(bytes[i + 1])) {
+            (Some(h), Some(l)) => (h, l),
+            _ => return String::new(), // 形态坏了就给空串，让 sidecar 的 fail-fast 接手
+        };
+        out.push(((hi << 4) | lo) ^ 0xA5);
+        i += 2;
+    }
+    String::from_utf8(out).unwrap_or_default()
 }
 
 /// 桌面端：启动 Node sidecar 并等握手。成功后把句柄存进 state、把 URL 发给主线程。
@@ -563,7 +641,13 @@ fn start_sidecar(app: &tauri::AppHandle, tx: Sender<BootOutcome>) -> Result<(), 
             script_arg,
             "--config".to_string(),
             config_arg,
-        ]);
+        ])
+        // 资产解码密钥：server.mjs 里的中文载荷是 base64(XOR(·, key))，
+        // 密钥只存在于这个环境变量里——它不落在安装目录任何文件上。
+        // build.rs 里存的是 XOR 0xA5 + hex 的混淆形态（防 strings 直捞），
+        // 这里还原成原文再交给 sidecar。
+        // dev 构建跑的是 TS 源码（中文明文），这个变量对它无意义，传了也无妨。
+        .env("XM_ASSET_KEY", deobfuscate_asset_key(env!("XIAOMO_ASSET_KEY_OBF")));
 
     let (mut rx, child) = sidecar.spawn().map_err(|e| format!("启动后端失败：{e}"))?;
 

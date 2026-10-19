@@ -1,10 +1,14 @@
-// 捆包后置编码：把产物里「成段的中文」从明文字面量换成 base64 + 运行时解码调用。
+// 捆包后置编码：把产物里「成段的中文」从明文字面量换成（可选 XOR 的）base64 + 运行时解码调用。
 //
 // 为什么要它：esbuild 的 minify 只改标识符，字符串一字不动，而且非 ASCII 会被写成
 // `\uXXXX`——看着像密文，一条正则就还原。实测一次 unescape 就能从安装包里捞走
 // 12032 个中文字符（人设模板、主动性判据、出图构图约束、工具描述全套）。
 // 这一层把「解压 + 一次 unescape」抬成「先读懂注入的解码器」，并且让**任何文本搜索
 // 都摸不到提示词**（minify 完全没做到这点）。仍然不是加密，有心人能还原，别当 DRM。
+//
+// 2026-10-19 起：调用方传入 key（Buffer）时，载荷从纯 base64 升级为
+// base64(XOR(utf8, key))——纯 base64 被实测 5 行 python 全解，XOR + 密钥进 exe
+// 把「一条命令解码」抬成「先从二进制里挖出密钥」。不传 key 保持原行为（测试用）。
 //
 // 扫描器必须处理四种歧义，否则会改坏代码：
 //   1) 注释里的引号不是字符串；
@@ -218,7 +222,27 @@ function nextNonSpace(src, pos) {
   return "";
 }
 
-const enc = (value, callName) => `${callName}("` + Buffer.from(value, "utf8").toString("base64") + '")';
+/**
+ * 载荷编码：
+ *   无 key → base64(utf8(value))，原行为（测试与旧产物）。
+ *   有 key → base64(XOR(utf8(value), key 循环))，密钥由 Rust 侧经环境变量在运行期注入。
+ * XOR 密文仍用 base64 呈现：产物形态不变（`xm("…")`），转义/引号问题不引入新变量。
+ */
+export function xorEncode(value, key) {
+  const bytes = Buffer.from(value, "utf8");
+  for (let i = 0; i < bytes.length; i++) bytes[i] ^= key[i % key.length];
+  return bytes.toString("base64");
+}
+
+/** xorEncode 的逆运算（verify-bundle 与测试用它还原明文，与 JS 解码器同一算法）。 */
+export function xorDecode(payloadB64, key) {
+  const bytes = Buffer.from(payloadB64, "base64");
+  for (let i = 0; i < bytes.length; i++) bytes[i] ^= key[i % key.length];
+  return bytes.toString("utf8");
+}
+
+const enc = (value, callName, key) =>
+  `${callName}("` + (key ? xorEncode(value, key) : Buffer.from(value, "utf8").toString("base64")) + '")';
 
 /**
  * 替换点前一个字符是标识符字符时必须补空格：压缩产物里 `return\`…\`` 换成调用后会粘成
@@ -254,7 +278,7 @@ export function applyPlans(src, plans) {
  * callName 由调用方给定，且必须是产物里不存在的长名字——早先用短名 `xm` 再做事后文本替换，
  * 把产物里本来就有的 `function xm(...)` 声明一起改了名，和解码器撞成重复声明。
  */
-export function planCjkEncoding(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm" } = {}) {
+export function planCjkEncoding(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm", key = null } = {}) {
   const plans = [];
   let i = 0;
   while (i < src.length) {
@@ -291,7 +315,7 @@ export function planCjkEncoding(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm"
       if (!isKey) {
         const value = decodeQuoted(q.body);
         if (value !== null && countCjk(value) >= minCjk) {
-          plans.push({ start: i, end: q.end, text: gap(src, i) + enc(value, callName), values: [value] });
+          plans.push({ start: i, end: q.end, text: gap(src, i) + enc(value, callName, key), values: [value] });
         }
       }
       i = q.end + 1;
@@ -315,13 +339,13 @@ export function planCjkEncoding(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm"
         const c = t.chunks[k];
         if (c.start !== undefined) {
           // 插值表达式里还能再嵌模板（`(t?`中文…` : "")`）——递归编，否则那段中文原样留在产物里
-          pieces.push("(" + encodeInterpolation(src.slice(c.start, c.end), { minCjk, callName }) + ")");
+          pieces.push("(" + encodeInterpolation(src.slice(c.start, c.end), { minCjk, callName, key }) + ")");
           continue;
         }
         const body = src.slice(c.contentStart, c.contentEnd);
         const v = decodeEscapes(body, { template: true });
         if (v !== null && countCjk(v) >= minCjk) {
-          pieces.push(enc(v, callName));
+          pieces.push(enc(v, callName, key));
           values.push(v);
         } else if (v === null) {
           ok = false; // 解不出来就整条放弃，不半截替换
@@ -339,8 +363,8 @@ export function planCjkEncoding(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm"
 }
 
 /** 应用全部指令，并回传被编码掉的原文值（自检与报告要用）。 */
-export function encodeCjk(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm" } = {}) {
-  const plans = planCjkEncoding(src, { minCjk, callName });
+export function encodeCjk(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm", key = null } = {}) {
+  const plans = planCjkEncoding(src, { minCjk, callName, key });
   const values = plans.flatMap((plan) => plan.values);
   return { js: applyPlans(src, plans), values, count: plans.length };
 }

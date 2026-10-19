@@ -27,8 +27,10 @@
 // 用法：node scripts/bundle-backend.mjs   （desktop / desktop:build 会自动先跑）
 
 import { createRequire } from "node:module";
-import { existsSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import { encodeCjk, planCjkEncoding, totalCjk, remainingCjkRuns, DEFAULT_MIN_CJK } from "./cjk-encode.mjs";
 
 const require = createRequire(join(import.meta.dirname, "..", "frontend", "noop.cjs"));
@@ -79,11 +81,35 @@ const decoderName = (() => {
   throw new Error("[bundle-backend] 找不到不冲突的解码器名字");
 })();
 
-const { js: encoded, values } = encodeCjk(plain, { minCjk: DEFAULT_MIN_CJK, callName: decoderName });
+// 3.5) 资产密钥：base64 载荷在 2026-10-19 被实测 5 行 python 全解，升级为 XOR + 密钥。
+//     密钥**不进** server.mjs：gen-asset-key 生成 32 字节，build.rs 烧进 exe，
+//     外壳 spawn sidecar 时经 XM_ASSET_KEY 环境变量交给运行时。
+//     拿到安装包的人要解提示词，得先从 exe 里把密钥挖出来。
+const keyPath = join(root, "dist-desktop", "asset-key.txt");
+if (!existsSync(keyPath)) {
+  console.error("[bundle-backend] ✗ 找不到 dist-desktop/asset-key.txt——先跑 node scripts/gen-asset-key.mjs");
+  process.exit(1);
+}
+const assetKey = Buffer.from(readFileSync(keyPath, "utf8").trim(), "base64");
+if (assetKey.length < 16) {
+  console.error(`[bundle-backend] ✗ asset-key.txt 解出 ${assetKey.length} 字节（<16），密钥文件损坏`);
+  process.exit(1);
+}
+
+const { js: encoded, values } = encodeCjk(plain, { minCjk: DEFAULT_MIN_CJK, callName: decoderName, key: assetKey });
 const encodedChars = values.reduce((sum, v) => sum + v.length, 0);
+// 解码器：XOR 循环还原。密钥缺失/为空时**立即抛错**而不是解出乱码——
+// 静默乱码会让用户看到满屏问号还以为数据坏了，明确报错才能一眼定位到"启动方式不对"。
+// ⚠️ 外层 IIFE 必须是双参 `(m,k)=>b=>…`：写成柯里化 `m=>k=>b=>…` 的话外层只收一个实参，
+// Buffer 会被静默丢掉，xmAssetText 第一次调用返回的是函数——p.exec 收到函数就是
+// "The sql argument must be a string"（首跑实测踩中，esbuild 语法门抓不到这种语义错）。
 const decoder =
-  `const ${decoderName}=(m=>b=>{const h=m.get(b);if(h!==void 0)return h;` +
-  `const t=Buffer.from(b,"base64").toString("utf8");m.set(b,t);return t;})(new Map());`;
+  `const ${decoderName}=((m,k)=>b=>{if(!k||!k.length)throw new Error("asset key missing (XM_ASSET_KEY)");` +
+  `const h=m.get(b);if(h!==void 0)return h;` +
+  `const x=Buffer.from(b,"base64");` +
+  `for(let i=0;i<x.length;i++)x[i]^=k[i%k.length];` +
+  `const t=x.toString("utf8");m.set(b,t);return t;})` +
+  `(new Map(),Buffer.from(process.env.XM_ASSET_KEY||"","base64"));`;
 const final = decoder + "\n" + encoded;
 
 // 语法门：能解析才算产物成立（只解析，不改写产物）。
@@ -119,7 +145,7 @@ for (const profile of ["debug", "release"]) {
   swept++;
 }
 
-writeFileSync(out, final, "utf8");
+  writeFileSync(out, final, "utf8");
 writeFileSync(
   join(root, "dist-desktop", "bundle-report.json"),
   JSON.stringify({
@@ -131,6 +157,8 @@ writeFileSync(
     cjkAfter: finalCjk,
     residualRuns: remainingCjkRuns(final, DEFAULT_MIN_CJK).length,
     sweptBackendDirs: swept,
+    assetKeyBytes: assetKey.length,
+    assetKeyFingerprint: createHash("sha256").update(assetKey).digest("hex").slice(0, 12),
   }, null, 2),
   "utf8",
 );
@@ -167,6 +195,7 @@ const kb = Math.round(statSync(out).size / 1024);
 console.log(
   `[bundle-backend] src/desktop.ts → dist-desktop/server.mjs（${kb} KB）：` +
   `压缩混淆 + ${values.length} 段中文资产已编码（${encodedChars} 字，含 ${assets.length} 条 >=${ASSET_MIN_CJK} 字提示词）；` +
-  `产物汉字 ${plainCjk}→${finalCjk}，明文残留 0 段` +
+  `产物汉字 ${plainCjk}→${finalCjk}，明文残留 0 段；` +
+  `载荷 = base64(XOR(·, ${assetKey.length} 字节密钥))，密钥在 dist-desktop/asset-key.txt（随 exe 烧录）` +
   (swept ? `；顺带清掉 ${swept} 处资源暂存目录（含旧 .ts 与陈旧前端产物）` : ""),
 );

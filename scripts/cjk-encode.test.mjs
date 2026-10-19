@@ -3,7 +3,7 @@
 // 靠第二遍 esbuild 的解析门才当场抓到。门能抓坏，但抓不出「静默少编码」，所以两条都要有。
 import { createRequire } from "node:module";
 import { join } from "node:path";
-import { planCjkEncoding, encodeCjk, remainingCjkRuns, totalCjk, DEFAULT_MIN_CJK } from "./cjk-encode.mjs";
+import { planCjkEncoding, encodeCjk, remainingCjkRuns, totalCjk, DEFAULT_MIN_CJK, xorDecode } from "./cjk-encode.mjs";
 
 const require = createRequire(join(import.meta.dirname, "..", "frontend", "noop.cjs"));
 const esbuild = require("esbuild");
@@ -151,6 +151,27 @@ check("门 B 量的是编码前后的汉字降幅（反证：带标点的长串�
   totalCjk(remainingCjkRuns(dirty).join("")) >= 20 && remainingCjkRuns(dirty).length === 1,
   JSON.stringify(remainingCjkRuns(dirty)));
 check("门 B 在干净产物上汉字归零", totalCjk(clean) === 0, `实际 ${totalCjk(clean)}`);
+
+// ── XOR 载荷路径（2026-10-19 新增）：传 key 时必须编成 base64(XOR(·,key))，且能逐字还原 ──
+{
+  const key = Buffer.from("0123456789abcdef0123456789abcdef", "utf8");
+  const src = `let m="${LONG}";let n="短标签";`;
+  const { js, values } = encodeCjk(src, { minCjk: DEFAULT_MIN_CJK, callName: "xmAssetText", key });
+  check("XOR：长中文被编码且产物不含明文", values.length === 1 && !js.includes(LONG),
+    JSON.stringify(js).slice(0, 160));
+  check("XOR：短标签不受影响（低于 minCjk 不编码）", js.includes("短标签"));
+  const payload = js.slice(js.indexOf('xmAssetText("') + 'xmAssetText("'.length, js.indexOf('")'));
+  check("XOR：载荷不是纯 base64（与无 key 产物不同字节）",
+    payload !== Buffer.from(LONG, "utf8").toString("base64"));
+  check("XOR：xorDecode 逐字还原", xorDecode(payload, key) === LONG);
+  // 错误密钥解不出原文（哪怕差一位）
+  const wrong = Buffer.from(key); wrong[0] ^= 1;
+  check("XOR：错误密钥解不出原文", xorDecode(payload, wrong) !== LONG);
+  // 语法完整性
+  let syntaxOk = true;
+  try { await esbuild.transform(js, { loader: "js" }); } catch { syntaxOk = false; }
+  check("XOR：语法可解析", syntaxOk);
+}
 
 console.log(`\uFEFFcjk-encode 反证用例：${pass} 通过 / ${fails.length} 失败`);
 if (fails.length > 0) {

@@ -41,5 +41,37 @@ fn main() {
     // “couldn't read …resource_pubkey.rs” 这种看不出所以然的错误炸掉编译。
     println!("cargo:rustc-env=XIAOMO_RESOURCE_PUBKEY_B64={pubkey}");
 
+    // 资产加密密钥（scripts/gen-asset-key.mjs 生成、cjk-encode 用它编中文载荷）：
+    // 烧成编译期常量，lib.rs spawn sidecar 时经 XM_ASSET_KEY 环境变量交给运行时。
+    // 密钥文件变了必须重编译（常量是编译期的），所以挂 rerun-if-changed。
+    // 找不到文件直接 panic：release 没有密钥 = 产物解码必炸，宁可编译失败也不产出坏包。
+    //
+    // ⚠️ 不直接烧 base64 原文：env! 常量会原样落进 .rdata，`strings xiaomo-ai.exe`
+    // 一条命令就能捞出 44 字符的密钥（exe 里还有 updater 公钥也是 base64，混在一起
+    // 虽然要多看一眼，但那不是保护）。存 XOR 0xA5 后的 hex，运行时还原——
+    // 把「strings 捞密钥」抬成「得读懂 deobfuscate_asset_key」。
+    println!("cargo:rerun-if-changed=../dist-desktop/asset-key.txt");
+    let key_path = PathBuf::from("../dist-desktop/asset-key.txt");
+    let key = std::fs::read_to_string(&key_path).unwrap_or_else(|e| {
+        panic!(
+            "读不到 {}：{e}\n先跑 node scripts/gen-asset-key.mjs 生成资产密钥再构建",
+            key_path.display()
+        )
+    });
+    let key = key.trim();
+    if base64_len(key) < 16 {
+        panic!("dist-desktop/asset-key.txt 解出不足 16 字节，密钥文件损坏——删掉后重跑 node scripts/gen-asset-key.mjs");
+    }
+    let obfuscated: String = key.bytes().map(|b| format!("{:02x}", b ^ 0xA5)).collect();
+    println!("cargo:rustc-env=XIAOMO_ASSET_KEY_OBF={obfuscated}");
+
     tauri_build::build()
+}
+
+/// 宽松校验 base64 长度：4 字符 ≈ 3 字节，32 字节密钥 ≈ 44 字符。
+/// 不引依赖、不做严格解码——严格解码在 gen-asset-key / bundle-backend 已经做过，
+/// 这里只防"文件被写坏成别的东西"这种最粗的错。
+fn base64_len(s: &str) -> usize {
+    let chars = s.bytes().filter(|b| b.is_ascii_alphanumeric() || *b == b'+' || *b == b'/' || *b == b'=').count();
+    chars / 4 * 3
 }

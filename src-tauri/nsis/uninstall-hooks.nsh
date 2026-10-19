@@ -96,6 +96,23 @@ Function un.XiaomoGuard
   ${EndIf}
 FunctionEnd
 
+; ── 安装前清掉上一版遗留的资源文件 ──────────────────────────────
+;
+; 【为什么需要】Tauri 的 NSIS 覆盖安装只增不删：0.2.0 装过的 81 个前端 chunk
+; 在升到 0.2.1 后原样留在 $INSTDIR\backend\frontend\dist 里（2026-10-19 实测
+; 升级机上堆到 134 个文件，其中 11 个 SettingsView 是未混淆的明文历史版本）。
+; 这些残留不在新版 manifest 里 → 不受签名校验保护，等于把旧源码白留在用户机器上。
+;
+; 【为什么删整个 dist 再让安装器重建】resources 按「文件清单」覆盖写入，
+; 只有先删目录才能保证"装完 = 清单"。删 dist 不碰用户数据（数据在 xiaomodata）。
+;
+; 【为什么放 PREINSTALL】在复制新版文件之前跑，随后安装器写入的才是目录里的全部内容。
+; 升级（UpdateMode）与全新安装都走这里，语义一致。
+!macro NSIS_HOOK_PREINSTALL
+  RmDir /r "$INSTDIR\backend\frontend\dist"
+  RmDir /r "$INSTDIR\backend\src"
+!macroend
+
 !macro NSIS_HOOK_PREUNINSTALL
   ${If} $DeleteAppDataCheckboxState = 1
   ${AndIf} $UpdateMode <> 1

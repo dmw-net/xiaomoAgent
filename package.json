@@ -1,6 +1,6 @@
 {
   "name": "xiaomo-ai",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "private": true,
   "license": "Apache-2.0",
   "type": "module",
@@ -30,8 +30,9 @@
     "proactive:once": "node --experimental-sqlite --env-file=.env src/index.ts --proactive-once",
 
     "start": "npm --prefix frontend run build && node --experimental-sqlite --env-file=.env src/index.ts",
-    "desktop": "npm --prefix frontend run build -- --mode fast && node scripts/stage-sidecar.mjs && node scripts/make-manifest.mjs --unsigned && node scripts/tauri.mjs dev",
-    "desktop:build": "node scripts/stage-sidecar.mjs && node scripts/bundle-backend.mjs && node scripts/cjk-encode.test.mjs && npm --prefix frontend run build && node scripts/verify-bundle.mjs && node scripts/make-manifest.mjs && node scripts/tauri.mjs build && node scripts/verify-staged.mjs",
+    "desktop": "node scripts/gen-asset-key.mjs && npm --prefix frontend run build -- --mode fast && node scripts/stage-sidecar.mjs && node scripts/make-manifest.mjs --unsigned && node scripts/tauri.mjs dev",
+    "release": "node scripts/publish-release.mjs",
+    "desktop:build": "node scripts/gen-asset-key.mjs && node scripts/stage-sidecar.mjs && node scripts/bundle-backend.mjs && node scripts/cjk-encode.test.mjs && npm --prefix frontend run build && node scripts/verify-bundle.mjs && node scripts/make-manifest.mjs && node scripts/tauri.mjs build && node scripts/verify-staged.mjs",
     "release": "node scripts/publish-release.mjs",
     "build:local": "node scripts/ship.mjs build",
     "pass:status": "node scripts/secret.mjs status",

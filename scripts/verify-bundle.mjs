@@ -11,13 +11,22 @@ import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { planCjkEncoding } from "./cjk-encode.mjs";
+import { planCjkEncoding, xorDecode } from "./cjk-encode.mjs";
 
 const root = join(import.meta.dirname, "..");
 const PORT_SRC = 18993;
 const PORT_DSK = 18994;
 const MIN_CJK = 300;            // 体量下界：低于此说明没真正拼出内容，比对无意义
 const MIN_ASSETS_IN_PROMPT = 3; // 提示词里至少要有几条「被编码的资产」，否则一致也可能是空转
+
+// 资产密钥：捆包版的中文载荷是 base64(XOR(·, key))，解码与起实例都要它。
+const keyPath = join(root, "dist-desktop", "asset-key.txt");
+if (!existsSync(keyPath)) {
+  console.error("✗ 找不到 dist-desktop/asset-key.txt——先跑 node scripts/gen-asset-key.mjs");
+  process.exit(1);
+}
+const ASSET_KEY_B64 = readFileSync(keyPath, "utf8").trim();
+const ASSET_KEY = Buffer.from(ASSET_KEY_B64, "base64");
 
 const failures = [];
 const ok = (name) => console.log("  ✓ " + name);
@@ -62,6 +71,8 @@ function startInstance({ label, entry, port, useDesktopConfig, extraArgs = [] })
     delete env.MODEL_MODE; delete env.CHARACTER_NAME; delete env.OWNER_NAME;
     delete env.PROACTIVE_ENABLED; delete env.MODEL_STARTUP_CHECK;
     delete env.HOST;
+    // 与外壳同一路径：密钥经环境变量交给 sidecar（lib.rs spawn 时 .env("XM_ASSET_KEY", …)）
+    env.XM_ASSET_KEY = ASSET_KEY_B64;
   } else {
     args = ["--experimental-sqlite", entry, ...extraArgs];
   }
@@ -163,8 +174,9 @@ try {
 
   // 真正的承重判定：把产物里每个编码载荷解出来，看这条提示词里**确实装着**其中几条。
   // 没有这条，「两边一致」可能只是「两边都短到没碰到被编码的串」。
+  // 载荷 = base64(XOR(utf8, key))——用与解码器同一算法还原（xorDecode）。
   const payloads = [...finalAll.matchAll(/xm\w+\("([A-Za-z0-9+/=]{16,})"\)/g)]
-    .map((m) => Buffer.from(m[1], "base64").toString("utf8"));
+    .map((m) => xorDecode(m[1], ASSET_KEY));
   const hit = payloads.filter((p) => p.length > 6 && b.prompt.includes(p));
   if (payloads.length === 0) bad("产物里解不出任何编码载荷：编码层没进文件");
   else if (hit.length < MIN_ASSETS_IN_PROMPT) {

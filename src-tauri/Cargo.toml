@@ -1,6 +1,6 @@
 [package]
 name = "xiaomo-ai"
-version = "0.2.1"
+version = "0.2.2"
 description = "小茉 AI —— 陪伴型 Agent"
 authors = ["小茉 AI"]
 edition = "2021"

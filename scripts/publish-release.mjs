@@ -113,8 +113,19 @@ if (verifyOnly) {
   process.exit(0);
 }
 
-// 口令不默认成空串：这把私钥带口令，缺口令时让签名那步如实报错，而不是拿空口令去解。
-const pass = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? "";
+// 口令两条来源（与 npm run pack 同一约定）：
+//   1) 环境变量 TAURI_SIGNING_PRIVATE_KEY_PASSWORD（CI / 临时用）
+//   2) TAURI_SIGNING_PRIVATE_KEY_PASSWORD_FILE，或同目录的 xiaomo-updater.pass
+// 都不给也不默认成空串：这把私钥带口令，让签名那步如实报错，而不是拿空口令去解。
+const passPath = process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD_FILE
+  ?? path.join(os.homedir(), ".tauri", "xiaomo-updater.pass");
+let pass = (process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD ?? "").trim();
+let passFrom = "环境变量 TAURI_SIGNING_PRIVATE_KEY_PASSWORD";
+if (pass === "" && existsSync(passPath)) {
+  pass = readFileSync(passPath, "utf8").trim();
+  passFrom = passPath;
+}
+console.log(`· 口令来源：${passFrom}`);
 
 // 门 0：花两秒先试签一次。首发实测过——私钥或口令不对时，它会把三分钟构建全跑完，
 // 只在最后一步报 "no private key"，包打出来了却没有 .sig（等于白跑一趟还得再来一次）。
@@ -127,7 +138,7 @@ rmSync(`${sigProbe}.sig`, { force: true });
 if (sign.code !== 0) die(`签名预检失败（退出码 ${sign.code}）：私钥 ${keyPath} 配当前口令签不出东西。\n`
   + `   CLI 的原始输出打在上方：口令缺失/不对是 "Wrong password for that key"，\n`
   + `   看到 "Usage: cargo-tauri signer sign ..." 则是参数冲突（-f 与环境里的 TAURI_SIGNING_PRIVATE_KEY 不能同给）。\n`
-  + `   带上口令重跑：TAURI_SIGNING_PRIVATE_KEY_PASSWORD=<口令> npm run release`);
+  + `   带上口令重跑：设 TAURI_SIGNING_PRIVATE_KEY_PASSWORD，或把口令写到 ${passPath}`);
 console.log("✓ 门 0：私钥能签（口令正确）");
 
 // 预检过了才注入给构建用。tauri 的打包签名只读 TAURI_SIGNING_PRIVATE_KEY，而且要的是
@@ -135,6 +146,9 @@ console.log("✓ 门 0：私钥能签（口令正确）");
 // 设了 _PATH 照样报 "A public key has been found, but no private key"，包打完了却没 .sig。
 // 顺序也不能反：这一经 env 之后，再拿 -f 去调 signer sign 会撞 clap 的 Usage 错。
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY) process.env.TAURI_SIGNING_PRIVATE_KEY = readFileSync(keyPath, "utf8");
+// 口令同样要交给构建链：desktop:build 里的 make-manifest 也从环境变量拿它。
+// 不写回去的话——预检过了、构建到签名那一步照样失败（实测踩过）。
+if (!process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD) process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = pass;
 
 // ── 打包 ─────────────────────────────────────────────────────────
 if (!skipBuild) {

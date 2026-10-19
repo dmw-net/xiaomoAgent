@@ -15,14 +15,11 @@
     "help": "node scripts/help.mjs",
     "ver": "node scripts/version.mjs",
 
-    "dev": "npm --prefix frontend run build -- --mode fast && node --experimental-sqlite --env-file=.env --env-file=.env.dev src/index.ts",
+    "dev": "npm --prefix frontend run build -- --mode fast && node --experimental-sqlite --env-file=.env src/index.ts",
     "app": "npm run desktop",
-    "pack": "npm run build:local",
-    "ship": "node scripts/ship.mjs release",
+    "pack": "node scripts/pack.mjs",
     "check": "npm run typecheck && npm --prefix frontend run typecheck",
-    "doctor": "node --experimental-sqlite --env-file=.env --env-file=.env.dev src/doctor.ts",
-    "pass": "node scripts/secret.mjs status",
-    "pass:set": "node scripts/secret.mjs set",
+    "doctor": "node --experimental-sqlite --env-file=.env src/doctor.ts",
 
     "smoke": "node --experimental-sqlite scripts/smoke.ts",
     "verify-context": "node --experimental-sqlite scripts/verify-context.ts",
@@ -33,9 +30,6 @@
     "desktop": "node scripts/gen-asset-key.mjs && npm --prefix frontend run build -- --mode fast && node scripts/stage-sidecar.mjs && node scripts/make-manifest.mjs --unsigned && node scripts/tauri.mjs dev",
     "release": "node scripts/publish-release.mjs",
     "desktop:build": "node scripts/gen-asset-key.mjs && node scripts/stage-sidecar.mjs && node scripts/bundle-backend.mjs && node scripts/cjk-encode.test.mjs && npm --prefix frontend run build && node scripts/verify-bundle.mjs && node scripts/make-manifest.mjs && node scripts/tauri.mjs build && node scripts/verify-staged.mjs",
-    "release": "node scripts/publish-release.mjs",
-    "build:local": "node scripts/ship.mjs build",
-    "pass:status": "node scripts/secret.mjs status",
 
     "typecheck": "tsc --noEmit",
     "stage-sidecar": "node scripts/stage-sidecar.mjs",

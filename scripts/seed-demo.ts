@@ -17,10 +17,18 @@ const { db } = await import("../src/db.ts");
 const { addMemoryEvent } = await import("../src/memory.ts");
 const { insertMessage } = await import("../src/agent.ts");
 
+// 记忆与消息都按联系人隔离（每条都带 contact_id），所以先把默认联系人准备好——
+// 空库上直接写 messages / memory_events 会因为没有归属人而绑参失败。
+const { DEFAULT_CONTACT_ID, ensureDefaultContact } = await import("../src/contacts.ts");
+
 if (reset) {
   db.exec("DELETE FROM messages; DELETE FROM memory_events; DELETE FROM turns; DELETE FROM kv;");
   console.log("[seed] 已清空 messages / memory_events / turns / kv");
 }
+
+// 空库时先把默认联系人建出来（表里已经有联系人就不动它）。
+ensureDefaultContact();
+const contactId = DEFAULT_CONTACT_ID;
 
 const now = Date.now();
 const MIN = 60_000;
@@ -69,7 +77,7 @@ const MEMORIES: Array<{ at: number; kind: "promise" | "preference" | "fact" | "p
 
 let memCount = 0;
 for (const item of MEMORIES) {
-  const id = addMemoryEvent({ kind: item.kind, content: item.content, subject: item.subject, weight: item.weight });
+  const id = addMemoryEvent({ kind: item.kind, content: item.content, subject: item.subject, weight: item.weight, contactId });
   db.prepare("UPDATE memory_events SET created_at = ?, last_used_at = ? WHERE id = ?").run(
     item.at,
     // 一部分标记为"最近被想起过"，好让记忆页的"近 7 天被想起过"不是 0
@@ -85,6 +93,7 @@ for (const item of SCRIPT) {
     role: item.role,
     text: item.text,
     kind: item.kind ?? "chat",
+    contactId,
   });
   db.prepare("UPDATE messages SET created_at = ? WHERE id = ?").run(item.at, row);
 }

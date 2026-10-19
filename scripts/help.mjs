@@ -23,7 +23,8 @@ const GROUPS = [
   {
     title: "出包",
     items: [
-      ["desktop:build", "打桌面安装包（需自备 Tauri 更新签名私钥）"],
+      ["pack", "本地出安装包（自动找签名私钥与口令）"],
+      ["desktop:build", "同上，但签名材料要自己用环境变量给"],
     ],
   },
   {

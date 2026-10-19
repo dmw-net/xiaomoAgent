@@ -28,6 +28,7 @@ import { gzipSync } from "node:zlib";
 import { extname, join as joinPath, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
 import { config } from "./config.ts";
+import * as lan from "./lan.ts";
 import {
   activateCapabilityProfile,
   activateProfile,
@@ -156,13 +157,14 @@ const MAX_AUDIO_BODY_BYTES = 8 * 1024 * 1024;
  */
 const MAX_CARD_BODY_BYTES = 512 * 1024;
 
-export function createHttpServer() {
+export function createHttpServer(options: { rebind?: () => Promise<{ ok: boolean; error: string }> } = {}) {
+  const rebind = options.rebind;
   // 存量迁移：首次遇到多联系人结构时，把旧的全局角色卡与数据归入默认联系人。
   ensureDefaultContact();
   // 内置设置助手：保留联系人，一句话配模型/建联系人（工具白名单见 assistant.ts）。
   ensureAssistantContact();
   return createServer((request, response) => {
-    handle(request, response).catch((error) => {
+    handle(request, response, rebind).catch((error) => {
       const payload = error instanceof SettingsBodyError
         ? { status: 400 as const, body: { ok: false, error: error.message } }
         // 兜底：任何未捕获异常都要变成一次明确的 500，而不是静默断连。
@@ -177,7 +179,11 @@ export function createHttpServer() {
   });
 }
 
-async function handle(request: IncomingMessage, response: ServerResponse): Promise<void> {
+async function handle(
+  request: IncomingMessage,
+  response: ServerResponse,
+  rebind?: () => Promise<{ ok: boolean; error: string }>,
+): Promise<void> {
   const url = new URL(request.url ?? "/", `http://${request.headers.host ?? "localhost"}`);
   const path = url.pathname;
   const method = request.method ?? "GET";
@@ -202,7 +208,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     // 分清是 Host 不过还是 Origin 不过：两者该改的地方完全不同（前者是监听地址/访问方式，
     // 后者是哪个网页在调），合成一句"不允许"会让人两头查。
     const loopbackBinds = new Set(["127.0.0.1", "localhost", "::1"]);
-    const hostBad = loopbackBinds.has(config.host) && !loopbackBinds.has(hostHeader);
+    const hostBad = lan.isLoopbackBind() && !loopbackBinds.has(hostHeader);
     sendJson(response, 403, {
       ok: false,
       code: hostBad ? "HOST_FORBIDDEN" : "ORIGIN_FORBIDDEN",
@@ -211,7 +217,117 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
 
+  // ── 访问码门（局域网 + 隧道共用）───────────────────────────
+  // 免码的唯一情形：**从本机发起、且访问的就是本机地址**（本机浏览器 / 桌面窗口）。
+  //   · 局域网手机：来源不是本机 → 要码；
+  //   · 隧道：穿透程序在本机跑，socket 来源是 127.0.0.1，但 Host 是公网域名 → 也要码。
+  // 最后那条是关键：只看来源的话，隧道等于一个没有门禁的公网入口。
+  // 为什么必须要有门：/api/settings 会把模型密钥原文回给调用方（本机应用的有意设计），
+  // 所以「可达」绝不能等于「可读」。
+  const isLocalOperator = lan.fromLoopback(request) && isLocalMachineHost(hostHeader);
+  if (!isLocalOperator && path !== lan.LAN_LOGIN_PATH && !lan.hasAccessCookie(request)) {
+    if (path === "/" || path === "/index.html") {
+      sendLanLogin(response);
+      return;
+    }
+    sendJson(response, 401, {
+      ok: false,
+      code: "LAN_AUTH",
+      error: "需要访问码：请在这台电脑的小茉里打开「设置 → 系统与数据 → 远程访问」查看",
+    });
+    return;
+  }
+
+  // ── 手机访问（局域网开关）：登录接口 + 状态读写 ────────────
+  if (path === lan.LAN_LOGIN_PATH) {
+    if (method === "GET") {
+      sendLanLogin(response);
+      return;
+    }
+    if (method === "POST") {
+      const body = await readJson<{ code?: unknown }>(request);
+      const want = typeof body.code === "string" ? lan.normalizeCode(body.code) : "";
+      const expect = lan.lanCode();
+      if (expect === "" || want !== expect) {
+        sendJson(response, 401, { ok: false, error: "访问码不对" });
+        return;
+      }
+      response.writeHead(200, {
+        "content-type": "application/json; charset=utf-8",
+        "cache-control": "no-store",
+        "set-cookie": `${lan.LAN_COOKIE}=${lan.currentToken()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
+      });
+      response.end(JSON.stringify({ ok: true }));
+      return;
+    }
+  }
+
+  if (path === "/api/lan" || path === "/api/lan/rotate" || path === "/api/lan/port" || path === "/api/lan/tunnel") {
+    // 这些设置只能在「本机 + 本机地址」上改。
+    // 光看 socket 来源不够：隧道也是从本机出去的，那样远程访客就能读到访问码、关掉开关、改端口。
+    if (!isLocalOperator) {
+      sendJson(response, 403, { ok: false, error: "只能在小茉运行的那台电脑上改这个开关" });
+      return;
+    }
+    if (path === "/api/lan" && method === "GET") {
+      sendJson(response, 200, { ok: true, ...lanSummary(request) });
+      return;
+    }
+    if (path === "/api/lan" && method === "POST") {
+      const body = await readJson<{ enabled?: unknown }>(request);
+      lan.setLanEnabled(body.enabled === true);
+      lan.clearBindError();
+      // 绑监听地址要先让这次响应写完，再动 socket（否则 closeAllConnections 会把这条响应一起掐掉）。
+      // 界面拿到 pending 后会再拉一次状态确认，绑不上时那边会看到 enabled 已经退回 false。
+      const summary = lanSummary(request);
+      sendJson(response, 200, { ok: true, ...summary, pending: true });
+      setTimeout(() => { void rebind?.(); }, 80);
+      return;
+    }
+    if (path === "/api/lan/port" && method === "POST") {
+      const body = await readJson<{ port?: unknown }>(request);
+      const raw = body.port;
+      const value = raw === "" || raw === null || raw === undefined ? 0 : Number(raw);
+      const previousPort = lan.portSetting();
+      const check = lan.setPort(value);
+      if (!check.ok) {
+        sendJson(response, 400, { ok: false, error: check.error });
+        return;
+      }
+      // 端口被占现在就说，别等用户重启完发现应用起不来。
+      if (value !== 0) {
+        const probe = await probePort(value);
+        if (!probe.ok) {
+          lan.setPort(previousPort);
+          sendJson(response, 400, { ok: false, error: probe.error });
+          return;
+        }
+      }
+      sendJson(response, 200, { ok: true, ...lanSummary(request) });
+      return;
+    }
+    if (path === "/api/lan/tunnel" && method === "POST") {
+      const body = await readJson<{ hosts?: unknown }>(request);
+      const list = Array.isArray(body.hosts)
+        ? body.hosts.map((item) => String(item))
+        : String(body.hosts ?? "").split(/[,\s]+/);
+      const result = lan.setTunnelHosts(list);
+      if (!result.ok) {
+        sendJson(response, 400, { ok: false, error: result.error });
+        return;
+      }
+      sendJson(response, 200, { ok: true, ...lanSummary(request) });
+      return;
+    }
+    if (path === "/api/lan/rotate" && method === "POST") {
+      lan.rotateLanCode();
+      sendJson(response, 200, { ok: true, ...lanSummary(request) });
+      return;
+    }
+  }
+
   // ── 页面 ────────────────────────────────────────────────
+
   // 前端只有 React 一轨：/ 与全部静态资源都来自 frontend/dist 构建产物。
   // dist 缺失只可能是没跑 `npm run fe:build`，给一句人话提示，而不是白屏。
   if (method === "GET" && (path === "/" || path === "/index.html")) {
@@ -2246,7 +2362,7 @@ function hostnameOfHostHeader(raw: string): string {
 
 /** 隧道域名（见 config.trustedHosts）是否被显式信任。空串永不匹配。 */
 export function isTrustedExternalHost(host: string): boolean {
-  return host !== "" && config.trustedHosts.includes(host);
+  return lan.isTrustedHost(host);
 }
 
 /** 从 Origin 里取主机名，IPv6 字面量要去掉方括号（`new URL` 的 hostname 带括号）。 */
@@ -2274,13 +2390,13 @@ function hostnameOfOrigin(origin: string): string {
  * `Host: attacker.com:8787` 不在这个集合里，于是被拒——而正常用 `http://192.168.1.20:8787`
  * 访问的人不受影响。
  *
- * 隧道是这套规则唯一的例外：cloudflared 把公网域名原样转发进来，它不是本机地址。
+ * 隧道是这套规则唯一的例外：穿透程序把公网域名原样转发进来，它不是本机地址。
  * 因此加了 config.trustedHosts（环境变量 TRUSTED_HOSTS）——只有显式列进去的域名才放行，
  * 且强制 Origin 与 Host 同源。没配就完全没有这个开口，与从前一致。
  */
 function passesLocalGuard(request: IncomingMessage, hostHeader: string): boolean {
   const loopbackBinds = new Set(["127.0.0.1", "localhost", "::1"]);
-  const isLoopbackBind = loopbackBinds.has(config.host);
+  const isLoopbackBind = lan.isLoopbackBind();
   // 显式信任的隧道域名（config.trustedHosts）：公网穿透唯一的开口。Host 不是本机地址也
   // 放行，但下面的 Origin 校验会收紧到「必须与 Host 同源」，别的网页借不走这个域名。
   const isTrusted = isTrustedExternalHost(hostHeader);
@@ -2306,7 +2422,8 @@ export function isLocalMachineHost(host: string): boolean {
   // 从前这里把 "" 和 localhost 并列放过，于是 LAN 模式下少了一道本该拦住的输入。
   if (host === "") return false;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
-  if (config.host !== "" && config.host !== "0.0.0.0" && config.host === host) return true;
+  const bound = lan.bindHost();
+  if (bound !== "" && bound !== "0.0.0.0" && bound === host) return true;
   const nets = networkInterfaces();
   for (const list of Object.values(nets)) {
     for (const net of list ?? []) {
@@ -2435,7 +2552,115 @@ function gzipOfFile(file: string, body: Buffer): Buffer | null {
   return buf;
 }
 
+/**
+ * 手机第一次打开时看到的登录页。
+ * 刻意**不依赖任何站点资源**：那时请求还没有 cookie，前端包也取不到，所以样式全内联。
+ */
+function sendLanLogin(response: ServerResponse): void {
+  sendHtml(response, `<!doctype html>
+<html lang="zh-CN"><head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>小茉 · 输入访问码</title>
+<style>
+ :root{--bg:#efe7da;--fg:#2b241d;--card:#fffdfa;--line:#d9cdbb;--accent:#b7522f}
+ @media (prefers-color-scheme:dark){:root{--bg:#171310;--fg:#f0e8dd;--card:#221c18;--line:#3a302a;--accent:#e08a5f}}
+ *{box-sizing:border-box}
+ body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px;
+      background:var(--bg);color:var(--fg);font:16px/1.6 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif}
+ form{width:100%;max-width:340px;padding:24px;background:var(--card);border:1px solid var(--line);border-radius:16px}
+ h1{margin:0 0 6px;font-size:19px}
+ p{margin:0 0 18px;font-size:13px;opacity:.72}
+ input{width:100%;padding:12px 14px;font-size:20px;letter-spacing:.14em;text-align:center;
+       border:1px solid var(--line);border-radius:10px;background:transparent;color:inherit}
+ button{margin-top:12px;width:100%;padding:12px;border:0;border-radius:10px;background:var(--accent);color:#fff;font-size:15px}
+ #err{margin-top:10px;min-height:18px;font-size:13px;color:#c0392b}
+</style></head>
+<body>
+<form id="f">
+  <h1>小茉</h1>
+  <p>请输入电脑上「手机访问」里显示的访问码</p>
+  <input id="c" inputmode="numeric" autocomplete="one-time-code" placeholder="000-000" autofocus>
+  <button type="submit">进入</button>
+  <div id="err"></div>
+</form>
+<script>
+document.getElementById("f").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const err = document.getElementById("err");
+  err.textContent = "";
+  try {
+    const r = await fetch("/__lan", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: document.getElementById("c").value }),
+    });
+    if (r.ok) { location.replace("/"); return; }
+    const data = await r.json().catch(() => ({}));
+    err.textContent = data.error || "访问码不对";
+  } catch { err.textContent = "连不上，确认手机和电脑还在同一个局域网"; }
+});
+</script>
+</body></html>`);
+}
+
+/**
+ * 试绑一下这个端口。被占的话现在就说清楚——等用户重启完发现白屏，是最难排查的那种失败。
+ */
+async function probePort(port: number): Promise<{ ok: boolean; error: string }> {
+  const { createServer } = await import("node:net");
+  return await new Promise((resolve) => {
+    const probe = createServer();
+    probe.once("error", (error: NodeJS.ErrnoException) => {
+      resolve({
+        ok: false,
+        error: error.code === "EADDRINUSE"
+          ? `端口 ${port} 已被别的程序占用，换一个`
+          : `端口 ${port} 用不了：${error.message}`,
+      });
+    });
+    probe.once("listening", () => probe.close(() => resolve({ ok: true, error: "" })));
+    probe.listen(port, "127.0.0.1");
+  });
+}
+
+/** 给界面看的局域网状态。端口取当前连接的本地端口——PORT=0 自动分配时也是对的。 */
+function lanSummary(request: IncomingMessage): {
+  enabled: boolean;
+  code: string;
+  bound: boolean;
+  urls: string[];
+  bindError: string;
+  /** 当前实际监听的端口（桌面端默认是系统随机分配的）。 */
+  port: number;
+  /** 用户设的固定端口；0 = 自动分配。 */
+  portSetting: number;
+  /** 下次启动会用的端口（0 = 仍自动）；与 port 不同时界面提示「重启生效」。 */
+  portNext: number;
+  /** 允许作为 Host 进来的隧道域名。 */
+  tunnelHosts: string[];
+} {
+  const port = request.socket.localPort ?? config.port;
+  return {
+    enabled: lan.lanEnabled(),
+    code: lan.formatCode(lan.lanCode()),
+    bound: !lan.isLoopbackBind(),
+    urls: lan.lanUrls(port),
+    bindError: lan.bindError(),
+    // 当前实际监听的端口（桌面端默认是系统随机分配的）
+    port,
+    // 用户设的固定端口；0 = 自动分配
+    portSetting: lan.portSetting(),
+    // 下次启动会用的端口（0 = 仍自动）。不等于 port 时界面提示「重启生效」
+    portNext: lan.effectivePort(),
+    // 允许作为 Host 进来的隧道域名（配置里那份 TRUSTED_HOSTS 也仍然有效）
+    tunnelHosts: lan.tunnelHosts(),
+  };
+}
+
 function sendJson(response: ServerResponse, status: number, body: unknown): void {
+
   const raw = Buffer.from(JSON.stringify(body));
   let buf = raw;
   let encoding: string | null = null;

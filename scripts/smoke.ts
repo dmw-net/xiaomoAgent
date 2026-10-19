@@ -17,7 +17,7 @@ process.env.MODEL_API_KEY = "";
 process.env.PROACTIVE_ENABLED = "true";
 process.env.PROACTIVE_IDLE_MINUTES = "1";
 process.env.QUIET_HOURS = "0-0";
-// 隧道域名白名单（模拟 cloudflared 转发进来的公网 Host）：故意用 大小写混合 + 多余空格，
+// 隧道域名白名单（模拟穿透程序转发进来的公网 Host）：故意用 大小写混合 + 多余空格，
 // 顺带验证 hostList() 的归一化。下面 [10] 段会真的用这个 Host 打一次服务。
 process.env.TRUSTED_HOSTS = " Xiaomo.Example.Test , xm.2025521.xyz ";
 
@@ -507,9 +507,11 @@ try {
     !isLocalMachineHost("attacker.example.com") && !isLocalMachineHost("evil.io"), "");
   check("空 Host 不放行", !isLocalMachineHost(""), "");
 
-  // 隧道域名白名单（TRUSTED_HOSTS）：cloudflared 会把公网域名原样当 Host 转发进来，
+  // 隧道域名白名单（TRUSTED_HOSTS）：穿透程序会把公网域名原样当 Host 转发进来，
   // 它不是本机地址。只有显式写进白名单才放行，且 Origin 必须与 Host 同源——这样既让穿透
   // 能通，又没把 DNS rebinding 那半边重新打开（未信任域名照旧被拒）。
+  // 注意：隧道虽然从本机出去，但它不是本机用户在操作，所以到这一步之后**还要过访问码那一道门**
+  // （这里期望 401；带码放行见 [45] 段）。
   const TRUSTED_HOST = "xiaomo.example.test";
   check("白名单里的隧道域名被信任（大小写归一）", isTrustedExternalHost(TRUSTED_HOST), TRUSTED_HOST);
   check("白名单外的域名不被信任", !isTrustedExternalHost("evil.io") && !isTrustedExternalHost(""), "");
@@ -527,7 +529,7 @@ try {
       req.end();
     });
     const viaTunnel = await rawGet(TRUSTED_HOST, `https://${TRUSTED_HOST}`);
-    check("隧道域名 + 同源 Origin 放行（穿透能通）", viaTunnel === 200, `status=${viaTunnel}`);
+    check("隧道域名 + 同源 Origin 过 Host 守卫，但随即要求访问码（401，见 [45]）", viaTunnel === 401, `status=${viaTunnel}`);
     const badOrigin = await rawGet(TRUSTED_HOST, "https://evil.io");
     check("隧道域名 + 外来 Origin 拒绝（借不走）", badOrigin === 403, `status=${badOrigin}`);
     const untrusted = await rawGet("attacker.example.com", "https://attacker.example.com");
@@ -3367,7 +3369,134 @@ try {
   }
 
   // ── 最后一节：恢复出厂设置（这一步会清库，只能等其它全部断言跑完）──
+  console.log("\n[44] 手机访问（局域网）：开关只本机可改、手机必须输访问码");
+  {
+    const { networkInterfaces } = await import("node:os");
+    let lanIp = "";
+    for (const list of Object.values(networkInterfaces())) {
+      for (const info of list ?? []) {
+        if (info.family === "IPv4" && !info.internal) { lanIp = info.address; break; }
+      }
+      if (lanIp !== "") break;
+    }
+    if (lanIp === "") {
+      console.log("  · 跳过：这台机器没有可用的局域网地址");
+    } else {
+      // 用本机网卡地址访问 = 模拟手机（对服务端来说来源不是回环，走的就是手机那条路）。
+      const viaLan = `http://${lanIp}:8799`;
+      const call = async (base: string, path: string, init?: RequestInit) => {
+        const r = await fetch(base + path, init);
+        const text = await r.text();
+        return { status: r.status, body: text, cookie: r.headers.get("set-cookie") ?? "" };
+      };
+      const json = (b: unknown, cookie = ""): RequestInit => ({
+        method: "POST",
+        headers: { "content-type": "application/json", ...(cookie === "" ? {} : { cookie }) },
+        body: JSON.stringify(b),
+      });
+      const stateOf = async (init?: RequestInit) => JSON.parse((await call(BASE, "/api/lan", init)).body) as {
+        enabled: boolean; code: string; bound: boolean; urls: string[];
+      };
+
+      const off = await stateOf();
+      check("默认关闭、只绑本机", off.enabled === false && off.bound === false, JSON.stringify(off));
+
+      const turnedOn = await call(BASE, "/api/lan", json({ enabled: true }));
+      check("本机能打开开关", turnedOn.status === 200, `status=${turnedOn.status}`);
+      const on = await stateOf();
+      check("打开后给出六位访问码", /^\d{3}-\d{3}$/.test(on.code), String(on.code));
+      const code = on.code.replace("-", "");
+
+      const noCookie = await call(viaLan, "/api/settings");
+      check("手机没带访问码时读不到设置（401）", noCookie.status === 401 && noCookie.body.includes("LAN_AUTH"), `status=${noCookie.status}`);
+      const page = await call(viaLan, "/");
+      check("手机没带访问码时看到的是登录页", page.status === 200 && page.body.includes("请输入电脑上") && !page.body.includes('id="root"'), `status=${page.status}`);
+
+      const wrong = await call(viaLan, "/__lan", json({ code: "000000" }));
+      check("访问码不对被拒", wrong.status === 401, `status=${wrong.status}`);
+      const right = await call(viaLan, "/__lan", json({ code }));
+      check("访问码正确时发放 cookie", right.status === 200 && right.cookie.includes("xiaomo_lan="), right.cookie.slice(0, 30));
+      const cookie = right.cookie.split(";")[0] ?? "";
+
+      const settings = await call(viaLan, "/api/settings", { headers: { cookie } });
+      check("带 cookie 的手机能正常用", settings.status === 200, `status=${settings.status}`);
+      const remoteWrite = await call(viaLan, "/api/lan", json({ enabled: false }, cookie));
+      check("但手机改不了这个开关（403）", remoteWrite.status === 403, `status=${remoteWrite.status}`);
+
+      await call(BASE, "/api/lan", json({ enabled: false }));
+      check("关掉后恢复只绑本机", (await stateOf()).bound === false);
+    }
+  }
+
+  console.log("\n[45] 固定端口与内网穿透：端口只在 PORT=0 时生效、隧道必须带访问码");
+  {
+    const { request: httpRequest } = await import("node:http");
+    const call = async (path: string, init?: RequestInit) => {
+      const r = await fetch(BASE + path, init);
+      const text = await r.text();
+      return { status: r.status, body: text };
+    };
+    const json = (b: unknown): RequestInit => ({ method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(b) });
+    const stateOf = async () => JSON.parse((await call("/api/lan")).body) as {
+      enabled: boolean; code: string; port: number; portSetting: number; portNext: number; tunnelHosts: string[];
+    };
+    /** 模拟隧道：连接来自本机，Host 是隧道域名。 */
+    const viaTunnel = (path: string, host: string, cookie = "") => new Promise<{ status: number; body: string }>((resolve) => {
+      const req = httpRequest({ host: "127.0.0.1", port: 8799, path, method: "GET", headers: { host, ...(cookie ? { cookie } : {}) } }, (res) => {
+        let body = "";
+        res.on("data", (c) => { body += c; });
+        res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+      });
+      req.on("error", (e) => resolve({ status: 0, body: String(e.message) }));
+      req.end();
+    });
+
+    const before = await stateOf();
+    check("端口默认是自动分配（portSetting=0）", before.portSetting === 0, String(before.portSetting));
+    check("smoke 用环境变量给了 PORT，所以 portNext 跟随环境变量", before.portNext === 8799, `${before.portNext}`);
+
+    const badPort = await call("/api/lan/port", json({ port: 80 }));
+    check("1024 以下的端口被拒（要管理员权限）", badPort.status === 400, badPort.body.slice(0, 70));
+    const goodPort = await call("/api/lan/port", json({ port: 18787 }));
+    check("合法端口被接受", goodPort.status === 200, goodPort.body.slice(0, 70));
+    const afterPort = await stateOf();
+    check("端口写进了设置，但环境变量 PORT 优先（portNext 仍是 8799）",
+      afterPort.portSetting === 18787 && afterPort.portNext === 8799,
+      `setting=${afterPort.portSetting} next=${afterPort.portNext}`);
+
+    const badHost = await call("/api/lan/tunnel", json({ hosts: ["不是域名"] }));
+    check("非法隧道域名被拒", badHost.status === 400, badHost.body.slice(0, 70));
+    const addHost = await call("/api/lan/tunnel", json({ hosts: ["smoke-tunnel.example.com"] }));
+    check("隧道域名被接受", addHost.status === 200, addHost.body.slice(0, 70));
+    const withHost = await stateOf();
+    check("有隧道域名后一定存在访问码", /^\d{3}-\d{3}$/.test(withHost.code), String(withHost.code));
+
+    // 这条是这次加固的核心回归：隧道虽然从本机发起，但它不是本机用户在操作。
+    const noCode = await viaTunnel("/api/settings", "smoke-tunnel.example.com");
+    check("隧道请求没带码 → 401（从前是 200 裸奔）", noCode.status === 401, `status=${noCode.status}`);
+    const localDirect = await viaTunnel("/api/settings", "127.0.0.1");
+    check("本机直连仍然免码", localDirect.status === 200, `status=${localDirect.status}`);
+    const tunnelLogin = await viaTunnel("/__lan", "smoke-tunnel.example.com");
+    check("隧道访问首页拿到的是登录页", tunnelLogin.status === 200 && tunnelLogin.body.includes("请输入电脑上"), `status=${tunnelLogin.status}`);
+
+    const code = withHost.code.replace("-", "");
+    const login = await fetch(`${BASE}/__lan`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
+    const cookieHeader = login.headers.get("set-cookie") ?? "";
+    const cookie = cookieHeader.split(";")[0] ?? "";
+    check("用访问码换到 cookie", login.status === 200 && cookie.includes("xiaomo_lan="), cookie.slice(0, 26));
+    const tunnelWithCookie = await viaTunnel("/api/settings", "smoke-tunnel.example.com", cookie);
+    check("带 cookie 的隧道请求放行", tunnelWithCookie.status === 200, `status=${tunnelWithCookie.status}`);
+    const tunnelWrite = await viaTunnel("/api/lan", "smoke-tunnel.example.com", cookie);
+    check("但隧道端改不了这些设置（403）", tunnelWrite.status === 403, `status=${tunnelWrite.status}`);
+
+    // 收尾：清掉隧道域名与固定端口，别把状态留给后面的用例
+    await call("/api/lan/tunnel", json({ hosts: [] }));
+    await call("/api/lan/port", json({ port: 0 }));
+  }
+
   console.log("\n[39] 恢复出厂设置：清干净 + 重新种子内置联系人");
+
+
   const fsR = await import("node:fs");
   const { db: dbR } = await import("../src/db.ts");
   // `one()` 那把计数助手定义在更早的分段作用域里，这儿够不着，就地来一把同语义的

@@ -14,6 +14,7 @@ import { modelConfig, modelReadyNow, personaConfig } from "./settings.ts";
 import { registerChannel } from "./channels/types.ts";
 import { webChannel } from "./channels/web.ts";
 import { createHttpServer } from "./server.ts";
+import * as lan from "./lan.ts";
 import { startProactiveLoop, runProactiveCheck, pruneProactiveBacklog, pruneFinishedTasks } from "./proactive.ts";
 import { sweepStaleTurns } from "./agent.ts";
 import { isChatModelId, listModels, pingChat } from "./model.ts";
@@ -107,14 +108,20 @@ if (pruned.orphans + pruned.deduped > 0) {
   console.log(`[startup] 主动性任务修复：孤儿清理 ${pruned.orphans} 条、堆积合并 ${pruned.deduped} 条`);
 }
 
-const server = createHttpServer();
+const server = createHttpServer({ rebind: applyLanBind });
+
+/** 换绑期间由 applyLanBind 自己处理 error，别让下面那个"出错即退出"的处理器把进程带走。 */
+let rebinding = false;
 
 // 端口被占用时给一句人话，而不是抛一堆栈。
 // 桌面端固定端口被占是常见的（用户同时开了两个窗口），必须能自己看懂发生了什么。
 server.on("error", (error: NodeJS.ErrnoException) => {
+  if (rebinding) return;
   if (error.code === "EADDRINUSE") {
-    console.error(`\n✗ 端口 ${config.port} 已被占用。`);
-    console.error(`  换个端口：在 .env 里改 PORT，或设 PORT=0 让系统自动分配。\n`);
+    // 显示实际要绑的那个端口：桌面端 config.port 是 0（自动分配），照它印会变成「端口 0 已被占用」。
+    const wanted = lan.effectivePort();
+    console.error(`\n✗ 端口 ${wanted === 0 ? "（自动分配）" : String(wanted)} 已被占用。`);
+    console.error("  换个端口：桌面端在「设置 → 系统与数据 → 手机与远程访问 → 固定端口」里改；命令行用 .env 的 PORT。\n");
   } else {
     console.error(`\n✗ 服务启动失败：${error.message}\n`);
   }
@@ -124,14 +131,18 @@ server.on("error", (error: NodeJS.ErrnoException) => {
 
 // PORT=0 时由系统分配空闲端口，实际端口从 server.address() 取。
 // 桌面端走这条路，避免和其他程序抢端口。
-server.listen(config.port, config.host, () => {
+server.listen(lan.effectivePort(), lan.bindHost(), () => {
   const address = server.address();
   const port = typeof address === "object" && address !== null ? address.port : config.port;
   writeRuntimeHandshake(port);
 
   console.log("──────────────────────────────────────────");
   console.log(`  ${personaConfig().character.name} 已启动`);
-  console.log(`  地址：http://${config.host}:${port}`);
+  const lanUrls = lan.lanUrls(port);
+  console.log(`  地址：http://127.0.0.1:${port}`);
+  if (!lan.isLoopbackBind()) {
+    console.log(`  局域网：${lanUrls.length > 0 ? lanUrls.join("  ") : "没找到可用网卡地址"}（需输入访问码）`);
+  }
   console.log(`  数据：${config.dbPath}`);
   console.log(
     `  模型：${modelReadyNow() ? modelConfig().name : "echo（未配置密钥，先跑通链路）"}`,
@@ -141,6 +152,58 @@ server.listen(config.port, config.host, () => {
   console.log("──────────────────────────────────────────");
   void selfCheck();
 });
+
+/**
+ * 按当前设置重新绑定监听地址（「手机访问」开关打开/关掉时调用）。
+ *
+ * 只能在这条响应写完之后调：closeAllConnections() 会把在途连接一起掐掉，
+ * 包括刚触发这次换绑的那条响应。所以 server.ts 里是 setTimeout 之后再喊它。
+ *
+ * 绑不上（端口被占 / 防火墙拦）时**退回只绑本机并把开关关掉**——
+ * 界面绝不能显示「已打开」而实际进不来，那比功能不存在更糟。
+ */
+async function applyLanBind(): Promise<{ ok: boolean; error: string }> {
+  const address = server.address();
+  const port = typeof address === "object" && address !== null ? address.port : config.port;
+  const want = lan.bindHost();
+  rebinding = true;
+  try {
+    await new Promise<void>((resolve) => {
+      server.close(() => resolve());
+      server.closeAllConnections?.();
+    });
+    const result = await new Promise<{ ok: boolean; error: string }>((resolve) => {
+      const onError = (error: NodeJS.ErrnoException): void => {
+        resolve({
+          ok: false,
+          error: error.code === "EADDRINUSE" ? `端口 ${port} 被占用` : error.message,
+        });
+      };
+      server.once("error", onError);
+      server.listen(port, want, () => {
+        server.off("error", onError);
+        resolve({ ok: true, error: "" });
+      });
+    });
+    if (result.ok) {
+      lan.clearBindError();
+      const urls = lan.lanUrls(port);
+      console.log(want === "0.0.0.0"
+        ? `[lan] 已允许手机访问：${urls.length > 0 ? urls.join("  ") : "没找到可用网卡地址"}（需输入访问码）`
+        : "[lan] 已关闭手机访问：恢复为只绑本机");
+      return result;
+    }
+    lan.setBindError(result.error);
+    lan.setLanEnabled(false);
+    console.warn(`[lan] 打开局域网访问失败：${result.error} —— 已退回只绑本机`);
+    await new Promise<void>((resolve) => {
+      server.listen(port, lan.bindHost(), () => resolve());
+    });
+    return result;
+  } finally {
+    rebinding = false;
+  }
+}
 
 /**
  * 启动自检：模型接不通时，用户在界面上只会看到"它不理我"。

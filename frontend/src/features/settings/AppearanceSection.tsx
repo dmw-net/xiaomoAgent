@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { LanSection } from "./LanSection";
 import type { ThemeMode } from "../../types/ui";
 import { getAccent, setAccent, getClockPref, setClockPref, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getThemeStyle, setThemeStyle, type ClockPref, type ThemeStyle } from "../../lib/ui-prefs";
 import Modal from "../../components/Modal";
@@ -227,15 +228,12 @@ export default function AppearanceSection({
               onClick={() => { setListPageSize(n); setListPage(n); }}>{LIST_PAGE_LABEL[n]}</button>
           ))}
         </div>
-        <div className="hint" style={{ marginTop: 6 }}>
-          选大一档，一次能看到更多行。
-        </div>
       </div>
 
       <div className="card card-pad" style={{ marginTop: 12 }}>
         <div className="subhead">消息提醒</div>
         <div className="hint">
-          开启后，小茉在后台主动开口或收到新消息时会发系统通知；点击通知直接回到对应会话。
+          后台有新消息、或收到主动消息时发系统通知；点通知回到那段会话。
         </div>
         <div className="preset-row" role="group" aria-label="消息提醒" style={{ marginTop: 6 }}>
           <button type="button" className="preset" aria-pressed={!notifyOn}
@@ -256,7 +254,7 @@ export default function AppearanceSection({
       <div className="card card-pad" style={{ marginTop: 12 }}>
         <div className="subhead">数据存储位置</div>
         <div className="hint">
-          对话、记忆、图片、技能都存在这一个目录里。默认在安装目录的同级；可改到别处（比如 D 盘），改时会把现有数据一起搬过去。
+          对话、记忆、图片、技能都在这个目录里。可改到别处（比如 D 盘），改时会把现有数据一起搬过去。
         </div>
         <div className="field">
           <label>当前位置</label>
@@ -270,16 +268,17 @@ export default function AppearanceSection({
         {storeNote && <div className="hint" style={{ marginTop: 6 }}>{storeNote}</div>}
       </div>
 
+      <LanSection />
+
       {desktop !== null && (
         <div className="card card-pad" style={{ marginTop: 12 }}>
           <div className="subhead">开机与关窗</div>
           <div className="hint">
-            仅桌面版提供。后台服务负责主动消息与微信/QQ 收发，窗口关闭后是否继续运行由下列两项决定。
+            窗口关闭后是否继续收发消息、主动找你，由下面两项决定。
           </div>
 
           <div className="field" style={{ marginTop: 8 }}>
             <label>开机自动启动</label>
-            <div className="hint">登录系统后自动启动小茉。</div>
             <div className="preset-row" role="group" aria-label="开机自动启动" style={{ marginTop: 6 }}>
               <button type="button" className="preset" aria-pressed={!prefs.autostart}
                 onClick={() => toggleDesktop("autostart", false)}>关闭</button>
@@ -291,9 +290,7 @@ export default function AppearanceSection({
           <div className="field" style={{ marginTop: 12 }}>
             <label>托盘常驻</label>
             <div className="hint">
-              开启后，系统托盘显示图标，关闭窗口仅将程序收至后台继续运行；点击托盘图标可重新打开，右键选择「退出小茉」才会完全关闭。
-              <br />
-              关闭后，不显示托盘图标，关闭窗口即完全退出。
+              开启：关窗只是收进托盘继续运行，右键托盘图标选「退出小茉」才真正退出。关闭：关窗即退出。
             </div>
             <div className="preset-row" role="group" aria-label="托盘常驻" style={{ marginTop: 6 }}>
               <button type="button" className="preset" aria-pressed={!prefs.tray}
@@ -311,9 +308,9 @@ export default function AppearanceSection({
         <Modal label="迁移数据到新位置？" onClose={() => setStoreTarget(null)}>
           <div className="del-title">迁移数据到新位置？</div>
           <div className="del-note">
-            将把现有数据（对话、记忆、图片、技能）搬到：
+            现有数据会搬到：
             <br /><code style={{ wordBreak: "break-all" }}>{storeTarget}</code>
-            <br />重启应用后生效；重启前产生的新对话不会带过去。
+            <br />重启后生效；期间的新对话不会带过去。
           </div>
           <div className="del-row">
             <button type="button" onClick={() => setStoreTarget(null)}>取消</button>

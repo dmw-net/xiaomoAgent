@@ -40,7 +40,7 @@ const BIND_TTL_MS = 8 * 60_000;
 const POLL_WAIT_CEILING_MS = 30_000;
 /** 短请求必须有界：对端接受连接却不响应时，默认会吊着用户好几分钟。 */
 const REQUEST_TIMEOUT_MS = 20_000;
-const BIND_POLL_FLOOR_MS = 900;
+const BIND_UPSTREAM_TIMEOUT_MS = 60_000;
 const TYPING_KEEPALIVE_MS = 5_000;
 const TYPING_TICKET_TTL_MS = 10 * 60_000;
 const TYPING_GIVE_UP_MS = 120_000;
@@ -65,6 +65,9 @@ export type WeChatLink = {
   lastSentAt: string;
 };
 
+/** 对外视图不含 token / cursor / 原始账号 id。 */
+type PublicWeChatLink = Omit<WeChatLink, "baseUrl" | "cursor" | "recentMessageIds">;
+
 /** 落库那份比界面看到的多两个凭证字段。 */
 type StoredLink = WeChatLink & { token: string; contextToken: string };
 
@@ -80,10 +83,11 @@ type BindSession = {
   baseUrl: string;
   qrKey: string;
   qrContent: string;
-  status: "waiting" | "scanned" | "error";
+  status: "waiting" | "scanned" | "confirmed" | "expired" | "error";
   error: string;
   expiresAt: number;
-  lastPollAt: number;
+  controller: AbortController;
+  link?: PublicWeChatLink;
 };
 
 type TypingSession = {
@@ -272,13 +276,16 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
   const callIlink = async (args: {
     base: string;
     path: string;
-    body: Record<string, unknown>;
+    body?: Record<string, unknown>;
+    method?: "GET" | "POST";
+    query?: Record<string, string>;
     token?: string;
     signal?: AbortSignal;
     /** 0 = 不设超时（收件长轮询那条由它自己的 controller 管生命周期）。 */
     timeoutMs?: number;
   }): Promise<Record<string, unknown>> => {
     const url = new URL(args.path, args.base.replace(/\/+$/, "") + "/");
+    for (const [key, value] of Object.entries(args.query ?? {})) url.searchParams.set(key, value);
     const headers: Record<string, string> = { "Content-Type": "application/json" };
     if (args.token !== undefined) {
       headers.AuthorizationType = "ilink_bot_token";
@@ -290,10 +297,11 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
     const guard = args.signal !== undefined && timeout !== null
       ? AbortSignal.any([args.signal, timeout])
       : args.signal ?? timeout ?? undefined;
+    const method = args.method ?? "POST";
     const response = await http(url.toString(), {
-      method: "POST",
+      method,
       headers,
-      body: JSON.stringify(args.body),
+      body: method === "POST" ? JSON.stringify(args.body ?? {}) : undefined,
       signal: guard,
     });
     if (!response.ok) throw new Error(`微信接口 ${args.path} HTTP ${response.status}`);
@@ -305,6 +313,15 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
     if (link.token === "") throw new Error("微信连接凭证不可用，请重新扫码绑定");
     return callIlink({ base: link.baseUrl, path, body, token: link.token, signal: opts.signal, timeoutMs: opts.timeoutMs });
   };
+
+  /** 二维码状态是长轮询：超时只表示还没变化，不能当失败。 */
+  const waitFor = (ms: number, signal: AbortSignal): Promise<void> => new Promise((resolve) => {
+    if (signal.aborted) { resolve(); return; }
+    let timer: ReturnType<typeof setTimeout>;
+    const onAbort = (): void => { clearTimeout(timer); resolve(); };
+    timer = setTimeout(() => { signal.removeEventListener("abort", onAbort); resolve(); }, ms);
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
 
 /** iLink 的业务码在 ret 里：非零一律当失败，且必须把 errmsg 带出来。 */
   const requireOk = (reply: Record<string, unknown>, what: string): void => {
@@ -629,11 +646,124 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
   });
 
   // ── 扫码绑定 ────────────────────────────────────────────────
+  const bindError = (error: unknown): string => (error instanceof Error ? error.message : String(error)).slice(0, 200);
+
+  /** 扫码确认后把一次性回复落成正式绑定；只在后台轮询线程里调用。 */
+  const completeBind = (session: BindSession, reply: Record<string, unknown>): void => {
+    const token = asText(reply.bot_token ?? reply.botToken);
+    const accountId = asText(reply.ilink_bot_id ?? reply.ilinkBotId);
+    const linkedUserId = asText(reply.ilink_user_id ?? reply.ilinkUserId);
+    if (token === "" || accountId === "" || linkedUserId === "") {
+      throw new Error("微信扫码确认未返回完整绑定信息，请重新生成二维码");
+    }
+    const baseUrl = asText(reply.baseurl ?? reply.base_url) || ILINK_ORIGIN;
+    // 同一位联系人的旧绑定先停掉再落新的——两条并存会把同一句话发两遍。
+    for (const id of links.dropByContact(session.contactId)) {
+      pollers.get(id)?.abort();
+      pollers.delete(id);
+    }
+    const link: StoredLink = {
+      id: newId(),
+      contactId: session.contactId,
+      accountId,
+      linkedUserId,
+      baseUrl,
+      enabled: true,
+      proactive: false,
+      cursor: "",
+      recentMessageIds: [],
+      createdAt: new Date(clock()).toISOString(),
+      lastError: "",
+      lastReceivedAt: "",
+      lastSentAt: "",
+      token,
+      contextToken: "",
+    };
+    links.keep(link);
+    links.save();
+    watchInbox(link.id);
+    session.status = "confirmed";
+    session.error = "";
+    session.link = viewOf(link);
+    session.controller.abort();
+  };
+
+  /**
+   * 后台消费二维码状态。上游 get_qrcode_status 是长轮询，不能交给前端的普通
+   * HTTP 请求去等；这里把变化写进内存，前端只轮询本地会话状态。
+   */
+  const watchBind = async (session: BindSession): Promise<void> => {
+    let failures = 0;
+    while (!disposed && sessions.get(session.id) === session && !session.controller.signal.aborted && clock() < session.expiresAt) {
+      try {
+        const remaining = Math.max(1, session.expiresAt - clock());
+        const reply = await callIlink({
+          base: session.baseUrl,
+          path: "ilink/bot/get_qrcode_status",
+          method: "GET",
+          query: { qrcode: session.qrKey },
+          signal: session.controller.signal,
+          timeoutMs: Math.min(BIND_UPSTREAM_TIMEOUT_MS, remaining),
+        });
+        if (session.controller.signal.aborted || disposed) return;
+        const state = asText(reply.status).toLowerCase();
+        if (state === "" && Number(reply.ret ?? 0) !== 0) {
+          throw new Error(asText(reply.errmsg) || "微信返回 ret=" + String(reply.ret));
+        }
+        if (state === "confirmed") {
+          completeBind(session, reply);
+          return;
+        }
+        if (state === "expired") {
+          session.status = "expired";
+          session.error = "二维码已过期，请重新生成";
+          session.controller.abort();
+          return;
+        }
+        session.status = state === "scaned" || state === "scanned" ? "scanned" : "waiting";
+        session.error = "";
+        failures = 0;
+      } catch (error) {
+        if (session.controller.signal.aborted || disposed) return;
+        const name = error instanceof Error ? error.name : "";
+        // 长轮询超时不是业务失败：下一轮接着等即可。
+        if (name === "TimeoutError" || name === "AbortError") {
+          session.status = session.status === "scanned" ? "scanned" : "waiting";
+          failures = 0;
+        } else {
+          failures += 1;
+          if (failures >= 3) {
+            session.status = "error";
+            session.error = "微信二维码状态读取失败：" + bindError(error);
+            session.controller.abort();
+            return;
+          }
+        }
+      }
+      await waitFor(1_000, session.controller.signal);
+    }
+    if (!disposed && sessions.get(session.id) === session && !session.controller.signal.aborted) {
+      session.status = "expired";
+      session.error = "等待微信扫码超时，请重新生成二维码";
+      session.controller.abort();
+    }
+  };
+
+  // ── 扫码绑定 ────────────────────────────────────────────────
   const beginBind = async (contactId: string): Promise<{ attemptId: string; qrContent: string; status: string }> => {
     if (getContact(contactId) === null) throw new Error("联系人不存在");
     const stale = [...sessions.values()].find((session) => session.contactId === contactId);
-    if (stale !== undefined) sessions.delete(stale.id);
-    const reply = await callIlink({ base: ILINK_ORIGIN, path: "ilink/bot/get_bot_qrcode", body: { bot_type: "3" } });
+    if (stale !== undefined) {
+      stale.controller.abort();
+      sessions.delete(stale.id);
+    }
+    // 上游二维码接口只认 GET 查询参数；POST JSON 会被当成缺少 bot_type。
+    const reply = await callIlink({
+      base: ILINK_ORIGIN,
+      path: "ilink/bot/get_bot_qrcode",
+      method: "GET",
+      query: { bot_type: "3" },
+    });
     const qrKey = asText(reply.qrcode);
     const qrContent = asText(reply.qrcode_img_content);
     if (qrKey === "" || qrContent === "") throw new Error("微信没有返回可用二维码，请重试");
@@ -646,75 +776,22 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
       status: "waiting",
       error: "",
       expiresAt: clock() + BIND_TTL_MS,
-      lastPollAt: 0,
+      controller: new AbortController(),
     };
     sessions.set(session.id, session);
+    void watchBind(session);
     return { attemptId: session.id, qrContent: session.qrContent, status: session.status };
   };
 
-  /** 前端轮一次扫码结果；扫上了就把绑定落库并起收件循环。 */
-  const pollBind = async (attemptId: string): Promise<{ status: string; error: string; link?: ReturnType<typeof viewOf> }> => {
+  /** 前端只读本地会话状态；上游长轮询在后台上跑，不会撞前端 10 秒超时。 */
+  const pollBind = async (attemptId: string): Promise<{ status: string; error: string; link?: PublicWeChatLink }> => {
     const session = sessions.get(attemptId);
     if (session === undefined) return { status: "gone", error: "二维码会话已结束，请重新生成" };
-    if (session.status === "error") return { status: "error", error: session.error };
-    if (clock() - session.lastPollAt < BIND_POLL_FLOOR_MS) {
-      return { status: session.status, error: session.error };
-    }
-    session.lastPollAt = clock();
-    try {
-      const reply = await callIlink({
-        base: session.baseUrl,
-        path: "ilink/bot/get_qrcode_status",
-        body: { qrcode: session.qrKey },
-      });
-      const state = asText(reply.status).toLowerCase();
-      if (state === "confirmed") {
-        const token = asText(reply.bot_token ?? reply.botToken);
-        const accountId = asText(reply.ilink_bot_id ?? reply.ilinkBotId);
-        const linkedUserId = asText(reply.ilink_user_id ?? reply.ilinkUserId);
-        if (token === "" || accountId === "" || linkedUserId === "") {
-          throw new Error("微信扫码确认未返回完整绑定信息，请重新生成二维码");
-        }
-        const baseUrl = asText(reply.baseurl ?? reply.base_url) || ILINK_ORIGIN;
-        // 同一位联系人的旧绑定先停掉再落新的——两条并存会把同一句话发两遍。
-        for (const id of links.dropByContact(session.contactId)) {
-          pollers.get(id)?.abort();
-          pollers.delete(id);
-        }
-        const link: StoredLink = {
-          id: newId(),
-          contactId: session.contactId,
-          accountId,
-          linkedUserId,
-          baseUrl,
-          enabled: true,
-          proactive: false,
-          cursor: "",
-          recentMessageIds: [],
-          createdAt: new Date(clock()).toISOString(),
-          lastError: "",
-          lastReceivedAt: "",
-          lastSentAt: "",
-          token,
-          contextToken: "",
-        };
-        links.keep(link);
-        links.save();
-        sessions.delete(attemptId);
-        watchInbox(link.id);
-        return { status: "confirmed", error: "", link: viewOf(link) };
-      }
-      if (state === "expired") {
-        sessions.delete(attemptId);
-        return { status: "expired", error: "二维码已过期，请重新生成" };
-      }
-      session.status = state === "scaned" || state === "scanned" ? "scanned" : "waiting";
-      return { status: session.status, error: "" };
-    } catch (error) {
-      session.status = "error";
-      session.error = (error instanceof Error ? error.message : String(error)).slice(0, 200);
-      return { status: "error", error: session.error };
-    }
+    return {
+      status: session.status,
+      error: session.error,
+      ...(session.link === undefined ? {} : { link: session.link }),
+    };
   };
 
   const snapshotFor = (contactId: string) => {
@@ -774,6 +851,7 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
 
   /** 掐掉全部收件循环与输入状态定时器（stopAll / clearAll / dispose 三条路共用）。 */
   const halt = (): void => {
+    for (const session of sessions.values()) session.controller.abort();
     for (const controller of pollers.values()) controller.abort();
     pollers.clear();
     for (const session of typing.values()) if (session.keepalive !== null) clearInterval(session.keepalive);

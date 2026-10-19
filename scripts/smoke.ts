@@ -51,6 +51,7 @@ const ILINK_HOST = "https://ilinkai.weixin.qq.com";
 const ilink = {
   confirmBound: false,
   sends: [] as Array<Record<string, unknown>>,
+  qrRequests: [] as Array<{ method: string; path: string; query: string }>,
   typings: [] as number[],
   pendingUpdates: [] as Array<Record<string, unknown>>,
   waiters: [] as Array<() => void>,
@@ -151,9 +152,11 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   if (url.origin !== ILINK_HOST) return realFetch(input as RequestInfo, init);
   const pathname = url.pathname;
   if (pathname === "/ilink/bot/get_bot_qrcode") {
+    ilink.qrRequests.push({ method: String(init?.method ?? "GET"), path: pathname, query: url.search });
     return ilinkJson({ qrcode: "qr-key-1", qrcode_img_content: "https://wx.example/scan?k=qr-key-1" });
   }
   if (pathname === "/ilink/bot/get_qrcode_status") {
+    ilink.qrRequests.push({ method: String(init?.method ?? "GET"), path: pathname, query: url.search });
     return ilinkJson(ilink.confirmBound
       ? { status: "confirmed", bot_token: "tok-1", ilink_bot_id: "acct-900001", ilink_user_id: "user-700001", baseurl: ILINK_HOST + "/" }
       : { status: "waiting" });
@@ -2202,8 +2205,14 @@ try {
 
     const bind = await wxApi("/bind", wxPost({}));
     check("生成二维码得到扫码内容", bind.ok === true && typeof bind.attemptId === "string" && String(bind.qrContent).includes("qr-key-1"));
+    const qrRequest = ilink.qrRequests.find((item) => item.path === "/ilink/bot/get_bot_qrcode");
+    check("二维码请求走 GET + 查询参数（回归：POST JSON 会被上游拒绝）",
+      qrRequest?.method === "GET" && qrRequest.query.includes("bot_type=3"), JSON.stringify(qrRequest));
     const waiting = await wxApi(`/bind/${encodeURIComponent(bind.attemptId)}`);
     check("扫码前状态是等待", waiting.status === "waiting");
+    const qrStatusRequest = ilink.qrRequests.find((item) => item.path === "/ilink/bot/get_qrcode_status");
+    check("扫码状态请求走 GET + 查询参数",
+      qrStatusRequest?.method === "GET" && qrStatusRequest.query.includes("qrcode=qr-key-1"), JSON.stringify(qrStatusRequest));
     ilink.confirmBound = true;
     await sleep(1000); // 绑定状态轮询有 900ms 限速
     const confirmed = await wxApi(`/bind/${encodeURIComponent(bind.attemptId)}`);

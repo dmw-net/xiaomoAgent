@@ -78,6 +78,9 @@
 
   /* 内容列统一宽度：各视图不一致的 max-width 会让导航切换时整列左右跳位 */
   --col: 880px;
+  /* 聊天页专用：画布铺满右栏，文字与输入区仍收在可读列内。
+     大屏宽到 1120px 就停，窄屏自然回落到左右 32px 安全边距。 */
+  --chat-col: clamp(900px, 64vw, 1120px);
 
   /* 阴影色相：所有投影都从这一支派生，换主题只换这一个值。
      冷灰的影子压在暖纸上会发脏，暖褐的影子压在冷底上又会发黄。 */
@@ -412,18 +415,18 @@ input, textarea {
 }
 
 #chat {
+  --chat-gutter: max(var(--space-8), calc((100% - var(--chat-col)) / 2));
   position: relative;
-  /* width 必须写死 100%：#view-chat 是 flex 容器，缺省时聊天列按内容收缩，
-     切到消息短的联系人整栏会窄一截，间距看起来就变了 */
-  width: 100%; max-width: var(--col); margin: 0 auto;
-  height: 100%;
+  /* 画布本身铺满右栏；顶栏/输入区的底色与分隔线也随之铺满。
+     真正需要收窄的是内部文字、气泡和输入控件，它们统一吃 --chat-gutter。 */
+  width: 100%; height: 100%;
   display: flex; flex-direction: column;
 }
 
 /* 顶栏：显示她的名字与连接状态，滚动时固定在容器内 */
 #bar {
   display: flex; align-items: center; gap: var(--space-4);
-  padding: var(--space-6) var(--space-8) var(--space-5);
+  padding: var(--space-6) var(--chat-gutter) var(--space-5);
   border-bottom: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
   /* 极淡的下投影：顶栏和消息流之间有一层空气，不再是一条生硬的线 */
   box-shadow: 0 4px 12px -8px rgb(var(--shadow-tint) / .22);
@@ -447,7 +450,7 @@ input, textarea {
 /* 消息流 */
 #log {
   flex: 1; overflow-y: auto; overscroll-behavior: contain;
-  padding: var(--space-8) var(--space-8) var(--space-3);
+  padding: var(--space-8) var(--chat-gutter) var(--space-3);
   display: flex; flex-direction: column; gap: 2px;
 }
 #log.empty { justify-content: center; }
@@ -459,7 +462,7 @@ input, textarea {
 .to-bottom {
   /* z 只在这一处局部堆叠里说话（.log-wrap 是 position:relative，而它不是滚动容器），
      不进全局那张 token 表也不会和弹层抢：这里的 3 是"盖住消息流"，不是野值。 */
-  position: absolute; right: var(--space-5); bottom: var(--space-6); z-index: 3;
+  position: absolute; right: calc(var(--chat-gutter) + var(--space-5)); bottom: var(--space-6); z-index: 3;
   display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
   min-width: 42px; height: 42px; padding: 0 12px; box-sizing: border-box;
   border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)); border-radius: var(--radius-full);
@@ -725,7 +728,7 @@ input, textarea {
 /* 输入区（微信 PC 式）：无边框扁平输入 + 底栏（左快捷键提示，右绿色发送按钮） */
 #composer {
   position: relative;
-  padding: 0 20px calc(12px + env(safe-area-inset-bottom, 0px));
+  padding: 0 var(--chat-gutter) calc(12px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   background: var(--bg-elevated);
   /* 输入区抬一档底色：和消息流拉开一点空气，不是一整块平面 */
@@ -1244,7 +1247,12 @@ input, textarea {
 #content { min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
 /* 对话画布：极淡的绿晕场景光，让聊天底不再是死平的一块。只加在对话视图，
    其余视图保持纯净底色，避免全站泛绿。 */
-#view-chat { background: var(--chat-scene), var(--bg); }
+#view-chat {
+  background: var(--chat-scene), var(--bg);
+  /* 聊天页外层不滚，滚动发生在 #log。这里若继承 .view 的 stable 槽位，
+     右侧会永久空出一条 10px 背景缝，看起来像画布没铺满。 */
+  scrollbar-gutter: auto;
+}
 /* 视图是 #content 这条 flex 列里唯一伸缩的孩子：断网提示条占的是它上面一行。
    从前写 height:100%，加上提示条后整列基线超 100%，flex-shrink 把视图压掉一条，
    被压掉的正好是会话页底部那条带安全区内边距的输入区。 */

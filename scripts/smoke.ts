@@ -3787,7 +3787,7 @@ try {
   console.log("\n[41] 联网底座与动作预算（SSRF 门 / 正文抽取 / 相关性 / 开关与轮数）");
   {
     const { isPrivateAddress, parseHttpUrl, htmlToText, fetchRaw, isFetchableMime } = await import("../src/web.ts");
-    const { relevance, WEB_TOOLS } = await import("../src/search.ts");
+    const { materializePreviews, relevance, WEB_TOOLS } = await import("../src/search.ts");
     const { toolDefsForApi } = await import("../src/tools.ts");
     const { safeMediaUrl } = await import("../src/model.ts");
     const settings = await import("../src/settings.ts");
@@ -3870,6 +3870,25 @@ try {
       relevance("玛奇玛是链锯人里的角色", "玛奇玛 链锯人") >= 0.5,
       String(relevance("玛奇玛是链锯人里的角色", "玛奇玛 链锯人").toFixed(2)));
     check("相关性：空查询一律 0（绝不给「全都算相关」）", relevance("任意", "") === 0);
+
+    // 候选图落盘不能只赌必应缩略图：缩略图被图床拒绝时要退回原图，8 条命中就必须有 8 个预览。
+    // 用注入的下载器离线钉住这条，避免把「只渲染了前三张」这种回归留给真实网络碰运气。
+    const previewHits = Array.from({ length: 8 }, (_, i) => ({
+      title: `图 ${i + 1}`,
+      url: `https://cdn.test/original-${i + 1}.jpg`,
+      thumb: `https://cdn.test/thumb-${i + 1}.jpg`,
+      preview: "",
+      snippet: "",
+      source: "测试图片",
+      page: `https://cdn.test/page-${i + 1}`,
+    }));
+    const retried = await materializePreviews(previewHits, async (url) => {
+      if (url.includes("/thumb-")) throw new Error("缩略图源拒绝了");
+      return `/media/${String(Number(url.match(/original-(\d+)/)?.[1] ?? 0)).padStart(16, "0")}.jpg`;
+    });
+    check("图片预览：8 条命中在缩略图失败后回退原图，全部保留",
+      retried.length === 8 && retried.every((hit, i) => hit.preview === `/media/${String(i + 1).padStart(16, "0")}.jpg`),
+      JSON.stringify(retried.map((hit) => hit.preview)));
 
     // 开关门：联网默认关，且"开"这一档必须真的能翻起来（正向对照 + 反证）。
     const webOff = await (await fetch(`${BASE}/api/contacts`, {

@@ -527,8 +527,8 @@ button.tool-card.open { border-style: solid; border-bottom-left-radius: 0; borde
 /* 工具卡上的候选图（图片搜索）：用户就是靠这一排「看看这几张行不行」。
    尺寸与气泡里那套（.msg-imgs）对齐，但贴在卡片左缘、不进气泡——它不是她说的话。 */
 .tool-wrap .tool-imgs {
-  display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr));
-  gap: var(--space-1); width: 100%; max-width: 260px;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+  gap: var(--space-1); width: 100%; max-width: 340px;
   border-radius: var(--radius-md); overflow: hidden;
 }
 .tool-wrap .tool-imgs img {
@@ -1218,7 +1218,7 @@ button.ctx-btn:hover { border-color: var(--border); color: var(--text); backgrou
 /* 会话内搜索：贴着顶栏展开，不遮挡标题；命中数、前后跳转和关闭都在同一行。 */
 .chat-search {
   display: flex; align-items: center; gap: var(--space-2); flex: none;
-  padding: var(--space-3) var(--space-8);
+  padding: var(--space-3) var(--chat-gutter);
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--bg-elevated) 92%, transparent);
   backdrop-filter: blur(10px);

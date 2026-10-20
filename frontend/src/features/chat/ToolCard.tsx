@@ -74,8 +74,9 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick }: {
         {imgs.length > 0 && (
           /* 候选图按 hits 的顺序排，详情里的 #1/#2 指的就是这里第几张——用户说"第 3 张"时两边对得上。 */
           <div className="tool-imgs">
-            {imgs.map((url) => (
-              <img key={url} src={url} alt={contactName + "搜到的候选图"} loading="lazy"
+            {imgs.map((url, index) => (
+              <img key={`${index}-${url}`} src={url} alt={`${contactName}搜到的第 ${index + 1} 张候选图`}
+                title={`第 ${index + 1} 张候选图`} decoding="async"
                 onClick={() => onImageClick?.(url)} />
             ))}
           </div>

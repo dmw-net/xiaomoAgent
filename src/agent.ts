@@ -791,10 +791,16 @@ export function toolSummary(name: string, result: unknown): string {
     return r?.ok ? "已更新头像" : `头像没设上：${r?.error ?? "未知原因"}`;
   }
   if (name === "web_search") {
-    const r = result as { kind?: string; query?: string; count?: number } | null;
+    const r = result as { kind?: string; query?: string; count?: number; preview_count?: number } | null;
     const n = typeof r?.count === "number" ? r.count : 0;
+    const shown = typeof r?.preview_count === "number" ? r.preview_count : n;
     const what = r?.kind === "image" ? "图" : "结果";
-    return n > 0 ? `搜了「${(r?.query ?? "").slice(0, 20)}」，找到 ${n} 条${what}` : `搜了「${(r?.query ?? "").slice(0, 20)}」，没找到${what}`;
+    if (n === 0) return `搜了「${(r?.query ?? "").slice(0, 20)}」，没找到${what}`;
+    // 搜索条数与真正能看见的预览数是两件事；有图床失败时必须说清，别让 8 条变成"8 张都已显示"。
+    if (r?.kind === "image" && shown < n) {
+      return `搜了「${(r?.query ?? "").slice(0, 20)}」，找到 ${n} 条图，${shown} 张预览可用`;
+    }
+    return `搜了「${(r?.query ?? "").slice(0, 20)}」，找到 ${n} 条${what}`;
   }
   if (name === "web_fetch") {
     const r = result as { title?: string; url?: string; chars?: number } | null;

@@ -1,8 +1,6 @@
 // Agent 层：一次「收消息 → 回消息」的完整处理。
 //
 // 关键设计：这是"薄循环"。它只做四件事——召回记忆、拼上下文、调模型、落库。
-// 不引入任何 Agent 框架：同题实测里九个框架的工具调用成功率是一样的，
-// 框架不决定可靠性，只增加 prompt 开销与依赖体积。
 
 import { randomUUID } from "node:crypto";
 import { db, withTx } from "./db.ts";

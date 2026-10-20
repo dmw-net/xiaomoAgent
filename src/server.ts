@@ -136,6 +136,7 @@ import { consolidateContact } from "./consolidate.ts";
 import { autoTitleThread, clearAssistantThread, createAssistantThread, deleteAssistantThread, ensureAssistantContact, isAssistantThreadContactId, listAssistantThreads, renameAssistantThread } from "./assistant.ts";
 import { deleteSkill, listSkills, MAX_SKILL_FILE_BYTES, readSkill, saveSkill, setSkillEnabled, skillsDir } from "./skills.ts";
 import { migrateDataDir } from "./data-dir.ts";
+import { importDataArchive, writeDataExport } from "./data-transfer.ts";
 import { setDesktopPrefs } from "./desktop-prefs.ts";
 import { wechat } from "./wechat.ts";
 import { qq } from "./qq.ts";
@@ -2133,6 +2134,33 @@ async function handle(
     return;
   }
 
+  // 一键导出/导入：导出是 gzip tar 文件流；导入会先校验临时解包目录，再替换当前数据并要求重启。
+  if (method === "GET" && path === "/api/settings/data-export") {
+    try {
+      await writeDataExport(response);
+    } catch (error) {
+      if (!response.headersSent) {
+        sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+      response.destroy();
+    }
+    return;
+  }
+
+  if (method === "POST" && path === "/api/settings/data-import") {
+    const contentType = (request.headers["content-type"] ?? "").split(";")[0]?.trim().toLowerCase();
+    if (contentType !== "application/gzip" && contentType !== "application/x-gzip" && contentType !== "application/octet-stream") {
+      sendJson(response, 400, { ok: false, error: "请上传小茉导出的 .tar.gz 备份文件" });
+      return;
+    }
+    try {
+      const result = await importDataArchive(request);
+      sendJson(response, 200, { ok: true, ...result, restartRequired: true });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
   // 更改数据存储位置：把库 / media / skills 迁到新目录、更新 desktop.json 的 DATA_DIR。
   // 迁完必须重启才走新位置（config / db / 目录都是模块级常量，见 data-dir.ts 注释）。
   if (method === "POST" && path === "/api/settings/data-dir") {

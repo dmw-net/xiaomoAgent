@@ -4,6 +4,7 @@ export * as chatApi from "./chat";
 export * as contactsApi from "./contacts";
 export * as memoryApi from "./memory";
 export * as settingsApi from "./settings";
+export * as dataTransferApi from "./dataTransfer";
 export * as skillsApi from "./skills";
 export * as proactiveApi from "./proactive";
 export * as usageApi from "./usage";

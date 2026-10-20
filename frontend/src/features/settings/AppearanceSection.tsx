@@ -1,10 +1,10 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { LanSection } from "./LanSection";
 import type { ThemeMode } from "../../types/ui";
 import { getAccent, setAccent, getClockPref, setClockPref, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getThemeStyle, setThemeStyle, type ClockPref, type ThemeStyle } from "../../lib/ui-prefs";
 import Modal from "../../components/Modal";
 import { pickDirectory, relaunchApp } from "../../lib/native-dialog";
-import { settingsApi } from "../../api";
+import { dataTransferApi, settingsApi } from "../../api";
 import { disableNotifications, enableNotifications, getNotifyPref, notificationSupported } from "../../lib/notify";
 
 /** 当前主题档（与 Rail 的快捷菜单读同一个真源：html[data-theme-mode]）。 */
@@ -87,6 +87,15 @@ export default function AppearanceSection({
   const [storeBusy, setStoreBusy] = useState(false);
   const [storeTarget, setStoreTarget] = useState<string | null>(null);
   const [storeNote, setStoreNote] = useState("");
+  // 跨设备迁移：导出单文件备份；导入会覆盖当前库、图片与技能，所以必须二次确认并重启。
+  const importFileRef = useRef<HTMLInputElement | null>(null);
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [transferBusy, setTransferBusy] = useState(false);
+  const [exportBusy, setExportBusy] = useState(false);
+  const [transferStatus, setTransferStatus] = useState<{ kind: "info" | "ok" | "bad"; text: string; percent?: number; indeterminate?: boolean }>({ kind: "info", text: "" });
+  const setTransferInfo = (text: string, percent?: number, indeterminate = false): void => setTransferStatus({ kind: "info", text, percent, indeterminate });
+  const setTransferError = (text: string): void => setTransferStatus({ kind: "bad", text });
+  const setTransferOk = (text: string, percent?: number): void => setTransferStatus({ kind: "ok", text, percent });
 
   // 跟随系统时，系统切换也要保持高亮正确
   useEffect(() => {
@@ -155,6 +164,77 @@ export default function AppearanceSection({
         if (!r.ok) setStoreNote(`已迁移，但没能自动重启：${r.error ?? ""}。请手动重启应用。`);
       })
       .catch((e: Error) => { setStoreBusy(false); setStoreNote("迁移失败：" + e.message); });
+  };
+
+  const pickImport = (): void => {
+    setTransferInfo("");
+    importFileRef.current?.click();
+  };
+
+  const onImportFileChange = (): void => {
+    const file = importFileRef.current?.files?.[0] ?? null;
+    if (!file) return;
+    if (!/\.(tar\.gz|tgz)$/i.test(file.name)) {
+      setTransferError("请选择小茉导出的 .tar.gz 备份文件。");
+      if (importFileRef.current) importFileRef.current.value = "";
+      return;
+    }
+    setImportFile(file);
+  };
+
+  const doExport = (): void => {
+    if (exportBusy) return;
+    setExportBusy(true);
+    setTransferInfo("正在生成并下载备份，请先不要关闭应用…", 1);
+    dataTransferApi.exportDataArchive((loaded, total) => {
+      if (total === null) {
+        setTransferInfo(`正在生成并下载备份… ${(loaded / 1024 / 1024).toFixed(1)} MB`, 8, true);
+      } else {
+        const percent = Math.min(99, Math.round((loaded / total) * 100));
+        setTransferInfo(`正在下载备份… ${percent}%（${(loaded / 1024 / 1024).toFixed(1)} / ${(total / 1024 / 1024).toFixed(1)} MB）`, percent);
+      }
+    })
+      .then(({ blob, fileName }) => {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = fileName;
+        link.style.display = "none";
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        setTransferOk(`备份已导出：${fileName}`, 100);
+      })
+      .catch((e: Error) => setTransferError("导出失败：" + e.message))
+      .finally(() => setExportBusy(false));
+  };
+
+  const doImport = (): void => {
+    if (!importFile) return;
+    setTransferBusy(true);
+    setTransferInfo("正在上传备份，数据越多越久，请先不要关闭应用…", 0);
+    dataTransferApi.importDataArchive(importFile, (loaded, total, phase) => {
+      if (phase === "process") {
+        setTransferInfo("上传完成，正在校验并替换数据…", 95);
+      } else if (total === null) {
+        setTransferInfo(`正在上传备份… ${(loaded / 1024 / 1024).toFixed(1)} MB`);
+      } else {
+        const percent = Math.min(94, Math.round((loaded / total) * 100));
+        setTransferInfo(`正在上传备份… ${percent}%（${(loaded / 1024 / 1024).toFixed(1)} / ${(total / 1024 / 1024).toFixed(1)} MB）`, percent);
+      }
+    })
+      .then(async (result) => {
+        setImportFile(null);
+        setTransferOk(result.note + " 正在重启…", 100);
+        const r = await relaunchApp();
+        if (!r.ok) setTransferError(result.note + " 数据已导入，但没能自动重启，请手动退出并重新打开小茉。");
+      })
+      .catch((e: Error) => setTransferError("导入失败：" + e.message))
+      .finally(() => {
+        setTransferBusy(false);
+        if (importFileRef.current) importFileRef.current.value = "";
+      });
   };
 
   return (
@@ -268,6 +348,35 @@ export default function AppearanceSection({
         {storeNote && <div className="hint" style={{ marginTop: 6 }}>{storeNote}</div>}
       </div>
 
+      <div className="card card-pad" style={{ marginTop: 12 }}>
+        <div className="subhead">跨设备数据迁移</div>
+        <div className="hint">
+          导出包包含对话、记忆、联系人、模型设置、图片和自定义技能；也包含已保存的 API Key，请只通过可信方式传输。
+        </div>
+        <div className="actions" style={{ marginTop: 8 }}>
+          <button type="button" className="pf-ghost" disabled={exportBusy} onClick={doExport}>
+            {exportBusy ? "正在导出…" : "一键导出备份"}
+          </button>
+          <button type="button" className="pf-ghost" disabled={transferBusy} onClick={pickImport}>
+            选择备份并导入
+          </button>
+          <input ref={importFileRef} type="file" accept=".tar.gz,.tgz,application/gzip"
+            style={{ display: "none" }} onChange={onImportFileChange} />
+        </div>
+        {transferStatus.text && (
+          <div className={`banner show ${transferStatus.kind === "info" ? "" : transferStatus.kind}`} role={transferStatus.kind === "bad" ? "alert" : "status"}>
+            <div className="body">
+              <div>{transferStatus.text}</div>
+              {transferStatus.percent !== undefined && (
+                <div className={`transfer-progress${transferStatus.indeterminate ? " indeterminate" : ""}`} aria-label="数据迁移进度">
+                  <span style={{ width: `${Math.max(2, Math.min(100, transferStatus.percent))}%` }} />
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
       <LanSection />
 
       {desktop !== null && (
@@ -302,6 +411,35 @@ export default function AppearanceSection({
 
           {prefsNote !== "" && <div className="hint" style={{ marginTop: 6 }}>{prefsNote}</div>}
         </div>
+      )}
+
+      {importFile !== null && (
+        <Modal label="导入备份并覆盖本机数据？" onClose={() => { if (!transferBusy) setImportFile(null); }}>
+          <div className="del-title">导入备份并覆盖本机数据？</div>
+          <div className="del-note">
+            将导入：<br /><code>{importFile.name}</code>
+            <br />当前这台机器上的对话、记忆、图片、技能和设置会被备份内容替换。导入完成后需要重启。
+            {transferBusy && (
+              <>
+                <div style={{ marginTop: 10 }}>{transferStatus.text}</div>
+                {transferStatus.percent !== undefined && (
+                  <div className="transfer-progress" aria-label="导入进度">
+                    <span style={{ width: `${Math.max(2, Math.min(100, transferStatus.percent))}%` }} />
+                  </div>
+                )}
+              </>
+            )}
+            {!transferBusy && transferStatus.kind === "bad" && transferStatus.text && (
+              <div className="transfer-error" role="alert">{transferStatus.text}</div>
+            )}
+          </div>
+          <div className="del-row">
+            <button type="button" disabled={transferBusy} onClick={() => setImportFile(null)}>取消</button>
+            <button type="button" className="danger" disabled={transferBusy} onClick={doImport}>
+              {transferBusy ? "正在导入，请勿关闭…" : "覆盖导入并重启"}
+            </button>
+          </div>
+        </Modal>
       )}
 
       {storeTarget !== null && (

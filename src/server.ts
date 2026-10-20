@@ -2608,12 +2608,22 @@ function sendLanLogin(response: ServerResponse): void {
 <body>
 <form id="f">
   <h1>小茉</h1>
-  <p>请输入电脑上「手机访问」里显示的访问码</p>
+  <p id="tip">请输入电脑上「手机访问」里显示的访问码</p>
   <input id="c" inputmode="numeric" autocomplete="one-time-code" placeholder="000-000" autofocus>
-  <button type="submit">进入</button>
+  <button id="go" type="submit">进入</button>
   <div id="err"></div>
 </form>
 <script>
+// 局域网二维码会把访问码放在 #code= 后面（fragment 不经过网络）。扫过来时直接预填，
+// 减少在手机上输六位数字；仍然需要用户点一次「进入」，避免打开旧链接就自动登录。
+const codeInput = document.getElementById("c");
+const preset = new URLSearchParams(location.hash.slice(1)).get("code") ?? "";
+const digits = preset.replace(/\D/g, "").slice(0, 6);
+if (digits.length === 6) {
+  codeInput.value = digits.slice(0, 3) + "-" + digits.slice(3);
+  document.getElementById("tip").textContent = "访问码已自动填好，点「进入」即可";
+  document.getElementById("go").focus();
+}
 document.getElementById("f").addEventListener("submit", async (e) => {
   e.preventDefault();
   const err = document.getElementById("err");
@@ -2622,7 +2632,7 @@ document.getElementById("f").addEventListener("submit", async (e) => {
     const r = await fetch("/__lan", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ code: document.getElementById("c").value }),
+      body: JSON.stringify({ code: codeInput.value }),
     });
     if (r.ok) { location.replace("/"); return; }
     const data = await r.json().catch(() => ({}));

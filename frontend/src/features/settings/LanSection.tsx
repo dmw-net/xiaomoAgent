@@ -48,14 +48,18 @@ export function LanSection() {
   useEffect(() => {
     const url = state?.enabled === true ? state.urls[0] ?? "" : "";
     if (url === "") { setQr(""); return; }
+    // 访问码放 fragment 里：不会发给服务端，也不会出现在 Referer 里；
+    // 手机打开登录页后由页面自己读出来预填，少让用户手输六位数字。
+    const code = state?.code.replace(/[^0-9]/g, "") ?? "";
+    const scanUrl = code === "" ? url : `${url}/#code=${code}`;
     let alive = true;
     void (async () => {
       const { toDataURL } = await import("qrcode");
-      const dataUrl = await toDataURL(url, { margin: 1, width: 200 });
+      const dataUrl = await toDataURL(scanUrl, { margin: 1, width: 200 });
       if (alive) setQr(dataUrl);
     })();
     return () => { alive = false; };
-  }, [state?.enabled, state?.urls]);
+  }, [state?.enabled, state?.urls, state?.code]);
 
   /**
    * 局域网开关要动监听 socket，服务端是「先回响应、再换绑」，
@@ -194,6 +198,9 @@ export function LanSection() {
                 <div className="field" style={{ marginTop: 10 }}>
                   <label>用手机扫这个</label>
                   <div><img src={qr} alt="手机访问地址二维码" width={200} height={200} /></div>
+                  <div className="hint" style={{ marginTop: 4 }}>
+                    扫码后会自动填好访问码，点「进入」即可。二维码等同于访问码，别截图外传。
+                  </div>
                 </div>
               )}
               <div className="hint" style={{ marginTop: 10 }}>

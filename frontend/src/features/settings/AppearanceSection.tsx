@@ -226,9 +226,16 @@ export default function AppearanceSection({
     })
       .then(async (result) => {
         setImportFile(null);
+        // 浏览器开发模式没有 Tauri 外壳，无法自动重启；导入本身已成功，不能报成失败。
+        if (!("__TAURI_INTERNALS__" in window)) {
+          setTransferOk(`${result.note} 当前不是桌面外壳，请手动重启应用或开发服务后继续使用。`, 100);
+          return;
+        }
         setTransferOk(result.note + " 正在重启…", 100);
         const r = await relaunchApp();
-        if (!r.ok) setTransferError(result.note + " 数据已导入，但没能自动重启，请手动退出并重新打开小茉。");
+        if (!r.ok) {
+          setTransferError(`${result.note} ${r.error ?? "自动重启失败，请手动退出并重新打开小茉。"}`);
+        }
       })
       .catch((e: Error) => setTransferError("导入失败：" + e.message))
       .finally(() => {

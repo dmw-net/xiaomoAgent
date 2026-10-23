@@ -20,7 +20,7 @@ function MdLink({ href, label }: { href: string; label: string }): JSX.Element {
   }, [href]);
   return (
     <>
-      <a href={href} target="_blank" rel="noreferrer" className="md-link"
+      <a href={href} target="_blank" rel="noreferrer" className="md-link" title={href}
         onClick={(e) => { e.preventDefault(); open(); }}>{label}</a>
       {note !== "" && <span className="md-link-note">{note}</span>}
     </>
@@ -38,6 +38,42 @@ const INLINE_RE = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\(\s*https?:\/\/[^)\s]
 const MD_LINK_RE = /^\[([^\]\n]+)\]\(\s*(https?:\/\/[^)\s]+)\s*\)$/;
 /** 裸地址尾巴上的标点是句读不是地址：中文句号、右括号、引号这些留在文字里。 */
 const URL_TAIL_RE = /[.,;:!?。，；：！？、）》】”"'’]+$/;
+const BARE_URL_RE = /https?:\/\/[^\s<>"'`）】]+/g;
+
+/** 裸链接只显示域名；完整 URL 留在 href/title 里，避免一条链接把气泡撑得很长。 */
+export function linkDomain(href: string): string {
+  try {
+    return new URL(href).hostname.replace(/^www\./i, "") || href;
+  } catch {
+    return href;
+  }
+}
+
+function bareUrlParts(token: string): { url: string; tail: string } {
+  let url = token.replace(URL_TAIL_RE, "");
+  // 外面拿括号把地址括起来时（「见 (https://…)」），多出来的那个右括号是句读不是地址。
+  // 只削配对不上的右侧括号：`…/a(b)` 这种自带括号的地址原样留着。
+  while (url.endsWith(")") && (url.match(/\(/g)?.length ?? 0) < (url.match(/\)/g)?.length ?? 0)) {
+    url = url.slice(0, -1);
+  }
+  return { url, tail: token.slice(url.length) };
+}
+
+/** 消息里第一条可预览的外链；代码块/行内代码里的地址不算。 */
+export function findFirstExternalUrl(text: string): string {
+  const re = new RegExp(INLINE_RE.source, "g");
+  let match: RegExpExecArray | null;
+  while ((match = re.exec(text)) !== null) {
+    const token = match[0];
+    if (token.startsWith("[")) {
+      const parts = MD_LINK_RE.exec(token);
+      if (parts) return parts[2]!;
+    } else if (token.startsWith("http")) {
+      return bareUrlParts(token).url;
+    }
+  }
+  return "";
+}
 
 function inline(text: string, keyBase: string): ReactNode[] {
   const nodes: ReactNode[] = [];
@@ -57,14 +93,8 @@ function inline(text: string, keyBase: string): ReactNode[] {
       if (parts) nodes.push(<MdLink key={keyBase + i} href={parts[2]!} label={parts[1]!} />);
       else nodes.push(token); // 形状不合（比如地址不是 http）就原样显示，别吞字
     } else {
-      let url = token.replace(URL_TAIL_RE, "");
-      // 外面拿括号把地址括起来时（「见 (https://…)」），多出来的那个右括号是句读不是地址。
-      // 只削配对不上的右侧括号：`…/a(b)` 这种自带括号的地址原样留着。
-      while (url.endsWith(")") && (url.match(/\(/g)?.length ?? 0) < (url.match(/\)/g)?.length ?? 0)) {
-        url = url.slice(0, -1);
-      }
-      nodes.push(<MdLink key={keyBase + i} href={url} label={url} />);
-      const tail = token.slice(url.length);
+      const { url, tail } = bareUrlParts(token);
+      nodes.push(<MdLink key={keyBase + i} href={url} label={linkDomain(url)} />);
       if (tail !== "") nodes.push(tail);
     }
     last = m.index + token.length;
@@ -91,6 +121,25 @@ export function renderMd(text: string): ReactNode {
     }
   });
   return out;
+}
+
+/** 工具详情等纯文本区域：保留原排版，只把裸 URL 变成可点击的域名链接。 */
+export function renderLinkedText(text: string): ReactNode {
+  const nodes: ReactNode[] = [];
+  const re = new RegExp(BARE_URL_RE.source, "g");
+  let last = 0;
+  let match: RegExpExecArray | null;
+  let i = 0;
+  while ((match = re.exec(text)) !== null) {
+    if (match.index > last) nodes.push(text.slice(last, match.index));
+    const { url, tail } = bareUrlParts(match[0]);
+    nodes.push(<MdLink key={"u" + i} href={url} label={linkDomain(url)} />);
+    if (tail !== "") nodes.push(tail);
+    last = match.index + match[0].length;
+    i += 1;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
 }
 
 /** 列表/预览用的纯文本化：去掉 markdown 标记，不留字面星号。 */

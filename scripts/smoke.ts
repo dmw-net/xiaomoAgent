@@ -3788,6 +3788,7 @@ try {
   {
     const { isPrivateAddress, parseHttpUrl, htmlToText, fetchRaw, isFetchableMime } = await import("../src/web.ts");
     const { materializePreviews, relevance, WEB_TOOLS } = await import("../src/search.ts");
+    const { parseLinkPreviewHtml } = await import("../src/link-preview.ts");
     const { toolDefsForApi } = await import("../src/tools.ts");
     const { safeMediaUrl } = await import("../src/model.ts");
     const settings = await import("../src/settings.ts");
@@ -3870,6 +3871,27 @@ try {
       relevance("玛奇玛是链锯人里的角色", "玛奇玛 链锯人") >= 0.5,
       String(relevance("玛奇玛是链锯人里的角色", "玛奇玛 链锯人").toFixed(2)));
     check("相关性：空查询一律 0（绝不给「全都算相关」）", relevance("任意", "") === 0);
+
+    // 链接预览的纯解析层：OG 标题/描述优先，相对 favicon 必须解析成绝对地址。
+    const parsedLink = parseLinkPreviewHtml(`
+      <html><head>
+        <title>普通标题</title>
+        <meta property="og:title" content="OG 标题">
+        <meta name="description" content="页面描述 &amp; 补充">
+        <link rel="icon" href="/static/favicon.png">
+      </head></html>`, "https://www.example.com/article");
+    check("链接预览：OG 标题与描述优先于普通标签",
+      parsedLink.title === "OG 标题" && parsedLink.description === "页面描述 & 补充",
+      `${parsedLink.title} / ${parsedLink.description}`);
+    check("链接预览：相对 favicon 解析成绝对地址，域名去掉 www",
+      parsedLink.iconUrl === "https://www.example.com/static/favicon.png" && parsedLink.domain === "example.com",
+      `${parsedLink.iconUrl} / ${parsedLink.domain}`);
+    const emptyPreview = await fetch(`${BASE}/api/link-preview`);
+    const localPreview = await fetch(`${BASE}/api/link-preview?url=${encodeURIComponent("http://127.0.0.1:8799/private")}`);
+    const localPreviewBody = await localPreview.json() as { error?: string };
+    check("链接预览路由：空地址 400、内网地址走 SSRF 门被拒",
+      emptyPreview.status === 400 && localPreview.status === 502 && String(localPreviewBody.error).includes("内网"),
+      `empty=${emptyPreview.status} local=${localPreview.status} err=${String(localPreviewBody.error).slice(0, 40)}`);
 
     // 候选图落盘不能只赌必应缩略图：缩略图被图床拒绝时要退回原图，8 条命中就必须有 8 个预览。
     // 用注入的下载器离线钉住这条，避免把「只渲染了前三张」这种回归留给真实网络碰运气。

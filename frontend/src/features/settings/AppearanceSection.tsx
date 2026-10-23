@@ -206,7 +206,13 @@ export default function AppearanceSection({
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
         setTransferOk(`备份已导出：${fileName}`, 100);
       })
-      .catch((e: Error) => setTransferError("导出失败：" + e.message))
+      .catch((e: Error) => {
+        if (e instanceof dataTransferApi.DirectDownloadStarted) {
+          setTransferOk(e.message, 100);
+          return;
+        }
+        setTransferError("导出失败：" + e.message);
+      })
       .finally(() => setExportBusy(false));
   };
 
@@ -359,11 +365,15 @@ export default function AppearanceSection({
         <div className="subhead">跨设备数据迁移</div>
         <div className="hint">
           导出包包含对话、记忆、联系人、模型设置、图片和自定义技能；也包含已保存的 API Key，请只通过可信方式传输。
+          如果“一键导出备份”被浏览器扩展中断，可以点“直接下载”。
         </div>
         <div className="actions" style={{ marginTop: 8 }}>
           <button type="button" className="pf-ghost" disabled={exportBusy} onClick={doExport}>
             {exportBusy ? "正在导出…" : "一键导出备份"}
           </button>
+          <a className="pf-ghost" href={dataTransferApi.EXPORT_URL} download>
+            直接下载
+          </a>
           <button type="button" className="pf-ghost" disabled={transferBusy} onClick={pickImport}>
             选择备份并导入
           </button>

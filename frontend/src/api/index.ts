@@ -18,6 +18,8 @@ export * as avatarApi from "./avatar";
 export * as qqApi from "./qq";
 export type { QQBindingView, QQStatus } from "../types";
 export * as searchApi from "./search";
+export * as linkPreviewApi from "./linkPreview";
+export type { LinkPreview } from "./linkPreview";
 export * as lanApi from "./lan";
 export type { LanState } from "./lan";
 export type { WeChatLink } from "./wechat";

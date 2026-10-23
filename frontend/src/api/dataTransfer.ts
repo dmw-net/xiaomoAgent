@@ -1,4 +1,4 @@
-const EXPORT_URL = "/api/settings/data-export";
+export const EXPORT_URL = "/api/settings/data-export";
 
 export type ExportProgress = (loaded: number, total: number | null) => void;
 
@@ -6,6 +6,25 @@ export type ExportedArchive = {
   blob: Blob;
   fileName: string;
 };
+
+/** XHR 被浏览器扩展或代理中断时，切换成原生下载。 */
+export class DirectDownloadStarted extends Error {
+  constructor(message = "浏览器中断了备份传输，已自动改为直接下载，请查看浏览器下载栏。") {
+    super(message);
+    this.name = "DirectDownloadStarted";
+  }
+}
+
+/** 原生下载不经过 XHR，兼容会拦截大响应的扩展/代理。 */
+function startDirectDownload(): void {
+  const link = document.createElement("a");
+  link.href = EXPORT_URL;
+  link.download = "";
+  link.style.display = "none";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+}
 
 function fallbackFileName(): string {
   const d = new Date();
@@ -37,7 +56,12 @@ export function exportDataArchive(onProgress?: ExportProgress): Promise<Exported
     xhr.onprogress = (event) => {
       onProgress?.(event.loaded, event.lengthComputable ? event.total : null);
     };
-    xhr.onerror = () => reject(new Error("网络中断或连接被关闭，备份没有下载完成"));
+    xhr.onerror = () => {
+      // 服务端可能已经完整生成了文件，只是浏览器 XHR 没把它交回来。
+      // 再发一次原生下载请求，让浏览器自己的下载器接管。
+      startDirectDownload();
+      reject(new DirectDownloadStarted());
+    };
     xhr.onload = async () => {
       if (xhr.status < 200 || xhr.status >= 300) {
         let detail = `导出失败（HTTP ${xhr.status}）`;

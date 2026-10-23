@@ -1963,6 +1963,52 @@ button.sm { padding: var(--space-3) var(--space-5); font-size: var(--text-note);
   display: inline-block; margin-left: var(--space-2);
   font-size: var(--text-note); color: var(--text-subtle); word-break: break-all;
 }
+
+/* 外链预览卡：只在消息进入视口附近后加载，失败时整块消失，不影响正文链接。 */
+.link-preview { width: 100%; max-width: 520px; margin-top: var(--space-3); }
+.link-card {
+  display: grid; grid-template-columns: 34px minmax(0, 1fr) 14px;
+  align-items: center; gap: var(--space-3);
+  width: 100%; min-width: min(280px, 100%); padding: var(--space-3) var(--space-4);
+  border: 1px solid color-mix(in srgb, var(--border-strong) 72%, transparent);
+  border-radius: var(--radius-xl); background: color-mix(in srgb, var(--bg-sunken) 72%, transparent);
+  color: var(--text-muted); text-decoration: none; text-align: left; cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), translate var(--dur-fast) var(--ease-out);
+}
+.link-card:hover { border-color: var(--border-strong); background: var(--bg-hover); translate: 0 -1px; }
+.link-card:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+.link-card.loading { cursor: progress; opacity: .72; }
+.link-card-icon {
+  position: relative; width: 34px; height: 34px; border-radius: var(--radius-lg);
+  display: grid; place-items: center; overflow: hidden;
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  color: var(--accent-ink); font-size: var(--text-md); font-weight: 600;
+}
+.link-card-icon img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--bg-elevated); }
+.link-card-main { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.link-card-title {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  color: var(--text); font-size: var(--text-base); font-weight: 500; line-height: 1.45;
+}
+.link-card-desc {
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden;
+  color: var(--text-muted); font-size: var(--text-note); line-height: 1.45;
+}
+.link-card-domain {
+  overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
+  color: var(--text-subtle); font-size: var(--text-cap); line-height: 1.35;
+}
+.link-card-ext { color: var(--text-subtle); flex: none; }
+.link-card-note { display: block; margin-top: var(--space-2); color: var(--text-subtle); font-size: var(--text-note); line-height: 1.45; }
+.msg-row.me .link-card {
+  color: var(--bubble-mine-text);
+  background: color-mix(in srgb, #fff 12%, transparent);
+  border-color: color-mix(in srgb, #fff 24%, transparent);
+}
+.msg-row.me .link-card:hover { background: color-mix(in srgb, #fff 18%, transparent); }
+.msg-row.me .link-card-title, .msg-row.me .link-card-domain, .msg-row.me .link-card-ext { color: var(--bubble-mine-text); }
+.msg-row.me .link-card-desc { color: color-mix(in srgb, var(--bubble-mine-text) 78%, transparent); }
+.msg-row.me .link-card-icon { background: color-mix(in srgb, #fff 18%, transparent); color: var(--bubble-mine-text); }
 .md-h { font-weight: 600; }
 .md-code { background: var(--bg-sunken); border-radius: var(--radius-xs); padding: 0 var(--space-1); font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
 

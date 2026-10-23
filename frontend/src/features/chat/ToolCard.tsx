@@ -2,6 +2,7 @@ import { memo, useMemo, useState } from "react";
 import { Check, ChevronDown, ChevronRight, X } from "lucide-react";
 import Avatar from "../../components/Avatar";
 import type { MessageRow } from "../../types";
+import { renderLinkedText } from "../../lib/md";
 
 /** 工具卡 text 的结构（agent.ts 落库时写入）。 */
 type ToolPayload = { tool?: string; ok?: boolean; summary?: string; elapsedMs?: number };
@@ -82,7 +83,7 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick }: {
           </div>
         )}
         {expandable && open && (
-          <pre className="tool-detail" aria-label="工具返回详情">{detail}</pre>
+          <div className="tool-detail" aria-label="工具返回详情">{renderLinkedText(detail)}</div>
         )}
       </div>
     </div>

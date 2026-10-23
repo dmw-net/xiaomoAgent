@@ -2,7 +2,8 @@ import { memo, type CSSProperties } from "react";
 import { Brain, Volume2, Loader2 } from "lucide-react";
 import Avatar from "../../components/Avatar";
 import { useLongPress } from "../../hooks/useLongPress";
-import { renderMd } from "../../lib/md";
+import { findFirstExternalUrl, renderMd } from "../../lib/md";
+import LinkPreviewCard from "./LinkPreviewCard";
 import { avatarToneStyle } from "../../lib/avatar-tone";
 import type { MessageRow } from "../../types";
 
@@ -60,6 +61,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   }
 
   const imgs = m.attachments ?? [];
+  const previewUrl = m.text ? findFirstExternalUrl(m.text) : "";
   /**
    * 思考过程：折叠在气泡顶部，默认收起（历史里 reasoning 是独立块 + 前 80 字预览）。
    * 用原生 details：键盘可达、移动端零 JS，展开才占地方。
@@ -96,6 +98,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
       )}
       {thinking}
       {m.text && <div className="msg-text">{renderMd(m.text)}</div>}
+      {previewUrl !== "" && <LinkPreviewCard url={previewUrl} />}
       {time && <div className="msg-time">{time}</div>}
     </div>
   );

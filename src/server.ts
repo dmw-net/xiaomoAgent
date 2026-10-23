@@ -121,6 +121,7 @@ import { lastModelCall, listInflightCalls, logModelCall, modelCallWindow, modelF
 import { friendlyModelError, isChatModelId, listModels, pingChat, resetToolsUnsupported, synthesizeSpeech, transcribeAudio } from "./model.ts";
 import { MAX_IMAGE_BYTES, mediaUrlExists, readMedia, releaseMediaFiles, saveImage } from "./media.ts";
 import { describeWebFailure, downloadImageToMedia } from "./search.ts";
+import { linkPreviewFor } from "./link-preview.ts";
 import { deleteArtifact, getArtifact, listArtifacts, setArtifactStarred } from "./artifacts.ts";
 import { listContent, type ContentFilter } from "./content.ts";
 import { getChannel, listChannels } from "./channels/types.ts";
@@ -359,6 +360,25 @@ async function handle(
    * 为什么落成本地文件而不是把外站直链给她：QQ 换头像、哪天换域名，直链就是一张裂图；
    * /media 那份跟着数据目录走，也才有东西可备份。
    */
+  /**
+   * 链接预览：只返回标题/描述/domain/小图标，不把网页正文带进聊天。
+   * 页面抓取和 favicon 下载都走 web.ts 的同一扇门，重定向仍逐跳校验。
+   */
+  if (method === "GET" && path === "/api/link-preview") {
+    const target = (url.searchParams.get("url") ?? "").trim();
+    if (target === "") {
+      sendJson(response, 400, { ok: false, error: "url 不能为空" });
+      return;
+    }
+    try {
+      const preview = await linkPreviewFor(target);
+      sendJson(response, 200, { ok: true, preview });
+    } catch (error) {
+      sendJson(response, 502, { ok: false, error: describeWebFailure(error) });
+    }
+    return;
+  }
+
   if (method === "POST" && path === "/api/avatar/qq") {
     const body = await readJson<{ qq?: unknown }>(request);
     const qq = String(body.qq ?? "").trim();

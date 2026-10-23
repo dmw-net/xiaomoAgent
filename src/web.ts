@@ -331,10 +331,8 @@ export async function fetchDocument(url: string, maxBytes = WEB_LIMITS.textBytes
     const mime = raw.contentType.split(";")[0]?.toLowerCase().trim() ?? "";
     throw new WebError("unsupported_type", mime === "" ? "对方没给内容类型，不敢当网页读" : `这不是网页或文本（${mime}）`);
   }
-  const charset = /charset=([\w-]+)/i.exec(raw.contentType)?.[1]?.toLowerCase() ?? "";
-  // 中文站点里 gbk/gb18030 仍常见，按 utf8 硬解会变成一堆乱码喂给模型。
   const mime = raw.contentType.split(";")[0]?.toLowerCase().trim() ?? "";
-  return { body: decodeBody(raw.body, charset), contentType: mime, finalUrl: raw.finalUrl };
+  return { body: decodeWebBody(raw.body, raw.contentType), contentType: mime, finalUrl: raw.finalUrl };
 }
 
 /** 抓网页文本：MIME 白名单 + 字符集处理 + HTML 抽正文。 */
@@ -349,10 +347,47 @@ export async function fetchText(url: string, abortSignal?: AbortSignal): Promise
   };
 }
 
+/**
+ * 从文档头部的 <meta> 里嗅探字符集。很多中文站只在 HTML 里写 `charset=gbk`，
+ * HTTP 头不带 charset；不补这一步就会按 UTF-8 硬解成乱码。
+ * 规范要求 meta charset 出现在文档前部，只扫前 2KB 足够，也避免把正文里的字样当声明。
+ */
+function sniffMetaCharset(body: Buffer): string {
+  const head = body.subarray(0, 2048).toString("latin1");
+  for (const tag of head.match(/<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi) ?? []) {
+    const found = /charset\s*=\s*["']?([\w-]+)/i.exec(tag)?.[1];
+    if (found !== undefined && found !== "") return found.toLowerCase();
+  }
+  return "";
+}
+
+/**
+ * 网页正文解码：HTTP 头优先，缺失时从 meta 嗅探。
+ * 容许 `charset="gbk"` 这种带引号的写法——旧正则只认裸值，带引号会被当成没声明。
+ */
+export function decodeWebBody(body: Buffer, contentType: string): string {
+  const fromHeader = /charset\s*=\s*["']?([\w-]+)/i.exec(contentType)?.[1]?.toLowerCase() ?? "";
+  const mime = contentType.split(";")[0]?.toLowerCase().trim() ?? "";
+  const fromMeta = fromHeader === "" && /html|xml/.test(mime) ? sniffMetaCharset(body) : "";
+  return decodeBody(body, fromHeader || fromMeta);
+}
+
 /** 按字符集解码。精简 ICU 的 Node 没有 gb18030——那种情况退回 utf-8，
- *  代价是那一类站读成乱码，而不是整次抓取失败。 */
+ *  代价是那一类站读成乱码，而不是整次抓取失败。
+ *  big5 必须交给 big5：写成 gb18030 不是“兼容”，是另一种乱码（实测同字节 A4A4
+ *  Big5 是「中」、GB18030 是「い」）。 */
 function decodeBody(body: Buffer, charset: string): string {
-  const want = charset.startsWith("gb") || charset === "big5" ? "gb18030" : "utf-8";
+  const want = charset.startsWith("gb")
+    ? "gb18030"
+    : charset === "big5" || charset === "big5-hkscs"
+      ? "big5"
+      : charset === "shift_jis" || charset === "sjis"
+        ? "shift_jis"
+        : charset === "euc-jp"
+          ? "euc-jp"
+          : charset === "euc-kr"
+            ? "euc-kr"
+            : "utf-8";
   try {
     return new TextDecoder(want, { fatal: false }).decode(body);
   } catch {
@@ -389,13 +424,27 @@ export function htmlToText(html: string): string {
   return s.trim();
 }
 
-const ENTITIES: Record<string, string> = { amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ", middot: "·", hellip: "…", mdash: "—", ndash: "–", ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’", yen: "¥", copy: "©", reg: "®", times: "×", divide: "÷" };
+const ENTITIES: Record<string, string> = {
+  amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: " ",
+  middot: "·", hellip: "…", mdash: "—", ndash: "–",
+  ldquo: "“", rdquo: "”", lsquo: "‘", rsquo: "’",
+  yen: "¥", copy: "©", reg: "®", trade: "™", euro: "€", pound: "£", cent: "¢",
+  times: "×", divide: "÷", deg: "°", plusmn: "±", micro: "µ", para: "¶", sect: "§",
+  laquo: "«", raquo: "»", bull: "•",
+  // 常见的 Latin-1 命名实体；网页标题/描述里出现频率不低，漏掉就会把整段字符删空。
+  agrave: "à", aacute: "á", acirc: "â", atilde: "ã", auml: "ä", aring: "å", aelig: "æ", ccedil: "ç",
+  egrave: "è", eacute: "é", ecirc: "ê", euml: "ë", iacute: "í", igrave: "ì", icirc: "î", iuml: "ï",
+  ntilde: "ñ", oacute: "ó", ograve: "ò", ocirc: "ô", otilde: "õ", ouml: "ö", oslash: "ø",
+  uacute: "ú", ugrave: "ù", ucirc: "û", uuml: "ü", yacute: "ý", yuml: "ÿ", szlig: "ß",
+};
 
 function decodeEntities(text: string): string {
   return text
     .replace(/&#x([0-9a-f]+);/gi, (_all, hex: string) => fromCodePoint(Number.parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_all, dec: string) => fromCodePoint(Number(dec)))
-    .replace(/&([a-z]+);/gi, (_all, name: string) => ENTITIES[name.toLowerCase()] ?? "");
+    // 不认识的命名实体原样保留，绝不能删成空串：以前 `&trade;` 这类会让「Rock & Roll™」
+    // 变成「Rock & Roll」，标题和正文都缺字，而且没有任何报错。
+    .replace(/&([a-z][a-z0-9]+);/gi, (all, name: string) => ENTITIES[name.toLowerCase()] ?? all);
 }
 
 /** 越界或代理区码点会让 fromCodePoint 抛 RangeError——网页里的实体数字经常是坏的，

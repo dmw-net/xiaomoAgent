@@ -98,7 +98,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
       )}
       {thinking}
       {m.text && <div className="msg-text">{renderMd(m.text)}</div>}
-      {previewUrl !== "" && <LinkPreviewCard url={previewUrl} />}
+      {/* key 用地址本身：编辑消息换了链接时强制重挂载，避免新链接下还显示旧卡的标题/域名。 */}
+      {previewUrl !== "" && <LinkPreviewCard key={previewUrl} url={previewUrl} />}
       {time && <div className="msg-time">{time}</div>}
     </div>
   );

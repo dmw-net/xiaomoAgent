@@ -58,3 +58,17 @@ export type SkillEntry = {
   /** 不合规的原因，逐条说清；valid 时为空数组。 */
   problems: string[];
 };
+
+/** /api/link-preview 下发的一张外链预览（标题/描述/站点/内联图标）。 */
+export type LinkPreview = {
+  /** 规范化后的原始地址（去掉 #hash，避免同一页被当成多个缓存项）。 */
+  url: string;
+  /** 跟随重定向后的最终地址。 */
+  finalUrl: string;
+  domain: string;
+  title: string;
+  description: string;
+  siteName: string;
+  /** 已内联成 data URL 的小图标；取不到时为空串，由前端显示域名首字母。 */
+  icon: string;
+};

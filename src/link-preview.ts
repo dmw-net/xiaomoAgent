@@ -5,25 +5,66 @@
 // 预览只服务界面展示，失败时前端安静地退回普通链接，不阻塞聊天。
 
 import { fetchDocument, fetchRaw, htmlToText, parseHttpUrl } from "./web.ts";
+import type { LinkPreview } from "../shared/api.ts";
 
-export type LinkPreview = {
-  /** 用户点的那条地址（去掉 #hash，避免同一页被当成多个缓存项）。 */
-  url: string;
-  /** 跟随重定向后的最终地址。 */
-  finalUrl: string;
-  domain: string;
-  title: string;
-  description: string;
-  siteName: string;
-  /** 已内联成 data URL 的小图标；取不到时为空串，由前端显示域名首字母。 */
-  icon: string;
-};
+export type { LinkPreview };
 
 const CACHE_TTL_MS = 30 * 60 * 1000;
 const CACHE_MAX = 120;
 const ICON_MAX_BYTES = 96 * 1024;
+/**
+ * 一次预览的总预算。必须小于前端 getJson 的 10 秒超时，否则页面稍慢就会
+ * 前端先放弃、服务端还在空跑。favicon 只占其中一小段，不能让它把卡片拖满整个预算。
+ */
+const PREVIEW_TOTAL_MS = 8_000;
+const PREVIEW_ICON_MS = 2_500;
+/** 同时最多抓几个外站：快速滚动历史时可能瞬间出现几十条链接。 */
+const PREVIEW_MAX_INFLIGHT = 4;
 const cache = new Map<string, { at: number; value: LinkPreview }>();
 const inflight = new Map<string, Promise<LinkPreview>>();
+let activeLoads = 0;
+const waiters: Array<() => void> = [];
+
+function acquireSlot(): Promise<void> {
+  if (activeLoads < PREVIEW_MAX_INFLIGHT) {
+    activeLoads += 1;
+    return Promise.resolve();
+  }
+  return new Promise((resolve) => {
+    waiters.push(() => {
+      activeLoads += 1;
+      resolve();
+    });
+  });
+}
+
+function releaseSlot(): void {
+  activeLoads = Math.max(0, activeLoads - 1);
+  waiters.shift()?.();
+}
+
+/** 缓存命中时把条目挪到末尾，让超出上限时先淘汰真正最久没用的。 */
+function cacheHit(url: string, now: number): LinkPreview | null {
+  const hit = cache.get(url);
+  if (hit === undefined) return null;
+  if (now - hit.at > CACHE_TTL_MS) {
+    cache.delete(url);
+    return null;
+  }
+  cache.delete(url);
+  cache.set(url, hit);
+  return hit.value;
+}
+
+function cachePut(url: string, value: LinkPreview): void {
+  cache.delete(url);
+  cache.set(url, { at: Date.now(), value });
+  while (cache.size > CACHE_MAX) {
+    const oldest = cache.keys().next().value;
+    if (oldest === undefined) break;
+    cache.delete(oldest);
+  }
+}
 
 function cleanText(raw: string, max: number): string {
   return htmlToText(raw).replace(/\s+/g, " ").trim().slice(0, max);
@@ -47,7 +88,9 @@ export type ParsedLinkPreview = Omit<LinkPreview, "icon" | "url"> & { iconUrl: s
 /** 纯解析函数：不联网，便于用固定 HTML 钉住标题/描述/favicon 的优先级。 */
 export function parseLinkPreviewHtml(html: string, finalUrl: string): ParsedLinkPreview {
   const meta = new Map<string, string>();
-  for (const tag of html.match(/<meta\b[^>]*>/gi) ?? []) {
+  // 标签边界要跳过引号里的 `>`：`content="1 > 0"` 会把 `[^>]*` 从引号中间截断，
+  // 结果 OG 标题读不到、描述为空。下面 attributes() 本身能处理带引号的值。
+  for (const tag of html.match(/<meta\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi) ?? []) {
     const attrs = attributes(tag);
     const key = (attrs.property ?? attrs.name ?? "").toLowerCase();
     const content = attrs.content ?? "";
@@ -60,7 +103,7 @@ export function parseLinkPreviewHtml(html: string, finalUrl: string): ParsedLink
   const siteName = meta.get("og:site_name") ?? meta.get("application-name") ?? "";
 
   let iconHref = "";
-  for (const tag of html.match(/<link\b[^>]*>/gi) ?? []) {
+  for (const tag of html.match(/<link\b(?:[^>"']|"[^"]*"|'[^']*')*>/gi) ?? []) {
     const attrs = attributes(tag);
     const rel = (attrs.rel ?? "").toLowerCase();
     if (!rel.includes("icon")) continue;
@@ -100,7 +143,7 @@ export function parseLinkPreviewHtml(html: string, finalUrl: string): ParsedLink
     title,
     description: cleanText(description, 300),
     siteName: cleanText(siteName, 80) || domain,
-    iconUrl: iconUrl || (origin ? origin + "/favicon.ico" : ""),
+    iconUrl: iconUrl, // new URL(..., finalUrl) 已经处理了相对路径与缺省 /favicon.ico
   };
 }
 
@@ -115,59 +158,74 @@ function sniffImageMime(body: Buffer): string {
   return "";
 }
 
-async function faviconDataUrl(iconUrl: string, pageUrl: string): Promise<string> {
-  if (iconUrl === "") return "";
+async function faviconDataUrl(iconUrl: string, pageUrl: string, timeoutMs: number): Promise<string> {
+  if (iconUrl === "" || timeoutMs <= 0) return "";
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     // favicon 很小，没必要落盘：data URL 跟着这次响应走，也不会被孤儿媒体清理扫掉。
-    const raw = await fetchRaw(iconUrl, ICON_MAX_BYTES, undefined, { referer: pageUrl });
+    const raw = await fetchRaw(iconUrl, ICON_MAX_BYTES, controller.signal, { referer: pageUrl });
     const declared = (raw.contentType.split(";")[0] ?? "").trim().toLowerCase();
     const mime = declared.startsWith("image/") ? declared : sniffImageMime(raw.body);
     if (!mime.startsWith("image/")) return "";
     return `data:${mime};base64,${raw.body.toString("base64")}`;
   } catch {
+    // 图标是锦上添花：抓不到就空着，绝不能让一张 404 的 favicon 拖垮整张卡。
     return "";
+  } finally {
+    clearTimeout(timer);
   }
 }
 
 async function load(rawUrl: string): Promise<LinkPreview> {
-  const doc = await fetchDocument(rawUrl);
-  const parsed = parseLinkPreviewHtml(doc.body, doc.finalUrl);
-  const icon = await faviconDataUrl(parsed.iconUrl, doc.finalUrl);
-  return {
-    url: rawUrl,
-    finalUrl: parsed.finalUrl,
-    domain: parsed.domain,
-    title: parsed.title,
-    description: parsed.description,
-    siteName: parsed.siteName,
-    icon,
-  };
+  const controller = new AbortController();
+  const deadline = Date.now() + PREVIEW_TOTAL_MS;
+  const timer = setTimeout(() => controller.abort(), PREVIEW_TOTAL_MS);
+  try {
+    const doc = await fetchDocument(rawUrl, undefined, controller.signal);
+    const parsed = parseLinkPreviewHtml(doc.body, doc.finalUrl);
+    // 预算已经在页面抓取上用掉一部分，图标只能拿剩下的，并且最多 2.5 秒。
+    const remaining = Math.min(PREVIEW_ICON_MS, deadline - Date.now());
+    const icon = await faviconDataUrl(parsed.iconUrl, doc.finalUrl, remaining);
+    return {
+      url: rawUrl,
+      finalUrl: parsed.finalUrl,
+      domain: parsed.domain,
+      title: parsed.title,
+      description: parsed.description,
+      siteName: parsed.siteName,
+      icon,
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 /**
  * 取一条链接预览。30 分钟内同一个 URL 直接命中内存缓存；同一 URL 并发请求共用一次抓取。
+ * 全部抓取共享并发上限，避免一段带几十条链接的历史把出网连接打满。
  * 失败直接抛给调用方，由路由转成可读错误；前端可以把失败当成“没有卡片”，不阻塞消息渲染。
  */
 export async function linkPreviewFor(rawUrl: string): Promise<LinkPreview> {
   const parsed = parseHttpUrl(rawUrl);
   parsed.hash = "";
   const url = parsed.toString();
-  const now = Date.now();
-  const hit = cache.get(url);
-  if (hit && now - hit.at < CACHE_TTL_MS) return hit.value;
+  const hit = cacheHit(url, Date.now());
+  if (hit !== null) return hit;
 
   const existing = inflight.get(url);
   if (existing) return existing;
 
-  const pending = load(url)
+  const pending = (async () => {
+    await acquireSlot();
+    try {
+      return await load(url);
+    } finally {
+      releaseSlot();
+    }
+  })()
     .then((value) => {
-      cache.delete(url);
-      cache.set(url, { at: Date.now(), value });
-      while (cache.size > CACHE_MAX) {
-        const oldest = cache.keys().next().value;
-        if (oldest === undefined) break;
-        cache.delete(oldest);
-      }
+      cachePut(url, value);
       return value;
     })
     .finally(() => { inflight.delete(url); });

@@ -353,14 +353,6 @@ async function handle(
     return;
   }
   /**
-   * 用 QQ 号取头像：把 qlogo 那张抓成本地 /media 文件再回路径。
-   *
-   * 为什么必须过服务端：界面那条 CSP 是 `connect-src 'self'`，前端直接 fetch 外站会被浏览器
-   * 拦掉；而且全项目只有 web.ts 一扇出网门（地址校验 / 字节上限 / MIME 白名单都在那儿）。
-   * 为什么落成本地文件而不是把外站直链给她：QQ 换头像、哪天换域名，直链就是一张裂图；
-   * /media 那份跟着数据目录走，也才有东西可备份。
-   */
-  /**
    * 链接预览：只返回标题/描述/domain/小图标，不把网页正文带进聊天。
    * 页面抓取和 favicon 下载都走 web.ts 的同一扇门，重定向仍逐跳校验。
    */
@@ -379,6 +371,14 @@ async function handle(
     return;
   }
 
+  /**
+   * 用 QQ 号取头像：把 qlogo 那张抓成本地 /media 文件再回路径。
+   *
+   * 为什么必须过服务端：界面那条 CSP 是 `connect-src 'self'`，前端直接 fetch 外站会被浏览器
+   * 拦掉；而且全项目只有 web.ts 一扇出网门（地址校验 / 字节上限 / MIME 白名单都在那儿）。
+   * 为什么落成本地文件而不是把外站直链给她：QQ 换头像、哪天换域名，直链就是一张裂图；
+   * /media 那份跟着数据目录走，也才有东西可备份。
+   */
   if (method === "POST" && path === "/api/avatar/qq") {
     const body = await readJson<{ qq?: unknown }>(request);
     const qq = String(body.qq ?? "").trim();

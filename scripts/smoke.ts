@@ -3796,7 +3796,7 @@ try {
 
   console.log("\n[41] 联网底座与动作预算（SSRF 门 / 正文抽取 / 相关性 / 开关与轮数）");
   {
-    const { isPrivateAddress, parseHttpUrl, htmlToText, fetchRaw, isFetchableMime } = await import("../src/web.ts");
+    const { isPrivateAddress, parseHttpUrl, htmlToText, fetchRaw, isFetchableMime, decodeWebBody } = await import("../src/web.ts");
     const { materializePreviews, relevance, WEB_TOOLS } = await import("../src/search.ts");
     const { parseLinkPreviewHtml } = await import("../src/link-preview.ts");
     const { toolDefsForApi } = await import("../src/tools.ts");
@@ -3873,6 +3873,20 @@ try {
     check("脚本与样式的内容不进正文",
       !htmlToText("<script>alert(1)</script><style>.a{b:c}</style>正文").includes("alert"), "");
     check("坏码点丢空而不是抛错", htmlToText("A&#99999999;B&#xD800;C") === "ABC", JSON.stringify(htmlToText("A&#99999999;B&#xD800;C")));
+    check("命名实体解码：&eacute; / &trade; 不能被删空",
+      htmlToText("caf&eacute; &trade;") === "café ™", JSON.stringify(htmlToText("caf&eacute; &trade;")));
+    check("不认识的命名实体原样保留（宁可显示原文，不能吞字）",
+      htmlToText("A &weirdent; B") === "A &weirdent; B", JSON.stringify(htmlToText("A &weirdent; B")));
+    // 字符集：带引号的 charset、Big5、以及 HTTP 头缺失时从 meta 嗅探。
+    check('quoted charset="gbk" 能识别', decodeWebBody(Buffer.from([0xD6, 0xD0]), 'text/html; charset="gbk"') === "中",
+      JSON.stringify(decodeWebBody(Buffer.from([0xD6, 0xD0]), 'text/html; charset="gbk"')));
+    check("Big5 按 Big5 解，不再当 GB18030", decodeWebBody(Buffer.from([0xA4, 0xA4]), 'text/html; charset="big5"') === "中",
+      JSON.stringify(decodeWebBody(Buffer.from([0xA4, 0xA4]), 'text/html; charset="big5"')));
+    const metaCharset = decodeWebBody(
+      Buffer.concat([Buffer.from('<html><head><meta charset="gbk"></head><body>'), Buffer.from([0xD6, 0xD0]), Buffer.from("</body></html>")]),
+      "text/html",
+    );
+    check("HTTP 头没有 charset 时从 meta 嗅探", metaCharset.includes("中"), JSON.stringify(metaCharset));
 
     check("相关性：整词命中给满分", relevance("玛奇玛（漫画《链锯人》中的角色）", "玛奇玛") === 1);
     check("相关性：兜底推荐零分（乱码词的 NASA/梗图就是这样被丢掉的）",
@@ -3896,6 +3910,13 @@ try {
     check("链接预览：相对 favicon 解析成绝对地址，域名去掉 www",
       parsedLink.iconUrl === "https://www.example.com/static/favicon.png" && parsedLink.domain === "example.com",
       `${parsedLink.iconUrl} / ${parsedLink.domain}`);
+    const gtLink = parseLinkPreviewHtml(
+      `<html><head><meta property="og:title" content="1 > 0"><meta name="description" content="a > b"></head></html>`,
+      "https://example.com/x",
+    );
+    check("链接预览：meta 属性里的 > 不会把标签截断",
+      gtLink.title === "1 > 0" && gtLink.description === "a > b",
+      `${gtLink.title} / ${gtLink.description}`);
     const emptyPreview = await fetch(`${BASE}/api/link-preview`);
     const localPreview = await fetch(`${BASE}/api/link-preview?url=${encodeURIComponent("http://127.0.0.1:8799/private")}`);
     const localPreviewBody = await localPreview.json() as { error?: string };

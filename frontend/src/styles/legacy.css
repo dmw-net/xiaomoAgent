@@ -184,6 +184,14 @@
      模态(80)：那两层从前嵌在会话子树里跟着祖先的 transform 定位，改成 portal 之后就
      只由这张全局阶梯说话，留在 60/70 会被弹窗压在下面看不见。 */
   --z-chat-pop: 90;
+  /* 运行期变量：由 lib/keyboard.ts、Splitter、消息菜单和头像色调写到
+     documentElement / 元素内联样式上。这里给默认值——JS 还没跑时也有可用的退化值，
+     同时让 IDE 的自定义属性检查能解析到声明（否则会报 Cannot resolve custom property）。 */
+  --kb: 0px;
+  --enter-delay: 0ms;
+  --ax: 50%;
+  --side-w: var(--side-w-default);
+  --s-ava-bg: var(--accent);
 }
 
 :root[data-theme="dark"] {
@@ -516,15 +524,15 @@ input, textarea {
   animation-delay: var(--enter-delay, 0ms);
 }
 .msg-row.me.msg-enter { transform-origin: right bottom; }
-@keyframes msgIn { from { opacity: 0; translate: 0 5px; scale: .992; } }
+@keyframes msgIn { 0% { opacity: 0; translate: 0 5px; scale: .992; } }
 /* 打字点切到第一段正文：只做一次很轻的交接，不让整团文字再弹一遍。 */
 .draft-text { display: inline; animation: draftSwap var(--dur-fast) var(--ease-out); }
-@keyframes draftSwap { from { opacity: .55; } }
+@keyframes draftSwap { 0% { opacity: .55; } }
 #typingRow { animation: msgIn var(--dur-base) var(--ease-out); transform-origin: left bottom; }
 /* 视图切换入场：只淡入 + 上浮 6px。不上横向位移 —— 横滑最容易引起前庭不适。 */
-@keyframes viewIn { from { opacity: 0; translate: 0 6px; } }
+@keyframes viewIn { 0% { opacity: 0; translate: 0 6px; } }
 /* 未读角标：数字从无到有那一下给个回弹，比"啪"地贴上去更像"有新消息到了" */
-@keyframes badgePop { from { opacity: 0; scale: .4; } }
+@keyframes badgePop { 0% { opacity: 0; scale: .4; } }
 .msg-row.me { align-items: flex-end; }
 .msg-row.her { align-items: flex-start; }
 /* 思考过程折叠条（气泡内顶部）：默认收起，展开才占地方。
@@ -809,7 +817,7 @@ input, textarea {
   box-shadow: var(--shadow-menu-sm);
   animation: menuIn var(--dur-fast) var(--ease-out);
 }
-@keyframes menuIn { from { opacity: 0; transform: translateY(-3px); } }
+@keyframes menuIn { 0% { opacity: 0; transform: translateY(-3px); } }
 @media (prefers-reduced-motion: reduce) { .msgmenu { animation: none; } }
 
 .msgmenu button {
@@ -891,7 +899,7 @@ input, textarea {
   color: #fff; text-decoration: underline; text-underline-offset: 2px;
   font-size: var(--text-note); font-weight: 500;
 }
-@keyframes toastIn { from { opacity: 0; transform: translateY(6px); } }
+@keyframes toastIn { 0% { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
 
 /* 撤回后的消息：气泡换成一行灰字，跟 IM 的既有心智一致 */

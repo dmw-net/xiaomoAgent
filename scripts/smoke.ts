@@ -109,9 +109,13 @@ const qqMock = {
   sockets: [] as FakeQQSocket[],
   get socket(): FakeQQSocket | null { return this.sockets[this.sockets.length - 1] ?? null; },
 };
-(globalThis as unknown as { WebSocket: unknown }).WebSocket = FakeQQSocket;
+// 用 Object.assign 而不是 `(globalThis as unknown as { ... }).WebSocket =`：
+// 后者在 IDE 的 TypeScript/JavaScript 双解析器里会在内联对象类型处报语法错。
+Object.assign(globalThis, { WebSocket: FakeQQSocket });
 
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+// 先声明成变量再赋给 globalThis：`(async …) as typeof fetch` 这种“括号后紧跟 as”
+// 会被 IDE 的 JavaScript 解析器当成语句结束，报 “Newline or semicolon expected”。
+const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = new URL(String(input));
   if (url.origin === QQ_BIND_HOST) {
     const pathname = url.pathname;
@@ -189,7 +193,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
     return ilinkJson({ msgs, get_updates_buf: "cursor-" + String(ilink.getUpdatesCount) });
   }
   return ilinkJson({ ret: -99, errmsg: "unexpected " + pathname });
-}) as typeof fetch;
+};
+globalThis.fetch = mockFetch;
 
 const { registerChannel } = await import("../src/channels/types.ts");
 const { webChannel } = await import("../src/channels/web.ts");
@@ -2705,7 +2710,7 @@ try {
     // 本机对 agnes-image-2.5-flash 实测过（同端点两次调用，一次有 b64、一次没有）。
     const priorFetch = globalThis.fetch;
     const img = { mode: "b64" as "b64" | "url" | "b64-empty" | "evil", hits: 0, cosHits: 0, localHits: 0, bodies: [] as Array<Record<string, unknown>> };
-    globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const imgFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
       const u = new URL(String(input));
       if (u.origin === "https://img.example") {
         img.hits += 1;
@@ -2725,7 +2730,8 @@ try {
       }
       if (u.pathname === "/healthz") img.localHits += 1;
       return priorFetch(input as RequestInfo, init);
-    }) as typeof fetch;
+    };
+    globalThis.fetch = imgFetch;
 
     try {
       check("没配图像模型 → imageGeneration 未就绪", capabilityReady("imageGeneration") === false);
@@ -3876,7 +3882,7 @@ try {
     check("块级边界仍还原成换行", htmlToText("<div>前</div><div>后</div>") === "前\n后",
       JSON.stringify(htmlToText("<div>前</div><div>后</div>")));
     check("脚本与样式的内容不进正文",
-      !htmlToText("<script>alert(1)</script><style>.a{b:c}</style>正文").includes("alert"), "");
+      !htmlToText("<script>alert(1)</script><style>.a{color:red}</style>正文").includes("alert"), "");
     check("坏码点丢空而不是抛错", htmlToText("A&#99999999;B&#xD800;C") === "ABC", JSON.stringify(htmlToText("A&#99999999;B&#xD800;C")));
     check("命名实体解码：&eacute; / &trade; 不能被删空",
       htmlToText("caf&eacute; &trade;") === "café ™", JSON.stringify(htmlToText("caf&eacute; &trade;")));
@@ -3888,7 +3894,7 @@ try {
     check("Big5 按 Big5 解，不再当 GB18030", decodeWebBody(Buffer.from([0xA4, 0xA4]), 'text/html; charset="big5"') === "中",
       JSON.stringify(decodeWebBody(Buffer.from([0xA4, 0xA4]), 'text/html; charset="big5"')));
     const metaCharset = decodeWebBody(
-      Buffer.concat([Buffer.from('<html><head><meta charset="gbk"></head><body>'), Buffer.from([0xD6, 0xD0]), Buffer.from("</body></html>")]),
+      Buffer.concat([Buffer.from('<html lang="zh-CN"><head><meta charset="gbk"></head><body>'), Buffer.from([0xD6, 0xD0]), Buffer.from("</body></html>")]),
       "text/html",
     );
     check("HTTP 头没有 charset 时从 meta 嗅探", metaCharset.includes("中"), JSON.stringify(metaCharset));
@@ -3916,7 +3922,7 @@ try {
 
     // 链接预览的纯解析层：OG 标题/描述优先，相对 favicon 必须解析成绝对地址。
     const parsedLink = parseLinkPreviewHtml(`
-      <html><head>
+      <html lang="zh-CN"><head>
         <title>普通标题</title>
         <meta property="og:title" content="OG 标题">
         <meta name="description" content="页面描述 &amp; 补充">
@@ -3929,7 +3935,7 @@ try {
       parsedLink.iconUrl === "https://www.example.com/static/favicon.png" && parsedLink.domain === "example.com",
       `${parsedLink.iconUrl} / ${parsedLink.domain}`);
     const gtLink = parseLinkPreviewHtml(
-      `<html><head><meta property="og:title" content="1 > 0"><meta name="description" content="a > b"></head></html>`,
+      `<html lang="zh-CN"><head><meta property="og:title" content="1 > 0"><meta name="description" content="a > b"></head></html>`,
       "https://example.com/x",
     );
     check("链接预览：meta 属性里的 > 不会把标签截断",

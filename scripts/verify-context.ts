@@ -24,7 +24,8 @@ let responder: (req: Req) => { status?: number; body?: string; delayMs?: number 
 const json = (o: unknown): { body: string } => ({ body: typeof o === "string" ? o : JSON.stringify(o) });
 const SIDE_CHANNEL = /记忆抽取器|整理一段长期陪伴|挤出对话窗口/;
 
-globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+// 先声明成变量再赋值：`(async …) as typeof fetch` 会被 IDE 的 JavaScript 解析器误判。
+const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const parsed = JSON.parse(String(init?.body ?? "{}")) as { messages?: Req["messages"] };
   const req: Req = { messages: parsed.messages ?? [] };
   sent.push(req);
@@ -41,7 +42,8 @@ globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit): Promis
   }
   if (r.status !== undefined && r.status >= 400) return new Response(r.body ?? "bad request", { status: r.status });
   return new Response(JSON.stringify({ choices: [{ message: { content: r.body ?? "好呀" } }] }), { status: 200 });
-}) as typeof fetch;
+};
+globalThis.fetch = mockFetch;
 
 const { updateModel, updatePersona } = await import("../src/settings.ts");
 const { createContact, updateContact, getContact, companionPromptExtras } = await import("../src/contacts.ts");

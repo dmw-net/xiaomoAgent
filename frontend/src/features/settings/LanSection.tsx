@@ -112,7 +112,9 @@ export function LanSection() {
       setState(next);
       setPortNote(next.portNext === 0
         ? `已设为自动分配（当前 ${next.port}），重启后生效。`
-        : `已保存，重启后监听 ${next.portNext}。`);
+        : next.portNext === next.port
+          ? `已保存，当前使用 ${next.port}。`
+          : `已保存，重启后监听 ${next.portNext}。`);
     } catch (e) {
       setPortNote(e instanceof Error ? e.message : "改端口失败");
     }
@@ -140,7 +142,7 @@ export function LanSection() {
       setState(await lanApi.rotateLanCode());
       setEditingCode(false);
       setCodeBad(false);
-      setCodeNote("已换新码，已连设备需要重新输入。");
+      setCodeNote("已换码，已连设备需重新输入。");
     } catch {
       setCodeBad(true);
       setCodeNote("换码失败，请重试。");
@@ -173,7 +175,7 @@ export function LanSection() {
       const next = await lanApi.setLanCode(digits);
       setState(next);
       setEditingCode(false);
-      setCodeNote("已保存。已连上的设备需要用新码重新进入。");
+      setCodeNote("已保存。已连设备需重新输入。");
     } catch (e) {
       setCodeBad(true);
       setCodeNote(e instanceof Error ? e.message : "保存失败");
@@ -203,7 +205,7 @@ export function LanSection() {
         <div>
           <div className="subhead">手机与远程访问</div>
           <div className="hint">
-            默认只有这台电脑能访问。同一 Wi-Fi 下打开开关即可；想在别处用，得自己配内网穿透。
+            默认仅本机可访问。同一 Wi-Fi 打开开关；外网需自配内网穿透。
           </div>
         </div>
         {state !== null && (
@@ -221,7 +223,7 @@ export function LanSection() {
             <div className="lan-row">
               <div className="lan-row-main">
                 <label>允许局域网访问</label>
-                <div className="hint">同一 Wi-Fi 下的手机 / 平板可以打开下面的地址。</div>
+                <div className="hint">同一 Wi-Fi 的手机 / 平板可访问。</div>
               </div>
               <div className="preset-row lan-toggle" role="group" aria-label="允许手机访问">
                 <button type="button" className="preset" aria-pressed={!enabled} disabled={busy} onClick={() => void apply(false)}>关闭</button>
@@ -231,7 +233,7 @@ export function LanSection() {
 
             {asking && (
               <div className="lan-confirm">
-                打开后同一网络的设备都能访问（含聊天记录与模型密钥）。只在可信网络下开启。
+                同一网络的设备都能访问（含聊天记录与模型密钥）。仅在可信网络开启。
                 <div className="actions" style={{ marginTop: 8 }}>
                   <button type="button" className="btn sm" onClick={() => setAsking(false)}>取消</button>
                   <button type="button" className="primary sm" disabled={busy} onClick={() => void apply(true)}>确认开启</button>
@@ -244,7 +246,7 @@ export function LanSection() {
             <div className="lan-block">
               <div className="lan-block-title">手机打开的地址</div>
               {urls.length === 0 ? (
-                <div className="hint">没找到可用的网卡地址（检查是否连着 Wi-Fi / 网线）。</div>
+                <div className="hint">没找到可用网卡地址（检查 Wi-Fi / 网线）。</div>
               ) : (
                 <div className="lan-access">
                   <div className="lan-urls">
@@ -254,17 +256,17 @@ export function LanSection() {
                         <button type="button" className="btn sm" onClick={() => void copy(url)}>复制</button>
                       </div>
                     ))}
-                    <div className="hint">Windows 弹防火墙提示时选「允许访问」。</div>
+                    <div className="hint">防火墙提示时选「允许访问」。</div>
                   </div>
                   <div className="lan-qr">
                     {qr !== "" ? (
                       <img src={qr} alt="手机访问地址二维码" width={168} height={168} />
                     ) : (
-                      <div className="hint">{qrFailed ? "二维码生成失败，直接复制上面的地址。" : "二维码生成中…"}</div>
+                      <div className="hint">{qrFailed ? "二维码生成失败，请复制地址。" : "二维码生成中…"}</div>
                     )}
                     {qr !== "" && (
                       <div className="hint">
-                        扫码后会自动填好访问码，点「进入」即可。二维码等同于访问码，别截图外传。
+                        扫码自动填访问码，点「进入」即可。二维码等同访问码，勿外传。
                       </div>
                     )}
                   </div>
@@ -276,8 +278,8 @@ export function LanSection() {
           <div className="lan-block">
             <div className="lan-block-title">访问码</div>
             <div className="hint">
-              手机 / 隧道首次访问要输它。登录页勾选「记住」后，下次打开会自动进入；换码后已连设备需重输。
-              {state.code === "" && "开启局域网或填写隧道域名后才需要它。"}
+              手机 / 隧道首次访问需输入；勾选「记住」后自动进入；换码后需重输。
+              {state.code === "" && "开启局域网或添加隧道域名后才会用到。"}
             </div>
             <div className="lan-code-row">
               <code className={`lan-code${state.code === "" ? " empty" : ""}`}>
@@ -313,15 +315,17 @@ export function LanSection() {
           </div>
 
           <div className="lan-block">
-            <div className="lan-block-title">远程访问（自己的内网穿透）</div>
-            <div className="hint">
-              小茉不做穿透，只配合你做两件事：固定端口、放行你的隧道域名。
-            </div>
+            <div className="lan-block-title">远程访问（内网穿透）</div>
+            <div className="hint">小茉不做穿透，只负责固定端口和放行隧道域名。</div>
             <div className="lan-remote-grid" style={{ marginTop: 12 }}>
               <div className="field">
                 <label>固定端口</label>
                 <div className="hint">
-                  桌面版默认随机端口（当前 <code>{state.port}</code>，每次启动都变）。内网穿透需要固定它；留空 = 自动。
+                  {state.portSetting === 0
+                    ? <>默认随机端口（当前 <code>{state.port}</code>，启动会变）。留空 = 自动。</>
+                    : state.portSetting === state.port
+                      ? <>已固定为 <code>{state.portSetting}</code>。留空 = 自动分配。</>
+                      : <>已固定为 <code>{state.portSetting}</code>（当前 <code>{state.port}</code>）。留空 = 自动分配。</>}
                 </div>
                 <div className="lan-inline" style={{ marginTop: 8 }}>
                   <input
@@ -346,9 +350,7 @@ export function LanSection() {
 
               <div className="field">
                 <label>隧道域名</label>
-                <div className="hint">
-                  隧道指向这台电脑后，把它给的公网域名填在这里，否则请求会被 403 挡掉；多个用逗号或空格分开，留空 = 不信任外部域名。
-                </div>
+                <div className="hint">填入隧道给的公网域名，否则会被 403 挡掉。多个用逗号分隔；留空 = 不信任。</div>
                 <div className="lan-inline" style={{ marginTop: 8 }}>
                   <input
                     value={hostInput}

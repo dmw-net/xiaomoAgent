@@ -235,7 +235,7 @@ async function handle(
     sendJson(response, 401, {
       ok: false,
       code: "LAN_AUTH",
-      error: "需要访问码：请在这台电脑的小茉里打开「设置 → 系统与数据 → 远程访问」查看",
+      error: "需要访问码：在小茉「设置 → 系统与数据」查看",
     });
     return;
   }
@@ -297,7 +297,11 @@ async function handle(
         return;
       }
       // 端口被占现在就说，别等用户重启完发现应用起不来。
-      if (value !== 0) {
+      // 例外：目标端口就是**当前正在监听的那个**。那必定是小茉自己（桌面端 PORT=0，
+      // 固定端口由 settings.port 决定），probe 必然 EADDRINUSE；用户只是把已经生效的端口
+      // 又点了一次「应用」，不该看到「已被别的程序占用」。
+      const listeningPort = request.socket.localPort ?? config.port;
+      if (value !== 0 && value !== listeningPort) {
         const probe = await probePort(value);
         if (!probe.ok) {
           lan.setPort(previousPort);
@@ -2648,9 +2652,9 @@ function sendLanLogin(response: ServerResponse): void {
 <body>
 <form id="f">
   <h1>小茉</h1>
-  <p id="tip">请输入电脑上「手机访问」里显示的访问码</p>
+  <p id="tip">输入电脑上显示的访问码</p>
   <input id="c" inputmode="numeric" autocomplete="off" placeholder="000-000" autofocus>
-  <label id="remember"><input id="r" type="checkbox" checked> 记住访问码，下次自动进入</label>
+  <label id="remember"><input id="r" type="checkbox" checked> 记住访问码</label>
   <button id="go" type="submit">进入</button>
   <div id="err"></div>
 </form>
@@ -2685,7 +2689,7 @@ form.addEventListener("submit", async (e) => {
   e.preventDefault();
   err.textContent = "";
   const digits = digitsOf(codeInput.value);
-  if (digits.length < 6) { err.textContent = "访问码至少 6 位数字"; return; }
+  if (digits.length < 6) { err.textContent = "至少 6 位数字"; return; }
   go.disabled = true;
   try {
     const r = await fetch("/__lan", {
@@ -2699,7 +2703,7 @@ form.addEventListener("submit", async (e) => {
     if (r.status === 401) clearSaved();
     err.textContent = data.error || "访问码不对";
   } catch {
-    err.textContent = "连不上，确认手机和电脑还在同一个局域网";
+    err.textContent = "连不上，确认还在同一局域网";
   }
   go.disabled = false;
 });
@@ -2712,10 +2716,10 @@ const initial = preset.length >= 6 ? preset : (saved.length >= 6 ? saved : "");
 if (initial !== "") {
   codeInput.value = shown(initial);
   if (preset.length >= 6) {
-    tip.textContent = "访问码已自动填好，点「进入」即可";
+    tip.textContent = "已自动填好，点「进入」";
     go.focus();
   } else {
-    tip.textContent = "正在用已记住的访问码进入…";
+    tip.textContent = "正在自动进入…";
     remember.checked = true;
     setTimeout(() => form.requestSubmit(), 0);
   }
@@ -2736,7 +2740,7 @@ async function probePort(port: number): Promise<{ ok: boolean; error: string }> 
       resolve({
         ok: false,
         error: error.code === "EADDRINUSE"
-          ? `端口 ${port} 已被别的程序占用，换一个`
+          ? `端口 ${port} 已被占用（别的程序，或另一个小茉实例），换一个`
           : `端口 ${port} 用不了：${error.message}`,
       });
     });

@@ -52,3 +52,8 @@ export function saveTunnelHosts(hosts: string[]): Promise<LanState> {
 export function rotateLanCode(): Promise<LanState> {
   return postJson<LanState>("/api/lan/rotate");
 }
+
+/** 自定义访问码（6–12 位数字）。已连设备会用 token 失效的方式被要求重输。 */
+export function setLanCode(code: string): Promise<LanState> {
+  return postJson<LanState>("/api/lan/code", { code });
+}

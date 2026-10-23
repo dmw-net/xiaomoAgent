@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "小茉",
-  "version": "0.2.6",
+  "version": "0.2.7",
   "identifier": "app.xiaomo.ai",
   "build": {
     "frontendDist": "../src-tauri/dist"

@@ -50,12 +50,16 @@ function write(state: Stored): void {
   kvSet(KV_LAN, JSON.stringify(state));
 }
 
-/** 六位数字码：人念得出来、在手机上输得进去。 */
+/** 访问码用数字：人念得出来、在手机上输得进去；6–12 位，够长才挡得住公网隧道上的穷举。 */
+const CODE_MIN = 6;
+const CODE_MAX = 12;
+
+/** 六位数字码：默认形态，用户也可以自己改。 */
 function freshCode(): string {
   return String(randomInt(0, 1_000_000)).padStart(6, "0");
 }
 
-/** 面板上显示的形态：123-456。 */
+/** 面板上显示的形态：默认六位码分成 123-456，用户自定义的其他长度原样显示。 */
 export function formatCode(code: string): string {
   return code.length === 6 ? `${code.slice(0, 3)}-${code.slice(3)}` : code;
 }
@@ -88,6 +92,21 @@ export function rotateLanCode(): { enabled: boolean; code: string } {
   const next: Stored = { enabled: current.enabled, code: freshCode() };
   write(next);
   return { enabled: next.enabled, code: next.code };
+}
+
+/**
+ * 把访问码改成用户自己记得住的数字（生日、门牌号都行）。
+ * 下限 6 位不是洁癖：登录接口没有限流，而隧道是公网可达的——4 位数字几秒就能穷举完。
+ * 改码后 cookie 派生的 token 随之失效，已连设备下次请求会回到登录页（这是换码的含义）。
+ */
+export function setLanCode(input: string): { ok: boolean; error: string } {
+  const code = normalizeCode(input);
+  if (code.length < CODE_MIN || code.length > CODE_MAX) {
+    return { ok: false, error: `访问码用 ${CODE_MIN}–${CODE_MAX} 位数字` };
+  }
+  const current = read();
+  write({ enabled: current.enabled, code });
+  return { ok: true, error: "" };
 }
 
 /** 最近一次绑定失败的原因（端口被占 / 防火墙拦了）。绑不上时界面要能说出为什么。 */

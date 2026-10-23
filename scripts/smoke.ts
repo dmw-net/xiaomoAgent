@@ -3941,6 +3941,11 @@ try {
     check("链接预览路由：空地址 400、内网地址走 SSRF 门被拒",
       emptyPreview.status === 400 && localPreview.status === 502 && String(localPreviewBody.error).includes("内网"),
       `empty=${emptyPreview.status} local=${localPreview.status} err=${String(localPreviewBody.error).slice(0, 40)}`);
+    const crossSitePreview = await fetch(
+      `${BASE}/api/link-preview?url=${encodeURIComponent("https://example.com/")}`,
+      { headers: { "sec-fetch-site": "cross-site" } },
+    );
+    check("链接预览拒绝跨站触发（有副作用的 GET）", crossSitePreview.status === 403, `status=${crossSitePreview.status}`);
 
     // 候选图落盘不能只赌必应缩略图：缩略图被图床拒绝时要退回原图，8 条命中就必须有 8 个预览。
     // 用注入的下载器离线钉住这条，避免把「只渲染了前三张」这种回归留给真实网络碰运气。

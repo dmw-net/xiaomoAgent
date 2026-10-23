@@ -357,6 +357,13 @@ async function handle(
    * 页面抓取和 favicon 下载都走 web.ts 的同一扇门，重定向仍逐跳校验。
    */
   if (method === "GET" && path === "/api/link-preview") {
+    // 这是一个**有副作用**的 GET（服务端会去抓外站）。跨站 <img> 请求不带 Origin，
+    // 本机守卫会放行；所以再看一眼 Sec-Fetch-Site：只接受同源页面或直接导航。
+    const fetchSite = request.headers["sec-fetch-site"];
+    if (typeof fetchSite === "string" && fetchSite !== "same-origin" && fetchSite !== "none") {
+      sendJson(response, 403, { ok: false, error: "不允许跨站请求链接预览" });
+      return;
+    }
     const target = (url.searchParams.get("url") ?? "").trim();
     if (target === "") {
       sendJson(response, 400, { ok: false, error: "url 不能为空" });

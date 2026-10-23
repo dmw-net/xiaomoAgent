@@ -7,6 +7,11 @@ export type OpenResult = { ok: true } | { ok: false; error: string };
  *
  * 失败有两种，都得让调用方拿去显示：外壳里是权限层拒绝（capability 没覆盖当前 origin
  * 时 openUrl 直接 reject），浏览器里是弹窗被拦（window.open 返回 null）。
+ *
+ * ⚠️ windowFeatures 里不能写 `noopener`：按 HTML 规范，带 noopener 时 window.open
+ * **一定返回 null**（哪怕标签页已经正常打开）。以前就是因为它，手机浏览器里每次
+ * 成功打开外链都会被当成“被拦截”。改成打开后手动把 opener 置空，
+ * 防篡改效果一样；Referer 由页面响应头 `Referrer-Policy: no-referrer` 管。
  */
 export async function openExternal(url: string): Promise<OpenResult> {
   if ("__TAURI_INTERNALS__" in window) {
@@ -19,8 +24,9 @@ export async function openExternal(url: string): Promise<OpenResult> {
       return { ok: false, error: `外壳没能调用系统浏览器（${message}）` };
     }
   }
-  const win = window.open(url, "_blank", "noopener,noreferrer");
+  const win = window.open(url, "_blank");
   if (!win) return { ok: false, error: "浏览器拦住了新窗口，请允许弹窗或手动打开下面的地址" };
+  try { win.opener = null; } catch { /* 某些环境不允许写，忽略即可 */ }
   win.focus();
   return { ok: true };
 }

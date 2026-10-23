@@ -7,9 +7,13 @@ export type ExportedArchive = {
   fileName: string;
 };
 
-/** XHR 被浏览器扩展或代理中断时，切换成原生下载。 */
+/**
+ * XHR 没把文件交回来时，切换成原生下载。
+ * 注意：onerror 分不清“扩展拦截”和“服务端/网络真失败”，所以这里只能算一次尝试，
+ * 不能当成导出成功——调用方必须用非成功语气提示用户去下载栏确认。
+ */
 export class DirectDownloadStarted extends Error {
-  constructor(message = "浏览器中断了备份传输，已自动改为直接下载，请查看浏览器下载栏。") {
+  constructor(message = "浏览器中断了备份传输，已尝试改为直接下载。请检查浏览器下载栏；若没有文件，说明备份没有完成，请重试。") {
     super(message);
     this.name = "DirectDownloadStarted";
   }

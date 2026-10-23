@@ -83,7 +83,9 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick }: {
           </div>
         )}
         {expandable && open && (
-          <div className="tool-detail" aria-label="工具返回详情">{renderLinkedText(detail)}</div>
+          // 保留 <pre>：.tool-detail 只设了 pre-wrap，等宽字体来自 pre 的默认样式；
+          // 换成 div 会让 JSON / 搜索结果变成正文字体。<a> 放在 pre 里是合法的。
+          <pre className="tool-detail" aria-label="工具返回详情">{renderLinkedText(detail)}</pre>
         )}
       </div>
     </div>

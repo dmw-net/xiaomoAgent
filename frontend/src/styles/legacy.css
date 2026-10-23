@@ -2011,6 +2011,12 @@ button.sm { padding: var(--space-3) var(--space-5); font-size: var(--text-note);
 .msg-row.me .link-card-icon { background: color-mix(in srgb, #fff 18%, transparent); color: var(--bubble-mine-text); }
 .md-h { font-weight: 600; }
 .md-code { background: var(--bg-sunken); border-radius: var(--radius-xs); padding: 0 var(--space-1); font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
+.md-pre {
+  margin: var(--space-2) 0; padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md); background: var(--bg-sunken);
+  white-space: pre-wrap; word-break: break-word; overflow-x: auto;
+  font-family: ui-monospace, Consolas, monospace; font-size: .92em; line-height: 1.55;
+}
 
 /* ── Batch3：断网提示条 ── */
 .net-tip {

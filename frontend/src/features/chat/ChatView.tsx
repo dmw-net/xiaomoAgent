@@ -16,6 +16,7 @@ import { enqueueOutbox, flushOutbox, outboxForContact, subscribeOutbox } from ".
 import { useDismiss } from "../../hooks/useDismiss";
 import { useLiveReveal } from "../../hooks/useLiveReveal";
 import { useNotices } from "../../hooks/useNotices";
+import { CHAT_RESIZE_EVENT } from "../../hooks/useResizeSignal";
 import Avatar from "../../components/Avatar";
 import MessageMenu, { type MenuState } from "./MessageMenu";
 import Modal from "../../components/Modal";
@@ -1286,6 +1287,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     const onLoad = (): void => { if (stickRef.current) scrollDown(true); };
     el.addEventListener("load", onLoad, true);
     return () => el.removeEventListener("load", onLoad, true);
+  }, [scrollDown]);
+
+  // 链接卡/展开详情是异步长高的，不会触发上面那条 load。卡片自己用 ResizeObserver
+  // 广播 CHAT_RESIZE_EVENT；这里按同一口径补一跳，避免最新内容被顶到视口外。
+  useEffect(() => {
+    const onResize = (): void => { if (stickRef.current) scrollDown(true); };
+    window.addEventListener(CHAT_RESIZE_EVENT, onResize);
+    return () => window.removeEventListener(CHAT_RESIZE_EVENT, onResize);
   }, [scrollDown]);
 
   // ── 消息菜单的关闭时机（点别处 / Esc / 滚动 / 改窗口尺寸） ──

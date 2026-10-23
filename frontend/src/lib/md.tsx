@@ -1,4 +1,5 @@
 import { useCallback, useState, type ReactNode } from "react";
+import { copyText } from "./clipboard";
 import { openExternal } from "./open-external";
 
 /**
@@ -13,8 +14,8 @@ function MdLink({ href, label }: { href: string; label: string }): JSX.Element {
     void (async () => {
       const r = await openExternal(href);
       if (r.ok) return;
-      let copied = false;
-      try { await navigator.clipboard.writeText(href); copied = true; } catch { copied = false; }
+      // 局域网是 http 普通源，navigator.clipboard 不存在；统一走带 execCommand 兜底的 copyText。
+      const copied = (await copyText(href)) === "ok";
       setNote(`${r.error} · ${copied ? "链接已复制到剪贴板：" : "请手动打开："}${href}`);
     })();
   }, [href]);
@@ -37,7 +38,7 @@ function MdLink({ href, label }: { href: string; label: string }): JSX.Element {
 const INLINE_RE = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\(\s*https?:\/\/[^)\s]+\s*\)|https?:\/\/[^\s<>"'`）】]+)/g;
 const MD_LINK_RE = /^\[([^\]\n]+)\]\(\s*(https?:\/\/[^)\s]+)\s*\)$/;
 /** 裸地址尾巴上的标点是句读不是地址：中文句号、右括号、引号这些留在文字里。 */
-const URL_TAIL_RE = /[.,;:!?。，；：！？、）》】”"'’]+$/;
+const URL_TAIL_RE = /[.,;:!?。，；：！？、）》】”"'’\]\}＞…]+$/;
 const BARE_URL_RE = /https?:\/\/[^\s<>"'`）】]+/g;
 
 /** 裸链接只显示域名；完整 URL 留在 href/title 里，避免一条链接把气泡撑得很长。 */
@@ -59,11 +60,22 @@ function bareUrlParts(token: string): { url: string; tail: string } {
   return { url, tail: token.slice(url.length) };
 }
 
-/** 消息里第一条可预览的外链；代码块/行内代码里的地址不算。 */
+/** 消息里第一条可预览的外链；围栏代码块、行内代码和图片地址都不算。 */
 export function findFirstExternalUrl(text: string): string {
+  // 先把围栏代码块整段遮掉。只在 inline() 里跳过反引号 token 是不够的：
+  // 代码块的内容是按普通行走的，里面 `curl https://…` 这种地址会被误当成正文外链。
+  let inFence = false;
+  const visible = text.split("\n").map((line) => {
+    if (/^\s*```/.test(line)) { inFence = !inFence; return ""; }
+    return inFence ? "" : line;
+  }).join("\n");
+  // 行内代码同理；Markdown 图片的地址也不是“点开看看的网页”，摘掉后再扫。
+  const scan = visible
+    .replace(/`[^`\n]*`/g, "")
+    .replace(/!\[[^\]\n]*\]\(\s*https?:\/\/[^)\s]+\s*\)/g, "");
   const re = new RegExp(INLINE_RE.source, "g");
   let match: RegExpExecArray | null;
-  while ((match = re.exec(text)) !== null) {
+  while ((match = re.exec(scan)) !== null) {
     const token = match[0];
     if (token.startsWith("[")) {
       const parts = MD_LINK_RE.exec(token);
@@ -107,9 +119,28 @@ function inline(text: string, keyBase: string): ReactNode[] {
 export function renderMd(text: string): ReactNode {
   const lines = text.split("\n");
   const out: ReactNode[] = [];
+  // 围栏代码块整段原样放进 <pre>：以前只跳过 ``` 标记行、内容仍走 inline()，
+  // 代码里的 URL 会变成可点链接，**粗体** 之类也会被误当 Markdown 解析。
+  let fenceKey = "";
+  let fenceLines: string[] = [];
+  const flushFence = (): void => {
+    if (fenceLines.length > 0) {
+      out.push(<pre key={fenceKey} className="md-pre">{fenceLines.join("\n")}</pre>);
+    }
+    fenceKey = "";
+    fenceLines = [];
+  };
   lines.forEach((line, index) => {
-    if (/^\s*```/.test(line)) return; // 代码围栏标记本身不显示，内容按普通行走
     const key = `l${index}`;
+    if (/^\s*```/.test(line)) {
+      if (fenceKey === "") fenceKey = key;
+      else flushFence();
+      return;
+    }
+    if (fenceKey !== "") {
+      fenceLines.push(line);
+      return;
+    }
     const bullet = /^\s*[-*]\s+/.exec(line);
     const heading = /^\s*(#{1,4})\s+(.*)$/.exec(line);
     if (bullet) {
@@ -120,6 +151,7 @@ export function renderMd(text: string): ReactNode {
       out.push(<span key={key}>{inline(line, key)}{index < lines.length - 1 ? "\n" : ""}</span>);
     }
   });
+  if (fenceKey !== "") flushFence(); // 未闭合的围栏也按代码显示，别把后半段吞掉
   return out;
 }
 

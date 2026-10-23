@@ -208,7 +208,9 @@ export default function AppearanceSection({
       })
       .catch((e: Error) => {
         if (e instanceof dataTransferApi.DirectDownloadStarted) {
-          setTransferOk(e.message, 100);
+          // 直链下载的结果页面看不到：可能成功，也可能服务端/网络真失败。
+          // 所以只给提示、不拉满进度条，更不能显示成绿色“已导出”。
+          setTransferInfo(e.message);
           return;
         }
         setTransferError("导出失败：" + e.message);

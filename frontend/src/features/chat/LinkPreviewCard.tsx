@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink } from "lucide-react";
 import { linkPreviewApi, type LinkPreview } from "../../api";
+import { copyText } from "../../lib/clipboard";
 import { linkDomain } from "../../lib/md";
 import { openExternal } from "../../lib/open-external";
+import { useResizeSignal } from "../../hooks/useResizeSignal";
 
 type State =
   | { phase: "idle" | "loading" }
@@ -29,6 +31,7 @@ export default function LinkPreviewCard({ url }: { url: string }): JSX.Element |
     return hit ? { phase: "ready", data: hit } : { phase: "none" };
   });
   const [note, setNote] = useState("");
+  useResizeSignal(holderRef);
 
   useEffect(() => {
     let alive = true;
@@ -92,8 +95,8 @@ export default function LinkPreviewCard({ url }: { url: string }): JSX.Element |
     void (async () => {
       const result = await openExternal(url);
       if (result.ok) return;
-      let copied = false;
-      try { await navigator.clipboard.writeText(url); copied = true; } catch { copied = false; }
+      // http 局域网下没有 navigator.clipboard，走带 execCommand 兜底的 copyText。
+      const copied = (await copyText(url)) === "ok";
       setNote(`${result.error} · ${copied ? "链接已复制到剪贴板" : "请手动打开链接"}`);
     })();
   };

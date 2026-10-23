@@ -31,6 +31,10 @@ export function usePagedList<T>(
   insertAt: (index: number, row: T) => void;
 } {
   const { key, enabled = true } = opts;
+  // requestFirst 与 finally 里的补拍都要看 enabled；用 ref 是为了不让它们
+  // 因为闭包里的旧值绕过节流（enabled=false 的标签页不该发任何请求）。
+  const enabledRef = useRef(enabled);
+  enabledRef.current = enabled;
   // 页大小走「界面」tab 那个全局档位；没显式传就用它，改档时整表回到第一页。
   const pageSize = opts.pageSize ?? getListPageSize();
   const fetchRef = useRef(fetchPage);
@@ -79,8 +83,9 @@ export function usePagedList<T>(
           setBusy(false);
           setRefreshing(false);
         }
-        // 这一拍收尾时有待办（期间被 reset() 或换了条件）：补一拍，别把它丢了
-        if (needRef.current && inflightRef.current === 0) {
+        // 这一拍收尾时有待办（期间被 reset() 或换了条件）：补一拍，别把它丢了。
+        // 但标签页已经不活跃就只留着待办，等它重新 enabled 时由 effect 启动。
+        if (enabledRef.current && needRef.current && inflightRef.current === 0) {
           needRef.current = false;
           void loadRef.current("first");
         }
@@ -93,7 +98,8 @@ export function usePagedList<T>(
     seqRef.current += 1;          // 作废在飞的那一页，别让它在换条件后追加进来
     lenRef.current = 0;
     needRef.current = true;
-    if (inflightRef.current === 0) {
+    // 不活跃的标签页只记下待办：enabled 变 true 时由下面的 effect 启动。
+    if (enabledRef.current && inflightRef.current === 0) {
       needRef.current = false;
       void load("first");
     }

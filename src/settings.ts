@@ -294,7 +294,7 @@ export const CAPABILITY_LABELS: Record<CapabilityName, string> = {
 };
 
 /**
- * 每张能力卡自己存一组「端点档」（与「主模型接入」同构：一家供应商下面挂多个模型），
+ * 每张能力卡自己存一组「端点档」（与「主对话模型」同构：一家供应商下面挂多个模型），
  * 其中一份生效；一份都没启用就跟随主模型。
  * 能力档只关心"打哪个端点、用什么密钥、要哪个模型名"——mode / caps / 思考形态
  * 那些是聊天主模型的概念，套在能力上只会多出没人填的字段。
@@ -339,7 +339,7 @@ export type SettingsSnapshot = {
   providerNames: Record<string, string>;
   /**
    * 每张能力卡：可挑的档、哪一份在用（"" = 跟随主模型）、实际生效值。
-   * `linkedToMain` 为真时这批档**就是「主模型接入」那批**（界面上是一个下拉，
+   * `linkedToMain` 为真时这批档**就是「主对话模型」那批**（界面上是一个下拉，
    * 没有存/删端点档的入口）；为假时是这张卡自己存的端点档。
    */
   capabilities: Record<CapabilityName, {
@@ -817,13 +817,13 @@ function tidyProviderNames(): void {
 // ── 能力端点档（每张卡自己存一组「一家供应商 × 一个模型」）──────
 //
 // 四张卡同构：一份份档存着「打哪个端点、用什么密钥、要哪个模型名」，其中一份生效。
-// 记忆提取与整理是例外——它的候选就是「主模型接入」那批档（见 MAIN_LINKED_CAPABILITIES）。
+// 记忆提取与整理是例外——它的候选就是「主对话模型」那批档（见 MAIN_LINKED_CAPABILITIES）。
 
 /**
  * 这几张卡不自己存端点档，只从主模型档里点一份。
  *
  * 抽记忆是纯文本活，通常的做法是同一家下面再挂一个便宜模型，而那批档本来就存在
- * 「主模型接入」里；再存一份地址+密钥就是第二个真相源，而且删掉主模型那份档之后，
+ * 「主对话模型」里；再存一份地址+密钥就是第二个真相源，而且删掉主模型那份档之后，
  * 这边还会留着一条指向旧地址的私有档。所以这张卡存的**是主模型档的 id**，
  * 地址、密钥、模型名全部现读那一份。
  */
@@ -900,7 +900,7 @@ export function listCapabilityProfiles(
 /** 主模型档不是能力档：那张卡上不接受写端点档，界面上也不给这两个入口。 */
 function assertOwnsProfiles(name: CapabilityName): void {
   if (mainLinked(name)) {
-    throw new Error("这张卡的候选来自「主模型接入」，要加或删模型请到那一页去");
+    throw new Error("这张卡的候选来自「主对话模型」，要加或删模型请到那一页去");
   }
 }
 
@@ -952,7 +952,7 @@ export function activateCapabilityProfile(name: CapabilityName, id: string): voi
   const trimmed = id.trim();
   if (trimmed !== "" && !capProfilesOf(name).some((p) => p.id === trimmed)) {
     throw new Error(mainLinked(name)
-      ? "「主模型接入」里没有这份档（可能刚被删掉），先去那边存一份再选"
+      ? "「主对话模型」里没有这份档（可能刚被删掉），先去那边存一份再选"
       : "那份端点档不存在，可能已被删除");
   }
   kvSet(capActiveOf(name), trimmed);

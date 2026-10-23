@@ -49,7 +49,7 @@ export type FileCapCard = {
   activeLabel: string;
   profiles: FileCapProfile[];
   /**
-   * 这张卡的候选不自己存，就是「主模型接入」那批档里的一份（记忆提取）。
+   * 这张卡的候选不自己存，就是「主对话模型」那批档里的一份（记忆提取）。
    * 所以文件里只记档名、不重复导出那批档；导入时按档名指回本机新档。
    */
   fromMain?: boolean;
@@ -143,7 +143,7 @@ export function buildModelConfig(snap: SettingsSnapshot, withKeys: boolean): { f
       capabilities: caps,
       note: withKeys
         ? "本文件含 API 密钥：只放在自己机器上，别发到群里或云盘。"
-        : `本文件已剥掉 ${stripped} 处 API 密钥；导入后请在「主模型接入」里逐个补密钥。`,
+        : `本文件已剥掉 ${stripped} 处 API 密钥；导入后请在「主对话模型」里逐个补密钥。`,
     },
     stripped,
   };
@@ -175,7 +175,7 @@ export function parseModelConfig(raw: string): ModelConfigFile {
   try {
     data = JSON.parse(raw);
   } catch {
-    throw new Error("这不是一份 JSON——请选「设置 → 主模型接入 → 导出」存下来的那个 .json");
+    throw new Error("这不是一份 JSON——请选「设置 → 主对话模型 → 导出」存下来的那个 .json");
   }
   if (data === null || typeof data !== "object" || Array.isArray(data)) throw new Error("文件内容不是一个配置对象");
   const o = data as Record<string, unknown>;

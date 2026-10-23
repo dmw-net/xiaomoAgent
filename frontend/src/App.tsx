@@ -179,10 +179,10 @@ export default function App(): JSX.Element {
   const navigateTo = useCallback((key: ViewKey): void => {
     setProfile(null);
     if (key === "chat") setChatPage("list"); // 微信式：切到「对话」先回列表页
-    // Rail 图标进设置落在「我的资料」；「主模型接入」从状态页的跳转进入。
+    // Rail 图标进设置落在「我的资料」；「主对话模型」从状态页的跳转进入。
     if (key === "settings") setSettingsTab("owner");
     // 「展开高级参数」是 openModelSettings 的一次性意图，不是常驻状态。
-    // 不复位的话，此后每次进设置页点「主模型接入」都会不请自开编辑弹窗并抢焦点。
+    // 不复位的话，此后每次进设置页点「主对话模型」都会不请自开编辑弹窗并抢焦点。
     setSettingsAdvanced(false);
     navigate(key);
   }, [navigate]);
@@ -254,7 +254,7 @@ export default function App(): JSX.Element {
     navigate("settings");
   }, [navigate]);
 
-  /** 上下文提示里的「去设置」：进「主模型接入」并把高级参数展开——输入上限就藏在那里，
+  /** 上下文提示里的「去设置」：进「主对话模型」并把高级参数展开——输入上限就藏在那里，
    *  不展开等于把人领到门口又让他自己找门。 */
   const openModelSettings = useCallback((): void => {
     setSettingsTab("model");

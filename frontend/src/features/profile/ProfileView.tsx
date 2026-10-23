@@ -838,7 +838,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   empty={modelOptions.length === 0 ? "还没有存好的模型档" : undefined}
                   onChange={setModelProfile} />
                 {modelOptions.length === 0 && (
-                  <small className="pf-set-note">先去「设置 → 主模型接入」存一份模型档，这里才有得挑。</small>
+                  <small className="pf-set-note">先去「设置 → 主对话模型」存一份模型档，这里才有得挑。</small>
                 )}
               </div>
             </div>

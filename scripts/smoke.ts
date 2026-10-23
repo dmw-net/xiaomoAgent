@@ -437,12 +437,12 @@ try {
   });
   const readable = friendlyModelError(timeoutError, "turn-1");
   check("超时错误给出界面内的下一步",
-    readable.includes("模型名") && readable.includes("设置 → 主模型接入") && readable.includes("从接口拉取"),
+    readable.includes("模型名") && readable.includes("设置 → 模型与能力 → 主对话模型") && readable.includes("从接口拉取"),
     readable.slice(0, 60));
   check("提示了可重试", readable.includes("重试"));
   const authError = new ModelError({ code: "AUTH", message: "x", status: 401, elapsedMs: 10, url: "u", model: "m" });
   check("鉴权错误引导去设置页而不是 .env",
-    friendlyModelError(authError).includes("设置 → 主模型接入") && !friendlyModelError(authError).includes(".env"));
+    friendlyModelError(authError).includes("设置 → 模型与能力 → 主对话模型") && !friendlyModelError(authError).includes(".env"));
   // 这段文案会原样出现在聊天气泡里：桌面用户没有终端，任何 .env / npm / 接口路径都是死路。
   const leaky = (["TIMEOUT", "AUTH", "RATE_LIMIT", "MODEL_UNAVAILABLE", "ENDPOINT_NOT_FOUND", "NETWORK"] as const)
     .map((code) => friendlyModelError(new ModelError({
@@ -2446,7 +2446,7 @@ try {
     const cons = await (await fetch(`${BASE}/api/contacts/${c5}/consolidate`, { method: "POST" })).json();
     check("演示模式整理明确跳过", cons.ok === true && cons.skipped === true && cons.note.includes("演示模式"), cons.note);
 
-    // 记忆提取这张卡是只读的：唯一的操作是「单独启用」= 挑一份「主模型接入」里存好的档。
+    // 记忆提取这张卡是只读的：唯一的操作是「单独启用」= 挑一份「主对话模型」里存好的档。
     // 卡上不再有地址/密钥/模型名，所以手填值、候选档、整套档三条路都不能碰到它。
     const { capabilityExplicit } = await import("../src/settings.ts");
     const { callSettings: csMemory } = await import("../src/model.ts");
@@ -2463,7 +2463,7 @@ try {
       Object.keys(s0.capabilities).join(",")
       === "memoryExtract,imageVision,imageGeneration,speechToText,textToSpeech",
       Object.keys(s0.capabilities).join(","));
-    // 记忆提取这张卡的候选就是「主模型接入」那批档：它不存端点档，只指一份过去。
+    // 记忆提取这张卡的候选就是「主对话模型」那批档：它不存端点档，只指一份过去。
     const memProf = await jsonPost("/api/settings/profiles", {
       label: "记忆便宜档", mode: "openai", baseUrl: "https://api.lite.test/v1",
       apiKey: "sk-lite-test-key", name: "lite-mini", timeoutMs: 30000,
@@ -2489,7 +2489,7 @@ try {
     const memDelTry = await capPost({ capability: "memoryExtract", op: "delete", id: memProfId });
     check("这张卡不收端点档、也不许删主模型档（400，话说清去哪改）",
       memSave.status === 400 && memDelTry.status === 400
-      && String(memSave.b.error).includes("主模型接入") && String(memDelTry.b.error).includes("主模型接入"),
+      && String(memSave.b.error).includes("主对话模型") && String(memDelTry.b.error).includes("主对话模型"),
       `${memSave.b.error} / ${memDelTry.b.error}`);
     const memOff = await capJson({ capability: "memoryExtract", op: "activate", id: "" });
     check("改回跟随主模型：就绪与否跟着主力走",
@@ -2644,7 +2644,7 @@ try {
     check("不传素材就一个字都不出现", !stripped.includes("[生活线]") && !stripped.includes("[关系现状]"));
   }
 
-  // 一张能力卡存几份端点档、点档名切换：这是「能力配置」与「主模型接入」同构的全部含义。
+  // 一张能力卡存几份端点档、点档名切换：这是「能力配置」与「主对话模型」同构的全部含义。
   {
     const a = await capJson({ capability: "imageVision", op: "save", label: "A 家", baseUrl: "https://a.test/v1", apiKey: "k-a", name: "a-vl", voice: "nova" });
     const b = await capJson({ capability: "imageVision", op: "save", label: "B 家", baseUrl: "https://b.test/v1", apiKey: "k-b", name: "b-vl" });
@@ -3892,6 +3892,19 @@ try {
       "text/html",
     );
     check("HTTP 头没有 charset 时从 meta 嗅探", metaCharset.includes("中"), JSON.stringify(metaCharset));
+
+    // 0 在配置里有明确语义，不能被 int() 当成“没配”。
+    const { execFileSync } = await import("node:child_process");
+    const zeroDays = execFileSync(
+      process.execPath,
+      ["-e", "import('./src/config.ts').then((m) => process.stdout.write(String(m.config.consolidateIntervalDays)))"],
+      { env: { ...process.env, CONSOLIDATE_INTERVAL_DAYS: "0" }, encoding: "utf8" },
+    ).trim();
+    check("CONSOLIDATE_INTERVAL_DAYS=0 真的能关闭后台整理", zeroDays === "0", zeroDays);
+    const { sniffImageMime } = await import("../src/media.ts");
+    check("图片魔数识别 PNG / JPEG",
+      sniffImageMime(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])) === "image/png"
+      && sniffImageMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0])) === "image/jpeg");
 
     check("相关性：整词命中给满分", relevance("玛奇玛（漫画《链锯人》中的角色）", "玛奇玛") === 1);
     check("相关性：兜底推荐零分（乱码词的 NASA/梗图就是这样被丢掉的）",

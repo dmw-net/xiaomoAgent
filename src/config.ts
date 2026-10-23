@@ -18,6 +18,17 @@ function int(key: string, fallback: number): number {
   return Number.isInteger(n) && n > 0 ? n : fallback;
 }
 
+/**
+ * 非负整数：0 有明确语义的配置项用它，别让 int() 把 0 当成“没配”换成默认值。
+ * 目前只有 CONSOLIDATE_INTERVAL_DAYS（0 = 关闭后台整理）。
+ */
+function uint(key: string, fallback: number): number {
+  const raw = process.env[key];
+  if (raw === undefined || raw.trim() === "") return fallback;
+  const n = Number(raw);
+  return Number.isInteger(n) && n >= 0 ? n : fallback;
+}
+
 function bool(key: string, fallback: boolean): boolean {
   const v = process.env[key];
   if (v === undefined || v === "") return fallback;
@@ -86,7 +97,8 @@ export const config = Object.freeze({
   devMode: bool("DEV_MODE", false),
   port: portOrZero("PORT", 8787),
   /** 监听地址。默认只绑本机回环——密钥和聊天记录都在这台机器上。
-   *  确实要让手机局域网访问再显式设 HOST=0.0.0.0，并自行理解暴露面。 */
+   *  确实要让手机局域网访问再显式设 HOST=0.0.0.0，并自行理解暴露面。
+   *  非回环绑定启动时会自动生成访问码；应用内开关是更推荐的入口。 */
   host: str("HOST", "127.0.0.1"),
   /**
    * 公网穿透（自建或第三方的隧道服务）显式信任的主机名清单，逗号分隔、大小写不敏感。
@@ -119,7 +131,7 @@ export const config = Object.freeze({
   desktopConfigFile: str("DESKTOP_CONFIG"),
   characterName: str("CHARACTER_NAME", "小茉"),
   ownerName: str("OWNER_NAME", ""),
-  /** 回放最近多少【轮】对话（一问一答算一轮）。运行期可在应用内覆盖（设置 → 主模型接入 → 对话上下文）。 */
+  /** 回放最近多少【轮】对话（一问一答算一轮）。运行期可在应用内覆盖（设置 → 模型与能力 → 主对话模型 → 对话上下文）。 */
   recentTurnsInContext: int("RECENT_TURNS_IN_CONTEXT", 6),
   recallLimit: int("RECALL_LIMIT", 6),
   model: Object.freeze({
@@ -140,7 +152,7 @@ export const config = Object.freeze({
     dailyLimit: Math.min(10, Math.max(1, int("PROACTIVE_DAILY_LIMIT", 1))),
   }),
   /** 记忆整理（合并/过期/生活线/温度计）的最小间隔天数；0 = 关闭后台整理。 */
-  consolidateIntervalDays: Math.min(90, Math.max(0, int("CONSOLIDATE_INTERVAL_DAYS", 7))),
+  consolidateIntervalDays: Math.min(90, uint("CONSOLIDATE_INTERVAL_DAYS", 7)),
 });
 
 /**

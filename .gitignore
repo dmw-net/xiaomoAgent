@@ -27,6 +27,10 @@ src-tauri/binaries/
 # 历史归档：重写前的完整 git 历史（bundle）。**只留本地**，
 # 里面有派生代码，见 _legacy/README.md —— 绝不能被提交/推送。
 _legacy/
+# 本地视频/推广素材与 graft 索引缓存（体积大，不入库）
+video/
+graft/
+
 # 本地 AI 工具目录
 .claude/
 .agnes/

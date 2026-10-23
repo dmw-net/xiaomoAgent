@@ -141,7 +141,7 @@ function ModelStep({ onSaved }: { onSaved: (next: SettingsSnapshot) => void }): 
   return (
     <form className="onb-body" onSubmit={save}>
       <h3>接入一个模型</h3>
-      <p>选一家服务、填上密钥，联系人就能回话了；之后随时能在「设置 → 主模型接入」改，也能在同一家里再加模型。</p>
+      <p>选一家服务、填上密钥，联系人就能回话了；之后随时能在「设置 → 主对话模型」改，也能在同一家里再加模型。</p>
       <div className="onb-chips">
         {CHAT_PRESETS.map((p) => (
           <button key={p.label} type="button" className="preset"

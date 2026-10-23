@@ -133,6 +133,8 @@ export default function LinkPreviewCard({ url }: { url: string }): JSX.Element |
   if (state.phase === "none") return null;
   const data = state.phase === "ready" ? state.data : null;
   const domain = data?.domain || linkDomain(url);
+  // og:site_name 有就显示站点名（比裸域名更像“这是什么站”），没有就回退域名。
+  const site = data?.siteName || domain;
   const title = data?.title || (state.phase === "loading" ? "正在读取链接…" : domain);
 
   const open = (event: React.MouseEvent<HTMLAnchorElement>): void => {
@@ -159,7 +161,7 @@ export default function LinkPreviewCard({ url }: { url: string }): JSX.Element |
         <span className="link-card-main">
           <span className="link-card-title">{title}</span>
           {data?.description ? <span className="link-card-desc">{data.description}</span> : null}
-          <span className="link-card-domain">{domain}</span>
+          <span className="link-card-domain">{site}</span>
         </span>
         <ExternalLink className="link-card-ext" size={14} strokeWidth={1.8} aria-hidden="true" />
       </a>

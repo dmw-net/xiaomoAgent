@@ -8,9 +8,6 @@
   "engines": {
     "node": ">=22.18"
   },
-  "config": {
-    "xiaomoPassFile": "D:\\xiaomo-key-backup\\xiaomo-pass.tmp"
-  },
   "scripts": {
     "help": "node scripts/help.mjs",
     "ver": "node scripts/version.mjs",

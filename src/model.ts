@@ -1033,21 +1033,21 @@ export function friendlyModelError(error: unknown, turnId?: string | null): stri
   }
   switch (error.code) {
     case "TIMEOUT":
-      return `请求超时（等了 ${(error.elapsedMs / 1000).toFixed(0)} 秒）。最常见的原因是模型名「${error.model}」在这家没有可用渠道——有的服务商会让请求一直挂着而不报错。到「设置 → 主模型接入」编辑这套配置，点模型名旁的「从接口拉取」换一个真实存在的名字。${retryHint}`;
+      return `请求超时（等了 ${(error.elapsedMs / 1000).toFixed(0)} 秒）。最常见的原因是模型名「${error.model}」在这家没有可用渠道——有的服务商会让请求一直挂着而不报错。到「设置 → 模型与能力 → 主对话模型」编辑这套配置，点模型名旁的「从接口拉取」换一个真实存在的名字。${retryHint}`;
     case "AUTH":
-      return `鉴权失败（HTTP ${error.status}）：API Key 无效或额度用尽。到「设置 → 主模型接入」编辑这套配置核对密钥；额度去服务商控制台看。`;
+      return `鉴权失败（HTTP ${error.status}）：API Key 无效或额度用尽。到「设置 → 模型与能力 → 主对话模型」编辑这套配置核对密钥；额度去服务商控制台看。`;
     case "RATE_LIMIT":
       return `被限流（HTTP 429）：${error.bodyExcerpt.slice(0, 100)} 稍后重试，或换一个额度更宽松的模型。${retryHint}`;
     case "MODEL_UNAVAILABLE":
-      return `模型「${error.model}」在这家不可用：${error.bodyExcerpt.slice(0, 100)} 到「设置 → 主模型接入」编辑这套配置，点「从接口拉取」改用列表里存在的名字。${retryHint}`;
+      return `模型「${error.model}」在这家不可用：${error.bodyExcerpt.slice(0, 100)} 到「设置 → 模型与能力 → 主对话模型」编辑这套配置，点「从接口拉取」改用列表里存在的名字。${retryHint}`;
     case "ENDPOINT_NOT_FOUND":
-      return `接口地址不对（HTTP 404）：${error.url} 到「设置 → 主模型接入」编辑这套配置的接口地址（很多服务要带 /v1 前缀）。`;
+      return `接口地址不对（HTTP 404）：${error.url} 到「设置 → 模型与能力 → 主对话模型」编辑这套配置的接口地址（很多服务要带 /v1 前缀）。`;
     case "BAD_REQUEST":
       return `请求参数被拒绝（HTTP 400）：${error.bodyExcerpt.slice(0, 120)}`;
     case "CONTEXT_OVERFLOW":
-      return `这轮要发的内容超出了模型「${error.model}」的上下文窗口，少带几轮历史后仍然装不下。到「设置 → 主模型接入」把这档的「输入上限」填准（留空时按 32K 保守估算），或调小「回放轮数」、换更大窗口的模型。${retryHint}`;
+      return `这轮要发的内容超出了模型「${error.model}」的上下文窗口，少带几轮历史后仍然装不下。到「设置 → 模型与能力 → 主对话模型」把这档的「输入上限」填准（留空时按 32K 保守估算），或调小「回放轮数」、换更大窗口的模型。${retryHint}`;
     case "NETWORK":
-      return `网络不通：${error.causeDetail || error.message} 国内直连部分海外服务会超时。到「设置 → 主模型接入」换一家国内可访问的服务商，或把接口地址指向你自己的代理。`;
+      return `网络不通：${error.causeDetail || error.message} 国内直连部分海外服务会超时。到「设置 → 模型与能力 → 主对话模型」换一家国内可访问的服务商，或把接口地址指向你自己的代理。`;
     case "EMPTY_RESPONSE":
       return `模型返回空内容（HTTP ${error.status}）：可能被内容策略拦了，换个说法再试。${retryHint}`;
     default:
@@ -1582,5 +1582,5 @@ function echo(messages: ChatMessage[], options: CallOptions): string {
     return JSON.stringify({ should: false, reason: "echo 模式不主动打扰" });
   }
   const preview = lastUser.length > 40 ? `${lastUser.slice(0, 40)}…` : lastUser;
-  return `（演示模式）我收到你说的「${preview}」了，这会儿还没接上真实模型——到「设置 → 主模型接入」添加并启用一套模型，我就能真的回你了。`;
+  return `（演示模式）我收到你说的「${preview}」了，这会儿还没接上真实模型——到「设置 → 模型与能力 → 主对话模型」添加并启用一套模型，我就能真的回你了。`;
 }

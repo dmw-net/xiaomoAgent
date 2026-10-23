@@ -32,7 +32,8 @@ export function setClockPref(v: ClockPref): void {
 const ACCENT_KEY = "xiaomo.accent";
 
 /** 强调色（#rrggbb；空串 = 内置默认色，见 legacy.css 的 --accent）。
- *  真正的应用在 index.html 的主题引导脚本里。 */export function getAccent(): string {
+ *  真正的应用在 index.html 的主题引导脚本里。 */
+export function getAccent(): string {
   try {
     const v = localStorage.getItem(ACCENT_KEY) || "";
     return /^#[0-9a-fA-F]{6}$/.test(v) ? v : "";

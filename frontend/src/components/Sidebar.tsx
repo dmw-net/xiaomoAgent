@@ -84,7 +84,13 @@ export default function Sidebar({ current, onPick, onLeaveCurrent, onContactsCha
   // 前台每 10 秒整份重拉一次且 no-store），本地那份 identity 也随之没有了。
   useEffect(() => {
     const q = query.trim();
-    if (q === "") { setSearchHits(null); return; }
+    if (q === "") {
+      // 清空输入也要作废在飞的旧查询：否则它回来时 seq 仍然匹配，
+      // 会把上一个关键词的结果写回 searchHits，列表显示与输入框对不上。
+      listSeq.current += 1;
+      setSearchHits(null);
+      return;
+    }
     const seq = ++listSeq.current;
     const timer = setTimeout(() => {
       void contactsApi.fetchContacts(q)

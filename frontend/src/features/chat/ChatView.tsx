@@ -147,7 +147,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   onEditProfile?: () => void;
   /** 打开联系人资料页的记忆 / 主动性分区（「⋯」菜单与空态链接）。 */
   onOpenSection?: (page: "memory" | "proactive") => void;
-  /** 上下文提示里的「去设置」：跳到设置页的「主模型接入」并展开高级参数。 */
+  /** 上下文提示里的「去设置」：跳到设置页的「主对话模型」并展开高级参数。 */
   onOpenModelSettings?: () => void;
   /** 空态清单上的「继续设置」：打开首次设置弹窗。 */
   onOpenOnboarding?: () => void;

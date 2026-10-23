@@ -20,7 +20,7 @@ export default function PickList({ value, options, onChange, label, width = 264,
   /** 给读屏用；可见的标题由外层那条 label 提供 */
   label: string;
   width?: number;
-  /** 列表为空时顶上摆一行提示（比如「先去主模型接入存一份」） */
+  /** 列表为空时顶上摆一行提示（比如「先去主对话模型存一份」） */
   empty?: ReactNode;
   disabled?: boolean;
 }): JSX.Element {

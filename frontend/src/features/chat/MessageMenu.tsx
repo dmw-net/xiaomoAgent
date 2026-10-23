@@ -1,4 +1,4 @@
-import { useLayoutEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { copyText } from "../../lib/clipboard";
 import type { MessageRow } from "../../types";
@@ -29,6 +29,16 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
   const ref = useRef<HTMLDivElement>(null);
   const m = menu.m;
   const close = (): void => setMenu(null);
+
+  /**
+   * 键盘路径：Enter 打开菜单后必须把焦点送进来，否则 Tab 会直接走到输入框，
+   * 菜单里的按钮对键盘用户等于不存在。关闭时把焦点还给打开前的那一行。
+   */
+  useEffect(() => {
+    const back = document.activeElement as HTMLElement | null;
+    ref.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus({ preventScroll: true });
+    return () => { back?.focus?.({ preventScroll: true }); };
+  }, []);
 
   // 贴边时收回视口内；优先悬在气泡上方，放不下就翻到下方，箭头始终指向气泡中心。
   useLayoutEffect(() => {
@@ -64,8 +74,18 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
     el.classList.toggle("below", below);
   }, [menu]);
 
+  const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
+    if (e.key !== "Tab") return;
+    const items = [...(ref.current?.querySelectorAll<HTMLElement>("button:not([disabled])") ?? [])];
+    if (items.length === 0) return;
+    const first = items[0]!;
+    const last = items[items.length - 1]!;
+    if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus({ preventScroll: true }); }
+    else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus({ preventScroll: true }); }
+  };
+
   const item = (label: string, hint: string, cls: string | null, fn: () => void): JSX.Element => (
-    <button type="button" className={cls ?? ""} title={hint} onClick={(e) => { e.stopPropagation(); fn(); }}>
+    <button type="button" role="menuitem" className={cls ?? ""} title={hint} onClick={(e) => { e.stopPropagation(); fn(); }}>
       <span className="lb">{label}</span>
       <span className="nt">{hint}</span>
     </button>
@@ -112,7 +132,8 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
   // 必须挂在 body 上：祖先一旦带 transform（助手弹窗就带），position:fixed 会改成
   // 相对那个祖先定位，坐标整体偏半个弹窗，还被它的 overflow:hidden 裁掉。
   return createPortal(
-    <div className="msgmenu dark" ref={ref} style={{ left: menu.x, top: menu.y }} data-keep-menu>
+    <div className="msgmenu dark" ref={ref} style={{ left: menu.x, top: menu.y }} data-keep-menu
+      role="menu" aria-label="消息操作" onKeyDown={onKeyDown}>
       <span className="mm-arrow" aria-hidden="true" />
       {body}
     </div>,

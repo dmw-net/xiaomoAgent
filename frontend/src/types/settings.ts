@@ -54,7 +54,7 @@ export type ProfileItem = {
 
 export type CapabilityName = "memoryExtract" | "imageVision" | "imageGeneration" | "speechToText" | "textToSpeech";
 
-/** 一张能力卡上的一份端点档：与「主模型接入」的档同构，只是字段少（没有 mode/思考形态）。 */
+/** 一张能力卡上的一份端点档：与「主对话模型」的档同构，只是字段少（没有 mode/思考形态）。 */
 export type CapabilityEndpoint = {
   id: string;
   label: string;
@@ -68,7 +68,7 @@ export type CapabilityEndpoint = {
 
 /**
  * 一张能力卡：可挑的档、在用哪一份（"" = 跟随主模型）、实际生效值。
- * `linkedToMain` 为真时 profiles 就是「主模型接入」那批档，界面上只有下拉可挑。
+ * `linkedToMain` 为真时 profiles 就是「主对话模型」那批档，界面上只有下拉可挑。
  */
 export type CapabilityConfig = {
   profiles: CapabilityEndpoint[];

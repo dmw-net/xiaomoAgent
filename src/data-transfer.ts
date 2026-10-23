@@ -259,6 +259,9 @@ function safeArchivePath(raw: string, isDir = false): string {
   if (raw.includes("\\") || raw.includes("\0")) throw new Error("备份含非法路径");
   // 标准 `tar czf` 会给路径加 `./` 前缀；用户在解包目录里重新打包时很常见。
   const path = raw.replace(/^\/+/, "").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
+  // `tar czf ... .` 会在最前面写一个 `./` 根目录条目。目录可以落在解包根上；
+  // 文件不行（那意味着一个没有名字的文件），所以只对 type=5 放行。
+  if ((path === "" || path === ".") && isDir) return "";
   if (path === "" || path === "." || path === ".." || path.split("/").includes("..")) {
     throw new Error("备份含非法路径");
   }

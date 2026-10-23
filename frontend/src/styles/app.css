@@ -443,7 +443,7 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   height: 2px; border-radius: var(--radius-full); background: var(--accent);
 }
 
-/* 窄屏一级标签：保持单行横向滚动，不能为了塞下而把「主模型接入」压成竖排。 */
+/* 窄屏一级标签：保持单行横向滚动，不能为了塞下而把「主对话模型」压成竖排。 */
 @media (max-width: 760px), (max-height: 520px) {
   .seg { width: 100%; margin-bottom: var(--space-6); }
 }

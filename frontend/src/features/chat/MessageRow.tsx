@@ -1,4 +1,4 @@
-import { memo, type CSSProperties } from "react";
+import { memo, useMemo, type CSSProperties } from "react";
 import { Brain, Volume2, Loader2 } from "lucide-react";
 import Avatar from "../../components/Avatar";
 import { useLongPress } from "../../hooks/useLongPress";
@@ -61,7 +61,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   }
 
   const imgs = m.attachments ?? [];
-  const previewUrl = m.text ? findFirstExternalUrl(m.text) : "";
+  // 一次渲染只在 text 变化时重扫；长回复里正则扫描不该跟着 TTS/主题等无关 props 重跑。
+  const previewUrl = useMemo(() => (m.text ? findFirstExternalUrl(m.text) : ""), [m.text]);
   /**
    * 思考过程：折叠在气泡顶部，默认收起（历史里 reasoning 是独立块 + 前 80 字预览）。
    * 用原生 details：键盘可达、移动端零 JS，展开才占地方。

@@ -753,12 +753,15 @@ export function contextUsage(contactId: string): ContextUsage {
 /** 工具卡的一句摘要：按工具给用户能看懂的话，而不是甩 JSON。 */
 export function toolSummary(name: string, result: unknown): string {
   if (name === "get_current_time") {
-    const r = result as { iso?: string } | null;
-    return r?.iso ? r.iso.slice(0, 16).replace("T", " ") : "查了当前时间";
+    // 工具返回的是 text（完整的一句「日期 周几 时分；现在是…」），没有 iso 字段。
+    const r = result as { text?: string } | null;
+    const clock = typeof r?.text === "string" ? r.text.split("；")[0]?.trim() ?? "" : "";
+    return clock !== "" ? clock : "查了当前时间";
   }
   if (name === "search_memory") {
-    const r = result as { results?: unknown[] } | null;
-    const n = Array.isArray(r?.results) ? r!.results!.length : 0;
+    // 记忆检索返回的是 events（不是 results），以前读错字段导致永远显示「没找到」。
+    const r = result as { events?: unknown[] } | null;
+    const n = Array.isArray(r?.events) ? r!.events!.length : 0;
     return n > 0 ? `想起了 ${n} 条相关的事` : "翻了翻，没找到相关的";
   }
   if (name === "schedule_reminder") {
@@ -776,8 +779,14 @@ export function toolSummary(name: string, result: unknown): string {
   }
   if (name === "app_status") return "读取了应用当前配置状态";
   if (name === "configure_model" || name === "activate_model") {
-    const r = result as { ok?: boolean; label?: string; activated?: boolean; error?: string } | null;
-    return r?.ok ? (name === "configure_model" ? `已${r.activated ? "保存并启用" : "保存"}模型「${r.label}」` : `已启用模型「${r.activated === false ? "" : (r.label ?? "")}」`) : `失败：${r?.error ?? "未知原因"}`;
+    // configure_model 回 {label, activated:boolean}；activate_model 回 {activated:"档名"}——
+    // 两个工具的形状不同，以前按同一套字段读，切模型那张卡会显示「已启用模型「」」。
+    const r = result as { ok?: boolean; label?: string; activated?: boolean | string; error?: string } | null;
+    if (!r?.ok) return `失败：${r?.error ?? "未知原因"}`;
+    const label = r.label ?? (typeof r.activated === "string" ? r.activated : "");
+    return name === "configure_model"
+      ? `已${r.activated === true ? "保存并启用" : "保存"}模型「${label}」`
+      : `已启用模型「${label}」`;
   }
   if (name === "create_contact" || name === "update_contact" || name === "bind_contact_model") {
     const r = result as { ok?: boolean; name?: string; contact?: string; bound?: string | null; error?: string } | null;
@@ -838,7 +847,8 @@ export function toolDetail(name: string, result: unknown): string {
     const body = String(r.content ?? "").slice(0, 1200);
     text = [`技能：${String(r.name ?? "")}`, `说明：${String(r.description ?? "")}`, "", body].join("\n");
   } else if (name === "search_memory") {
-    const hits = Array.isArray(r.results) ? (r.results as Array<Record<string, unknown>>) : [];
+    // 与 toolSummary 同一处坑：记忆检索的结果字段叫 events。
+    const hits = Array.isArray(r.events) ? (r.events as Array<Record<string, unknown>>) : [];
     text = hits.slice(0, 10).map((h) => `- ${String(h.content ?? "")}`).join("\n");
   } else {
     return ""; // 其余工具（时间/出图/配置类）摘要已够，不额外给详情
@@ -1068,10 +1078,15 @@ async function runAgentLoop(
       }
     }
 
-    // 轮数用尽仍没给最终回复：去掉工具消息强制它收口（本轮结论已在循环消息里，丢弃重生成太浪费）
-    const compact = messages.filter((m) => m.role !== "tool" && m.tool_calls === undefined);
-    const final = await guardOverflow(compact, () => callModel(compact, options));
-    return final;
+    // 轮数用尽仍没给最终回复：保留全部工具消息，只追加一句收口指令。
+    // 以前这里把 role='tool' 和带 tool_calls 的 assistant 消息一起过滤掉，剩下的就是 base——
+    // 等于让她把刚查到的资料全忘掉、重新回答原问题，多轮搜索白做。
+    // 不再传 tools（callModel 本来就不带），所以保留工具历史也不会触发新一轮调用。
+    messages.push({
+      role: "user",
+      content: "（本轮工具调用次数已经用完。请直接根据上面已经拿到的结果回答我，不要再调用工具，也不要说自己没查到。）",
+    });
+    return await guardOverflow(messages, () => callModel(messages, options));
   } catch (error) {
     // 端点不支持 tools：回退为无工具单次生成（callModelWithTools 已置降级标记）。
     // 超长不算"不支持"——换成无工具请求照样超长，只会把一条能看懂的报错变成看不懂的。
@@ -1259,8 +1274,14 @@ export async function respondToTurn(
      * 所以这里沿用它第一个气泡那一行的 id 把整条写回去、多余的分条气泡删掉。
      * 代价是这一种重答不分条——故意的重答旧消息，不需要打字节奏。
      */
+    /**
+     * 只找真正的对话气泡，不能把工具卡算进来：同一轮的工具卡也是 role='assistant'，
+     * 而且先于最终回复落库。以前这里只看 role，于是重答「用过工具的旧轮」会把回复
+     * UPDATE 进第一张工具卡（kind 仍是 tool），真正的对话行反而被删掉——
+     * 界面看到一张坏掉的工具卡，上下文里也找不到这条回复。
+     */
     const collapseIntoId = opts.isRetry && opts.collapseReply
-      ? ((db.prepare(`SELECT id FROM messages WHERE turn_id = ? AND role = 'assistant' ORDER BY id ASC LIMIT 1`)
+      ? ((db.prepare(`SELECT id FROM messages WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC LIMIT 1`)
         .get(turn.id) as { id: number } | undefined)?.id ?? null)
       : null;
     if (opts.isRetry) {

@@ -1625,6 +1625,16 @@ try {
     agentMod.toolDetail("web_fetch", { title: "页面A", url: "https://a", content: "正文内容XYZ" }).includes("正文内容XYZ"));
   check("toolDetail 对无细节工具返回空串（卡片不可点）",
     agentMod.toolDetail("get_current_time", { iso: "2026-01-01T00:00:00" }) === "");
+  // 摘要/详情必须按工具真正返回的字段读：记忆检索是 events、当前时间是 text、
+  // 切模型把档名放在 activated 里（configure_model 才是 label+activated:boolean）。
+  check("toolSummary 记忆检索读 events 而不是 results",
+    agentMod.toolSummary("search_memory", { events: [{ content: "A" }, { content: "B" }], total: 2 }) === "想起了 2 条相关的事");
+  check("toolDetail 记忆检索读 events",
+    agentMod.toolDetail("search_memory", { events: [{ content: "胃不好" }], total: 1 }).includes("胃不好"));
+  check("toolSummary 当前时间读 text",
+    agentMod.toolSummary("get_current_time", { text: "2026-10-23 周五 16:30；现在是下午", weekday: "周五" }).startsWith("2026-10-23 周五 16:30"));
+  check("toolSummary 切模型读 activated 里的档名",
+    agentMod.toolSummary("activate_model", { ok: true, activated: "DeepSeek-V4", note: "已启用" }) === "已启用模型「DeepSeek-V4」");
   // 图片搜索那条链：候选图挂在**工具卡**上（不是当成她的回复发出去），编号与界面那排一一对应。
   check("toolDetail 图片搜索带序号（对得上界面上那排候选图）",
     agentMod.toolDetail("web_search", {

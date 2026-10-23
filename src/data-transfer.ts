@@ -31,7 +31,7 @@ import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip, type Gzip } from "node:zlib";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { config } from "./config.ts";
-import { db } from "./db.ts";
+import { db, reopenDb } from "./db.ts";
 import { mediaDir } from "./media.ts";
 import { skillsDir } from "./skills.ts";
 
@@ -255,15 +255,19 @@ function octalString(buf: Buffer, offset: number, len: number): number {
   return parseInt(raw, 8);
 }
 
-function safeArchivePath(raw: string): string {
+function safeArchivePath(raw: string, isDir = false): string {
   if (raw.includes("\\") || raw.includes("\0")) throw new Error("备份含非法路径");
-  const path = raw.replace(/^\/+/, "").replace(/\/+$/, "");
+  // 标准 `tar czf` 会给路径加 `./` 前缀；用户在解包目录里重新打包时很常见。
+  const path = raw.replace(/^\/+/, "").replace(/^(?:\.\/)+/, "").replace(/\/+$/, "");
   if (path === "" || path === "." || path === ".." || path.split("/").includes("..")) {
     throw new Error("备份含非法路径");
   }
   const normalized = path.split("/").filter(Boolean).join("/");
   const allowed = normalized === "manifest.json" || normalized === DB_ENTRY
-    || normalized.startsWith("media/") || normalized.startsWith("skills/");
+    || normalized.startsWith("media/") || normalized.startsWith("skills/")
+    // 标准 tar 会写目录条目（type=5）：顶层 `media/`、`skills/` 归一化后没有斜杠，
+    // 以前会被文件白名单拒掉，导致“重新打包过的合法备份”整包导入失败。
+    || (isDir && (normalized === "media" || normalized === "skills"));
   if (!allowed) throw new Error(`备份含不在允许范围内的文件：${normalized}`);
   return normalized;
 }
@@ -306,7 +310,7 @@ async function extractTarGzip(request: IncomingMessage, stage: string): Promise<
       let name = header.toString("utf8", 0, 100).replace(/\0.*$/s, "");
       const prefix = header.toString("utf8", 345, 500).replace(/\0.*$/s, "");
       if (prefix) name = `${prefix}/${name}`;
-      const path = safeArchivePath(name);
+      const path = safeArchivePath(name, type === "5");
       const size = octalString(header, 124, 12);
       uncompressed += BLOCK + size;
       if (uncompressed > MAX_UNCOMPRESSED_BYTES) throw new Error("备份解压后体积超过 8GB 上限");
@@ -421,6 +425,14 @@ function replaceWithStaged(stage: string): void {
     rmSync(`${activeDb}-wal`, { force: true });
     rmSync(`${activeDb}-shm`, { force: true });
   } catch (error) {
+    // 上面的 db.close() 已经执行；无论文件回滚是否成功，都必须把连接重新打开。
+    // 否则进程带着 closed 句柄继续服务，之后每个接口都是 "database is not open"，
+    // 而这里只回一句“旧数据保留”，用户根本不知道要重启。
+    try {
+      reopenDb();
+    } catch (reopenError) {
+      console.error("[import] 回滚后重新打开数据库失败：", reopenError instanceof Error ? reopenError.message : String(reopenError));
+    }
     throw new Error(`导入替换失败：${error instanceof Error ? error.message : String(error)}。旧数据保留在 *${oldSuffix} 文件/目录旁`);
   }
 }

@@ -138,6 +138,10 @@ server.listen(lan.effectivePort(), lan.bindHost(), () => {
 
   console.log("──────────────────────────────────────────");
   console.log(`  ${personaConfig().character.name} 已启动`);
+  // 用 .env 的 HOST 直接绑到非回环地址时，应用内开关可能从未打开过，访问码也就还没生成。
+  // 不补这一下，手机能连到端口却永远过不了登录接口（expect === "" 必拒），
+  // 文档里那条“改 HOST=0.0.0.0 就能用手机访问”就是假的。
+  if (!lan.isLoopbackBind() && lan.lanCode() === "") lan.ensureCode();
   const lanUrls = lan.lanUrls(port);
   console.log(`  地址：http://127.0.0.1:${port}`);
   if (!lan.isLoopbackBind()) {

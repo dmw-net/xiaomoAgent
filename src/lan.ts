@@ -131,7 +131,16 @@ export function setPort(value: number): { ok: boolean; error: string } {
 // 而 Host 守卫只认「本机地址」，于是隧道域名会被 403 挡掉——所以要让用户把自己那个域名填进来。
 // 只在白名单里的域名才放行，是防 DNS rebinding 的那道门，不能改成「全都放行」。
 
-const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+(:d{1,5})?$/;
+const HOST_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$/;
+
+/**
+ * 用户常从地址栏直接粘 `host:port`。Host 头在比较前已经剥掉端口（hostnameOfHostHeader），
+ * 所以存下来的也必须是裸主机名；这里统一剥掉端口再校验/去重。
+ * （旧正则写成 `(:d{1,5})?`，字面量 `:d`，带端口的域名会被拒，是另一个坑。）
+ */
+function normalizeHost(raw: string): string {
+  return String(raw).trim().toLowerCase().replace(/:\d{1,5}$/, "");
+}
 
 export function tunnelHosts(): string[] {
   const raw = kvGet(KV_TUNNEL);
@@ -139,14 +148,14 @@ export function tunnelHosts(): string[] {
   try {
     const parsed = JSON.parse(raw) as unknown;
     if (!Array.isArray(parsed)) return [];
-    return parsed.map((item) => String(item).trim().toLowerCase()).filter((item) => item !== "");
+    return parsed.map((item) => normalizeHost(String(item))).filter((item) => item !== "");
   } catch {
     return [];
   }
 }
 
 export function setTunnelHosts(input: string[]): { ok: boolean; error: string; hosts: string[] } {
-  const hosts = [...new Set(input.map((item) => String(item).trim().toLowerCase()).filter((item) => item !== ""))];
+  const hosts = [...new Set(input.map((item) => normalizeHost(String(item))).filter((item) => item !== ""))];
   for (const host of hosts) {
     if (!HOST_RE.test(host)) return { ok: false, error: `这个域名看着不对：${host}`, hosts: tunnelHosts() };
   }
@@ -159,7 +168,8 @@ export function setTunnelHosts(input: string[]): { ok: boolean; error: string; h
 /** 显式信任的域名：配置文件里那份（TRUSTED_HOSTS）仍然有效，两边取并集。 */
 export function isTrustedHost(host: string): boolean {
   if (host === "") return false;
-  return config.trustedHosts.includes(host) || tunnelHosts().includes(host);
+  // 环境变量里的白名单也按同一口径归一化，允许写成 `xiaomo.example.com:443`。
+  return config.trustedHosts.some((item) => normalizeHost(item) === host) || tunnelHosts().includes(host);
 }
 
 /** 需要一个访问码（局域网或隧道要用）时调用：没有就现生成一个返回。 */

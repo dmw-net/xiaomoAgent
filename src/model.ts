@@ -26,7 +26,7 @@ import { db } from "./db.ts";
 import { beginModelCall, endModelCall, logModelCall } from "./logs.ts";
 import { isPrivateAddress } from "./web.ts";
 import { isIP } from "node:net";
-import { MAX_IMAGE_BYTES, mediaDataUrl, saveImage } from "./media.ts";
+import { MAX_IMAGE_BYTES, mediaDataUrl, saveImage, sniffImageMime } from "./media.ts";
 
 /** OpenAI 兼容的多模态内容块：文本 + dataURL 图片（服务商普遍接受 base64 data URL）。 */
 export type MessageContentPart =
@@ -1535,7 +1535,9 @@ export async function generateImage(
       logModelCall({ turnId: ctx.turnId ?? null, purpose: "imageGen", ok: false, code: error.code, status: response.status, model: cap.model, url, elapsedMs, message: `${error.message}（${meta}）`, detail: raw.slice(0, 300), resFull: redactImageResponse(raw), requestBody: body, contactId: ctx.contactId ?? null });
       throw error;
     }
-    const saved = saveImage(buffer, "image/png");
+    // 服务商走 data[0].url 时可能回 JPEG/WebP；一律按 PNG 存会让文件扩展名、
+    // Content-Type 与实际字节不符（nosniff 下就是裂图）。认不出再退回 PNG。
+    const saved = saveImage(buffer, sniffImageMime(buffer) || "image/png");
     // 文件刚落盘就先记账，**不等消息插入**：这一轮之后可能被打断、重试、取消、
     // 或者服务重启——那些情况下画是成功的，但如果只有消息引用它，文件就会变成孤儿被清理掉。
     recordArtifact({

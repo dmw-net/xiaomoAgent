@@ -15,7 +15,7 @@
 //    参考实现里没有这一层（它连兜底 SSRF 都放行），这是我们自创的，别当成移植来的。
 
 import { WebError, fetchDocument, fetchText, fetchRaw, htmlToText } from "./web.ts";
-import { saveImage, MAX_IMAGE_BYTES } from "./media.ts";
+import { saveImage, sniffImageMime, MAX_IMAGE_BYTES } from "./media.ts";
 import type { ToolDef } from "./tools.ts";
 
 /**
@@ -218,16 +218,9 @@ export async function downloadImageToMedia(url: string, pageUrl = ""): Promise<s
   const declared = raw.contentType.split(";")[0]?.trim().toLowerCase() ?? "";
   // 以字节为准而不是以 Content-Type 为准：图床经常声明 image/jpeg 却装着别的东西。
   const mime = declared.startsWith("image/") ? declared : sniffImageMime(raw.body);
+  // 给错 MIME 会被 saveImage 直接拒掉；这里先报清楚“那个地址下的不是图片”。
+  if (mime === "") throw new WebError("bad_body", "那个地址下的不是图片");
   return saveImage(raw.body, mime).url;
-}
-
-/** 没有可信 MIME 时按魔数猜：给错 MIME 会被 saveImage 直接拒掉，所以宁可这里就报清楚的错。 */
-function sniffImageMime(body: Buffer): string {
-  if (body.length > 3 && body[0] === 0xff && body[1] === 0xd8) return "image/jpeg";
-  if (body.length > 8 && body[0] === 0x89 && body[1] === 0x50) return "image/png";
-  if (body.length > 12 && body.subarray(0, 4).toString() === "RIFF" && body.subarray(8, 12).toString() === "WEBP") return "image/webp";
-  if (body.length > 6 && body.subarray(0, 3).toString() === "GIF") return "image/gif";
-  throw new WebError("bad_body", "那个地址下的不是图片");
 }
 
 /**

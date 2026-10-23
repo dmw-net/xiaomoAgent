@@ -28,6 +28,22 @@ const IMAGE_EXT: Record<string, string> = {
   "image/gif": "gif",
 };
 
+/**
+ * 按魔数判断图片类型，认不出来返回空串。
+ * 图床和服务商声明的 Content-Type 经常是假的（实测 image/jpeg 里装着 HTML），
+ * 落盘和下发都以字节为准；这里集中一份，别再多处各写一套。
+ */
+export function sniffImageMime(body: Buffer): string {
+  if (body.length > 3 && body[0] === 0xff && body[1] === 0xd8) return "image/jpeg";
+  if (body.length > 8 && body[0] === 0x89 && body[1] === 0x50) return "image/png";
+  if (body.length > 12 && body.subarray(0, 4).toString() === "RIFF" && body.subarray(8, 12).toString() === "WEBP") return "image/webp";
+  if (body.length > 6 && body.subarray(0, 3).toString() === "GIF") return "image/gif";
+  if (body.length > 4 && body[0] === 0 && body[1] === 0 && body[2] === 1 && body[3] === 0) return "image/x-icon";
+  const head = body.subarray(0, 512).toString("utf8").trim().toLowerCase();
+  if (head.startsWith("<svg") || (head.startsWith("<?xml") && head.includes("<svg"))) return "image/svg+xml";
+  return "";
+}
+
 const EXT_MIME: Record<string, string> = {
   png: "image/png",
   jpg: "image/jpeg",

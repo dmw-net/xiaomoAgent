@@ -3485,6 +3485,11 @@ try {
 
     const badHost = await call("/api/lan/tunnel", json({ hosts: ["不是域名"] }));
     check("非法隧道域名被拒", badHost.status === 400, badHost.body.slice(0, 70));
+    // 从地址栏直接粘 host:port 很常见；Host 头比较前已剥端口，白名单里也必须存裸主机名。
+    const portHost = await call("/api/lan/tunnel", json({ hosts: ["port-tunnel.example.com:8443"] }));
+    check("带端口的隧道域名被接受并剥掉端口",
+      portHost.status === 200 && portHost.body.includes("port-tunnel.example.com") && !portHost.body.includes(":8443"),
+      portHost.body.slice(0, 100));
     const addHost = await call("/api/lan/tunnel", json({ hosts: ["smoke-tunnel.example.com"] }));
     check("隧道域名被接受", addHost.status === 200, addHost.body.slice(0, 70));
     const withHost = await stateOf();

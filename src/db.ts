@@ -11,12 +11,27 @@ import { config } from "./config.ts";
 const dbFile = resolve(config.dbPath);
 mkdirSync(dirname(dbFile), { recursive: true });
 
-export const db = new DatabaseSync(dbFile);
+function applyPragmas(handle: DatabaseSync): void {
+  // WAL：读写并发时不容易互相阻塞（一个进程在写、另一个在查也不卡）。
+  handle.exec("PRAGMA journal_mode = WAL");
+  // 桌面多窗口 = 多进程共享同一个库文件：写冲突时先等而不是立刻抛 SQLITE_BUSY。
+  handle.exec("PRAGMA busy_timeout = 5000");
+}
 
-// WAL：读写并发时不容易互相阻塞（一个进程在写、另一个在查也不卡）。
-db.exec("PRAGMA journal_mode = WAL");
-// 桌面多窗口 = 多进程共享同一个库文件：写冲突时先等而不是立刻抛 SQLITE_BUSY。
-db.exec("PRAGMA busy_timeout = 5000");
+/** let 而不是 const：导入失败回滚后需要换一个新的连接（见 reopenDb）。 */
+export let db = new DatabaseSync(dbFile);
+applyPragmas(db);
+
+/**
+ * 重新打开当前库文件。数据导入会先关掉连接再替换文件；替换失败、旧文件回滚后
+ * 如果不重开，进程里剩下的是一个 closed 句柄，之后每个接口都是 "database is not open"。
+ */
+export function reopenDb(): void {
+  try { db.close(); } catch { /* 可能已经关闭 */ }
+  db = new DatabaseSync(dbFile);
+  applyPragmas(db);
+  console.log("[db] 已重新打开数据库");
+}
 
 /** 多语句写必须同生共死：中途抛错回滚，不留半截脏状态。 */
 export function withTx<T>(fn: () => T): T {

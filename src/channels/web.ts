@@ -5,7 +5,7 @@
 //   所以 HTTP 请求不会因为等模型而超时，这跟 IM 平台的回调要求是同一个道理。
 
 import { randomUUID } from "node:crypto";
-import { getTurn, getTurnByClientId, createTurn, insertMessage, respondToTurn } from "../agent.ts";
+import { getTurn, getTurnByClientId, createTurn, insertMessage, respondToTurn, retryTurn } from "../agent.ts";
 import type { Channel } from "./types.ts";
 
 export const webChannel: Channel = {
@@ -15,7 +15,15 @@ export const webChannel: Channel = {
     // 离线发件箱会带着同一个 clientId 重试：已经建过就返回原处理单，不重复落用户消息。
     if (clientId) {
       const existing = getTurnByClientId(contactId, clientId);
-      if (existing) return { turnId: existing.id };
+      if (existing) {
+        // 幂等重放只该保证「不重复落一条用户消息」，不该保证「失败了也不重来」：
+        // failed/cancelled 的旧单光回个 turnId，客户端"重发"之后永远等不到回复。
+        // 重新点火一次；在跑/已成功的单仍按幂等原样返回。
+        if (existing.status === "failed" || existing.status === "cancelled") {
+          void retryTurn(existing.id).catch(() => { /* 失败已写进 turns.error */ });
+        }
+        return { turnId: existing.id };
+      }
     }
     const turnId = randomUUID();
     try {

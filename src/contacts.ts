@@ -424,8 +424,17 @@ export function createContact(input: {
   faceRef?: string;
   gender?: ContactGender;
 }): Contact {
-  const base = defaultPersona().character;
-  const card = sanitizeCharacter({ ...base, ...(input.card ?? {}), name: input.name });
+  // 不拿出厂人设补齐：表单里空着的背景/人设/关系，存下来就是空的——
+  // 从前这里会悄悄继承小茉的出厂设定，新建时只写了「人设」一段的话，
+  // 背景和关系就凭空长出一份别人的来历，界面上还看不出是哪一步塞进来的。
+  // 想要现成人设：「按模板填写」「换回默认人设」都是明确按钮。
+  const raw = input.card ?? {};
+  const card = sanitizeCharacter({
+    name: input.name,
+    background: raw.background ?? "",
+    identity: raw.identity ?? "",
+    relationship: raw.relationship ?? "",
+  });
   const id = input.id && input.id !== "" ? input.id : randomUUID();
   db.prepare(
     `INSERT INTO contacts (id, type, name, card, avatar, face_ref, gender, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -658,6 +667,14 @@ export function contactModelProfile(contactId: string): string {
     | { model_profile: string | null }
     | undefined;
   return String(row?.model_profile ?? "");
+}
+
+/** 绑着某份模型档的联系人数：档位设置（思考强度这类）改在档上，改之前要让界面知道影响面。 */
+export function countContactsBoundToProfile(profileId: string): number {
+  const row = db.prepare("SELECT COUNT(*) AS n FROM contacts WHERE model_profile = ?").get(profileId) as
+    | { n: number }
+    | undefined;
+  return row?.n ?? 0;
 }
 
 /** 每个联系人的最后一条消息（中栏会话列表的预览行）。 */

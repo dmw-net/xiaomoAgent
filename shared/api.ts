@@ -72,3 +72,29 @@ export type LinkPreview = {
   /** 已内联成 data URL 的小图标；取不到时为空串，由前端显示域名首字母。 */
   icon: string;
 };
+
+/** 扩展诊断的级别：error 会挡住启用，warning 只是提醒（如明文 http、URL 内嵌密钥）。 */
+export type ExtensionDiagnostic = { level: "info" | "warning" | "error"; message: string };
+
+/** 一只扩展工具的来源：mcp=远端目录发现，webhook/script=清单自带的自定义工具。 */
+export type ExtensionToolKind = "mcp" | "webhook" | "script";
+
+/** 一项扩展在 HTTP 面上的形状（/api/extensions）。 */
+export type ExtensionSnapshotEntry = {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  enabled: boolean;
+  importedAt: string;
+  /** 已知的全部工具（mcp 目录走短缓存，可能比真实目录少；probe 后补全）。 */
+  tools: Array<{ name: string; kind: ExtensionToolKind; description: string }>;
+  diagnostics: ExtensionDiagnostic[];
+};
+
+/** /api/extensions 的整体快照。 */
+export type ExtensionSnapshot = {
+  /** JS 工具执行许可。false 时 script 类工具对模型完全不存在。 */
+  allowScripts: boolean;
+  extensions: ExtensionSnapshotEntry[];
+};

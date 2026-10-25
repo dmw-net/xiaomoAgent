@@ -31,12 +31,22 @@ export function setClockPref(v: ClockPref): void {
 
 const ACCENT_KEY = "xiaomo.accent";
 
-/** 强调色（#rrggbb；空串 = 内置默认色，见 legacy.css 的 --accent）。
+/** 可选的强调色只为“个性化”，不改变页面材质。空串代表品牌默认赤陶。 */
+export const ACCENT_PRESETS = [
+  { hex: "", label: "赤陶" },
+  { hex: "#22c55e", label: "薄荷" },
+  { hex: "#2f6fed", label: "湖蓝" },
+  { hex: "#6f5bd8", label: "紫罗兰" },
+  { hex: "#3b9e8e", label: "青瓷" },
+  { hex: "#d9821c", label: "琥珀" },
+] as const;
+
+/** 强调色（#rrggbb；空串 = 内置默认色，见 theme.css 的 --accent）。
  *  真正的应用在 index.html 的主题引导脚本里。 */
 export function getAccent(): string {
   try {
     const v = localStorage.getItem(ACCENT_KEY) || "";
-    return /^#[0-9a-fA-F]{6}$/.test(v) ? v : "";
+    return /^#[0-9a-fA-F]{6}$/.test(v) ? v.toLowerCase() : "";
   } catch { return ""; }
 }
 
@@ -111,27 +121,133 @@ export function setProfilePage(cid: string, page: string): void {
 
 
 /**
- * 主题风格：同一套骨架下的四套材质与配色。
- * warm 暖房（默认，赤陶 + 暖纸）/ classic 薄荷（旧观感）/ night 夜航 / paper 和纸。
- * 深浅色仍由 data-theme 单独管，两者正交——风格决定"什么材质"，明暗决定"开不开灯"。
- * 真正的应用在 index.html 的主题引导脚本里（首帧前），这里只管读写偏好。
+ * 旧版“主题风格”已下线。迁移策略只保留用户当时最有感知的强调色：
+ * 薄荷/夜航/和纸分别落到对应色，暖房回到品牌默认赤陶；页面材质统一。
+ * 壁纸、玻璃与透明度偏好完全不在这里改动。
  */
-export type ThemeStyle = "warm" | "classic" | "night" | "paper";
-export const THEME_STYLES: readonly ThemeStyle[] = ["warm", "classic", "night", "paper"];
+const LEGACY_THEME_STYLE_KEY = "xiaomo.themeStyle";
+const LEGACY_STYLE_ACCENT: Record<string, string> = {
+  classic: "#22c55e",
+  night: "#d9821c",
+  paper: "#2f6fed",
+};
 
-const THEME_STYLE_KEY = "xiaomo.themeStyle";
-
-export function getThemeStyle(): ThemeStyle {
+export function migrateAppearancePrefs(): void {
   try {
-    const v = localStorage.getItem(THEME_STYLE_KEY) || "";
-    return (THEME_STYLES as readonly string[]).includes(v) ? (v as ThemeStyle) : "warm";
-  } catch { return "warm"; }
+    const legacy = localStorage.getItem(LEGACY_THEME_STYLE_KEY) || "";
+    if (!legacy) return;
+    if (!localStorage.getItem(ACCENT_KEY) && LEGACY_STYLE_ACCENT[legacy]) {
+      localStorage.setItem(ACCENT_KEY, LEGACY_STYLE_ACCENT[legacy]);
+    }
+    localStorage.removeItem(LEGACY_THEME_STYLE_KEY);
+    document.documentElement.removeAttribute("data-theme-style");
+  } catch { /* 存储不可用时保持默认外观 */ }
 }
 
-export function setThemeStyle(style: ThemeStyle): void {
-  try {
-    if (style === "warm") localStorage.removeItem(THEME_STYLE_KEY);
-    else localStorage.setItem(THEME_STYLE_KEY, style);
-  } catch { /* 无痕模式下存不进也不该炸 */ }
-  window.__setThemeStyle?.(style);
+/**
+ * 壁纸：设备级偏好（同主题一套逻辑）。kind 决定形态——
+ * none 关闭（回到主题自带的场景光）/ preset 内置预设（纯 CSS，零素材）/ media 自定义（/media 的图或视频）。
+ * 预设清单在 lib/wallpaper.ts（渲染与 CSS 都在那边），这里只管读写偏好。
+ */
+export type WallpaperKind = "none" | "preset" | "media";
+
+export type WallpaperPref = {
+  kind: WallpaperKind;
+  preset: string;
+  url: string;
+  /** 界面透明度 0–80（%）：越大界面各表面越透、壁纸露得越多。0 = 完全不透明（等于看不见壁纸）。 */
+  surface: number;
+};
+
+export const DEFAULT_WALLPAPER: WallpaperPref = { kind: "none", preset: "", url: "", surface: 45 };
+
+const WALLPAPER_KEY = "xiaomo.wallpaper";
+
+/** 壁纸偏好被改（lib/wallpaper.ts 监听它重建壁纸层，不用刷新）。 */
+export const WALLPAPER_EVENT = "xiaomo:wallpaper-pref";
+
+function clampSurface(n: number): number {
+  return Number.isFinite(n) ? Math.max(0, Math.min(80, Math.round(n))) : 26;
 }
+
+export function getWallpaper(): WallpaperPref {
+  try {
+    const raw = localStorage.getItem(WALLPAPER_KEY);
+    if (!raw) return DEFAULT_WALLPAPER;
+    const d = JSON.parse(raw) as Partial<WallpaperPref>;
+    const kind: WallpaperKind = d.kind === "preset" || d.kind === "media" ? d.kind : "none";
+    return {
+      kind,
+      preset: typeof d.preset === "string" ? d.preset : "",
+      url: typeof d.url === "string" && d.url.startsWith("/media/") ? d.url : "",
+      surface: clampSurface(Number(d.surface)),
+    };
+  } catch { return DEFAULT_WALLPAPER; }
+}
+
+export function setWallpaper(pref: WallpaperPref): void {
+  const clean: WallpaperPref = {
+    kind: pref.kind,
+    preset: typeof pref.preset === "string" ? pref.preset : "",
+    url: typeof pref.url === "string" && pref.url.startsWith("/media/") ? pref.url : "",
+    surface: clampSurface(pref.surface),
+  };
+  try {
+    if (clean.kind === "none" && !clean.preset && !clean.url && clean.surface === 45) {
+      localStorage.removeItem(WALLPAPER_KEY);
+    } else {
+      localStorage.setItem(WALLPAPER_KEY, JSON.stringify(clean));
+    }
+  } catch { /* 同上 */ }
+  window.dispatchEvent(new CustomEvent(WALLPAPER_EVENT));
+}
+
+/* ── 我的壁纸（收藏）────────────────────────────────────────────
+   上传过的壁纸文件都留在盘上（/media 的 wp 前缀文件），收藏清单记在本设备——
+   换壁纸是在收藏里切换，不是覆盖；不喜欢的再删（连文件一起删）。 */
+
+export type WallpaperItem = { url: string; addedAt: number };
+
+const WALLPAPER_LIB_KEY = "xiaomo.wallpaperLib";
+const WALLPAPER_LIB_MAX = 20;
+
+/** 收藏被增删（设置页自己监听即可，别的组件不关心）。 */
+export const WALLPAPER_LIB_EVENT = "xiaomo:wallpaper-lib";
+
+export function getWallpaperLibrary(): WallpaperItem[] {
+  try {
+    const raw = localStorage.getItem(WALLPAPER_LIB_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw) as unknown;
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((x): x is WallpaperItem => {
+        const it = x as WallpaperItem;
+        return typeof it?.url === "string" && it.url.startsWith("/media/") && typeof it?.addedAt === "number";
+      })
+      .sort((a, b) => b.addedAt - a.addedAt);
+  } catch { return []; }
+}
+
+export function addWallpaperLibraryItem(url: string): void {
+  const clean = typeof url === "string" && url.startsWith("/media/") ? url : "";
+  if (!clean) return;
+  const list = getWallpaperLibrary().filter((x) => x.url !== clean);
+  list.unshift({ url: clean, addedAt: Date.now() });
+  try {
+    localStorage.setItem(WALLPAPER_LIB_KEY, JSON.stringify(list.slice(0, WALLPAPER_LIB_MAX)));
+  } catch { /* 同上 */ }
+  window.dispatchEvent(new CustomEvent(WALLPAPER_LIB_EVENT));
+}
+
+export function removeWallpaperLibraryItem(url: string): void {
+  try {
+    const list = getWallpaperLibrary().filter((x) => x.url !== url);
+    localStorage.setItem(WALLPAPER_LIB_KEY, JSON.stringify(list));
+  } catch { /* 同上 */ }
+  window.dispatchEvent(new CustomEvent(WALLPAPER_LIB_EVENT));
+}
+
+/* 玻璃拟态已并入壁纸适配：壁纸开着 = data-glass 自动生效（lib/wallpaper.ts 管理），
+   不再是独立偏好。旧的 xiaomo.glass 键留在存储里无人读取，无副作用。 */
+

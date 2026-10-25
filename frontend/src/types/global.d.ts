@@ -7,8 +7,12 @@ declare global {
     __setThemeMode?: (mode: "system" | "light" | "dark") => void;
     /** 同上：套用自定义强调色（#rrggbb；空串 = 跟随当前主题的默认色）。 */
     __setThemeAccent?: (hex: string) => void;
-    /** 同上：切换主题风格（warm / classic / night / paper）。 */
-    __setThemeStyle?: (style: "warm" | "classic" | "night" | "paper") => void;
+    /** 同上：按持久化偏好重算明暗（壁纸开/关后由 lib/wallpaper.ts 调用，壁纸模式强制暗底）。 */
+    __refreshTheme?: () => void;
+    /** 同上：玻璃表面开关（挂/摘 html[data-glass]）——壁纸适配的一部分，跟着壁纸走。 */
+    __setGlass?: (on: boolean) => void;
+    /** lib/wallpaper.ts 提供：按最新偏好重建壁纸层（引导脚本只做首帧那份）。 */
+    __applyWallpaper?: () => void;
   }
 }
 

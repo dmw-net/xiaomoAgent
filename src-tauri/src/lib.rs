@@ -132,6 +132,15 @@ pub fn run() {
             .min_inner_size(780.0, 560.0)
             .resizable(true);
 
+            // 无边框窗口：标题栏由页面自己画（App.tsx 的 <Titlebar/>），壁纸才能铺到窗口顶部——
+            // 原生标题栏永远是一块实色，压在壁纸上非常突兀。拖拽靠 data-tauri-drag-region，
+            // 最小化/最大化/关闭走 core:window 权限（见 capabilities/webview-remote.json）；
+            // 可缩放边缘由 tao 对无边框窗口的命中测试兜住，手机端不吃这条配置。
+            #[cfg(desktop)]
+            {
+                builder_window = builder_window.decorations(false);
+            }
+
             // 上次的位置/尺寸（自己存的，见 save_window_state 的说明）：
             // 存过的值必须过一道屏幕范围校验才敢用，否则拔掉外接屏后窗口会开在看不见的地方。
             #[cfg(desktop)]

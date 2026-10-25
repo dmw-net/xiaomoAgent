@@ -60,6 +60,8 @@
 </style>
 </head>
 <body>
+  <!-- 无边框窗口的启动页也要能拖：一条 40px 的透明拖拽区压在顶部（拖拽走 data-tauri-drag-region） -->
+  <div data-tauri-drag-region style="position:fixed;top:0;left:0;right:0;height:40px;"></div>
   <div class="wrap">
     <svg class="sprout" viewBox="0 0 32 32" fill="none" aria-hidden="true">
       <path d="M16 28V13" stroke="var(--accent)" stroke-width="2" stroke-linecap="round"/>

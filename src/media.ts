@@ -21,11 +21,19 @@ const MEDIA_DIR = config.mediaDir === ""
 /** 图片上传上限：5MB 足够手机直出的 JPEG/HEIC 转码结果，再大就该客户端先压缩。 */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
+/** 视频壁纸上限：几秒到一两分钟的循环短片 100MB 很宽裕；再大就该用户自己先剪。 */
+export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
+
 const IMAGE_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
   "image/webp": "webp",
   "image/gif": "gif",
+};
+
+const VIDEO_EXT: Record<string, string> = {
+  "video/mp4": "mp4",
+  "video/webm": "webm",
 };
 
 /**
@@ -49,15 +57,32 @@ const EXT_MIME: Record<string, string> = {
   jpg: "image/jpeg",
   webp: "image/webp",
   gif: "image/gif",
+  mp4: "video/mp4",
+  webm: "video/webm",
 };
 
 /** /media/<id>.<ext> 的合法形状；路径穿越在解析文件名这一步就被挡掉。 */
 const MEDIA_URL_RE = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif))$/;
 
+/**
+ * 壁纸文件的形状：wp 前缀 + 16 位随机 id。前缀就是它的「引用在 localStorage、不在库里」
+ * 的身份证明——sweepOrphanMedia 只认无前缀形状，壁纸因此天然免于被当孤儿清掉；
+ * 释放改由「换壁纸时删旧文件」与出厂重置负责。
+ */
+const WALLPAPER_URL_RE = /^\/media\/(wp[a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm))$/;
+
 /** 当前媒体目录（默认库同级 media/）。改数据位置时照着它搬（data-dir.ts）。 */
 export function mediaDir(): string {
   if (!existsSync(MEDIA_DIR)) mkdirSync(MEDIA_DIR, { recursive: true });
   return MEDIA_DIR;
+}
+
+/** 壁纸文件也用 /media/ 前缀下发：读取与存在性判断认两种形状。 */
+function anyMediaFileName(url: string): string | null {
+  const name = MEDIA_URL_RE.exec(url)?.[1] ?? WALLPAPER_URL_RE.exec(url)?.[1];
+  if (!name) return null;
+  const file = resolve(MEDIA_DIR, name);
+  return file.startsWith(MEDIA_DIR) ? name : null;
 }
 
 /** 存一张图，返回可直接回给前端的 /media URL。mime 不在白名单时抛错。 */
@@ -72,22 +97,75 @@ export function saveImage(buffer: Buffer, mime: string): { url: string; id: stri
   return { url: `/media/${id}.${ext}`, id };
 }
 
+/** 按魔数判断视频类型，认不出来返回空串。声明头照样可能是假的，与 sniffImageMime 同一纪律。 */
+export function sniffVideoMime(body: Buffer): string {
+  if (body.length > 12 && body.subarray(4, 8).toString("latin1") === "ftyp") return "video/mp4";
+  if (body.length > 4 && body[0] === 0x1a && body[1] === 0x45 && body[2] === 0xdf && body[3] === 0xa3) return "video/webm";
+  return "";
+}
+
+/**
+ * 存一张壁纸：文件名带 wp 前缀（见 WALLPAPER_URL_RE），内容可以是图片或视频。
+ * 与 saveImage 不同，这里按魔数复检——浏览器报的 content-type 不可信，落盘以字节为准。
+ */
+export function saveWallpaper(buffer: Buffer, mime: string): { url: string; id: string } {
+  const imageMime = sniffImageMime(buffer);
+  const videoMime = sniffVideoMime(buffer);
+  const kind = IMAGE_EXT[imageMime] ? "image" : VIDEO_EXT[videoMime] ? "video" : "";
+  if (kind === "image") {
+    if (buffer.length > MAX_IMAGE_BYTES) {
+      throw new Error(`图片大小需在 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB 以内`);
+    }
+  } else if (kind === "video") {
+    if (buffer.length > MAX_VIDEO_BYTES) {
+      throw new Error(`视频大小需在 ${MAX_VIDEO_BYTES / (1024 * 1024)}MB 以内`);
+    }
+  } else {
+    throw new Error("壁纸格式不支持（图片 png / jpg / webp / gif，视频 mp4 / webm）");
+  }
+  const id = `wp${randomBytes(8).toString("hex")}`;
+  const ext = (kind === "image" ? IMAGE_EXT[imageMime] : VIDEO_EXT[videoMime]) as string;
+  writeFileSync(join(mediaDir(), `${id}.${ext}`), buffer);
+  return { url: `/media/${id}.${ext}`, id };
+}
+
+/** 删一个壁纸文件：形状必须是 wp 前缀（普通聊天图片有自己的回收通道，别走到这）。 */
+export function deleteWallpaper(url: string): void {
+  const match = WALLPAPER_URL_RE.exec(url);
+  const name = match?.[1];
+  if (!name) return;
+  const file = resolve(MEDIA_DIR, name);
+  if (!file.startsWith(MEDIA_DIR)) return;
+  try {
+    rmSync(file, { force: true });
+  } catch { /* 删不掉就算了，留给出厂重置 */ }
+}
+
+/** 壁纸文件元信息：/media/ 路由给视频做 Range 流式播放用，不把整个文件读进内存。 */
+export function mediaFileInfo(url: string): { file: string; mime: string; size: number } | null {
+  const match = WALLPAPER_URL_RE.exec(url);
+  const name = match?.[1];
+  if (!name) return null;
+  const file = resolve(MEDIA_DIR, name);
+  if (!file.startsWith(MEDIA_DIR) || !existsSync(file)) return null;
+  const ext = file.slice(file.lastIndexOf(".") + 1);
+  return { file, mime: EXT_MIME[ext] ?? "application/octet-stream", size: statSync(file).size };
+}
+
 /** 媒体目录里的全部 /media 路径（出厂重置用：库清空后这些文件都没人认领了）。
- *  只认 MEDIA_URL_RE 那个形状——目录里若有别人放的文件，不去动它。 */
+ *  只认两个 URL 形状（聊天图片 / 壁纸）——目录里若有别人放的文件，不去动它。 */
 export function listMediaUrls(): string[] {
   if (!existsSync(MEDIA_DIR)) return [];
   return readdirSync(MEDIA_DIR)
-    .filter((name) => MEDIA_URL_RE.test("/media/" + name))
+    .filter((name) => MEDIA_URL_RE.test("/media/" + name) || WALLPAPER_URL_RE.test("/media/" + name))
     .map((name) => "/media/" + name);
 }
 
 /** 按 /media URL 读回文件内容；不存在或形状不对返回 null。 */
 export function readMedia(url: string): { buffer: Buffer; mime: string } | null {
-  const match = MEDIA_URL_RE.exec(url);
-  const name = match?.[1];
+  const name = anyMediaFileName(url);
   if (!name) return null;
   const file = resolve(mediaDir(), name);
-  if (!file.startsWith(MEDIA_DIR)) return null;
   if (!existsSync(file)) return null;
   const ext = file.slice(file.lastIndexOf(".") + 1);
   return { buffer: readFileSync(file), mime: EXT_MIME[ext] ?? "application/octet-stream" };
@@ -95,15 +173,12 @@ export function readMedia(url: string): { buffer: Buffer; mime: string } | null 
 
 export function mediaUrlExists(url: string): boolean {
   // 只判断存在，不把整张图读进内存（readMedia 是给真要内容的人用的）
-  const name = mediaFileName(url);
+  const name = anyMediaFileName(url);
   return name !== null && existsSync(join(MEDIA_DIR, name));
 }
 
 function mediaFileName(url: string): string | null {
-  const name = MEDIA_URL_RE.exec(url)?.[1];
-  if (!name) return null;
-  const file = resolve(MEDIA_DIR, name);
-  return file.startsWith(MEDIA_DIR) ? name : null;
+  return anyMediaFileName(url);
 }
 
 /**

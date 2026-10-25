@@ -23,7 +23,7 @@
 // 前端只靠 ok 判断成败，不用去猜状态码的含义。
 
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { existsSync, readFileSync, statSync } from "node:fs";
+import { createReadStream, existsSync, readFileSync, statSync } from "node:fs";
 import { gzipSync } from "node:zlib";
 import { extname, join as joinPath, resolve, sep } from "node:path";
 import { networkInterfaces } from "node:os";
@@ -112,14 +112,16 @@ import {
   memoryCount,
   memoryStats,
   recallExplained,
+  queryVector,
+  backfillMemoryEmbeddings,
   rememberMessage,
   resetExtractFailures,
   updateMemoryEvent,
   type MemoryKind,
 } from "./memory.ts";
 import { lastModelCall, listInflightCalls, logModelCall, modelCallWindow, modelFailureCount, countModelCalls, modelCallById, recentModelCallSummaries, usageStats, failureWatermark, resetFailureCounters, type CallFilter } from "./logs.ts";
-import { friendlyModelError, isChatModelId, listModels, pingChat, resetToolsUnsupported, synthesizeSpeech, transcribeAudio } from "./model.ts";
-import { MAX_IMAGE_BYTES, mediaUrlExists, readMedia, releaseMediaFiles, saveImage } from "./media.ts";
+import { contactModelSettings, embedTexts, friendlyModelError, isChatModelId, listModels, pingChat, resetToolsUnsupported, synthesizeSpeech, transcribeAudio } from "./model.ts";
+import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, deleteWallpaper, mediaFileInfo, mediaUrlExists, readMedia, releaseMediaFiles, saveImage, saveWallpaper } from "./media.ts";
 import { describeWebFailure, downloadImageToMedia } from "./search.ts";
 import { linkPreviewFor } from "./link-preview.ts";
 import { deleteArtifact, getArtifact, listArtifacts, setArtifactStarred } from "./artifacts.ts";
@@ -132,10 +134,11 @@ const reactEntry = existsSync(joinPath(reactDist, "index.html"));
 /** dist 根下逐条白名单发出的固定静态图（文件名不带 hash，故沿用 no-store）：应用图标 + 两张内置头像。 */
 const ROOT_IMAGE_ASSETS = new Set(["/icon.png", "/xiaomo.png", "/assistant.png"]);
 
-import { ALL_TURNS, archiveContact, ASSISTANT_CONTACT_ID, companionPromptExtras, contactCard, contactExists, createContact, DEFAULT_CONTACT_ID, defaultPersonaIsDefault, deleteContact, ensureDefaultContact, factoryReset, getContact, lastMessagePreview, listContacts, markContactRead, MAX_TURNS, restoreDefaultCard, sanitizeAvatar, sanitizeFaceRef, unreadCount, unarchiveContact, updateContact, type BondState, type CompanionFeatures, type ContactGender } from "./contacts.ts";
+import { ALL_TURNS, archiveContact, ASSISTANT_CONTACT_ID, companionPromptExtras, contactCard, contactExists, contactModelProfile, countContactsBoundToProfile, createContact, DEFAULT_CONTACT_ID, defaultPersonaIsDefault, deleteContact, ensureDefaultContact, factoryReset, getContact, lastMessagePreview, listContacts, markContactRead, MAX_TURNS, restoreDefaultCard, sanitizeAvatar, sanitizeFaceRef, unreadCount, unarchiveContact, updateContact, type BondState, type CompanionFeatures, type ContactGender } from "./contacts.ts";
 import { consolidateContact } from "./consolidate.ts";
-import { autoTitleThread, clearAssistantThread, createAssistantThread, deleteAssistantThread, ensureAssistantContact, isAssistantThreadContactId, listAssistantThreads, renameAssistantThread } from "./assistant.ts";
+import { autoTitleThread, clearAssistantThread, createAssistantThread, deleteAssistantThread, ensureAssistantContact, isAssistantThreadContactId, listAssistantThreads, renameAssistantThread, assistantPermission, setAssistantPermission, pendingActionsFor, resolvePendingAction } from "./assistant.ts";
 import { deleteSkill, listSkills, MAX_SKILL_FILE_BYTES, readSkill, saveSkill, setSkillEnabled, skillsDir } from "./skills.ts";
+import { removeExtension as deleteExtension, deleteTool as deleteExtensionTool, snapshot as extensionSnapshot, importManifest as importExtension, probeExtension, saveTool as saveExtensionTool, setEnabled as setExtensionEnabled, setScriptGate } from "./extensions.ts";
 import { migrateDataDir } from "./data-dir.ts";
 import { importDataArchive, writeDataExport } from "./data-transfer.ts";
 import { setDesktopPrefs } from "./desktop-prefs.ts";
@@ -428,7 +431,54 @@ async function handle(
 
   if (method === "GET" && path.startsWith("/media/")) {
     // 聊天图片：文件名形状校验在 media.ts 里做（含防穿越），内容是随机 id，可永久缓存
-    const file = readMedia(decodeURIComponent(path));
+    const url = decodeURIComponent(path);
+    // 视频壁纸走流式：文件可达上百 MB，整读进内存再下发既慢又占内存，
+    // 而且 <video> 拖动进度条依赖 Range/206（WebView 会先发 HEAD 类探测请求）。
+    const info = mediaFileInfo(url);
+    if (info !== null) {
+      const range = request.headers.range;
+      if (range) {
+        const match = /^bytes=(\d*)-(\d*)$/.exec(range.trim());
+        if (match && (match[1] !== "" || match[2] !== "")) {
+          let start: number;
+          let end: number;
+          if (match[1] === "") {
+            // 后缀形式 bytes=-N：取末尾 N 字节
+            const suffix = Math.min(Number(match[2]), info.size);
+            start = info.size - suffix;
+            end = info.size - 1;
+          } else {
+            start = Number(match[1]);
+            end = match[2] === "" ? info.size - 1 : Math.min(Number(match[2]), info.size - 1);
+          }
+          if (start <= end && start < info.size) {
+            response.writeHead(206, {
+              "content-type": info.mime,
+              "content-length": end - start + 1,
+              "content-range": `bytes ${start}-${end}/${info.size}`,
+              "accept-ranges": "bytes",
+              "cache-control": IMMUTABLE,
+              "x-content-type-options": "nosniff",
+            });
+            createReadStream(info.file, { start, end }).pipe(response);
+            return;
+          }
+          response.writeHead(416, { "content-range": `bytes */${info.size}` });
+          response.end();
+          return;
+        }
+      }
+      response.writeHead(200, {
+        "content-type": info.mime,
+        "content-length": info.size,
+        "accept-ranges": "bytes",
+        "cache-control": IMMUTABLE,
+        "x-content-type-options": "nosniff",
+      });
+      createReadStream(info.file).pipe(response);
+      return;
+    }
+    const file = readMedia(url);
     if (!file) {
       sendJson(response, 404, { ok: false, error: "not found" });
       return;
@@ -970,6 +1020,9 @@ async function handle(
       return;
     }
     resetToolsUnsupported(); // 能力配置变了：工具支持的探测结论作废
+    // 向量化档启用/更换后当场补算存量记忆（异步、限量）：不补的话新库要等维护周期才有向量，
+    // 界面上"配好了却还是词面召回"会像没生效。失手也不影响响应——下一轮维护会再来。
+    if (cap === "embedding") void backfillMemoryEmbeddings().catch(() => { /* 维护周期兜底 */ });
     sendJson(response, 200, { ok: true, ...snapshotResponse(), note });
     return;
   }
@@ -1078,6 +1131,109 @@ async function handle(
     return;
   }
 
+  // ── 扩展：外挂能力的登记与插拔（MCP / webhook / script）──
+  // 语义：import=登记清单，enabled=插拔开关，tools=清单内自定义工具的增改删，
+  // probe=手动连一次 MCP 刷新目录，script-gate=JS 执行许可（必须显式确认）。
+  if (path === "/api/extensions") {
+    if (method === "GET") {
+      sendJson(response, 200, { ok: true, ...extensionSnapshot() });
+      return;
+    }
+  }
+
+  if (path === "/api/extensions/import" && method === "POST") {
+    const body = await readJson<{ manifest?: unknown }>(request, 256_000);
+    try {
+      const result = importExtension(body.manifest);
+      sendJson(response, 200, { ok: true, created: result.created, ...extensionSnapshot() });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (path === "/api/extensions/script-gate" && method === "POST") {
+    const body = await readJson<{ confirmed?: unknown; allow?: unknown }>(request);
+    try {
+      setScriptGate(body.confirmed === true, body.allow === true);
+      sendJson(response, 200, { ok: true, ...extensionSnapshot() });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (path === "/api/extensions/enabled" && method === "POST") {
+    const body = await readJson<{ id?: unknown; enabled?: unknown }>(request);
+    const id = typeof body.id === "string" ? body.id : "";
+    if (id === "") {
+      sendJson(response, 400, { ok: false, error: "扩展 id 不能为空" });
+      return;
+    }
+    try {
+      const entry = await setExtensionEnabled(id, body.enabled === true);
+      sendJson(response, 200, { ok: true, entry, ...extensionSnapshot() });
+    } catch (error) {
+      sendJson(response, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  if (path === "/api/extensions/probe" && method === "POST") {
+    const body = await readJson<{ id?: unknown }>(request);
+    const id = typeof body.id === "string" ? body.id : "";
+    if (id === "") {
+      sendJson(response, 400, { ok: false, error: "扩展 id 不能为空" });
+      return;
+    }
+    try {
+      const probed = await probeExtension(id);
+      sendJson(response, 200, { ok: true, probed, ...extensionSnapshot() });
+    } catch (error) {
+      sendJson(response, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // <id> 路由要排在保留字（import/enabled/probe/script-gate）之后，且别把保留字当 id 接住。
+  const extensionPathMatch = !["import", "enabled", "probe", "script-gate"].includes(path.slice("/api/extensions/".length))
+    ? /^\/api\/extensions\/([a-z0-9][a-z0-9-]{0,47})(?:\/tools\/([a-z0-9][a-z0-9_]{0,39}))?$/.exec(path)
+    : null;
+  if (extensionPathMatch !== null) {
+    const [, extensionId = "", toolName] = extensionPathMatch;
+    if (toolName === undefined) {
+      if (method === "DELETE") {
+        try {
+          deleteExtension(extensionId, url.searchParams.get("confirmed") === "1");
+          sendJson(response, 200, { ok: true, ...extensionSnapshot() });
+        } catch (error) {
+          sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+    } else {
+      if (method === "PUT") {
+        const body = await readJson<{ tool?: unknown }>(request, 256_000);
+        try {
+          const entry = saveExtensionTool(extensionId, body.tool);
+          sendJson(response, 200, { ok: true, entry, ...extensionSnapshot() });
+        } catch (error) {
+          sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+      if (method === "DELETE") {
+        try {
+          const entry = deleteExtensionTool(extensionId, toolName);
+          sendJson(response, 200, { ok: true, entry, ...extensionSnapshot() });
+        } catch (error) {
+          sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+        }
+        return;
+      }
+    }
+  }
+
   // 她的画：生成产物台账。按联系人隔离，翻页口径与调用记录/记忆清单一致。
   // 内容库：作品台账 + 聊天媒体附件聚合视图。只读，动作继续走各自原有接口。
   if (method === "GET" && path === "/api/content") {
@@ -1152,6 +1308,67 @@ async function handle(
     return;
   }
 
+  // 聊天输入区的「思考强度」快捷开关。强度属于模型档，不属于某条消息：
+  // 联系人绑了档就改那份档；没绑就改当前生效档。响应回一份和 GET 同形的控制快照，
+  // 前端据此做乐观更新后的校准。
+  if (method === "GET" && path === "/api/model/thinking") {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    sendJson(response, 200, { ok: true, ...modelThinkingControl(contactId) });
+    return;
+  }
+  if (method === "POST" && path === "/api/model/thinking") {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    const body = await readJson<{ level?: unknown }>(request);
+    const level = typeof body.level === "string" ? body.level : "";
+    // "off" 不是档位而是意图：关思考。档位形式发 level，开关形式同步 thinkingMode，
+    // 这样「选了强度」永远意味着开，「关闭」永远意味着关，两种协议形态不会互相打架。
+    const off = level === "off";
+    if (!off && !THINKING_LEVELS.some((item) => item.id === level)) {
+      sendJson(response, 400, { ok: false, error: "未知的思考强度" });
+      return;
+    }
+    const current = contactModelSettings(contactId) ?? modelConfig();
+    // 「关闭」对三种形态都成立（开关形态关得更彻底），强度档则仍只限 effort 形态。
+    if (!off && (current.thinkingParam !== "effort" || !current.caps.thinking)) {
+      sendJson(response, 400, { ok: false, error: "这个模型使用开关式思考，不能调强度" });
+      return;
+    }
+    const supported = current.thinkingLevels.length > 0
+      ? current.thinkingLevels
+      : THINKING_LEVELS.map((item) => item.id);
+    // 关闭不是档位，只改 thinkingMode，不受模型支持的档位清单约束。
+    if (!off && !supported.some((item) => item === level)) {
+      sendJson(response, 400, { ok: false, error: "这个模型不支持所选强度" });
+      return;
+    }
+    const boundId = contactModelProfile(contactId);
+    const profile = boundId !== "" ? listProfiles().find((item) => item.id === boundId) : undefined;
+    // 绑档失效必须报错而不是悄悄落全局：删档入口会拒绝仍有绑定的档，这里查不到只剩
+    // 导入/手工改库留下的悬空绑定——此时落笔到全局，等于改掉所有未绑定联系人的配置。
+    if (boundId !== "" && !profile) {
+      sendJson(response, 409, { ok: false, error: "这位联系人绑定的模型档已失效，请先在设置里重新绑定" });
+      return;
+    }
+    const patch = off
+      ? { thinkingLevel: "" as ModelSettings["thinkingLevel"], thinkingMode: "off" as ModelSettings["thinkingMode"] }
+      : { thinkingLevel: level as ModelSettings["thinkingLevel"], thinkingMode: "on" as ModelSettings["thinkingMode"] };
+    let appliedTo: Record<string, unknown>;
+    if (profile) {
+      // saveProfile 会保留没传的字段；若这份档正在生效，它也会同步当前生效配置。
+      saveProfile({ id: profile.id, label: profile.label, ...patch });
+      // 档是联系人共享的：强度改在这份档上，所有绑它的人都跟着变。这里把影响面
+      // 报给前端，界面据此说破，而不是让人以为只改了当前这位。
+      appliedTo = { scope: "profile", label: profile.label, contacts: countContactsBoundToProfile(profile.id) };
+    } else {
+      updateModel(patch);
+      appliedTo = { scope: "global", label: modelConfig().name, contacts: 0 };
+    }
+    sendJson(response, 200, { ok: true, appliedTo, ...modelThinkingControl(contactId) });
+    return;
+  }
+
   // 能力连接测试：用「表单里还没保存的参数」（给了就覆盖），语义与 /api/model/ping 一致。
   // 视觉能力走 chat ping；语音能力没有 chat 端点可言，退化为「拉列表 + 模型名是否在内」。
   if (method === "POST" && path === "/api/settings/capabilities/test") {
@@ -1176,11 +1393,26 @@ async function handle(
     }
 
     const override: Partial<ModelSettings> = { baseUrl, apiKey, name: model };
+    // 向量化走真实调用而不是拉清单：embedding 端点常常不提供 /models，
+    // 且「能不能出向量、维度多少」只有打一次才知道。
+    if (name === "embedding") {
+      if (model === "") {
+        sendJson(response, 200, { ok: true, ready: false, hint: "还缺：模型名。填上就能测。" });
+        return;
+      }
+      const attempt = await embedTexts(["召回测试"], { timeoutMs: 25_000, override: { baseUrl, apiKey, model } });
+      sendJson(response, 200, attempt
+        ? { ok: true, ready: true, capability: name, model, note: `连上了，向量维度 ${attempt.vectors[0]?.length ?? 0}` }
+        : { ok: true, ready: false, capability: name, model, hint: "没拿到向量：核对地址（一般到 /v1）、密钥与模型名，这个端点必须支持 /embeddings。" });
+      return;
+    }
     const listed = await listModels(10_000, override);
     const result: Record<string, unknown> = {
       ok: true,
+      ready: listed.ok,
       capability: name,
       model,
+      ...(listed.ok ? { note: `连上了，模型清单共 ${listed.ids.length} 个` } : {}),
       list: listed.ok
         ? { ok: true, elapsedMs: listed.elapsedMs, count: listed.ids.length }
         : { ok: false, code: listed.error.code, message: listed.error.message },
@@ -1209,6 +1441,29 @@ async function handle(
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
     }
+    return;
+  }
+
+  // 壁纸上传：请求体是图片或视频二进制，落成 wp 前缀文件（引用在设备 localStorage，不在库里）。
+  // ?prev= 传旧壁纸 URL 时顺带删旧文件——换壁纸不该在盘上留一串没人认领的大视频。
+  if (method === "POST" && path === "/api/wallpaper") {
+    const buffer = await readBinary(request, MAX_VIDEO_BYTES + 1024);
+    try {
+      const saved = saveWallpaper(buffer, "");
+      const prev = url.searchParams.get("prev");
+      if (prev) deleteWallpaper(decodeURIComponent(prev));
+      sendJson(response, 200, { ok: true, ...saved });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // 壁纸删除：形状校验（wp 前缀）在 deleteWallpaper 里，普通聊天图片传进来会被直接忽略。
+  if (method === "DELETE" && path === "/api/wallpaper") {
+    const url0 = url.searchParams.get("url");
+    if (url0) deleteWallpaper(decodeURIComponent(url0));
+    sendJson(response, 200, { ok: true });
     return;
   }
 
@@ -1266,6 +1521,7 @@ async function handle(
           memories: recallExplained(DEFAULT_CONTACT_ID, "").events,
           lastUserAt: lastUserMessageAt(DEFAULT_CONTACT_ID),
           companion: companionPromptExtras(getContact(DEFAULT_CONTACT_ID)),
+          includeNow: getContact(DEFAULT_CONTACT_ID)?.features?.clock !== false,
         }),
         memoryNote: "[记忆] 全局预览不带具体召回查询，这里显示默认联系人最近的几条记忆。要看某段关系的召回，请到该联系人的资料页预览。",
       });
@@ -1290,6 +1546,7 @@ async function handle(
         companion: companionPromptExtras(getContact(cid), rows[0]?.id),
         lastUserAt: lastUserMessageAt(cid),
         memories,
+        includeNow: getContact(cid)?.features?.clock !== false,
       }),
       history: rows.map((r) => ({ role: r.role, text: r.text })),
       memoryNote: lastUser
@@ -1316,13 +1573,14 @@ async function handle(
     }
     // 前端统一用 ?contactId= 携带（cq 助手），body 里的写法保留兼容其它客户端
     const requested = typeof body.contactId === "string" ? body.contactId : url.searchParams.get("contactId");
-    const contactId = requested && (getContact(requested) || isAssistantThreadContactId(requested))
-      ? requested
-      : DEFAULT_CONTACT_ID;
-    if (!getContact(contactId) && !isAssistantThreadContactId(contactId)) {
+    // 不带 contactId = 默认会话；带了就必须真实存在。从前查不到会静默回落 DEFAULT_CONTACT_ID，
+    // 而默认联系人必存在、404 检查永远不触发——陈旧标签页的一句话就此发给了
+    // 另一个人，还顺手打断她正在进行的回复。与 /api/messages 的 404 语义保持一致。
+    if (requested && !getContact(requested) && !isAssistantThreadContactId(requested)) {
       sendJson(response, 404, { ok: false, code: "CONTACT_NOT_FOUND", error: "联系人不存在" });
       return;
     }
+    const contactId = requested ? requested : DEFAULT_CONTACT_ID;
     // 助手工作区：新工作区的第一条消息用它的内容自动命名
     autoTitleThread(contactId, text);
     const channel = getChannel("web");
@@ -1341,6 +1599,13 @@ async function handle(
     const id = decodeURIComponent(path.slice("/api/turn/".length));
     const turn = getTurn(id);
     if (!turn) {
+      sendJson(response, 404, { ok: false, error: "处理单不存在" });
+      return;
+    }
+    // 归属校验：聊天页每个请求都带 ?contactId=，turnId 虽是 UUID，但不校验的话
+    // 串号标签页仍能读到别的联系人的回复正文与报错。
+    const asked = url.searchParams.get("contactId");
+    if (asked && turn.contact_id && turn.contact_id !== asked) {
       sendJson(response, 404, { ok: false, error: "处理单不存在" });
       return;
     }
@@ -1459,12 +1724,15 @@ async function handle(
       : all
         ? before > 0 ? messagesBefore(contactId, before, CHAT_EARLIER_PAGE) : allMessages(contactId, CHAT_FIRST_PAGE)
         : messagesSince(contactId, since);
+    // 就绪位按**这位联系人真正会走的那份配置**判：从前报的是全局位，联系人绑档
+    // 没配好时顶栏照样显示在线，实际调用静默 echo 回退，界面上看不出任何区别。
+    const ready = modelReadyNow(contactModelSettings(contactId) ?? modelConfig());
     // 更早还剩多少条：界面自己数行数会与服务端页大小脱钩，所以由这里报。
     // 只有全量/往前翻两档需要它——增量轮询每 1.5 秒一次，不为它跑两条 COUNT。
     const oldest = messages[0]?.id ?? 0;
     sendJson(response, 200, {
       ok: true,
-      modelReady: modelReadyNow(),
+      modelReady: ready,
       // 首次设置的清单挂在聊天空态上，跟着这一趟轮询回来，不为它单发一次请求。
       onboardingDone: onboardingDone(),
       personaIsDefault: defaultPersonaIsDefault(),
@@ -1650,7 +1918,7 @@ async function handle(
       sendJson(response, 400, { ok: false, error: "q 不能为空" });
       return;
     }
-    const result = recallExplained(contactId, query, limit);
+    const result = recallExplained(contactId, query, limit, { vector: await queryVector(query) });
     sendJson(response, 200, { ok: true, contactId, ...result });
     return;
   }
@@ -2320,6 +2588,54 @@ async function handle(
     return;
   }
 
+  // ── 助手权限档位与确认卡片 ──────────────────────────────
+  // 档位决定助手写工具的可见性（readonly 整组摘除）与危险动作是否要用户真实点击；
+  // 确认/拒绝之后用合成用户消息走 web 通道续跑——消息落库、新轮启动，全部复用现有管道。
+  if (path === "/api/assistant/permission") {
+    if (method === "GET") {
+      sendJson(response, 200, { ok: true, permission: assistantPermission() });
+      return;
+    }
+    if (method === "POST") {
+      const body = await readJson<{ permission?: unknown }>(request);
+      try {
+        const permission = setAssistantPermission(body.permission);
+        sendJson(response, 200, { ok: true, permission });
+      } catch (error) {
+        sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+      }
+      return;
+    }
+  }
+
+  if (method === "GET" && path === "/api/assistant/pending") {
+    const contactId = url.searchParams.get("contactId") ?? "";
+    // 裸 assistant（内置「通用」）与派生线程都是合法作用域。
+    if (contactId !== ASSISTANT_CONTACT_ID && !isAssistantThreadContactId(contactId)) {
+      sendJson(response, 400, { ok: false, error: "contactId 必须是助手线程（assistant 或 assistant:<id>）" });
+      return;
+    }
+    sendJson(response, 200, { ok: true, pending: pendingActionsFor(contactId) });
+    return;
+  }
+
+  const pendingDecisionMatch = method === "POST"
+    ? /^\/api\/assistant\/pending\/([0-9a-f-]{36})\/(confirm|decline)$/.exec(path)
+    : null;
+  if (pendingDecisionMatch !== null) {
+    const [, actionId = "", decision = ""] = pendingDecisionMatch;
+    try {
+      const resolved = await resolvePendingAction(actionId, decision === "confirm");
+      // 续跑文本对模型是一条普通的用户消息——它由此知道结果并接着说话。
+      const note = resolved.executed ? `（用户已确认：${resolved.title}）` : `（用户拒绝了：${resolved.title}）`;
+      const { turnId } = getChannel("web")!.receive(note, resolved.contactId, undefined, undefined, undefined);
+      sendJson(response, 202, { ok: true, executed: resolved.executed, turnId, result: resolved.result });
+    } catch (error) {
+      sendJson(response, 404, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   // ── 主动性 ──────────────────────────────────────────────
   if (method === "GET" && path === "/api/proactive/status") {
     const contactId = strictContactId(url, response);
@@ -2544,6 +2860,33 @@ function currentContactId(url: URL): string {
  * localStorage 里的陈旧 id（联系人已删除）拿到「另一个人的数据」比报错危险得多——
  * 与消息路由的 `404 联系人不存在` 保持同一语义。
  */
+/** 当前联系人的思考控制面：只暴露聊天快捷切换真正需要的最小信息。 */
+function modelThinkingControl(contactId: string): Record<string, unknown> {
+  const settings = contactModelSettings(contactId) ?? modelConfig();
+  const supported = settings.thinkingLevels.length > 0
+    ? settings.thinkingLevels
+    : THINKING_LEVELS.map((item) => item.id);
+  const levels = [...new Set<string>([
+    ...supported,
+    ...(settings.thinkingLevel === "" ? [] : [settings.thinkingLevel]),
+  ])] as ModelSettings["thinkingLevels"];
+  const effort = settings.thinkingParam === "effort" && settings.caps.thinking;
+  return {
+    model: settings.name,
+    provider: providerLabel(settings.baseUrl),
+    // 生效档的工具硬闸状态：资料页「工具」卡用它提示「总开关开了也没用」的情形。
+    tools: settings.caps.tools === true,
+    thinking: {
+      switchable: effort && levels.length > 0,
+      param: settings.thinkingParam,
+      mode: settings.thinkingMode,
+      off: settings.thinkingMode === "off",
+      level: settings.thinkingLevel,
+      levels: effort ? levels : [],
+    },
+  };
+}
+
 function strictContactId(url: URL, response: ServerResponse): string | null {
   const requested = url.searchParams.get("contactId");
   if (!requested) return DEFAULT_CONTACT_ID;

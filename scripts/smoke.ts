@@ -1307,6 +1307,17 @@ try {
       fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const newContact = async (name: string): Promise<string> =>
       (await (await post("/api/contacts", { name })).json()).contact.id as string;
+
+    // 新建不拿出厂人设补齐：只填一段，另两段必须是空串——
+    // 从前空段会悄悄继承小茉的出厂设定，用户以为没写的东西也在发给模型。
+    {
+      const made = await (await post("/api/contacts", { name: "补齐测试", identity: "只写了人设" })).json();
+      const card = made.contact.card as Record<string, string>;
+      check("新建联系人空着的人设段不被出厂设定补齐",
+        card.background === "" && card.relationship === "" && card.identity === "只写了人设",
+        JSON.stringify(card));
+    }
+
     /** 发一句并等它回完，返回那条 user 行的 id。 */
     const sayAndGetId = async (cid: string, text: string): Promise<number> => {
       const said = await (await post("/api/say", { text, contactId: cid })).json();
@@ -1597,6 +1608,29 @@ try {
   check("未知工具返回结构化错误（不让整轮对话失败）", badTool.ok === false && "error" in badTool);
   const badArgs = await executeTool("search_memory", "not-json", { lastUserAt: null, contactId: "default" });
   check("坏参数返回结构化错误", badArgs.ok === false);
+
+  // search_memory 的空结果出路：模型偶发空参（流式聚合下 arguments 只剩空串）时
+  // 用最近原话兜底；真没查到时必须带换词重试引导，否则她的下一句就是「未查询到相关记忆」。
+  const hitTool = await executeTool("search_memory", JSON.stringify({ query: "酸辣" }), { lastUserAt: null, contactId: "default" });
+  check("search_memory 命中已存的记忆", hitTool.ok && ((hitTool.result as { events?: unknown[] })?.events?.length ?? 0) > 0);
+  const missTool = await executeTool("search_memory", JSON.stringify({ query: "qwq 完全不存在的词组" }), { lastUserAt: null, contactId: "default" });
+  check("search_memory 空结果带换词重试引导（不让模型当场放弃）",
+    missTool.ok && typeof (missTool.result as { note?: unknown })?.note === "string");
+  const blankTool = await executeTool("search_memory", "{}", { lastUserAt: null, contactId: "default" });
+  check("search_memory 空参回退到最近原话当查询（不再「query 为空」白跑）",
+    blankTool.ok && (((blankTool.result as { events?: unknown[] })?.events?.length ?? 0) > 0
+      || typeof (blankTool.result as { note?: unknown })?.note === "string"));
+
+  // 工具硬闸（模型档 caps.tools）的缺省语义与存量迁移：
+  // 缺省按支持处理（端点不兼容有运行时探测兜底），显式 false 保留（否则界面永远关不掉），
+  // 存量「从没勾过」的 false 由一次性迁移翻正——不翻的话联系人设置里的工具开关全部失效。
+  const capsMod = await import("../src/settings.ts");
+  check("caps 缺省按支持工具处理", capsMod.sanitizeModelCaps({}).tools === true);
+  check("caps 显式 false 保留（取消勾选不会被读回 true）", capsMod.sanitizeModelCaps({ tools: false }).tools === false);
+  check("能力通道的 caps 仍是全关（视觉/语音档不声明工具）", capsMod.emptyModelCaps().tools === false);
+  const mig = capsMod.migrateCapsToolsDefault();
+  check("存量迁移可重入（第二次跑不再改动）", mig.profiles === 0 && mig.model === false);
+
   console.log("\n[23] 回复分条 + 工具过程卡");
   const seg = await import("../src/reply-segmentation.ts");
   const parts = seg.segmentReply("今天好累啊。不过想到你就好多了！晚上吃什么呢？");
@@ -1900,7 +1934,8 @@ try {
     maxInputTokens: 131072, maxOutputTokens: 8192,
   })).json();
   const capProf = capProfRes.profiles.find((p: { label: string }) => p.label === "能力档");
-  check("能力勾选存回一致（脏字段丢弃）", capProf.caps.vision === true && capProf.caps.thinking === true && capProf.caps.tools === false && !("bogusField" in capProf.caps));
+  check("能力勾选存回一致（脏字段丢弃、tools 缺省按支持处理）",
+    capProf.caps.vision === true && capProf.caps.thinking === true && capProf.caps.tools === true && !("bogusField" in capProf.caps));
   check("思考强度：默认档合法、支持列表过滤脏值", capProf.thinkingLevel === "high" && JSON.stringify(capProf.thinkingLevels) === '["low","high"]');
   check("思考形态与开关存回一致", capProf.thinkingParam === "thinkingType" && capProf.thinkingMode === "off",
     JSON.stringify({ 形态: capProf.thinkingParam, 开关: capProf.thinkingMode }));
@@ -2385,6 +2420,7 @@ try {
     check("新联系人默认全关、上限跟随默认",
       d0.features.lifeline === false && d0.features.consolidate === false
       && d0.features.reminders === false && d0.features.bond === false && d0.features.dailyLimit === 0);
+    check("工具总开关默认开（历史行为，关掉才是变更）", d0.features.tools === true);
     check("温度计初始为空形状", d0.bond.stage === "" && d0.bond.warmth === 50);
 
     const { toolDefsForApi } = await import("../src/tools.ts");
@@ -2410,6 +2446,43 @@ try {
       method: "PUT", headers: { "content-type": "application/json" },
       body: JSON.stringify({ features: { reminders: true } }),
     });
+
+    // 联系人级工具总开关（资料页「工具」卡第一行）：关掉 = 连常开的看时间/翻记忆都不声明。
+    await fetch(`${BASE}/api/contacts/${c5}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ features: { tools: false } }),
+    });
+    const namesMaster = toolDefsForApi(c5).map((t) => t.function.name);
+    check("工具总开关关掉 → 一个工具都不声明（提醒开关开着也一样）", namesMaster.length === 0);
+    await fetch(`${BASE}/api/contacts/${c5}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ features: { tools: true } }),
+    });
+    const namesBack = toolDefsForApi(c5).map((t) => t.function.name);
+    check("总开关重新打开 → 工具照常回来", namesBack.includes("get_current_time") && namesBack.includes("schedule_reminder"));
+
+    // 看时间 / 翻记忆：默认开（历史行为），可按联系人单独关——关 = 工具不声明，
+    // 且系统提示词不再硬拼 [现在] 时间行（两者同一次变更，断言也成对写）。
+    await fetch(`${BASE}/api/contacts/${c5}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ features: { clock: false, memorySearch: false } }),
+    });
+    const namesNoClock = toolDefsForApi(c5).map((t) => t.function.name);
+    check("关看时间/翻记忆 → 两个工具不再声明", !namesNoClock.includes("get_current_time") && !namesNoClock.includes("search_memory"));
+    const { buildSystemPrompt: buildPrompt } = await import("../src/persona.ts");
+    const { getContact } = await import("../src/contacts.ts");
+    const offCard = getContact(c5);
+    const promptOff = buildPrompt([], {
+      character: offCard?.card, lastUserAt: Date.now(),
+      includeNow: offCard?.features?.clock !== false,
+    });
+    check("关看时间 → 提示词不含硬拼的时间行", !promptOff.includes("[现在]") && !promptOff.includes("现在是"));
+    await fetch(`${BASE}/api/contacts/${c5}`, {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ features: { clock: true, memorySearch: true } }),
+    });
+    const namesClockBack = toolDefsForApi(c5).map((t) => t.function.name);
+    check("重新打开 → 看时间/翻记忆照常回来", namesClockBack.includes("get_current_time") && namesClockBack.includes("search_memory"));
 
     // 工具落任务（确定性本地操作，echo 模式也能验证）。
     // 注意 executeTool 的双层结构：外层 ok 表示"执行没炸"，业务成败在 result 里（模型看到的就是它）。
@@ -2464,9 +2537,9 @@ try {
       `卡=${s0.capabilitiesReady?.memoryExtract} 主力=${s0.modelReady}`);
     // 顺序是界面秩序的唯一来源：后端这张表动了，前端 CAPABILITY_GROUPS 与状态页总览必须同序，
     // 否则同一个能力在两个页面上位置不一样（图像生成就曾经孤零零挂在末尾）。
-    check("能力顺序：记忆提取 → 图片理解 → 图像生成 → 语音识别 → 语音合成",
+    check("能力顺序：记忆提取 → 图片理解 → 图像生成 → 语音识别 → 语音合成 → 向量化记忆",
       Object.keys(s0.capabilities).join(",")
-      === "memoryExtract,imageVision,imageGeneration,speechToText,textToSpeech",
+      === "memoryExtract,imageVision,imageGeneration,speechToText,textToSpeech,embedding",
       Object.keys(s0.capabilities).join(","));
     // 记忆提取这张卡的候选就是「主对话模型」那批档：它不存端点档，只指一份过去。
     const memProf = await jsonPost("/api/settings/profiles", {
@@ -3020,6 +3093,19 @@ try {
     const nap = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
     const caps = { tools: true, vision: false, thinking: false, thinkingOnly: false, customProtocol: false };
 
+    // 假 /embeddings：词组 → 确定性向量。同组词（唱片/黑胶/淘碟）共享同一方向，
+    // 异组词近正交——这样「黑胶收藏」和「喜欢囤积复古唱片，周末常去淘碟」词面零重合
+    // 却语义同向，正好用来证明语义召回这条路真的在工作。
+    const EMB_DIM = 32;
+    const SEME: string[][] = [["唱片", "黑胶", "淘碟", "专辑"], ["咖啡", "拿铁"], ["加班", "熬夜"]];
+    const mockEmbed = (text: string): number[] => {
+      const v = new Array<number>(EMB_DIM).fill(0.001);
+      SEME.forEach((words, gi) => {
+        if (words.some((w) => text.includes(w))) v[gi * 4] = 1;
+      });
+      return v;
+    };
+
     // 假服务商守契约：只有请求里真的带了 stream 才回 SSE。
     // 第一版桩不问契约也要流式，于是「只发了 accept 头、body 里根本没写 stream」这个错
     // 是靠断言 flags 那一行才抓出来的——桩必须和真网关一样苛刻。
@@ -3030,6 +3116,12 @@ try {
         void (async () => {
           let body: Record<string, unknown>;
           try { body = JSON.parse(raw) as Record<string, unknown>; } catch { res.writeHead(400).end(); return; }
+          if (String(body.model).startsWith("mock-emb")) {
+            const inputs = Array.isArray(body.input) ? (body.input as string[]) : [String(body.input ?? "")];
+            res.writeHead(200, { "content-type": "application/json" });
+            res.end(JSON.stringify({ data: inputs.map((text, index) => ({ index, embedding: mockEmbed(text) })) }));
+            return;
+          }
           const wantsStream = body.stream === true;
           seenFlags.push(wantsStream ? "true" : "absent");
           const model = String(body.model);
@@ -3167,6 +3259,34 @@ try {
         afterCancel.reply === null || afterCancel.reply === undefined, String(afterCancel.reply));
       check("取消的轮不插任何气泡（非流式时代就守着这条，流式后仍然成立）",
         one(`SELECT COUNT(*) AS c FROM messages WHERE turn_id = ? AND role='assistant' AND kind='chat'`, String(startedD.turnId)).c === 0);
+
+      // E. 记忆向量化（语义召回）：假 /embeddings 端点 + 词面零重合的改写查询。
+      //    放在最后做、跑完立刻解绑：embedding 生效会影响其它段落的召回排序。
+      console.log("\n[流式同块] 记忆向量化（语义召回）");
+      {
+        const { saveCapabilityProfile, activateCapabilityProfile } = await import("../src/settings.ts");
+        const mem = await import("../src/memory.ts");
+        check("embedding 未配置 → 退纯词面（模型名为空、回填零条）",
+          mem.currentEmbeddingModel() === "" && (await mem.backfillMemoryEmbeddings()) === 0);
+        const newId = mem.addMemoryEvent({ kind: "preference", content: "喜欢囤积复古唱片，周末常去淘碟", contactId: "default" });
+        const prof = saveCapabilityProfile("embedding", { label: "假向量", baseUrl: mockBase, apiKey: "sk-mock", name: "mock-emb" });
+        activateCapabilityProfile("embedding", prof.id);
+        check("配置生效 → 当前模型名到位", mem.currentEmbeddingModel() === "mock-emb");
+        const filled = await mem.backfillMemoryEmbeddings("default");
+        check("回填把存量记忆都向量化", filled >= 1, String(filled));
+        const row = one(`SELECT emb_model, emb_dim, LENGTH(embedding) AS bytes FROM memory_events WHERE id = ?`, String(newId));
+        check("记忆带上了向量（模型名/维度/字节自洽）",
+          row.emb_model === "mock-emb" && row.emb_dim === EMB_DIM && row.bytes === EMB_DIM * 4, JSON.stringify(row));
+        const hits = await mem.recallSmart("default", "黑胶收藏");
+        check("零字面重合的改写说法也能召回（语义路）", hits.some((e) => e.id === newId), `命中 ${hits.length} 条`);
+        const prof2 = saveCapabilityProfile("embedding", { label: "假向量2", baseUrl: mockBase, apiKey: "sk-mock", name: "mock-emb-b" });
+        activateCapabilityProfile("embedding", prof2.id);
+        const stale = (db.prepare(`SELECT COUNT(*) AS c FROM memory_events WHERE emb_model = 'mock-emb' AND embedding IS NOT NULL`).get() as { c: number }).c;
+        check("换模型后旧向量还在库里但按模型名判废", stale > 0, String(stale));
+        const refilled = await mem.backfillMemoryEmbeddings("default");
+        check("判废后回填按新模型重算", refilled >= 1, String(refilled));
+        activateCapabilityProfile("embedding", "");  // 还原：不影响后续段落
+      }
     } finally {
       updateModel({ mode: "echo" });
       await new Promise<void>((resolve) => mock.close(() => resolve()));
@@ -3435,7 +3555,7 @@ try {
       const noCookie = await call(viaLan, "/api/settings");
       check("手机没带访问码时读不到设置（401）", noCookie.status === 401 && noCookie.body.includes("LAN_AUTH"), `status=${noCookie.status}`);
       const page = await call(viaLan, "/");
-      check("手机没带访问码时看到的是登录页", page.status === 200 && page.body.includes("请输入电脑上") && !page.body.includes('id="root"'), `status=${page.status}`);
+      check("手机没带访问码时看到的是登录页", page.status === 200 && page.body.includes("输入电脑上显示的访问码") && !page.body.includes('id="root"'), `status=${page.status}`);
 
       const wrong = await call(viaLan, "/__lan", json({ code: "000000" }));
       check("访问码不对被拒", wrong.status === 401, `status=${wrong.status}`);
@@ -3507,7 +3627,7 @@ try {
     const localDirect = await viaTunnel("/api/settings", "127.0.0.1");
     check("本机直连仍然免码", localDirect.status === 200, `status=${localDirect.status}`);
     const tunnelLogin = await viaTunnel("/__lan", "smoke-tunnel.example.com");
-    check("隧道访问首页拿到的是登录页", tunnelLogin.status === 200 && tunnelLogin.body.includes("请输入电脑上"), `status=${tunnelLogin.status}`);
+    check("隧道访问首页拿到的是登录页", tunnelLogin.status === 200 && tunnelLogin.body.includes("输入电脑上显示的访问码"), `status=${tunnelLogin.status}`);
 
     const code = withHost.code.replace("-", "");
     const login = await fetch(`${BASE}/__lan`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ code }) });
@@ -3803,6 +3923,216 @@ try {
       huge.status === 400 && (await huge.json()).ok === false, `status=${huge.status}`);
 
     await delJson("/api/skills/in-app-made");
+  }
+
+  console.log("\n[41b] 扩展（清单校验 / MCP 桥接 / webhook / 脚本许可 / 插拔）");
+  {
+    const { createServer: createHttpServer } = await import("node:http");
+    const { toolDefsForApi, executeTool } = await import("../src/tools.ts");
+    const CHAT_CTX = { lastUserAt: null, contactId: "default", turnId: null };
+
+    // 假 MCP 服务器 + 假 webhook：最小 JSON-RPC 面，只答握手、目录、调用三件事。
+    // 会话头必发——客户端第一次带不上、之后要带回去，这条链路必须真走一遍。
+    const fakeUpstream = createHttpServer((req, res) => {
+      let raw = "";
+      req.on("data", (c: Buffer) => { raw += c.toString(); });
+      req.on("end", () => {
+        if (req.url === "/hook") {
+          res.writeHead(200, { "content-type": "application/json" });
+          res.end(JSON.stringify({ pong: JSON.parse(raw || "{}") }));
+          return;
+        }
+        const rpc = JSON.parse(raw || "{}") as { id?: number; method?: string; params?: { arguments?: Record<string, unknown> } };
+        const reply = (result: unknown): void => {
+          res.writeHead(200, { "content-type": "application/json", "mcp-session-id": "sess-smoke-1" });
+          res.end(JSON.stringify({ jsonrpc: "2.0", id: rpc.id ?? null, result }));
+        };
+        if (rpc.method === "initialize") {
+          reply({ protocolVersion: "2025-06-18", capabilities: {}, serverInfo: { name: "fake-mcp", version: "0.0.1" } });
+          return;
+        }
+        if (rpc.method === "tools/list") {
+          reply({ tools: [{ name: "echo_text", description: "把输入原样说回来", inputSchema: { type: "object", properties: { text: { type: "string" } }, required: ["text"] } }] });
+          return;
+        }
+        if (rpc.method === "tools/call") {
+          reply({ content: [{ type: "text", text: `echo:${rpc.params?.arguments?.text ?? ""}` }] });
+          return;
+        }
+        if (rpc.id === undefined) { res.writeHead(202); res.end(); return; }
+        res.writeHead(400); res.end(JSON.stringify({ ok: false }));
+      });
+    });
+    await new Promise<void>((done) => fakeUpstream.listen(8801, "127.0.0.1", done));
+
+    const extPost = (path: string, body: unknown): Promise<Response> =>
+      fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+
+    const list = await (await fetch(`${BASE}/api/extensions`)).json() as { ok: boolean; allowScripts: boolean; extensions: unknown[] };
+    check("GET /api/extensions 出空清单，脚本许可默认关", list.ok === true && list.allowScripts === false && list.extensions.length === 0);
+
+    const badImport = await extPost("/api/extensions/import", { manifest: { formatVersion: 1, id: "x", name: "n", version: "1.0.0", description: "", unknownField: 1 } });
+    check("多一个不认识的顶层字段直接拒（不做宽容转换）",
+      badImport.status === 400 && ((await badImport.json()) as { error: string }).error.includes("unknownField"));
+
+    const secretManifest = { formatVersion: 1, id: "leaky-ext", name: "带密钥的", version: "1.0.0", description: "d", mcp: { url: "https://mcp.example.com/mcp/?apiKey=sk-123" } };
+    const leaky = await (await extPost("/api/extensions/import", { manifest: secretManifest })).json() as { ok: boolean; extensions: Array<{ id: string; diagnostics: Array<{ level: string; message: string }> }> };
+    const leakyEntry = leaky.extensions.find((e) => e.id === "leaky-ext");
+    check("URL 内嵌密钥能导入但必须给安全警告", leaky.ok === true && (leakyEntry?.diagnostics.some((d) => d.level === "warning" && d.message.includes("密钥")) ?? false));
+
+    const manifest = {
+      formatVersion: 1,
+      id: "demo-ext",
+      name: "演示扩展",
+      version: "1.0.0",
+      description: "冒烟用",
+      mcp: { url: "http://127.0.0.1:8801/mcp" },
+      tools: [
+        { name: "shout", description: "回一声", parameters: { type: "object", properties: { text: { type: "string" } }, required: ["text"] },
+          handler: { kind: "webhook", url: "http://127.0.0.1:8801/hook", headers: {}, timeoutMs: 5000 } },
+        { name: "sum_two", description: "两数相加", parameters: { type: "object", properties: { a: { type: "number" }, b: { type: "number" } }, required: ["a", "b"] },
+          handler: { kind: "script", code: "(args) => ({ sum: args.a + args.b })", timeoutMs: 5000 } },
+      ],
+    };
+    const imported = await (await extPost("/api/extensions/import", { manifest })).json() as { ok: boolean; extensions: Array<{ id: string }> };
+    check("清单导入成功", imported.ok === true && imported.extensions.some((e) => e.id === "demo-ext"));
+
+    const namesBefore = toolDefsForApi("default").map((t) => t.function.name);
+    check("未启用的扩展不进模型声明",
+      !namesBefore.some((n) => n.startsWith("mcp__demo-ext__") || n.startsWith("ext__demo-ext__")));
+
+    const enabledRes = await extPost("/api/extensions/enabled", { id: "demo-ext", enabled: true });
+    const enabled = (await enabledRes.json()) as { ok: boolean; extensions: Array<{ id: string; tools: Array<{ name: string; kind: string }> }> };
+    const demoTools = enabled.extensions.find((e) => e.id === "demo-ext")?.tools ?? [];
+    check("启用后 MCP 目录拉到了", enabled.ok === true && demoTools.some((t) => t.name === "mcp__demo-ext__echo_text" && t.kind === "mcp"));
+
+    const namesOn = toolDefsForApi("default").map((t) => t.function.name);
+    check("启用的 MCP 与 webhook 工具进声明，script 工具被许可挡在外面",
+      namesOn.includes("mcp__demo-ext__echo_text") && namesOn.includes("ext__demo-ext__shout") && !namesOn.includes("ext__demo-ext__sum_two"));
+
+    const mcpCall = await executeTool("mcp__demo-ext__echo_text", JSON.stringify({ text: "你好" }), CHAT_CTX);
+    check("MCP 工具调用转发到上游并取回文本", mcpCall.ok === true && JSON.stringify(mcpCall.result).includes("echo:你好"), JSON.stringify(mcpCall.result));
+
+    const hookCall = await executeTool("ext__demo-ext__shout", JSON.stringify({ text: "喂" }), CHAT_CTX);
+    check("webhook 工具把参数 POST 出去并回包", hookCall.ok === true && JSON.stringify(hookCall.result).includes("pong"), JSON.stringify(hookCall.result));
+
+    const gateRes = await extPost("/api/extensions/script-gate", { confirmed: true, allow: true });
+    const gate = (await gateRes.json()) as { ok: boolean; allowScripts: boolean };
+    const namesScriptOn = toolDefsForApi("default").map((t) => t.function.name);
+    check("显式确认后脚本许可开启，script 工具出现在声明里",
+      gate.ok === true && gate.allowScripts === true && namesScriptOn.includes("ext__demo-ext__sum_two"));
+
+    const scriptCall = await executeTool("ext__demo-ext__sum_two", JSON.stringify({ a: 2, b: 40 }), CHAT_CTX);
+    check("script 工具在沙箱里算出结果", scriptCall.ok === true && JSON.stringify(scriptCall.result).includes("42"), JSON.stringify(scriptCall.result));
+
+    const gateOff = await extPost("/api/extensions/script-gate", { confirmed: true, allow: false });
+    check("许可关掉后 script 工具立刻从声明里消失",
+      (gateOff as unknown as { allowScripts: boolean }).ok === true &&
+      !toolDefsForApi("default").map((t) => t.function.name).includes("ext__demo-ext__sum_two"));
+
+    const disabled = await extPost("/api/extensions/enabled", { id: "demo-ext", enabled: false });
+    const namesOff = toolDefsForApi("default").map((t) => t.function.name);
+    check("停用扩展后它的全部工具都退出声明",
+      (disabled as unknown as { ok: boolean }).ok === true &&
+      !namesOff.some((n) => n.includes("demo-ext")));
+
+    const delRes = await fetch(`${BASE}/api/extensions/demo-ext?confirmed=1`, { method: "DELETE" });
+    check("确认后删除扩展", delRes.status === 200 && ((await (await fetch(`${BASE}/api/extensions`)).json()) as { extensions: unknown[] }).extensions.every((e) => (e as { id: string }).id !== "demo-ext"));
+
+    const noConfirm = await fetch(`${BASE}/api/extensions/demo-ext?confirmed=0`, { method: "DELETE" });
+    check("没带确认的删除被拒", noConfirm.status === 400);
+
+    // ── 助手权限档位与确认卡片 ──
+    // auto 档：写工具全放，配完即生效（原有行为）。
+    const setTier = async (permission: string): Promise<void> => {
+      const r = await extPost("/api/assistant/permission", { permission });
+      if (r.status !== 200) throw new Error(`切档失败：${await r.text()}`);
+    };
+    const pendingList = async (contactId: string): Promise<Array<Record<string, unknown>>> => {
+      const r = await fetch(`${BASE}/api/assistant/pending?contactId=${encodeURIComponent(contactId)}`);
+      return ((await r.json()) as { pending: Array<Record<string, unknown>> }).pending;
+    };
+    const waitTurn = async (turnId: string): Promise<string> => {
+      for (let i = 0; i < 30; i++) {
+        const t = (await (await fetch(`${BASE}/api/turn/${turnId}?contactId=assistant`)).json()) as { status?: string };
+        if (t.status === "done" || t.status === "failed" || t.status === "cancelled") return t.status ?? "?";
+        await new Promise((r) => setTimeout(r, 100));
+      }
+      return "timeout";
+    };
+
+    const ASST = { contactId: "assistant", lastUserAt: null };
+    const asstNames = toolDefsForApi("assistant").map((t) => t.function.name);
+    check("扩展管理工具进了助手白名单",
+      ["manage_extensions", "import_extension", "edit_extension_tool", "set_script_gate"].every((n) => asstNames.includes(n)));
+
+    await setTier("auto");
+    const asstImport = await executeTool("import_extension", JSON.stringify({
+      manifest: { formatVersion: 1, id: "asst-ext", name: "助手写的", version: "1.0.0", description: "d", mcp: { url: "http://127.0.0.1:8801/mcp" } },
+      enable: true,
+    }), ASST);
+    check("auto 档：助手 import_extension 写清单并启用，MCP 目录也拉到了",
+      asstImport.ok === true
+        && (asstImport.result as { entry?: { tools?: Array<{ name: string }> } }).entry?.tools?.some((t) => t.name === "mcp__asst-ext__echo_text") === true);
+
+    const asstTool = await executeTool("edit_extension_tool", JSON.stringify({
+      id: "asst-ext", action: "save",
+      tool: { name: "greet", description: "打招呼", parameters: { type: "object", properties: {}, additionalProperties: false },
+        handler: { kind: "webhook", url: "http://127.0.0.1:8801/hook", headers: {}, timeoutMs: 5000 } },
+    }), ASST);
+    check("助手 edit_extension_tool 给扩展加 webhook 工具",
+      asstTool.ok === true && JSON.stringify(asstTool.result).includes("ext__asst-ext__greet"));
+    const asstHookCall = await executeTool("ext__asst-ext__greet", "{}", CHAT_CTX);
+    check("助手加的工具下一刻就能调用", asstHookCall.ok === true && JSON.stringify(asstHookCall.result).includes("pong"));
+
+    // confirm 档（默认）：不可逆动作不发 confirmed 也执行不了——挂卡片等用户点击。
+    await setTier("confirm");
+    const gateNoConfirm = await executeTool("set_script_gate", JSON.stringify({ allow: true, confirmed: true }), ASST);
+    // executeTool 会把工具返回包成 {ok:true, result: <工具原返回>}，所以卡片在 result 里。
+    const gatePending = (gateNoConfirm.result as { ok?: boolean; needsConfirmation?: { actionId: string; title: string } }).needsConfirmation;
+    check("confirm 档：模型自己传 confirmed 也不再算数，改为挂确认卡片",
+      gateNoConfirm.ok === true && (gateNoConfirm.result as { ok?: boolean }).ok === false
+      && gatePending !== undefined && gatePending.title.includes("JS"));
+    check("发起的卡片在 GET /api/assistant/pending 里可见",
+      (await pendingList("assistant")).some((p) => p.id === gatePending?.actionId));
+
+    const gateConfirmRes = await fetch(`${BASE}/api/assistant/pending/${gatePending!.actionId}/confirm`, { method: "POST" });
+    const gateConfirm = (await gateConfirmRes.json()) as { ok: boolean; executed: boolean; turnId: string };
+    check("用户点同意：后端执行动作并开续跑轮",
+      gateConfirm.ok === true && gateConfirm.executed === true && gateConfirm.turnId !== ""
+      && (await (await fetch(`${BASE}/api/extensions`)).json() as { allowScripts?: boolean }).allowScripts === true);
+    check("续跑轮真的完成了（合成用户消息走的是普通 say 管道）", await waitTurn(gateConfirm.turnId) === "done");
+    await executeTool("set_script_gate", JSON.stringify({ allow: false, confirmed: true }), ASST);
+
+    // 拒绝路径：挂卡片 → decline → 动作没执行。
+    const delPendingCall = await executeTool("manage_extensions", JSON.stringify({ action: "delete", id: "asst-ext" }), ASST);
+    const delPending = (delPendingCall.result as { ok?: boolean; needsConfirmation?: { actionId: string } }).needsConfirmation;
+    check("confirm 档：删扩展同样走卡片",
+      delPendingCall.ok === true && (delPendingCall.result as { ok?: boolean }).ok === false && delPending !== undefined);
+    const declineRes = await fetch(`${BASE}/api/assistant/pending/${delPending!.actionId}/decline`, { method: "POST" });
+    const declined = (await declineRes.json()) as { ok: boolean; executed: boolean };
+    check("用户点拒绝：动作没有执行，扩展还在",
+      declined.ok === true && declined.executed === false
+      && ((await (await fetch(`${BASE}/api/extensions`)).json()) as { extensions: Array<{ id: string }> }).extensions.some((e) => e.id === "asst-ext"));
+
+    // readonly 档：写工具整组从声明里摘掉——不声明 = 调不到。
+    await setTier("readonly");
+    const roNames = toolDefsForApi("assistant").map((t) => t.function.name);
+    const WRITE_TOOLS = ["configure_model", "activate_model", "create_contact", "update_contact",
+      "set_contact_avatar", "bind_contact_model", "manage_extensions", "import_extension", "edit_extension_tool", "set_script_gate"];
+    check("readonly 档：全部写工具退出声明，读工具还在",
+      WRITE_TOOLS.every((n) => !roNames.includes(n)) && roNames.includes("app_status"));
+    const roWrite = await executeTool("manage_extensions", JSON.stringify({ action: "list" }), ASST);
+    check("readonly 档：写工具直接调不到（executeTool 也查无此名）", roWrite.ok === false);
+    await setTier("confirm");
+
+    // 清理：confirm 档下删除要走卡片，这里切 auto 一次用完即走。
+    await setTier("auto");
+    const delWithConfirm = await executeTool("manage_extensions", JSON.stringify({ action: "delete", id: "asst-ext", confirmed: true }), ASST);
+    check("清理：auto 档确认后助手能删扩展", delWithConfirm.ok === true && (delWithConfirm.result as { ok?: boolean }).ok === true);
+    await setTier("confirm");
+
+    fakeUpstream.close();
   }
 
   console.log("\n[41] 联网底座与动作预算（SSRF 门 / 正文抽取 / 相关性 / 开关与轮数）");

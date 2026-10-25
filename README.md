@@ -168,10 +168,12 @@ data/           运行时数据（聊天记录 / 记忆 / 媒体 / 密钥），�
 | --- | --- |
 | `npm run dev` | 浏览器里跑，改后端自动重启 |
 | `npm run app` | 桌面窗口里跑（Tauri），前端热更新 |
-| `npm run check` | 类型检查（后端 + 前端） |
+| `npm run check` | 类型检查（后端 + 前端）并验证外观偏好迁移 |
+| `npm run test:appearance` | 单独验证旧主题迁移、强调色与清理逻辑 |
 | `npm run doctor` | 环境与配置自检，会列出服务商可用模型并逐个实测 |
 | `npm run smoke` | 全链路冒烟（离线 echo 模式，780+ 断言） |
 | `npm run pack` | 本地打 Windows 安装包（自动找签名私钥与口令） |
+| `npm run pack:dev` | 本地打「开发模式」安装包：debug 构建 + 免签名，试装包效果用（产物在 `target/debug/bundle/nsis/`） |
 | `npm run desktop:build` | 同上，但签名材料要自己用环境变量给 |
 | `npm run release` | 出包 + 发 GitHub Release（含 `latest.json`，应用内「检查更新」用它） |
 | `npm run ver` | 版本号唯一入口：查看/校验，`npm run ver patch` 递增 |
@@ -179,7 +181,7 @@ data/           运行时数据（聊天记录 / 记忆 / 媒体 / 密钥），�
 
 ### 签名密钥（出包必需）
 
-出包需要一把 minisign 私钥 + 它的口令，**本地出包也要**——它管两件事：
+出包需要一把 minisign 私钥 + 它的口令，**本地出包也要**（唯一例外：`npm run pack:dev` 的开发模式包，debug 构建整体免签名）——它管两件事：
 
 | 签什么 | 谁验 | 挡住什么 |
 | --- | --- | --- |

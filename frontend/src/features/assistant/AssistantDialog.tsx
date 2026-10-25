@@ -7,6 +7,7 @@ import { createPortal } from "react-dom";
 import { Plus, Settings2, X } from "lucide-react";
 import ChatView from "../chat/ChatView";
 import ThreadChip from "./ThreadChip";
+import PendingCard from "./PendingCard";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useNarrow } from "../../hooks/useNarrow";
 import { contactsApi, threadContactId, assistantApi, type AssistantThread } from "../../api";
@@ -253,6 +254,9 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
         </header>
         {listErr && <div className="ws-err">{listErr}</div>}
         <div className="asst-body">
+          {/* 待确认卡片浮在最上层：confirm 档下助手发起的不可逆操作在这里等用户真实点击。
+              点完走 confirm/decline 接口，后端执行并合成续跑消息，后续轮次由 ChatView 的轮询接管。 */}
+          <PendingCard contactId={threadContactId(sel)} active={open} />
           {/* 聊天那屏**不卸载**（关闭只是隐藏，草稿与流式都在里面），设置屏是盖在它上面的一层：
               从设置返回时看到的还是原来那条会话，不重新挂一遍。 */}
           <ChatView key={sel} paused={!open} contactIdOverride={threadContactId(sel)}

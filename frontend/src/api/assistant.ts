@@ -31,3 +31,39 @@ export function deleteThread(id: string): Promise<unknown> {
 export function clearThread(id: string): Promise<{ messages: number; turns: number; media: number }> {
   return postJson("/api/assistant/threads/clear", { id });
 }
+
+// ── 权限档位与确认卡片 ──
+
+/** readonly 断手 / confirm 危险动作要用户点击 / auto 全放。 */
+export type AssistantPermission = "readonly" | "confirm" | "auto";
+
+/** 一张待处理的确认卡片（后端 kv 待确认动作原样下发）。 */
+export type AssistantPendingAction = {
+  id: string;
+  tool: string;
+  title: string;
+  detail: string;
+  contactId: string;
+  createdAt: number;
+};
+
+export function getPermission(): Promise<{ permission: AssistantPermission }> {
+  return getJson("/api/assistant/permission");
+}
+
+export function setPermission(permission: AssistantPermission): Promise<{ permission: AssistantPermission }> {
+  return postJson("/api/assistant/permission", { permission });
+}
+
+export function fetchPending(contactId: string): Promise<{ pending: AssistantPendingAction[] }> {
+  return getJson(`/api/assistant/pending?contactId=${encodeURIComponent(contactId)}`);
+}
+
+/** 同意后后端执行动作并自动发一条续跑消息，后续轮次由现有消息轮询接管。 */
+export function confirmPending(id: string): Promise<{ executed: boolean; turnId: string }> {
+  return postJson(`/api/assistant/pending/${id}/confirm`, {});
+}
+
+export function declinePending(id: string): Promise<{ executed: boolean; turnId: string }> {
+  return postJson(`/api/assistant/pending/${id}/decline`, {});
+}

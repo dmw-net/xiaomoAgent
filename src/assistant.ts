@@ -16,6 +16,16 @@ import { activateProfile,
 } from "./settings.ts";
 import { ASSISTANT_CONTACT_ID, createContact, getContact, listContacts, updateContact, type Contact } from "./contacts.ts";
 import { skillCatalogSection, skillsStatus } from "./skills.ts";
+import {
+  importManifest as importExtensionManifest,
+  probeExtension,
+  removeExtension,
+  saveTool as saveExtensionTool,
+  deleteTool as deleteExtensionToolByName,
+  setEnabled as setExtensionEnabled,
+  setScriptGate,
+  snapshot as extensionSnapshot,
+} from "./extensions.ts";
 import { downloadImageToMedia, describeWebFailure } from "./search.ts";
 import { generateImage } from "./model.ts";
 import { mediaUrlExists, releaseMediaFiles } from "./media.ts";
@@ -25,6 +35,145 @@ import type { ToolDef } from "./tools.ts";
 
 export { ASSISTANT_CONTACT_ID };
 export const ASSISTANT_CONTACT_NAME = "设置助手";
+
+// ── 助手权限档位：约束她能自己动多少配置 ──────────────────────────
+// 三档的语义是硬的，不是提示词里的客套话：
+//   readonly — 全部写工具从声明里摘掉，物理断手；
+//   confirm  — 可逆写直接放行，不可逆动作必须等用户在界面上真实点击（确认卡片）；
+//   auto     — 全部放行（工具参数里的 confirmed 即代表用户先前已同意）。
+export type AssistantPermission = "readonly" | "confirm" | "auto";
+
+const KV_PERMISSION = "assistant.permission";
+
+export function assistantPermission(): AssistantPermission {
+  const raw = kvGet(KV_PERMISSION);
+  return raw === "readonly" || raw === "auto" ? raw : "confirm";
+}
+
+export function setAssistantPermission(value: unknown): AssistantPermission {
+  if (value !== "readonly" && value !== "confirm" && value !== "auto") throw new Error("未知权限档位（readonly / confirm / auto）");
+  kvSet(KV_PERMISSION, value);
+  return value;
+}
+
+/** 写配置的工具名单：readonly 档按它整组摘除。读工具（app_status 等）永远在。 */
+export const ASSISTANT_WRITE_TOOLS: ReadonlySet<string> = new Set([
+  "configure_model", "activate_model", "create_contact", "update_contact",
+  "set_contact_avatar", "bind_contact_model",
+  "manage_extensions", "import_extension", "edit_extension_tool", "set_script_gate",
+]);
+
+// ── 待确认动作：危险操作的用户点击凭证 ────────────────────────────
+// confirm 档下，不可逆动作不直接执行，而是登记一张「确认卡片」等用户点。
+// 模型拿到的只有 actionId；凭证的消费只发生在 confirm 路由把 actionId 注回工具参数时——
+// 模型自己传 confirmed:true 在这一档不再有效，这就是「不靠模型自觉」的那道闸。
+
+const KV_PENDING = "assistant.pendingActions";
+const PENDING_TTL_MS = 10 * 60_000;
+const MAX_PENDING_PER_THREAD = 3;
+
+export type PendingAction = {
+  id: string;
+  /** 哪个工具的哪次调用；confirm 路由按它重新分发执行。 */
+  tool: string;
+  args: Record<string, unknown>;
+  /** 卡片上一句话标题与给用户看的详情（人话，不是给模型的）。 */
+  title: string;
+  detail: string;
+  /** 发起它的助手线程（"assistant" 或 "assistant:<id>"），确认后续跑也回到这个线程。 */
+  contactId: string;
+  createdAt: number;
+};
+
+function readPending(): PendingAction[] {
+  try {
+    const raw = kvGet(KV_PENDING);
+    const arr = raw ? (JSON.parse(raw) as PendingAction[]) : [];
+    if (!Array.isArray(arr)) return [];
+    const cutoff = Date.now() - PENDING_TTL_MS;
+    return arr.filter((a) => typeof a?.id === "string" && a.createdAt > cutoff);
+  } catch {
+    return [];
+  }
+}
+
+function writePending(list: PendingAction[]): void {
+  kvSet(KV_PENDING, JSON.stringify(list));
+}
+
+/** 某个助手线程当前挂着的确认卡片（已过期的不出现；读时顺手清账）。 */
+export function pendingActionsFor(contactId: string): PendingAction[] {
+  const fresh = readPending().filter((a) => a.contactId === contactId);
+  const kept = readPending().filter((a) => a.createdAt > Date.now() - PENDING_TTL_MS);
+  if (kept.length !== readPending().length) writePending(kept);
+  return fresh;
+}
+
+function removePending(id: string): PendingAction | null {
+  const list = readPending();
+  const hit = list.find((a) => a.id === id) ?? null;
+  if (hit) writePending(list.filter((a) => a.id !== id));
+  return hit;
+}
+
+/**
+ * 危险动作守卫。confirm 档且没有凭证时登记卡片并返回 needsConfirmation——
+ * 返回 ok:false 是刻意的：这轮工具调用视为未完成，模型应该停下来告知用户，
+ * 而不是继续往下编排已经没依据的步骤。
+ */
+function guardDangerous(
+  tool: string, args: Record<string, unknown>, context: { contactId: string },
+  title: string, detail: string, run: () => unknown,
+): unknown {
+  const tier = assistantPermission();
+  if (tier === "auto") return run();
+  if (tier === "readonly") {
+    return { ok: false, error: "当前助手权限档位为只读，不能改配置。用户可以在 设置 → 技能与工具 里调整档位。" };
+  }
+  const token = typeof args.__confirmActionId === "string" ? args.__confirmActionId : "";
+  if (token !== "") {
+    const action = removePending(token);
+    if (action && action.tool === tool) return run();
+    return { ok: false, error: "确认凭证无效或已过期，请重新发起，让用户再点一次。" };
+  }
+  const list = readPending();
+  const mine = list.filter((a) => a.contactId === context.contactId);
+  if (mine.length >= MAX_PENDING_PER_THREAD) {
+    return { ok: false, error: `已挂起 ${mine.length} 个待确认操作，请先等用户处理现有卡片。` };
+  }
+  const action: PendingAction = {
+    id: randomUUID(), tool, args, title, detail, contactId: context.contactId, createdAt: Date.now(),
+  };
+  writePending([...list, action]);
+  return {
+    ok: false,
+    needsConfirmation: { actionId: action.id, title, detail },
+    note: "已向用户发出确认卡片。停下来告知用户请在卡片上点同意或拒绝；不要重复发起同一操作，也不要用文字追问来代替确认。",
+  };
+}
+
+/**
+ * confirm 路由的执行入口：approved 时把 actionId 注回工具参数重新走一遍原工具——
+ * 守卫消费凭证后放行，等于「用户真实点击」这一证据只有这条路径能注入。
+ * 拒绝只摘卡片不执行；续跑由调用方（server）用合成用户消息触发。
+ */
+export async function resolvePendingAction(id: string, approved: boolean): Promise<{ executed: boolean; contactId: string; title: string; result?: unknown }> {
+  // 只窥视不删除：同意路径的凭证消费统一由 guardDangerous 在工具执行时完成，
+  // 这里先删会造成「凭证已被消费」的假失败。拒绝路径才由这里直接摘卡。
+  const action = readPending().find((a) => a.id === id) ?? null;
+  if (!action) throw new Error("没有这个待确认操作（可能已过期或已处理）");
+  if (!approved) {
+    removePending(id);
+    return { executed: false, contactId: action.contactId, title: action.title };
+  }
+  const toolDef = ASSISTANT_TOOLS.find((t) => t.name === action.tool);
+  if (!toolDef) {
+    removePending(id);
+    throw new Error(`找不到动作对应的工具「${action.tool}」`);
+  }
+  const result = await toolDef.execute({ ...action.args, __confirmActionId: id }, { lastUserAt: null, contactId: action.contactId, turnId: null });
+  return { executed: true, contactId: action.contactId, title: action.title, result };
+}
 
 // ── 工作区：助手的多个互相隔离的会话 ──────────────────────────────
 // 派生会话的 contact_id = "assistant:<线程 id>"，直接复用现成的「按 contact_id
@@ -245,6 +394,9 @@ function statusSnapshot(): Record<string, unknown> {
     // 快照里带上 blocked 的原因，用户问「我那个技能怎么没生效」时她能答上来，
     // 而不是只会说"我没看到技能"把人送去重启。
     skills: skillsStatus(),
+    // 扩展（MCP / webhook / JS 工具）同样进快照：助手回答「现在能查网吗」这类问题
+    // 要以登记表为事实，而不是猜。
+    extensions: extensionSnapshot(),
   };
 }
 
@@ -501,6 +653,164 @@ export const ASSISTANT_TOOLS: ToolDef[] = [
       return { ok: true, contact: r.contact.name, bound: p.label, note: "该联系人的对话已改用这个模型" };
     },
   },
+  {
+    name: "manage_extensions",
+    description:
+      "扩展（外部能力包）的插拔管理。action=list 列出全部扩展与诊断；enable/disable 拨开关（enable 会顺带连一次 MCP 拉工具目录）；probe 手动连一次 MCP 刷新目录并返回连接诊断；delete 彻底删除（必须先经用户明确同意再传 confirmed:true，删除不可恢复）。",
+    parameters: {
+      type: "object",
+      properties: {
+        action: { type: "string", enum: ["list", "enable", "disable", "probe", "delete"] },
+        id: { type: "string", description: "扩展 id（list 之外必填）" },
+        confirmed: { type: "boolean", description: "仅 delete 需要：用户明确同意后传 true" },
+      },
+      required: ["action"],
+      additionalProperties: false,
+    },
+    execute: async (args, context) => {
+      const action = clean(args.action);
+      if (action === "list") return { ok: true, ...extensionSnapshot() };
+      const id = clean(args.id);
+      if (id === "") return { ok: false, error: "id 不能为空（list 之外的动作都要指明哪个扩展）" };
+      try {
+        if (action === "delete") {
+          // confirm 档下这里的 confirmed:true 不再算数——必须等用户点卡片（见 guardDangerous）。
+          return await Promise.resolve(guardDangerous(
+            "manage_extensions", args, context,
+            `删除扩展「${id}」`,
+            "扩展连同它的全部工具一起摘除，不可恢复。要换新版本可以重新导入，不必删除。",
+            () => {
+              removeExtension(id, true);
+              return { ok: true, deleted: id, ...extensionSnapshot() };
+            },
+          ));
+        }
+        if (action === "enable" || action === "disable") {
+          const entry = await setExtensionEnabled(id, action === "enable");
+          const probeErr = entry.diagnostics.find((d) => d.level === "error");
+          return { ok: true, id, enabled: action === "enable", tools: entry.tools, warning: probeErr?.message };
+        }
+        if (action === "probe") {
+          const probed = await probeExtension(id);
+          return { ok: probed.diagnostics.every((d) => d.level !== "error"), id, toolCount: probed.tools, diagnostics: probed.diagnostics };
+        }
+        return { ok: false, error: `未知 action「${action}」` };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  },
+  {
+    name: "import_extension",
+    description:
+      "替用户写一份扩展清单并登记（xiaomo-extension.json 格式）。mcp（url/headers，url 只收 https 或本机回环 http）与 tools（自定义工具数组）至少有其一。密钥放 headers 不要拼进 URL。导入成功后默认不启用，需再调 manage_extensions(enable)。",
+    parameters: {
+      type: "object",
+      properties: {
+        manifest: {
+          type: "object",
+          description: "完整清单对象：formatVersion=1、id（小写字母开头，小写字母/数字/连字符）、name、version（x.y.z）、description、mcp?、tools?",
+        },
+        enable: { type: "boolean", description: "导入后是否立即启用，缺省 false" },
+      },
+      required: ["manifest"],
+      additionalProperties: false,
+    },
+    execute: async (args, context) => {
+      const manifest = args.manifest;
+      const manifestName = manifest !== null && typeof manifest === "object" && typeof (manifest as { name?: unknown }).name === "string"
+        ? (manifest as { name: string }).name : "未命名扩展";
+      return await Promise.resolve(guardDangerous(
+        "import_extension", args, context,
+        `导入扩展「${manifestName}」`,
+        "导入会给模型新增一批工具；若随后启用 MCP，相关对话数据还会发送给第三方服务。",
+        async () => {
+          try {
+            const result = importExtensionManifest(args.manifest);
+            if (args.enable === true) await setExtensionEnabled(result.entry.id, true);
+            // 启用会拉 MCP 目录，回包必须取启用后的新快照——导入那一刻目录还是空的。
+            const fresh = extensionSnapshot().extensions.find((e) => e.id === result.entry.id) ?? result.entry;
+            return { ok: true, id: result.entry.id, created: result.created, entry: fresh, note: args.enable === true ? "已导入并启用" : "已导入（未启用）" };
+          } catch (error) {
+            return { ok: false, error: error instanceof Error ? error.message : String(error) };
+          }
+        },
+      ));
+    },
+  },
+  {
+    name: "edit_extension_tool",
+    description:
+      "给已登记的扩展增改删自定义工具（webhook 或 script）。action=save 需传完整 tool（name/description/parameters(JSON Schema)/handler）；action=delete 传 name。script 工具只有在「JS 执行许可」开启后才会对模型可见。",
+    parameters: {
+      type: "object",
+      properties: {
+        id: { type: "string", description: "扩展 id" },
+        action: { type: "string", enum: ["save", "delete"] },
+        tool: {
+          type: "object",
+          description: "save 时必填：{ name, description, parameters, handler:{ kind:'webhook', url, headers?, timeoutMs? } 或 { kind:'script', code, timeoutMs? } }",
+        },
+        name: { type: "string", description: "delete 时要删的工具名" },
+      },
+      required: ["id", "action"],
+      additionalProperties: false,
+    },
+    execute: (args) => {
+      const id = clean(args.id);
+      const action = clean(args.action);
+      if (id === "") return { ok: false, error: "id 不能为空" };
+      try {
+        if (action === "save") {
+          if (args.tool === undefined || args.tool === null || typeof args.tool !== "object") return { ok: false, error: "save 需要完整的 tool 对象" };
+          const entry = saveExtensionTool(id, args.tool);
+          return { ok: true, id, tools: entry.tools, note: "工具已保存；若该扩展已启用，下一轮对话即生效" };
+        }
+        if (action === "delete") {
+          const name = clean(args.name);
+          if (name === "") return { ok: false, error: "delete 需要工具名" };
+          const entry = deleteExtensionToolByName(id, name);
+          return { ok: true, id, tools: entry.tools };
+        }
+        return { ok: false, error: `未知 action「${action}」` };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  },
+  {
+    name: "set_script_gate",
+    description:
+      "开启或关闭「JS 工具执行许可」。开启后 script 类工具会在本机受限沙箱里执行 JS——这是一次真实的权限授予：模型可决定传给脚本的参数。必须先向用户说明风险并得到明确同意，才能传 confirmed:true。",
+    parameters: {
+      type: "object",
+      properties: {
+        allow: { type: "boolean" },
+        confirmed: { type: "boolean", description: "用户明确同意后传 true" },
+      },
+      required: ["allow", "confirmed"],
+      additionalProperties: false,
+    },
+    execute: async (args, context) => {
+      try {
+        if (args.allow === true) {
+          return await Promise.resolve(guardDangerous(
+            "set_script_gate", args, context,
+            "开启 JS 工具执行许可",
+            "script 类工具将在本机的受限沙箱里执行代码；模型可以决定传给它的参数。只在确有需要时开启。",
+            () => {
+              setScriptGate(true, true);
+              return { ok: true, allowScripts: true, note: "JS 执行许可已开启" };
+            },
+          ));
+        }
+        setScriptGate(args.confirmed === true, false);
+        return { ok: true, allowScripts: false, note: "JS 执行许可已关闭，script 工具对模型不可见" };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  },
 ];
 
 /** 助手的系统提示词：身份 + 纪律 + 每轮注入的实时状态。 */
@@ -509,7 +819,8 @@ export function buildAssistantSystemPrompt(): string {
   const skills = skillCatalogSection();
   return [
     "你是「小茉」应用内置的设置助手，不是陪伴角色。说话简洁、专业、友好，用中文。",
-    "你能做的事：接入/切换模型、创建与配置联系人、给联系人绑定模型与头像、排查图片/语音能力的配置问题、排查技能目录。",
+    "你能做的事：接入/切换模型、创建与配置联系人、给联系人绑定模型与头像、排查图片/语音能力的配置问题、排查技能目录、" +
+    "替用户编写与管理扩展（接入 MCP 服务、写 webhook/JS 自定义工具、插拔开关）。",
     "纪律：",
     "- 动手改配置前先调 app_status 拿真实状态；改完后如果合适再拿一次确认结果。",
     "- 只有工具返回 ok:true 才能说操作成功；失败就原样说明原因和下一步建议。",
@@ -533,6 +844,18 @@ export function buildAssistantSystemPrompt(): string {
       "目录路径也在 skills.dir 里，直接报给用户。技能改了不用重启，重新扫描即生效。",
     skills === "" ? "" : "- 用户要办的事落在下面「[技能]」清单里时，先 load_skill 取完整做法再照着说或照着做。",
     "- 你自己的模型绑定由用户在「编辑资料 → 模型」手动维护，不受全局切换影响；如果用户把你启用的新模型配坏了，他仍能在设置页手动切回。",
+    // 扩展的三条红线：未经同意不删、脚本许可必须先讲风险、密钥永远不进 URL。
+    "- 扩展纪律：导入（import_extension）后默认不启用，问清用户再 enable；删除扩展必须先得到用户明确同意；" +
+      "替用户写清单时密钥放 headers、绝不拼进 URL；" +
+      "set_script_gate 开启前必须把「JS 会在本机执行、模型可决定传入参数」这条风险讲明白并征得同意。",
+    // 档位纪律按当前档注入，说的永远是此刻真成立的规则。
+    ...(assistantPermission() === "confirm"
+      ? ["- 当前是「变更前确认」档：删除扩展、导入扩展、开启 JS 执行许可这类不可逆操作会自动弹出确认卡片，" +
+         "你发起一次后停下等用户点击即可——卡片的结果会作为新消息回到对话里；不要重复发起，也不要用口头追问代替确认。"]
+      : []),
+    ...(assistantPermission() === "readonly"
+      ? ["- 当前是「只读」档：你没有任何改配置的工具。回答配置问题、给出界面操作路径即可，不要承诺替用户改。"]
+      : []),
     ...(skills === "" ? [] : [skills]),
     "",
     "当前应用状态（本轮实时快照）：",

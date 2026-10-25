@@ -15,7 +15,9 @@
     "dev": "npm --prefix frontend run build -- --mode fast && node --experimental-sqlite --env-file=.env src/index.ts",
     "app": "npm run desktop",
     "pack": "node scripts/pack.mjs",
-    "check": "npm run typecheck && npm --prefix frontend run typecheck",
+    "pack:dev": "node scripts/gen-asset-key.mjs && node scripts/stage-sidecar.mjs && node scripts/bundle-backend.mjs && npm --prefix frontend run build -- --mode fast && node scripts/make-manifest.mjs --unsigned && node scripts/tauri.mjs build --debug --no-sign",
+    "check": "npm run typecheck && npm --prefix frontend run typecheck && node scripts/appearance.test.ts",
+    "test:appearance": "node scripts/appearance.test.ts",
     "doctor": "node --experimental-sqlite --env-file=.env src/doctor.ts",
 
     "smoke": "node --experimental-sqlite scripts/smoke.ts",

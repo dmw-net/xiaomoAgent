@@ -24,7 +24,8 @@ const GROUPS = [
     title: "出包",
     items: [
       ["pack", "本地出安装包（自动找签名私钥与口令）"],
-      ["desktop:build", "同上，但签名材料要自己用环境变量给"],
+      ["pack:dev", "出开发模式安装包（debug 构建 + 免签名，试装包效果用）"],
+      ["desktop:build", "同 pack，但签名材料要自己用环境变量给"],
     ],
   },
   {
@@ -75,7 +76,7 @@ for (const g of GROUPS) {
 console.log("  记住几条");
 console.log("    · 后端零依赖：Node 22 起自带 node:sqlite，脚本要带 --experimental-sqlite");
 console.log("    · 版本号散在七处，别手改：npm run ver 看现值，npm run ver patch 递增");
-console.log("    · 安装包产物：src-tauri/target/release/bundle/nsis/");
+console.log("    · 安装包产物：正式包 src-tauri/target/release/bundle/nsis/，开发包（pack:dev）在 target/debug/bundle/nsis/");
 console.log("");
 console.log(`  内部命令（构建链自己调用，别直接跑）：${INTERNAL.join(" · ")}`);
 console.log("");

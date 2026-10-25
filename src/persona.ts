@@ -170,6 +170,13 @@ export function buildSystemPrompt(
     lastUserAt?: number | null;
     /** 可插拔陪伴能力：调用方按联系人开关取值，空串 = 该段整个不出现。 */
     companion?: CompanionSections;
+    /**
+     * [现在] 行（硬拼的时间文本）跟「看时间」能力同一开关：调用方按联系人 features.clock
+     * 传入，缺省 true（历史行为）。false = 提示词里不出现任何日期/时段/距上次说话——
+     * 她的时间感知整个改走工具那条路（工具也在同一开关下，关了就是真没有）。
+     * 作息是独立能力，不陪葬：关掉时间后它单独成段。
+     */
+    includeNow?: boolean;
   },
 ): string {
   const settings = personaConfig();
@@ -179,10 +186,12 @@ export function buildSystemPrompt(
   // 对用户的全称代词单源：[现在] 行与背景资料外壳都跟着性别走。
   const op = ownerPronoun(owner.gender);
 
-  const nowLine = nowText(new Date(), override?.lastUserAt, op)
-    + (companion?.schedule
-      ? `；你的作息：${companion.schedule.trim().slice(0, COMPANION_BUDGET.schedule)}`
-      : "");
+  const scheduleLine = companion?.schedule
+    ? `你的作息：${companion.schedule.trim().slice(0, COMPANION_BUDGET.schedule)}`
+    : "";
+  const nowLine = override?.includeNow === false
+    ? ""
+    : nowText(new Date(), override?.lastUserAt, op) + (scheduleLine !== "" ? `；${scheduleLine}` : "");
   const bracketed = [
     companion?.bondLine
       ? `[关系现状]\n说话的语气要与它相称：${companion.bondLine.trim().slice(0, COMPANION_BUDGET.bond)}`
@@ -194,7 +203,7 @@ export function buildSystemPrompt(
       ? `[上次说到]\n（回放窗口之外的对话只剩这段梗概，细节别编，需要就问）\n${companion.recap.trim().slice(0, COMPANION_BUDGET.recap)}`
       : "",
     `[记忆]\n${buildMemorySection(memories)}`,
-    `[现在]\n${nowLine}`,
+    nowLine !== "" ? `[现在]\n${nowLine}` : scheduleLine !== "" ? `[作息]\n${scheduleLine}` : "",
     // 用户自定义技能的清单（只有 name + 一句话）；正文要她自己 load_skill 去取。
     // 一个都没有时这里返回空串，被下面的 filter 整段省掉——不占常驻 token。
     skillCatalogSection(),
@@ -220,11 +229,11 @@ export function previewSystemPrompt(
   character: CharacterCard,
   owner: OwnerProfile,
   /** 按联系人预览时传入：陪伴段与「距上次说话」和真实对话同口径；
-   *  memories 给该联系人真实记忆（预览尽量贴近实际）。 */
-  extra?: { companion?: CompanionSections; lastUserAt?: number | null; memories?: MemoryEvent[] },
+   *  memories 给该联系人真实记忆（预览尽量贴近实际）。includeNow 同 buildSystemPrompt。 */
+  extra?: { companion?: CompanionSections; lastUserAt?: number | null; memories?: MemoryEvent[]; includeNow?: boolean },
 ): string {
   return buildSystemPrompt(extra?.memories ?? [], {
-    character, owner, companion: extra?.companion, lastUserAt: extra?.lastUserAt,
+    character, owner, companion: extra?.companion, lastUserAt: extra?.lastUserAt, includeNow: extra?.includeNow,
   });
 }
 

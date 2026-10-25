@@ -5,9 +5,9 @@
 import { randomUUID } from "node:crypto";
 import { db, withTx } from "./db.ts";
 import { config } from "./config.ts";
-import { extractMemories, likePattern, recall, recallExplained, recordExtractFailure } from "./memory.ts";
+import { extractMemories, likePattern, recallExplained, recallSmart, recordExtractFailure } from "./memory.ts";
 import { buildSystemPrompt, toChatMessages } from "./persona.ts";
-import { capabilityReady, effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolRounds } from "./settings.ts";import { callModel, callModelWithTools, contactModelSettings, friendlyModelError, ModelError, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "./model.ts";
+import { capabilityExplicit, capabilityReady, effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolRounds } from "./settings.ts";import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "./model.ts";
 import { executeTool, toolDefsForApi, type ToolContext } from "./tools.ts";
 import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
 import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getContact } from "./contacts.ts";
@@ -673,20 +673,27 @@ export function contextUsage(contactId: string): ContextUsage {
   const card = contactCard(cid);
   const lastAt = lastUserMessageAt(cid);
   // 陪伴增强段两边同给：它们的开销进 system 项，不该被记到"记忆召回"头上。
+  // includeNow 与 respondToTurn 同源：圆环量的是"下一次发消息会带什么"。
   const companion = companionPromptExtras(getContact(cid), history[0]?.id);
-  const bare = buildSystemPrompt([], { character: card, lastUserAt: lastAt, companion });
+  const includeNow = getContact(cid)?.features?.clock !== false;
+  const bare = buildSystemPrompt([], { character: card, lastUserAt: lastAt, companion, includeNow });
   // 观测路径用 recallExplained（不写 last_used_at）：圆环随消息轮询刷新，
   // 走真实 recall 会把「近 7 天被想起」统计刷成"用户打开了页面"，而不是"她想起过"。
-  const full = buildSystemPrompt(lastUser ? recallExplained(cid, lastUser.text).events : [], { character: card, lastUserAt: lastAt, companion });
+  const full = buildSystemPrompt(lastUser ? recallExplained(cid, lastUser.text).events : [], { character: card, lastUserAt: lastAt, companion, includeNow });
   // 量的是真会发出去的那份工具定义：可见性按联系人不同，不带 cid 会算错。
-  const toolsJson = JSON.stringify(toolDefsForApi(cid));
+  // 门控判据与 runAgentLoop / respondToTurn 同源（见 model.ts 的 toolCapsSettings）：
+  // 带图会走视觉通道时，显式绑档=不带工具、未显式绑档=按聊天档意图。
+  const settings = contactModelSettings(cid) ?? modelConfig();
   // 圆环量的是"下一次发消息会带什么"：那时他还没发新图，所以当前轮按 0 张算，
   // 只估历史图里有几张挤得进字节天花板。选图、标记、裁剪全部与 respondToTurn **同一套算法**，
   // 两边不可能给出不一致的数（这正是 contextParts 存在的理由）。
   const visionOn = !isAssistant(cid) && capabilityReady("imageVision");
   const replay = visionOn ? selectReplayImages(history, []) : new Set<string>();
+  const toolsOn = visionOn && replay.size > 0
+    ? !capabilityExplicit("imageVision") && settings.caps.tools === true
+    : settings.caps.tools === true;
+  const toolsJson = toolsOn ? JSON.stringify(toolDefsForApi(cid)) : "[]";
   const proxied = imageProxiedHistory(history, replay, visionOn);
-  const settings = contactModelSettings(cid) ?? modelConfig();
   const budget = inputBudget(settings);
   // 与 respondToTurn 同一套：历史占比上限也要在圆环这边生效，否则"设置里限了、圆环不认"。
   const histCap = historyTokenCapFor(cid, settings);
@@ -999,11 +1006,22 @@ async function runAgentLoop(
     ...(onDraft ? { onDelta: onDraft } : {}),
   };
 
-  // 联系人维度就绪判定：全局是 echo 但本联系人绑了可用档时，也要走工具路径——
-  // 否则「给某个角色单独配模型 + 开工具」会静默退化成无工具对话。
+  // 就绪判定必须用这次请求真正会走的配置：联系人绑定档、能力专用档都可能
+  // 覆盖全局模型。门控三道闸：模型档 caps.tools（硬闸）、端点协议探测、
+  // 这一位**实际声明出来的工具清单**（联系人总开关 features.tools 与逐个工具开关
+  // 都在 toolDefsForApi 里收口）——清单为空就不走工具路径，别给端点发空 tools 数组
+  // （部分服务商对 tools: [] 直接 400）。
   const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
-  const effective = contactModelSettings(contactId) ?? modelConfig();
-  if (!modelReadyNow(effective) || toolsUnsupportedFor(effective)) {
+  const effective = callSettings(options);
+  // 门控读哪份 caps 由 toolCapsSettings 统一裁决：能力显式绑档=空 caps（不带）、
+  // 能力隐式回落主模型端点=按联系人聊天档意图、普通调用=请求落到的配置本身。
+  const declaredTools = toolDefsForApi(contactId);
+  if (
+    !modelReadyNow(effective)
+    || declaredTools.length === 0
+    || toolCapsSettings(options, effective).caps.tools !== true
+    || toolsUnsupportedFor(effective)
+  ) {
     return guardOverflow(base, () => callModel(base, options));
   }
 
@@ -1021,7 +1039,7 @@ async function runAgentLoop(
       // 包括花钱的 generate_image（十几秒 + 一张配额）和会建真实任务的 schedule_reminder。
       // 跨进程取消只能靠库侧标记传达到这里，所以走 cancelIfAborted 而不是只看 signal。
       if (shouldYield()) return "";
-      const response = await guardOverflow(messages, () => callModelWithTools(messages, toolDefsForApi(contactId), options));
+      const response = await guardOverflow(messages, () => callModelWithTools(messages, declaredTools, options));
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
         return response.content || (await guardOverflow(base, () => callModel(base, options)));
@@ -1255,12 +1273,21 @@ export async function respondToTurn(
       const live = db.prepare(`SELECT status FROM turns WHERE id = ?`).get(turn.id) as { status: string } | undefined;
       if (live?.status !== "cancelled") return false;
     }
-    deleteAssistantMessagesForTurn(turn.id);
-    db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, finished_at = ? WHERE id = ?`).run(
-      Date.now(),
-      turn.id,
-    );
-    console.log(`[agent] turn ${turn.id} 已取消（被新消息打断）`);
+    // 收尾只属于仍持有这一轮的执行体：同 turnId 重入（重试/重答）时登记表里已换成
+    // 新执行体，被打断的旧执行体迟到的收尾不得删新执行体刚插的气泡、把它的状态
+    // 覆写成 cancelled——否则重答的轮次会以「被新消息打断」收场、一句回复都不剩。
+    // 注意只认「同一轮被重入」：普通 barge-in 登记的是**另一轮**，旧执行体仍要
+    // 清掉自己那轮的半截气泡，不能因为登记换了人就把自己的尾巴留下。
+    const incumbent = activeTurns.get(contactId);
+    const reentered = incumbent !== undefined && incumbent.controller !== controller && incumbent.turnId === turn.id;
+    if (!reentered) {
+      deleteAssistantMessagesForTurn(turn.id);
+      db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, finished_at = ? WHERE id = ?`).run(
+        Date.now(),
+        turn.id,
+      );
+      console.log(`[agent] turn ${turn.id} 已取消（被新消息打断）`);
+    }
     return true;
   };
 
@@ -1308,13 +1335,16 @@ export async function respondToTurn(
         .get(turn.id) as { id: number } | undefined
       : undefined;
     const rawRows = recentMessages(contactId, undefined, upToRow?.id ?? null);
-    const memories = assistant ? [] : recall(contactId, turn.text);
+    // 混合召回：查询句先向量化（embedding 能力没配/失败时自动退纯词面）。
+    const memories = assistant ? [] : await recallSmart(contactId, turn.text);
     const system = assistant
       ? buildAssistantSystemPrompt()
       : buildSystemPrompt(memories, {
           character: contactCard(contactId),
           lastUserAt: lastUserMessageAt(contactId),
           companion: companionPromptExtras(getContact(contactId), rawRows[0]?.id),
+          // [现在] 的硬拼时间行跟「看时间」能力同一开关（工具门控在 tools.visibleTools）
+          includeNow: getContact(contactId)?.features?.clock !== false,
         });
     // 预算裁剪（软防线）：装不下就从最旧一轮开始丢，本轮永不丢。
     // 估算有误差，所以真值兜底留在 runAgentLoop——服务商回 context-length 400 时再丢一轮重试。
@@ -1327,7 +1357,14 @@ export async function respondToTurn(
     const budget = inputBudget(modelSettings);
     // 历史占比上限（联系人级）：轮数管形状，这条管钱包，两条同时生效。
     const histCap = historyTokenCapFor(contactId, modelSettings);
-    const toolsJson = JSON.stringify(toolDefsForApi(contactId));
+    // 与 runAgentLoop 的门控同一套判据（见 model.ts 的 toolCapsSettings）：这轮真要带图
+    // 走视觉通道时，显式绑档=不带工具、未显式绑档=按聊天档意图；纯文本轮就按聊天档。
+    // 估算与实际请求必须同源，否则圆环和裁剪都跟真实请求对不上。
+    const visionCall = visionOn && replay.size > 0;
+    const toolsOn = visionCall
+      ? !capabilityExplicit("imageVision") && modelSettings.caps.tools === true
+      : modelSettings.caps.tools === true;
+    const toolsJson = toolsOn ? JSON.stringify(toolDefsForApi(contactId)) : "[]";
     const { kept: keptRows } = trimHistoryToBudget(historyRows, (rows) => {
       const p = contextParts({
         systemBare: system, systemFull: system, toolsJson,

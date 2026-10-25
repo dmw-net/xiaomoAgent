@@ -216,6 +216,24 @@ function callReady(options: CallOptions, settings: ModelSettings): boolean {
   return modelReadyNow(settings);
 }
 
+/**
+ * 工具门控该读哪份 caps。请求真正落到的端点配置是 `effective`（见 callSettings），
+ * 但「带不带工具」得看两层意图的交集：
+ * - 能力通道显式绑档：能力卡没有工具这一维（caps 为空）→ 不带；
+ * - 能力通道未显式绑档：请求实际仍落在主模型端点（capabilityConfig 的回落语义），
+ *   但「这位联系人关了工具」是联系人级意图，要跟着聊天档走——
+ *   从前直接看主档，绑定档 caps.tools=false 会被带图/抽取请求绕过；
+ * - 普通调用：就是请求落到的配置本身。
+ * 请求层（callModelWithToolsInner）与两处估算（respondToTurn / contextUsage 的 toolsJson）
+ * 必须共用这一个函数，圆环和裁剪才不会跟真实请求对不上。
+ */
+export function toolCapsSettings(options: CallOptions, effective: ModelSettings): ModelSettings {
+  const capability = effCapability(options);
+  if (!capability) return effective;
+  if (capabilityExplicit(capability)) return effective;
+  return boundProfileSettings(options) ?? modelConfig();
+}
+
 /** 这次调用该记到谁头上：联系人 + 实际使用的模型档（绑定档 > 当前生效档；能力调用不归档）。 */
 function attribution(options: CallOptions): { contactId: string | null; profileId: string | null } {
   const contactId = options.contactId ?? null;
@@ -303,6 +321,9 @@ export function applyThinkingParams(body: Record<string, unknown>, settings: Mod
     return;
   }
   if (!settings.caps.thinking) return;
+  // effort 形态协议里没有"关"：这里的关闭是尽力而为——不发 reasoning_effort，
+  // 让模型走自己的默认（通常是最低档思考），而不是我们替它选一档。
+  if (mode === "off") return;
   body.reasoning_effort = settings.thinkingLevel === "" ? "medium" : settings.thinkingLevel;
 }
 
@@ -787,8 +808,12 @@ async function callModelWithToolsInner(
   options: CallOptions,
 ): Promise<ToolCallResponse> {
   const settings = callSettings(options);
-  if (toolsUnsupportedFor(settings)) {
-    // 已知该端点不支持 tools：直接走无工具路径（上层已包含同样消息，少撞一次 400）。
+  // 工具是模型级能力，不是所有 OpenAI 兼容端点都支持。没勾选时必须在请求层再拦一次：
+  // 上层忘了过滤也不能把 tools 发给服务商，更不能执行模型凭空返回的工具调用。
+  // 门控读哪份 caps 由 toolCapsSettings 统一裁决（能力通道/联系人意图的交集），与估算同源。
+  const toolSettings = toolCapsSettings(options, settings);
+  if (toolSettings.caps.tools !== true || toolsUnsupportedFor(settings)) {
+    // 已知不支持 tools / 用户没勾能力：直接走无工具路径（上层已包含同样消息）。
     return { content: await attempt(messages, options, true), toolCalls: null };
   }
 

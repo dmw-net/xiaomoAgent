@@ -11,7 +11,7 @@
 //   npm run proactive:once
 
 import { config } from "./config.ts";
-import { modelConfig, modelReadyNow, personaConfig } from "./settings.ts";
+import { migrateCapsToolsDefault, modelConfig, modelReadyNow, personaConfig } from "./settings.ts";
 import { registerChannel } from "./channels/types.ts";
 import { webChannel } from "./channels/web.ts";
 import { createHttpServer } from "./server.ts";
@@ -109,6 +109,9 @@ const pruned = weHoldLease ? pruneProactiveBacklog() : { orphans: 0, deduped: 0 
 if (pruned.orphans + pruned.deduped > 0) {
   console.log(`[startup] 主动性任务修复：孤儿清理 ${pruned.orphans} 条、堆积合并 ${pruned.deduped} 条`);
 }
+// 存量数据迁移（幂等，kv 标记防重跑）：工具调用能力从「元数据」升格为「硬闸」的这一版，
+// 把老数据里从未勾选过的 false 翻正，否则联系人设置里的工具开关全部失效。
+if (weHoldLease) migrateCapsToolsDefault();
 // 启动补一遍向量化：能力档配好的情况下，导入/迁移来的旧记忆在这里获得向量。
 // 异步跑不挡启动；失败等 6 小时后的 maintenance 兜底。
 if (weHoldLease) {

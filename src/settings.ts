@@ -37,7 +37,7 @@ const KV_ONBOARDING = "settings.onboarding";
 
 /** 模型自述的能力开关。 */
 export type ModelCaps = {
-  /** 支持 function calling（目前仅作为元数据展示）。 */
+  /** 支持 function calling：未勾选时不向模型声明任何工具，也不会执行工具。 */
   tools: boolean;
   /** 支持图片输入：勾了才会在发图时走多模态 parts。 */
   vision: boolean;
@@ -53,6 +53,18 @@ export type ModelCapsKey = keyof ModelCaps;
 
 export function emptyModelCaps(): ModelCaps {
   return { tools: false, vision: false, thinking: false, thinkingOnly: false, customProtocol: false };
+}
+
+/**
+ * 解析「模型能力」时的缺省值：**按支持工具处理**。
+ * 工具是历史行为（第一版就在），而「端点不支持 function calling」已有运行时探测兜底
+ * （带 tools 的请求吃 400/422 且报错特征吻合时按端点记降级标记，见 model.ts）——
+ * 所以缺省不必因兼容性保守。把缺省留在 false 的后果是：模型档只要没主动勾过
+ * 「工具调用」，联系人设置里那一排工具开关全部失效（实测踩过）。
+ * 能力专用档（视觉/语音）没有工具这一维，仍然用 emptyModelCaps 显式关死，不走这里。
+ */
+export function defaultModelCaps(): ModelCaps {
+  return { tools: true, vision: false, thinking: false, thinkingOnly: false, customProtocol: false };
 }
 
 /** 思考强度档位（值直接进请求体的 reasoning_effort）。 */
@@ -82,11 +94,14 @@ const THINKING_LEVEL_IDS = new Set<string>(THINKING_LEVELS.map((l) => l.id));
 
 /** 把任意脏输入收窄成合法的 ModelCaps。 */
 export function sanitizeModelCaps(input: unknown): ModelCaps {
-  const out = emptyModelCaps();
+  const out = defaultModelCaps();
   if (input === null || typeof input !== "object" || Array.isArray(input)) return out;
   const src = input as Record<string, unknown>;
   for (const key of Object.keys(out) as ModelCapsKey[]) {
     if (src[key] === true) out[key] = true;
+    // 显式 false 必须保留：tools 的缺省是 true，若「非 true 即缺省」，用户在界面
+    // 取消勾选后一重读就被翻回来，永远关不掉。
+    else if (src[key] === false) out[key] = false;
   }
   return out;
 }
@@ -371,7 +386,7 @@ function defaultModel(): ModelSettings {
     timeoutMs: config.model.timeoutMs,
     extraBody: { ...config.model.extraBody },
     startupCheck: config.model.startupCheck,
-    caps: emptyModelCaps(),
+    caps: defaultModelCaps(),
     thinkingLevel: "",
     thinkingLevels: [],
     thinkingParam: "effort",
@@ -572,6 +587,39 @@ function readProfiles(): ModelProfile[] {
 
 function writeProfiles(profiles: ModelProfile[]): void {
   writeJson(KV_PROFILES, profiles);
+}
+
+/**
+ * 一次性迁移：把存量配置里「工具调用」的未勾选翻成勾选。
+ *
+ * 为什么必须有：caps.tools 在 0.2.8 及以前只是元数据（勾不勾都不影响功能），表单默认
+ * 又是不勾——存量档里的 false 全是「从没填过」，不是「刻意关闭」。这一版起它是硬闸
+ * （未勾选 = 不声明也不执行任何工具），直接沿用会把联系人设置里那一排工具开关
+ * 全部静默关死（实测踩过）。翻成 true 之后，用户再主动取消勾选仍会照常保存并生效。
+ */
+const KV_MIGRATED_CAPS_TOOLS = "settings.migrated.capsToolsOn";
+export function migrateCapsToolsDefault(): { profiles: number; model: boolean } {
+  if (kvGet(KV_MIGRATED_CAPS_TOOLS) !== null) return { profiles: 0, model: false };
+  let profiles = 0;
+  const list = readProfiles();
+  for (const p of list) {
+    if (p.caps.tools !== true) {
+      p.caps = { ...p.caps, tools: true };
+      profiles += 1;
+    }
+  }
+  if (profiles > 0) writeProfiles(list);
+  let model = false;
+  const stored = readJson<ModelSettings>(KV_MODEL);
+  if (stored !== null && stored.caps?.tools !== true) {
+    writeJson(KV_MODEL, sanitizeModel({ ...defaultModel(), ...stored, caps: { ...(stored.caps ?? defaultModelCaps()), tools: true } }));
+    model = true;
+  }
+  writeJson(KV_MIGRATED_CAPS_TOOLS, true);
+  if (profiles > 0 || model) {
+    console.log(`[startup] 已把存量模型配置的「工具调用」默认打开（此前未勾选只是没填过，不是刻意关闭）：配置档 ${profiles} 份${model ? " + 当前生效配置" : ""}`);
+  }
+  return { profiles, model };
 }
 
 function sanitizeProfile(input: Partial<ModelProfile>): ModelProfile {

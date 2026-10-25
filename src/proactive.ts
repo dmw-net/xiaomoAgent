@@ -535,6 +535,8 @@ async function decideWithModel(
     character: contactCard(contactId),
     lastUserAt: lastUserMessageAt(contactId),
     companion: companionPromptExtras(getContact(contactId), historyRows[0]?.id),
+    // 与 respondToTurn 同一开关：这位关了「看时间」，主动判断的提示词里也不硬拼时间
+    includeNow: getContact(contactId)?.features?.clock !== false,
   })}\n\n${buildDecideSystem(ownerPron, imageGenOn)}`;
 
   const facts = [

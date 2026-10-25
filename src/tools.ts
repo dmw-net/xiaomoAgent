@@ -19,10 +19,11 @@
 import { describePeriod, nowText, ownerPronoun } from "./persona.ts";
 import { capabilityReady, personaConfig } from "./settings.ts";
 import { generateImage, IMAGE_DAILY_LIMIT, imagesToday } from "./model.ts";
-import { recallExplained } from "./memory.ts";
-import { ASSISTANT_TOOLS, isAssistant } from "./assistant.ts";
+import { keywords, lastUserMessageText, queryVector, recallExplained } from "./memory.ts";
+import { ASSISTANT_TOOLS, ASSISTANT_WRITE_TOOLS, assistantPermission, isAssistant } from "./assistant.ts";
 import { SKILL_TOOL, usableSkills } from "./skills.ts";
 import { WEB_TOOLS } from "./search.ts";
+import { extensionToolDefs } from "./extensions.ts";
 import { takeReminderSlot, REMINDERS_PER_TURN } from "./proactive.ts";
 import { db } from "./db.ts";
 import { getContact } from "./contacts.ts";
@@ -79,7 +80,8 @@ const TOOLS: ToolDef[] = [
   {
     name: "search_memory",
     description:
-      "在你们的关系记忆里检索。当你不确定是否记得某件事、需要回忆细节（约定、偏好、他说过的事）时调用。query 用具体的关键词，比如「周日 吃饭」「加班」。调用后你会得到最相关的几条记忆及内容。",
+      "在你们的关系记忆里检索。当你不确定是否记得某件事、需要回忆细节（约定、偏好、他说过的事）时调用。query 用具体的关键词（2~6 个字），比如「周日 吃饭」「加班」，优先用对方说过的原词（人名、食物、日期、地点）。" +
+      "返回空结果时不要立刻断言「没有记忆」：换一组更具体的词再查一次（最多换两三次），都查不到再如实说。",
     parameters: {
       type: "object",
       properties: {
@@ -88,12 +90,22 @@ const TOOLS: ToolDef[] = [
       required: ["query"],
       additionalProperties: false,
     },
-    execute: (args, context) => {
-      const query = String(args.query ?? "").trim();
-      if (query === "") return { events: [], note: "query 为空" };
-      // 她自己主动查记忆 = 真实的回忆行为，所以 markUsed：这条和被动注入一起
-      // 构成「近 7 天被想起」的唯一数据来源（观测路径不写，见 memory.ts）。
-      const explained = recallExplained(context.contactId, query, 8, { markUsed: true });
+    execute: async (args, context) => {
+      // 空参兜底：流式聚合下模型偶发只发工具名、arguments 是空串（实测 2026-10-18 一次），
+      // 直接回空等于这轮工具白跑，界面只会看到一句「没找到相关的」。
+      // 退而求其次：拿他最近一句原话当查询——那是最贴近记忆库词汇的选择。
+      const asked = String(args.query ?? "").trim();
+      const lastText = lastUserMessageText(context.contactId, asked);
+      const query = asked !== "" ? asked : lastText;
+      if (query === "") return { events: [], note: "没有可用的检索词" };
+      // 查询向量在兜底词确定后再算，两条查询共用一个向量（端点只打一次）。
+      const vector = await queryVector(query);
+      let explained = recallExplained(context.contactId, query, 8, { markUsed: true, vector });
+      // 一击未中再扩一次：把他的原话并进查询再筛。≤2 个关键词时第一轮已经并过（见
+      // memory.ts 的 expandQuery），所以只在关键词够多时补这一手；向量沿用（两句话并查语义不变）。
+      if (explained.events.length === 0 && keywords(query).length > 2 && lastText !== "" && lastText !== query) {
+        explained = recallExplained(context.contactId, `${query} ${lastText}`, 8, { markUsed: true, vector });
+      }
       return {
         events: explained.events.map((e) => ({
           kind: e.kind,
@@ -102,6 +114,10 @@ const TOOLS: ToolDef[] = [
           matched: explained.matched[e.id] ?? [],
         })),
         total: explained.total,
+        // 空结果必须带引导，否则她的下一句话就是「未查询到相关记忆」——工具明明还能再试。
+        ...(explained.events.length > 0 ? {} : {
+          note: "没查到相关记忆。换 2~6 个字、用对方说过的原词（人名/食物/日期/地点）再查一次；换两三次都没有，再如实说没查到。",
+        }),
       };
     },
   },
@@ -235,9 +251,22 @@ const SELFIE_FRAMING =
  */
 function visibleTools(contactId?: string): ToolDef[] {
   const skillTools = usableSkills().length > 0 ? [SKILL_TOOL] : [];
-  if (contactId && isAssistant(contactId)) return [...ASSISTANT_TOOLS, ...WEB_TOOLS, ...skillTools];
+  if (contactId && isAssistant(contactId)) {
+    // 只读档把写工具整组摘掉：不声明 = 模型调不到，比运行时拦截干净。
+    const base = assistantPermission() === "readonly"
+      ? ASSISTANT_TOOLS.filter((t) => !ASSISTANT_WRITE_TOOLS.has(t.name))
+      : ASSISTANT_TOOLS;
+    return [...base, ...WEB_TOOLS, ...skillTools];
+  }
   const features = contactId ? getContact(contactId)?.features : undefined;
+  // 联系人级总开关（资料页「工具」卡的第一行）：false = 连工具声明都不进请求、
+  // executeTool 也查不到（同一个池子），这位联系人彻底没有「手」。默认开是历史行为。
+  if (contactId && features?.tools === false) return [];
   const off = new Set<string>();
+  // 看时间 / 翻记忆：默认开（历史行为），资料页可按联系人单独关。
+  // 关 = 连工具声明都摘掉（模型调不到）；系统提示词的 [现在] 行由 persona.ts 按同一开关 gating。
+  if (features?.clock === false) off.add("get_current_time");
+  if (features?.memorySearch === false) off.add("search_memory");
   if (features?.reminders !== true) off.add("schedule_reminder");
   if (features?.imageGen !== true || !capabilityReady("imageGeneration")) off.add("generate_image");
   if (features?.web !== true) { off.add("web_search"); off.add("web_fetch"); }
@@ -246,7 +275,10 @@ function visibleTools(contactId?: string): ToolDef[] {
   // 而这条只有「打开档」的断言能抓到（关闭档看起来一样绿）。
   const pool = [...TOOLS, ...WEB_TOOLS];
   const base = off.size === 0 ? pool : pool.filter((t) => !off.has(t.name));
-  return [...base, ...skillTools];
+  // 扩展工具（MCP / webhook / JS）跟在最后：名字自带 mcp__/ext__ 前缀，不会与内置撞名；
+  // 联系人工具总开关在上面已经 return [] 了，脚本许可未开时 extensions 也不产出 script 工具，
+  // 这里不用再筛一遍。
+  return [...base, ...skillTools, ...extensionToolDefs()];
 }
 
 /** OpenAI tools 协议的声明格式（function calling）。设置助手有自己的一套白名单工具。 */

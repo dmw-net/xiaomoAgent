@@ -30,8 +30,9 @@ export const MAX_TURNS = 500;
  * **默认全关**：这些能力会改变提示词内容或引入后台模型调用——静默改行为
  * 违背「用户主权、变更必须可见」，所以每一项都要用户在资料页主动打开。
  * 缺键按关解析也顺手消除了"老联系人存的是 {}"的升级歧义：没开过就是没开。
- * 默认开的两个例外都是**历史行为**（它不是新增能力，关掉才是变更，所以保持原样、
- * 由用户主动关）：`splitReply`（一直分气泡回复）与 `memoryExtract`（一直记记忆）。
+ * 默认开的三个例外都是**历史行为**（它不是新增能力，关掉才是变更，所以保持原样、
+ * 由用户主动关）：`splitReply`（一直分气泡回复）、`memoryExtract`（一直记记忆）与
+ * `tools`（工具从第一版就在，总开关关掉 = 这一位什么都做不了）。
  */
 export type CompanionFeatures = {
   /**
@@ -49,6 +50,25 @@ export type CompanionFeatures = {
   consolidate: boolean;
   /** 到点提醒：注册 schedule_reminder 工具，她说"提醒你"就能立下必达的定时任务。 */
   reminders: boolean;
+  /**
+   * 看时间：get_current_time 工具 + 系统提示词的 [现在] 行（日期/星期/时段/距上次说话）。
+   * 默认开——时间感知从第一版就在（历史行为，关掉才是变更）。关掉后提示词里不再硬拼
+   * 任何时间文本，模型也拿不到时间工具；「判断现在几点」这件事整个从她手里摘走。
+   */
+  clock: boolean;
+  /**
+   * 翻记忆：search_memory 工具，她可以自己检索关系记忆（拿不准的事主动去翻）。
+   * 默认开（历史行为）。注意它只关「她主动翻」这一条路；每轮自动召回的 [记忆] 段
+   * 归记忆提取/召回那套管，不跟这个开关走。
+   */
+  memorySearch: boolean;
+  /**
+   * 工具总开关（联系人级可插拔的主闸）：false = 这一位**一个工具都不声明、也不执行**，
+   * 连常开的看时间/翻记忆一起关。默认开——工具从第一版就在（历史行为，关掉才是变更），
+   * 总开关是给「这位纯聊天、什么都别做」的场景准备的。单个工具的开闭在 visibleTools 里
+   * 逐个判 features，这里只管"要不要给她手"。
+   */
+  tools: boolean;
   /**
    * 图像生成：注册 generate_image 工具，她可以画一张发回来。
    * 默认关——一次出图实测 7.8 秒（她那一轮会从 1 秒级变成 9 秒级），且服务商响应里没有
@@ -118,6 +138,9 @@ export type CompanionFeatures = {
 
 export const FEATURE_DEFAULTS: CompanionFeatures = {
   memoryExtract: true,
+  tools: true,
+  clock: true,
+  memorySearch: true,
   lifeline: false,
   recap: false,
   consolidate: false,
@@ -153,7 +176,7 @@ export function sanitizeFeatures(input: unknown): CompanionFeatures {
   const out: CompanionFeatures = { ...FEATURE_DEFAULTS };
   if (input === null || typeof input !== "object" || Array.isArray(input)) return out;
   const src = input as Record<string, unknown>;
-  for (const key of ["memoryExtract", "lifeline", "recap", "consolidate", "reminders", "imageGen", "web", "bond", "splitReply", "showThinking", "showTools"] as const) {
+  for (const key of ["memoryExtract", "tools", "clock", "memorySearch", "lifeline", "recap", "consolidate", "reminders", "imageGen", "web", "bond", "splitReply", "showThinking", "showTools"] as const) {
     if (src[key] === true) out[key] = true;
     else if (src[key] === false) out[key] = false;
   }

@@ -18,6 +18,7 @@ import { createHttpServer } from "./server.ts";
 import * as lan from "./lan.ts";
 import { startProactiveLoop, runProactiveCheck, pruneProactiveBacklog, pruneFinishedTasks } from "./proactive.ts";
 import { sweepStaleTurns } from "./agent.ts";
+import { backfillMemoryEmbeddings } from "./memory.ts";
 import { isChatModelId, listModels, pingChat } from "./model.ts";
 import { writeRuntimeHandshake, clearRuntimeHandshake } from "./runtime.ts";
 import { claimPrimary, isPrimary, leaseIsFreeOrOurs, primaryPid, releasePrimary, startLeaseLoop } from "./instance.ts";
@@ -107,6 +108,13 @@ if (staleTurns > 0) console.log(`[startup] 清扫 ${staleTurns} 条因重启中�
 const pruned = weHoldLease ? pruneProactiveBacklog() : { orphans: 0, deduped: 0 };
 if (pruned.orphans + pruned.deduped > 0) {
   console.log(`[startup] 主动性任务修复：孤儿清理 ${pruned.orphans} 条、堆积合并 ${pruned.deduped} 条`);
+}
+// 启动补一遍向量化：能力档配好的情况下，导入/迁移来的旧记忆在这里获得向量。
+// 异步跑不挡启动；失败等 6 小时后的 maintenance 兜底。
+if (weHoldLease) {
+  void backfillMemoryEmbeddings().then((n) => {
+    if (n > 0) console.log(`[startup] 记忆向量化回填 ${n} 条`);
+  }).catch(() => { /* maintenance 兜底 */ });
 }
 
 const server = createHttpServer({ rebind: applyLanBind });
@@ -256,6 +264,12 @@ function maintenance(): void {
     if (tasks > 0 || media.removed > 0) {
       console.log(`[maintenance] 清理：主动性历史 ${tasks} 条、孤儿图片 ${media.removed} 个（${(media.bytes / 1024 / 1024).toFixed(1)}MB）`);
     }
+    // 向量化回填是后台批量：启动那一遍没跑完的（端点刚才不可用、导入的老数据）这里继续补。
+    void backfillMemoryEmbeddings().then((n) => {
+      if (n > 0) console.log(`[maintenance] 记忆向量化回填 ${n} 条`);
+    }).catch((error: unknown) => {
+      console.warn(`[maintenance] 记忆向量化回填失败：${error instanceof Error ? error.message : String(error)}`);
+    });
   } catch (error) {
     console.error(`[maintenance] 清理失败：`, error instanceof Error ? error.message : String(error));
   }

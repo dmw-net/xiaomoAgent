@@ -7,10 +7,10 @@
 
 import { db, kvGet, kvSet } from "./db.ts";
 import { config } from "./config.ts";
-import { callModelJson } from "./model.ts";
+import { callModelJson, embedTexts } from "./model.ts";
 import { getContact, listContacts, pronounOf, updateContact } from "./contacts.ts";
 import { ownerPronoun } from "./persona.ts";
-import { personaConfig } from "./settings.ts";
+import { capabilityConfig, capabilityReady, personaConfig } from "./settings.ts";
 import type { ChatMessage } from "./model.ts";
 
 export type MemoryKind = "promise" | "preference" | "fact" | "plan" | "mood";
@@ -114,7 +114,9 @@ export function addMemoryEvent(input: {
       input.validUntil ?? null,
       input.contactId,
     );
-  return Number(result.lastInsertRowid);
+  const id = Number(result.lastInsertRowid);
+  void embedEvent(id, input.content);
+  return id;
 }
 
 /** 用户主动「记成记忆」：用 message id 做幂等源，重复点不会堆出重复条目。 */
@@ -180,7 +182,10 @@ export function updateMemoryEvent(
   const result = db
     .prepare(`UPDATE memory_events SET ${sets.join(", ")} WHERE id = ? AND contact_id = ? AND deleted_at IS NULL`)
     .run(...args, id, contactId);
-  return Number(result.changes) > 0;
+  const changed = Number(result.changes) > 0;
+  // 内容变了向量就是旧的了：标成另一个模型名让它整体判废，backfill 会重算。
+  if (changed && patch.content !== undefined) db.prepare(`UPDATE memory_events SET emb_model = NULL, embedding = NULL WHERE id = ?`).run(id);
+  return changed;
 }
 
 /** 删一条记忆：墓碑标记（deleted_at），召回/清单/统计全部立即不可见。 */
@@ -219,13 +224,31 @@ export function setMemoryValidUntil(id: number, contactId: string, ts: number | 
   return Number(result.changes) > 0;
 }
 
-type RecallHit = { event: MemoryEvent; score: number; matchedKeys: string[] };
+type RecallHit = { event: MemoryEvent; score: number; matchedKeys: string[]; via?: "semantic" };
 
 /** 三天内的事/刚想起过的事给一个有界小加项——它是加分项，不再是能把老记忆压死的乘子。 */
 const ACTIVE_BONUS = 0.2;
 const ACTIVE_WINDOW_MS = 3 * 86_400_000;
 /** 同一种类最多占几个注入位子：6 条全被"同一情绪的三种说法"占满是实测过的浪费。 */
 const MAX_PER_KIND = 3;
+
+/**
+ * 他最近一句原话（排除 exclude 那句）。给 search_memory 的空参兜底与二次扩展用：
+ * 他自己的用词是离记忆库词汇最近的查询源（记忆内容就是从他的话里抽的）。
+ * 只读，不写 last_used_at——取词不算「想起过」。
+ */
+export function lastUserMessageText(contactId: string, exclude?: string): string {
+  const rows = db
+    .prepare(
+      `SELECT text FROM messages
+       WHERE contact_id = ? AND role = 'user' AND superseded_at IS NULL AND kind != 'tool'
+       ORDER BY id DESC LIMIT 3`,
+    )
+    .all(contactId) as unknown as Array<{ text: string }>;
+  const want = (exclude ?? "").trim();
+  const hit = rows.find((row) => row.text.trim() !== want && row.text.trim() !== "");
+  return hit?.text?.trim() ?? "";
+}
 
 /**
  * 短句追问的查询扩展：他这句几乎没词（「那个事呢？」「真的吗」）时，
@@ -239,17 +262,10 @@ const MAX_PER_KIND = 3;
 function expandQuery(contactId: string, query: string): string {
   const trimmed = query.trim();
   if (trimmed === "" || keywords(trimmed).length > 2) return query;
-  const rows = db
-    .prepare(
-      `SELECT text FROM messages
-       WHERE contact_id = ? AND role = 'user' AND superseded_at IS NULL AND kind != 'tool'
-       ORDER BY id DESC LIMIT 3`,
-    )
-    .all(contactId) as unknown as Array<{ text: string }>;
   // 取"最近一条不是这句话的自己说的话"：主链路上本轮消息已经先落库，所以它是上一条；
   // 而试验台/预览拿的本来就是最后一句，这里取到的也是它前面那句 —— 两种调用都不得找错人。
-  const previous = rows.find((row) => row.text.trim() !== trimmed);
-  return previous ? `${trimmed} ${previous.text}` : query;
+  const previous = lastUserMessageText(contactId, trimmed);
+  return previous !== "" ? `${trimmed} ${previous}` : query;
 }
 
 /**
@@ -265,7 +281,7 @@ function expandQuery(contactId: string, query: string): string {
  * 分词器要求查询至少 3 个字，"很晚"这种两字查询会查不到）。LIKE 对中文子串匹配天然正确，
  * 实测 121 条记忆 ×40 个关键词的全表扫最慢 0.88ms。上量后再叠加向量，届时这里仍是唯一要改的地方。
  */
-function scoreRecall(contactId: string, query: string, limit: number): { hits: RecallHit[]; keywords: string[] } {
+function scoreRecall(contactId: string, query: string, limit: number, vector: QueryVector | null = null): { hits: RecallHit[]; keywords: string[] } {
   const keys = keywords(expandQuery(contactId, query));
   if (keys.length === 0) {
     // 没关键词可筛（纯图片轮、只有语气词）：借几条最要紧的往事保持连贯。
@@ -306,6 +322,10 @@ function scoreRecall(contactId: string, query: string, limit: number): { hits: R
     // 分数降序；同分时新的在前（旧的已经靠保底位子兜，不必占排序优势）。
     .sort((a, b) => b.score - a.score || b.event.created_at - a.event.created_at);
 
+  mergeSemantic(contactId, scored, vector);
+
+  // 语义路可能插进新条目/给已有条目加了分，重排一次再进 pickDistinct。
+  scored.sort((a, b) => b.score - a.score || b.event.created_at - a.event.created_at);
   return { hits: pickDistinct(scored, limit), keywords: keys };
 }
 
@@ -349,6 +369,145 @@ function markRecalled(hits: RecallHit[]): void {
   for (const id of ids) mark.run(at, id);
 }
 
+// ── 语义召回（向量化）────────────────────────────────────────
+//
+// 为什么不是向量库：单联系人几百~几千条，进程内暴力余弦毫秒级且**精确**；
+// ANN 索引（HNSW/IVF）在 N < 1 万时通常比顺序扫更慢、还是近似。向量存 BLOB、
+// 余弦在 JS 里算，唯一的外部依赖是 embedding 模型本身（能力档「向量化记忆」）。
+// 量级边界：单联系人 > 1 万条或要做跨联系人全局检索时，把 cosineScan 换成
+// sqlite-vec 的 vec0 MATCH——BLOB 里的 float32 原样可迁，接缝只有这一个函数。
+
+export type QueryVector = { v: Float32Array; model: string; dim: number };
+
+/** 当前向量化模型名；能力档没配 = ""（全部退回纯词面，行为与没有这层时一致）。 */
+export function currentEmbeddingModel(): string {
+  return capabilityReady("embedding") ? capabilityConfig("embedding").model : "";
+}
+
+/** 查询向量：8 秒封顶——它长在每轮回话的主链路上，端点卡 90 秒等于卡死对话。 */
+export async function queryVector(text: string): Promise<QueryVector | null> {
+  if (currentEmbeddingModel() === "") return null;
+  const r = await embedTexts([text], { timeoutMs: 8_000 });
+  if (r === null || r.vectors.length !== 1) return null;
+  const vec = r.vectors[0];
+  if (vec === undefined) return null;
+  return { v: toF32(vec), model: r.model, dim: vec.length };
+}
+
+/** 写入/改写后异步补向量。失败不重试：embedding 仍是 NULL，下一轮 backfill 会补。 */
+async function embedEvent(id: number, content: string): Promise<void> {
+  if (currentEmbeddingModel() === "") return;
+  const r = await embedTexts([content]);
+  if (r === null || r.vectors.length !== 1 || r.vectors[0] === undefined) return;
+  const f32 = toF32(r.vectors[0]);
+  db.prepare(`UPDATE memory_events SET embedding = ?, emb_model = ?, emb_dim = ? WHERE id = ?`)
+    .run(Buffer.from(f32.buffer), r.model, f32.length, id);
+}
+
+/** 批量回填：补齐缺失/换模型后判废的向量。启动与定期维护各跑一遍。返回补算条数。 */
+export async function backfillMemoryEmbeddings(contactId?: string): Promise<number> {
+  const model = currentEmbeddingModel();
+  if (model === "") return 0;
+  const ids = contactId !== undefined
+    ? [contactId]
+    : (db.prepare(`SELECT id FROM contacts WHERE archived_at IS NULL`).all() as Array<{ id: string }>).map((c) => c.id);
+  let done = 0;
+  const CHUNK = 32;
+  for (const cid of ids) {
+    for (;;) {
+      const rows = db.prepare(
+        `SELECT id, content FROM memory_events
+         WHERE contact_id = ? AND deleted_at IS NULL AND (embedding IS NULL OR emb_model IS NULL OR emb_model <> ?)
+         ORDER BY id DESC LIMIT ?`,
+      ).all(cid, model, CHUNK) as unknown as Array<{ id: number; content: string }>;
+      if (rows.length === 0) break;
+      const r = await embedTexts(rows.map((row) => row.content));
+      if (r === null) break; // 端点这会儿不行就停手，下一轮维护再来
+      for (const [i, row] of rows.entries()) {
+        const v = r.vectors[i];
+        if (!v) continue;
+        const f32 = toF32(v);
+        db.prepare(`UPDATE memory_events SET embedding = ?, emb_model = ?, emb_dim = ? WHERE id = ?`)
+          .run(Buffer.from(f32.buffer), r.model, f32.length, row.id);
+        done += 1;
+      }
+      if (rows.length < CHUNK) break;
+    }
+  }
+  return done;
+}
+
+function bytesToF32(blob: Uint8Array): Float32Array {
+  // slice 拷贝一份顺带解决对齐问题；Node 支持的平台都是小端，与写入侧一致。
+  return new Float32Array(blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength));
+}
+
+function toF32(values: number[]): Float32Array {
+  const f32 = new Float32Array(values.length);
+  for (let i = 0; i < values.length; i += 1) f32[i] = values[i] ?? 0;
+  return f32;
+}
+
+function cosineScan(a: Float32Array, b: Float32Array): number {
+  let dot = 0;
+  let na = 0;
+  let nb = 0;
+  const n = Math.min(a.length, b.length);
+  for (let i = 0; i < n; i += 1) {
+    const x = a[i] ?? 0;
+    const y = b[i] ?? 0;
+    dot += x * y;
+    na += x * x;
+    nb += y * y;
+  }
+  if (na === 0 || nb === 0) return 0;
+  return dot / Math.sqrt(na * nb);
+}
+
+/**
+ * 把语义路的命中并进词面打分结果：
+ * - 词面已经接住的条目加语义加成重排（两路都认为相关的排最前）；
+ * - 词面完全 miss、只有向量接住的（「发张自拍」vs 记忆里的「照片」）凭余弦入场，
+ *   分数折算成与词面同量纲（cos × 4 × weight，0.7 × w2 ≈ 一次两词命中）。
+ * 阈值不按绝对余弦定——各家 embedding 的分布差一个量级——按相对值：与最高分
+ * 相差不超过 45% 的才要，绝对底线 0.15 只挡噪声。
+ */
+function mergeSemantic(
+  contactId: string,
+  scored: RecallHit[],
+  vector: QueryVector | null,
+): void {
+  if (vector === null || vector.model !== currentEmbeddingModel()) return;
+  const rows = db.prepare(
+    `SELECT * FROM memory_events
+     WHERE contact_id = ? AND emb_model = ? AND embedding IS NOT NULL AND ${VALID_CONDITION}`,
+  ).all(contactId, vector.model, Date.now()) as unknown as Array<MemoryEvent & { embedding: Uint8Array; emb_dim: number | null }>;
+  const coses: Array<{ row: MemoryEvent; cos: number }> = [];
+  for (const row of rows) {
+    if (row.emb_dim !== vector.dim) continue;
+    const cos = cosineScan(bytesToF32(row.embedding), vector.v);
+    if (cos >= 0.15) coses.push({ row, cos });
+  }
+  coses.sort((a, b) => b.cos - a.cos);
+  const top = coses[0]?.cos ?? 0;
+  const semantic = coses.filter((x) => x.cos >= top * 0.55).slice(0, 6);
+  if (semantic.length === 0) return;
+  const byId = new Map(scored.map((hit) => [hit.event.id, hit]));
+  for (const { row, cos } of semantic) {
+    const existing = byId.get(row.id);
+    if (existing) {
+      existing.score += cos * 3 * (row.weight || 1);
+    } else {
+      scored.push({ event: row, score: cos * 4 * (row.weight || 1), matchedKeys: [], via: "semantic" });
+    }
+  }
+}
+
+/** 主链路用的召回：先把查询句向量化（失败自动退纯词面），再走混合打分。 */
+export async function recallSmart(contactId: string, query: string, limit = config.recallLimit): Promise<MemoryEvent[]> {
+  return recall(contactId, query, limit, await queryVector(query));
+}
+
 /**
  * 对话主链路的召回：只要事件，并把真正命中的那些记为「被想起」。
  *
@@ -357,8 +516,8 @@ function markRecalled(hits: RecallHit[]): void {
  * 用户说话时的被动注入（这里）、她自己调 search_memory 主动查（tools.ts）算；
  * 观测路径（上下文占用圆环、提示词预览、记忆页搜索与试验台）一律走 recallExplained 且不标记。
  */
-export function recall(contactId: string, query: string, limit = config.recallLimit): MemoryEvent[] {
-  const { hits } = scoreRecall(contactId, query, limit);
+export function recall(contactId: string, query: string, limit = config.recallLimit, vector: QueryVector | null = null): MemoryEvent[] {
+  const { hits } = scoreRecall(contactId, query, limit, vector);
   markRecalled(hits);
   return hits.map((hit) => hit.event);
 }
@@ -374,7 +533,7 @@ export function recallExplained(
   contactId: string,
   query: string,
   limit = config.recallLimit,
-  opts: { markUsed?: boolean } = {},
+  opts: { markUsed?: boolean; vector?: QueryVector | null } = {},
 ): {
   events: MemoryEvent[];
   scores: Record<number, number>;
@@ -382,7 +541,7 @@ export function recallExplained(
   keywords: string[];
   total: number;
 } {
-  const { hits, keywords } = scoreRecall(contactId, query, limit);
+  const { hits, keywords } = scoreRecall(contactId, query, limit, opts.vector ?? null);
   if (opts.markUsed === true) markRecalled(hits);
 
   const scores: Record<number, number> = {};

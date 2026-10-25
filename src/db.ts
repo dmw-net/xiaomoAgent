@@ -249,3 +249,10 @@ ensureColumn("contacts", "face_ref", "face_ref TEXT NOT NULL DEFAULT ''");
 // 主动任务分类：care = 模型判断该不该说；reminder = schedule_reminder 工具立下的
 // 到点提醒——必须说，不吃每日配额（陪伴承诺比"防打扰节奏"更硬）。
 ensureColumn("proactive_tasks", "kind", "kind TEXT NOT NULL DEFAULT 'care'");
+// 语义召回：embedding 存 Float32Array 的字节（维度由 emb_dim 记，emb_model 记「哪个模型算的」）。
+// 不引向量库/原生扩展：单联系人几百~几千条，JS 暴力余弦毫秒级且精确；量级边界与
+// 换 sqlite-vec 的迁移路径写在 memory.ts 的 cosineScan。emb_model 用来判废——
+// 换 embedding 模型后旧向量维度/分布不可比，必须整体重算。
+ensureColumn("memory_events", "embedding", "embedding BLOB");
+ensureColumn("memory_events", "emb_model", "emb_model TEXT");
+ensureColumn("memory_events", "emb_dim", "emb_dim INTEGER");

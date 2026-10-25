@@ -275,7 +275,8 @@ export type CapabilityName =
   | "speechToText"
   | "textToSpeech"
   | "memoryExtract"
-  | "imageGeneration";
+  | "imageGeneration"
+  | "embedding";
 
 export const CAPABILITY_NAMES: CapabilityName[] = [
   "memoryExtract",
@@ -283,6 +284,7 @@ export const CAPABILITY_NAMES: CapabilityName[] = [
   "imageGeneration",
   "speechToText",
   "textToSpeech",
+  "embedding",
 ];
 
 export const CAPABILITY_LABELS: Record<CapabilityName, string> = {
@@ -291,6 +293,7 @@ export const CAPABILITY_LABELS: Record<CapabilityName, string> = {
   speechToText: "语音识别",
   textToSpeech: "语音合成",
   memoryExtract: "记忆抽取与整理",
+  embedding: "向量化记忆",
 };
 
 /**
@@ -998,6 +1001,9 @@ export function capabilityReady(name: CapabilityName): boolean {
   if (bound !== null) return bound.baseUrl !== "" && bound.apiKey !== "" && bound.name !== "";
   if (!modelReadyNow()) return false;
   if (name === "memoryExtract") return true;
+  // 向量化必须显式绑档：拿聊天模型名去打 /embeddings 只会得到一个毫无意义的失败
+  // （与 TTS/STT 同理），而且它没配好时召回要能静默退回纯词面，不能误报就绪。
+  if (name === "embedding") return false;
   return name === "imageVision" && modelConfig().caps.vision === true;
 }
 

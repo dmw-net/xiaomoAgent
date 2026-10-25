@@ -1355,6 +1355,59 @@ export async function synthesizeSpeech(input: string): Promise<{ dataUrl: string
 }
 
 /**
+ * 向量化记忆的 embedding 调用（/embeddings，OpenAI 兼容）。失败返回 null 而不是抛——
+ * 它长在召回主链路上：端点抖一下不能让每一轮对话都失败，最多退回纯词面召回。
+ * 返回 model 名是为了把「这批向量是哪个模型算的」落进库：换模型后旧向量维度/分布
+ * 都不可比，必须按模型名判废重算（见 memory.ts 的 backfill）。
+ *
+ * timeoutMs 覆盖能力档超时：查询侧每次回话都要现算一个查询向量，卡 90 秒等于卡死对话——
+ * 那一侧必须压到 8 秒内；回填是后台批量，用能力档自己的值。
+ */
+export async function embedTexts(
+  texts: string[],
+  opts: { timeoutMs?: number; override?: { baseUrl: string; apiKey: string; model: string; timeoutMs?: number } } = {},
+): Promise<{ vectors: number[][]; model: string } | null> {
+  // override 给「能力测试」用：表单里还没保存/启用的参数也要能试（与 pingChat 的 override 同语义）。
+  const cap = opts.override ?? (capabilityReady("embedding") ? capabilityConfig("embedding") : null);
+  if (cap === null) return null;
+  const timeoutMs = Math.min(opts.timeoutMs ?? cap.timeoutMs ?? 90_000, cap.timeoutMs ?? 90_000);
+  const url = `${cap.baseUrl}/embeddings`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  const started = Date.now();
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${cap.apiKey}` },
+      body: JSON.stringify({ model: cap.model, input: texts }),
+      signal: controller.signal,
+    });
+    const elapsedMs = Date.now() - started;
+    if (!response.ok) {
+      const detail = (await response.text()).slice(0, 300);
+      console.warn(`[model] embedding 失败（HTTP ${response.status}，${elapsedMs}ms）：${detail}`);
+      return null;
+    }
+    const parsed = (await response.json()) as { data?: Array<{ embedding?: unknown; index?: number }> };
+    const data = Array.isArray(parsed.data) ? parsed.data : [];
+    const vectors = data
+      .slice()
+      .sort((a, b) => (a.index ?? 0) - (b.index ?? 0))
+      .map((item) => (Array.isArray(item.embedding) && item.embedding.every((n) => typeof n === "number") ? (item.embedding as number[]) : null));
+    if (vectors.length !== texts.length || vectors.some((v) => v === null)) {
+      console.warn(`[model] embedding 返回条数/形状不对：要 ${texts.length} 条，得到 ${vectors.length} 条`);
+      return null;
+    }
+    return { vectors: vectors as number[][], model: cap.model };
+  } catch (error) {
+    console.warn(`[model] embedding 请求失败：${error instanceof Error ? error.message : String(error)}`);
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * 只允许拉公网 http(s)：服务商给的外链地址由它的响应决定，本机与内网地址一律拒绝。
  *
  * ⚠️ 私网判断必须**复用 web.ts 的 isPrivateAddress**，别在这儿另写一套前缀匹配：

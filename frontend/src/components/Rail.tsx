@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MessageCircleMore, Sparkles, Activity, Settings, Menu } from "lucide-react";
 import { useDismiss } from "../hooks/useDismiss";
+import { getWallpaper, WALLPAPER_EVENT } from "../lib/ui-prefs";
 import type { ThemeMode, ViewKey } from "../types";
 
 const NAV: Array<{ key: ViewKey; label: string; icon: JSX.Element }> = [
@@ -33,15 +34,32 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
 }): JSX.Element {
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<ThemeMode>(currentMode);
+  /** 壁纸开着 = 浅色/深色暂停生效，菜单的主题组换成一枚状态徽标。 */
+  const [wallpaperOn, setWallpaperOn] = useState(() => getWallpaper().kind !== "none");
 
-  // 跟随系统时监听系统切换，保持高亮正确（与旧 theme-switch.js 行为一致）
+  // 主题高亮跟着真源走：跟随系统时听系统切换；别处（设置页）改了主题，
+  // index.html 会广播 xiaomo:themechange，这里重画一遍，两处高亮不再各说各话。
+  // 壁纸开/关也要跟着换主题组的样子（WALLPAPER_EVENT 由 ui-prefs 的 setWallpaper 广播）。
   useDismiss(open, () => setOpen(false));
   useEffect(() => {
-    const paint = (): void => setMode(currentMode());
+    const paint = (): void => {
+      setMode(currentMode());
+      setWallpaperOn(getWallpaper().kind !== "none");
+    };
+    document.addEventListener("xiaomo:themechange", paint);
+    document.addEventListener(WALLPAPER_EVENT, paint);
     try {
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", paint);
-      return () => window.matchMedia("(prefers-color-scheme: dark)").removeEventListener("change", paint);
-    } catch { return undefined; }
+      return () => {
+        document.removeEventListener("xiaomo:themechange", paint);
+        document.removeEventListener(WALLPAPER_EVENT, paint);
+        window.matchMedia("(prefers-color-scheme: dark)").removeEventListener("change", paint);
+      };
+    } catch {
+      document.removeEventListener("xiaomo:themechange", paint);
+      document.removeEventListener(WALLPAPER_EVENT, paint);
+      return undefined;
+    }
   }, []);
 
   const pick = (m: ThemeMode): void => {
@@ -78,6 +96,7 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
           onFocus={() => onPrefetch?.(item.key)}
         >
           {item.icon}
+          <span className="rbtn-label">{item.label}</span>
           {item.key === "chat" && unreadChat > 0 && <span className="rbtn-dot" aria-label={unreadChat + " 条未读"}>{unreadChat > 99 ? "99+" : unreadChat}</span>}
         </button>
       ))}
@@ -86,6 +105,7 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
         title="问助手 · 配置与排查" aria-label="问助手" aria-haspopup="dialog"
         onClick={() => { onOpenAssistant(); }}>
         <Sparkles size={20} strokeWidth={1.8} />
+        <span className="rbtn-label">助手</span>
       </button>
       <div className="rail-menu-wrap">
         <button
@@ -98,17 +118,26 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
           onClick={(e) => { e.stopPropagation(); setOpen(!open); }}
         >
           <Menu size={20} strokeWidth={1.8} />
+          <span className="rbtn-label">更多</span>
         </button>
         {open && (
           <div className="rail-menu" id="railMenu" data-keep-menu>
             <div className="menu-label">主题</div>
-            <div className="menu-theme" role="group" aria-label="主题">
-              {(["system", "light", "dark"] as const).map((m) => (
-                <button key={m} type="button" aria-pressed={mode === m ? "true" : "false"} onClick={() => pick(m)}>
-                  {m === "system" ? "跟随系统" : m === "light" ? "亮色" : "暗色"}
-                </button>
-              ))}
-            </div>
+            {wallpaperOn ? (
+              <div className="wp-mode-chip" role="status">
+                <i aria-hidden="true" />
+                壁纸适配中 · 明暗已暂停
+              </div>
+            ) : (
+              <div className="menu-theme" role="group" aria-label="主题">
+                {(["system", "light", "dark"] as const).map((m) => (
+                  <button key={m} type="button" aria-pressed={mode === m ? "true" : "false"} onClick={() => pick(m)}>
+                    {/* 与设置页同一套词：浅色 / 深色 / 跟随系统 */}
+                    {m === "system" ? "跟随系统" : m === "light" ? "浅色" : "深色"}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="menu-sep" />
             <button type="button" className="menu-item" onClick={() => { setOpen(false); onOnboarding(); }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M14.8 9.2 13 13l-3.8 1.8L11 11z" /></svg>

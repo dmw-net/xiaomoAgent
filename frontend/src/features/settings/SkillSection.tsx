@@ -179,11 +179,14 @@ export default function SkillSection({ ask }: {
     .sort((a, b) => (Number(b.valid) - Number(a.valid)) || a.name.localeCompare(b.name));
 
   return (
-    <div className="section">
+    <div className="section skill-section" id="settings-skills">
       <h2>技能</h2>
       <div className="desc">
-        在技能目录里放一份说明，联系人就多会一件事。平时只看到每篇的一句话，
-        真要办那件事才取完整内容看。文件改完马上生效。
+        每个技能是一份 SKILL.md。联系人平时只看到一句话，真正需要时才读取全文；文件保存后立即生效。
+      </div>
+      <div className="settings-overview-strip">
+        <span><b>{skills.length}</b> 项技能</span>
+        <span>{ordered.filter((x) => stateOf(x).on).length} 项当前可用</span>
       </div>
 
       {err && (
@@ -193,13 +196,10 @@ export default function SkillSection({ ask }: {
         <div className="banner show ok" role="status"><div className="body">{note}</div></div>
       )}
 
-      <div className="card card-pad">
+      <div className="card card-pad skill-dir-card">
         <div className="subhead">技能目录</div>
-        <div className="hint">
-          一个技能就是这个目录下的一个文件夹。在这里新建、改、删，和你自己进这个目录
-          放文件夹是一回事——文件落地即生效，不用重启。
-        </div>
-        <div className="preview show"><pre>{dir === "" ? "正在读取目录…" : dir}</pre></div>
+        <div className="hint">目录里的每个文件夹就是一项技能；也可以直接在文件管理器里维护。</div>
+        <div className="preview show skill-dir"><pre>{dir === "" ? "正在读取目录…" : dir}</pre></div>
         <div className="actions">
           <button type="button" className="btn sm" onClick={load} disabled={busy !== ""}>
             <RefreshCw size={13} /> {busy === "scan" ? "扫描中…" : "重新扫描"}
@@ -262,13 +262,14 @@ export default function SkillSection({ ask }: {
 
       {skills.length === 0 ? (
         <div className="empty">
-          还没有技能。点上面的「新建技能」写一份就行；想自己动手的话，
-          照着这个路径进目录放一个文件夹、放一份 {SKILL_FILE} 也一样。
+          还没有技能。点「新建技能」写一份，或在技能目录里放一个文件夹和 {SKILL_FILE}。
         </div>
-      ) : ordered.map((s) => {
+      ) : (
+        <div className="settings-list-scroll skill-list">
+        {ordered.map((s) => {
         const st = stateOf(s);
         return (
-          <div className="card card-pad" key={s.name}>
+          <div className="skill-item" key={s.name}>
             <div className="cap-head">
               <div>
                 <div className="subhead">{s.name}</div>
@@ -318,8 +319,10 @@ export default function SkillSection({ ask }: {
           </div>
         );
       })}
+        </div>
+      )}
 
-      <details className="card card-pad">
+      <details className="card card-pad skill-template">
         <summary className="subhead">{SKILL_FILE} 怎么写</summary>
         <div className="preview show"><pre>{TEMPLATE("weather-advice").join("\n")}</pre></div>
         <div className="hint">
@@ -333,3 +336,4 @@ export default function SkillSection({ ask }: {
     </div>
   );
 }
+

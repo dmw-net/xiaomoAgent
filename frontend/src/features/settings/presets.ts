@@ -97,4 +97,17 @@ export const CAPABILITY_GROUPS: CapabilityPresetGroup[] = [
       { label: "硅基流动 CosyVoice", baseUrl: "https://api.siliconflow.cn/v1", model: "FunAudioLLM/CosyVoice2-0.5B" },
     ],
   },
+  {
+    name: "embedding",
+    title: "向量化记忆",
+    desc: "记忆召回的语义半边：配上之后，说话和记忆按含义匹配，不再只靠字面重合（「发张自拍」也能想起「照片」）。本地跑 Ollama 也行；不配则退回纯关键词召回，一切照旧。",
+    endpoint: "/embeddings",
+    modelHint: "如 bge-m3 / text-embedding-3-small",
+    followsMain: false,
+    presets: [
+      { label: "本地 Ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "bge-m3" },
+      { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "text-embedding-3-small" },
+      { label: "硅基流动", baseUrl: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3" },
+    ],
+  },
 ];

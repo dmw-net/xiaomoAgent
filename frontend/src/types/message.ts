@@ -3,6 +3,32 @@
 /** 消息行与处理单是 HTTP 契约，类型与后端同源：见仓库根 shared/api.ts。 */
 export type { MessageRow, TurnSummary as TurnRow } from "../../../shared/api";
 
+import type { ThinkingLevelId, ThinkingModeId, ThinkingParamId } from "./settings";
+
+/** 当前联系人的思考控制面（/api/model/thinking）：聊天输入区只读这一份快照。 */
+export type ThinkingControl = {
+  model: string;
+  provider: string;
+  /** 生效模型档的工具硬闸状态：false = 档上没勾「工具调用」，联系人开了工具也不会带。 */
+  tools: boolean;
+  thinking: {
+    switchable: boolean;
+    param: ThinkingParamId;
+    mode: ThinkingModeId;
+    /** 聊天快捷开关里「关闭」是否正被选中（thinkingMode === "off"）。 */
+    off?: boolean;
+    level: ThinkingLevelId | "";
+    levels: ThinkingLevelId[];
+  };
+  /** 这次写入落在了谁头上（POST 响应才带）：强度改在模型档上，档共享或落全局时界面要说破。 */
+  appliedTo?: {
+    scope: "profile" | "global";
+    label: string;
+    /** 绑定这份档的联系人数（scope=global 时为 0）。 */
+    contacts: number;
+  };
+};
+
 /** 聊天流内的临时提示条（可带重试按钮）。 */
 export type Notice = {
   id: number;

@@ -2,10 +2,23 @@ import { contactId as activeContactId, deleteJson, getJson, postJson, putJson } 
 import type { ContactItem } from "../types";
 
 /** 联系人级可插拔陪伴能力（与后端 CompanionFeatures 对齐；缺键按后端 FEATURE_DEFAULTS 解析，
- *  除 memoryExtract/splitReply/showThinking/showTools 默认开外，其余默认关）。 */
+ *  除 memoryExtract/tools/splitReply/showThinking/showTools 默认开外，其余默认关）。 */
 export type CompanionFeatures = {
   /** 记忆提取：每次回复后把新发生的事记进记忆库。默认开（历史行为，关掉才是变更）；温度计随它的刷新绑在这一项上。 */
   memoryExtract: boolean;
+  /**
+   * 工具总开关（联系人级主闸）：false = 这一位一个工具都不声明、也不执行，连常开的
+   * 看时间/翻记忆一起关。默认开（历史行为）。注意它之上还有一道模型档硬闸——
+   * 生效模型档没勾「工具调用」时，这里开着也不会带工具（界面会提示）。
+   */
+  tools: boolean;
+  /**
+   * 看时间：get_current_time 工具 + 系统提示词的 [现在] 行。默认开（历史行为）。
+   * 关掉后提示词不再硬拼任何时间文本，时间感知整个摘走。
+   */
+  clock: boolean;
+  /** 翻记忆：search_memory 工具，她可以自己检索关系记忆。默认开（历史行为）；只关"她主动翻"，自动召回不受影响。 */
+  memorySearch: boolean;
   lifeline: boolean;
   /** 窗口边缘梗概：被挤出回放窗口的对话压成「上次说到」继续带着。 */
   recap: boolean;

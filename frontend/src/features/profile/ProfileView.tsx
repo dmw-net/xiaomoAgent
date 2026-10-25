@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Camera, Save, Wand2, FileDown, Images, RotateCcw, SlidersHorizontal, HeartHandshake, BookOpen, X } from "lucide-react";
+import { ArrowLeft, BrainCircuit, Camera, FileDown, HeartHandshake, Images, Link2, MessageSquareText, RotateCcw, Save, SlidersHorizontal, Wand2, BookOpen, X } from "lucide-react";
 import { contactsApi, settingsApi } from "../../api";
 import { chatApi } from "../../api";
 import { fmtTokens } from "../../lib/format";
@@ -29,12 +29,27 @@ import type { PersonaDraft } from "../../lib/persona-doc";
 /** 与后端 FEATURE_DEFAULTS 对齐：除历史行为（memoryExtract 记记忆、splitReply 分条气泡）
  *  与显示开关外默认全关——新增能力由用户主动开，历史行为保持原样、由用户主动关。 */
 const FEATURE_DEFAULTS: CompanionFeatures = {
-  memoryExtract: true,
+  memoryExtract: true, tools: true, clock: true, memorySearch: true,
   lifeline: false, recap: false, consolidate: false, reminders: false, imageGen: false, web: false, toolRounds: 0, bond: false,
   splitReply: true, turnPct: 0, tokenPct: 0, showThinking: true, showTools: true,
   dailyLimit: 0, temperature: -1, bannedWords: "", schedule: "", lastConsolidatedAt: null,
 };
 const EMPTY_BOND: BondState = { stage: "", warmth: 50, mood: "", updated_at: null };
+
+/** 联系人「对话设置」的第二层导航：先按改动目的分组，避免一张页里堆满旋钮。 */
+type ContactSettingsSection = "context" | "reply" | "tools" | "care" | "channels";
+const CONTACT_SETTINGS_SECTIONS: Array<{
+  key: ContactSettingsSection;
+  label: string;
+  hint: string;
+  icon: typeof MessageSquareText;
+}> = [
+  { key: "context", label: "模型与上下文", hint: "模型、回复方式、回放轮数", icon: BrainCircuit },
+  { key: "reply", label: "回复与显示", hint: "温度、禁用词、聊天气泡", icon: MessageSquareText },
+  { key: "tools", label: "工具与联网", hint: "看时间、翻记忆、联网、提醒", icon: Wand2 },
+  { key: "care", label: "记忆与陪伴", hint: "记忆提取、生活线与关系状态", icon: HeartHandshake },
+  { key: "channels", label: "连接方式", hint: "微信、QQ 与消息通道", icon: Link2 },
+];
 
 /** 陪伴能力开关的一句话说明（记忆 / 生活线 / 温度计这类增强；工具型开关见下方 TOOL_ITEMS）。 */
 const FEATURE_ITEMS: Array<{ key: keyof CompanionFeatures; label: string; hint: (who: string) => string }> = [
@@ -48,12 +63,11 @@ const FEATURE_ITEMS: Array<{ key: keyof CompanionFeatures; label: string; hint: 
 /** 工具清单：她手上每一个能"做点事"的工具一行。开关都绑到现有 features 字段，不另立真源。 */
 type ToolRow =
   | { kind: "toggle"; key: keyof CompanionFeatures; label: string; hint: (who: string) => string }
-  | { kind: "always"; label: string; hint: string }
   | { kind: "pointer"; label: string; hint: string };
 
 const TOOL_ITEMS: ToolRow[] = [
-  { kind: "always", label: "看时间", hint: "报现在几点、今天几号星期几，接得住「今天周几」。一直在。" },
-  { kind: "always", label: "翻记忆", hint: "从已记住的事里挑相关的来用；记不记新的归「记忆提取」管。一直在。" },
+  { kind: "toggle", key: "clock", label: "看时间", hint: (who) => `系统提示词里常驻的现在时间、和「查一下现在几点」的工具一起关；关了${who}就不知道今天几号星期几，也接不住「现在几点」这种问题。` },
+  { kind: "toggle", key: "memorySearch", label: "翻记忆", hint: (who) => `拿不准的事，${who}可以自己翻记忆库核对；这里只关「主动去翻」这条路，每轮自动带上的相关记忆归「记忆召回」管，记不记新的归「记忆提取」管。` },
   { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。" },
   { kind: "toggle", key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
   { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。` },
@@ -240,6 +254,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   // 其条目自己即时写库，表单的保存入口是底部脏值条（见 pf-dock）。
   const [page, setPage] = useState<ProfilePage>(() =>
     initialPage ?? (getProfilePage(contactId) as ProfilePage | null) ?? "persona");
+  const [settingsSection, setSettingsSection] = useState<ContactSettingsSection>("context");
   // 带着目的跳进来（initialPage）优先；否则回到这位**上次看的分区**——刚在「记忆」里删完，
   // 退出再进来不该重新点两下才回到那一屏。
   useEffect(() => { setProfilePage(contactId, page); }, [contactId, page]);
@@ -260,6 +275,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   // 模型绑定："" = 跟随全局
   const [modelProfile, setModelProfile] = useState("");
   const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
+  /** 「跟随全局」不是一句空标签：同时显示全局模型名和是否可用。 */
+  const [globalModel, setGlobalModel] = useState({ name: "", ready: false, echo: false });
   // 回放轮数：0 = 跟随全局；globalTurns 用来把「跟随全局」标成具体数字
   const [recentTurns, setRecentTurns] = useState(0);
   const [globalTurns, setGlobalTurns] = useState(6);
@@ -267,6 +284,20 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   const [usage, setUsage] = useState<ContextUsage | null>(null);
   // 陪伴能力（可插拔借鉴功能包）：开关 + 作息 + 生活线 + 温度计
   const [features, setFeatures] = useState<CompanionFeatures>(FEATURE_DEFAULTS);
+  /**
+   * 生效模型档的工具硬闸（caps.tools）：false 时「允许使用工具」开了也不带工具，
+   * 总开关下面的清单全是摆设——必须在卡里说破，不能让人对着开关排障。
+   * null = 还没拉到 / 拉失败（模型未配置时后端回 echo 档，tools 照常为 true）。
+   */
+  const [modelTools, setModelTools] = useState<{ on: boolean; model: string } | null>(null);
+  useEffect(() => {
+    if (isAssistant) return;
+    let alive = true;
+    void chatApi.fetchThinkingControl(contactId)
+      .then((d) => { if (alive) setModelTools({ on: d.tools === true, model: d.model }); })
+      .catch(() => { if (alive) setModelTools(null); });
+    return () => { alive = false; };
+  }, [contactId, isAssistant]);
   const [lifeline, setLifeline] = useState("");
   const [recap, setRecap] = useState("");
   const [bond, setBond] = useState<BondState>(EMPTY_BOND);
@@ -337,6 +368,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       .then((s) => {
         setModelOptions(profilePicks(s.profiles ?? [], s.providerNames ?? {}));
         setGlobalTurns(s.persona?.recentTurns || s.defaultRecentTurns || 6);
+        setGlobalModel({ name: s.model?.name || "", ready: s.modelReady === true, echo: s.model?.mode === "echo" });
       })
       .catch((e: Error) => setError("可选模型与全局轮数读取失败：" + e.message));
   }, [mode, contactId]);
@@ -355,6 +387,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       void settingsApi.fetchSettings()
         .then((s) => {
           setGlobalTurns(s.persona?.recentTurns || s.defaultRecentTurns || 6);
+          setGlobalModel({ name: s.model?.name || "", ready: s.modelReady === true, echo: s.model?.mode === "echo" });
           setModelOptions(profilePicks(s.profiles ?? [], s.providerNames ?? {}));
         })
         .catch(() => undefined);
@@ -373,12 +406,14 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     else { setFeatures({ ...features, turnPct: features.turnPct > 0 ? features.turnPct : 50 }); if (recentTurns === -1) setRecentTurns(0); }
   };
   const totalTurns = usage?.fullHistory?.turns ?? 0;
+  const globalModelStatus = globalModel.echo ? "演示模式" : globalModel.ready ? (globalModel.name || "已就绪") : "未就绪";
   const turnHint = (() => {
     if (turnMode === "pct") {
       // 换算要说人话：比例本身没概念，"这段会话多少轮 → 带多少轮"才有。
       if (totalTurns === 0) return `带这段会话最近 ${features.turnPct}% 的轮数（正在读入轮数…）`;
       return `这段会话 ${totalTurns} 轮 × ${features.turnPct}% = 带最近 ${Math.max(1, Math.ceil(totalTurns * features.turnPct / 100))} 轮`;
     }
+    if (turnMode === "global") return `当前全局默认会带最近 ${globalTurns} 轮`;
     if (turnMode === "all" && usage?.fullHistory) {
       return `全部历史 ≈ ${fmtTokens(usage.fullHistory.tokens)} token · ${usage.fullHistory.turns} 轮`
         + (usage.fullHistory.tokens > 20000 ? "（每次调用的输入都会涨到这个量级）" : "");
@@ -617,13 +652,18 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   // 这时不输出关联，免得 aria-labelledby 指向一个不存在的 tab。
   const pagePanel: PanelAria = mode === "edit" ? panelAria("pf-page", page) : {};
   const pagePanelFor = (key: ProfilePage): PanelAria => mode === "edit" ? panelAria("pf-page", key) : {};
+  const pfRootRef = useRef<HTMLDivElement>(null);
   const [visitedPages, setVisitedPages] = useState<Set<ProfilePage>>(() => new Set([page]));
+  // 切分区等于换一张设置页：滚动位置必须回到顶部，避免一进来就落在上页的中段。
+  useEffect(() => {
+    pfRootRef.current?.scrollTo({ top: 0, behavior: "auto" });
+  }, [page, settingsSection]);
   useEffect(() => {
     setVisitedPages((prev) => prev.has(page) ? prev : new Set(prev).add(page));
-  }, [page]);
+  }, [page, settingsSection]);
 
   return (
-    <div className="pf" data-page={page}>
+    <div className="pf" data-page={page} ref={pfRootRef}>
       <div className="pf-topbar">
         <button type="button" className="pf-back" onClick={tryBack}>
           <ArrowLeft size={15} strokeWidth={1.8} />{isAssistant ? "返回助手" : "返回对话"}
@@ -820,11 +860,35 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       )}
 
       {mode === "edit" && (visitedPages.has("settings") || page === "settings") && loaded && (
-        <div className="pf-settings" hidden={page !== "settings"} {...pagePanelFor("settings")}>
+        <div className={"pf-settings" + (isAssistant ? " pf-settings-single" : "")} hidden={page !== "settings"} {...pagePanelFor("settings")}>
+          {!isAssistant && (
+            <nav className="pf-settings-nav" aria-label="对话设置分类">
+              <div className="pf-settings-nav-label">本联系人</div>
+              <div className="pf-settings-nav-list">
+                {CONTACT_SETTINGS_SECTIONS.map((item) => {
+                  const Icon = item.icon;
+                  return (
+                    <button key={item.key} type="button" className={"pf-settings-nav-item" + (settingsSection === item.key ? " on" : "")}
+                      aria-current={settingsSection === item.key ? "page" : undefined} onClick={() => setSettingsSection(item.key)}>
+                      <span className="pf-settings-nav-icon" aria-hidden="true"><Icon size={15} strokeWidth={1.8} /></span>
+                      <span className="pf-settings-nav-copy"><b>{item.label}</b><small>{item.hint}</small></span>
+                    </button>
+                  );
+                })}
+              </div>
+              <p className="pf-settings-nav-foot">改动仍由页面底部的保存条统一提交。</p>
+            </nav>
+          )}
+
+          <div className="pf-settings-panels">
+          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "channels"}>
           {/* 微信连接放最前：绑不绑通道决定从哪里说话，优先级高于模型参数。 */}
           {!contactId.startsWith("assistant") && <WeChatSection contactId={contactId} who={who} />}
           {/* QQ 跟在微信后面：两条通道各自独立绑定，一张联系人可以两条都开。 */}
           {!contactId.startsWith("assistant") && <QQSection contactId={contactId} who={who} />}
+          </div>
+
+          <div className="pf-settings-pane" hidden={settingsSection !== "context"}>
 
           <div className="card card-pad pf-set-card">
             <div className="pf-set-title">模型与上下文</div>
@@ -834,9 +898,12 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
               </div>
               <div className="pf-set-ctl">
                 <PickList label="该联系人用哪个模型" value={modelProfile}
-                  options={[{ value: "", label: "跟随全局（正在生效的主模型）" }, ...modelOptions]}
+                  options={[{ value: "", label: `跟随全局 · ${globalModelStatus}` }, ...modelOptions]}
                   empty={modelOptions.length === 0 ? "还没有存好的模型档" : undefined}
                   onChange={setModelProfile} />
+                {modelProfile === "" && (
+                  <small className="pf-set-note">当前全局模型：{globalModelStatus}</small>
+                )}
                 {modelOptions.length === 0 && (
                   <small className="pf-set-note">先去「设置 → 主对话模型」存一份模型档，这里才有得挑。</small>
                 )}
@@ -864,7 +931,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   {TURN_MODES.map(([key, label]) => (
                     <button key={key} type="button" role="radio" aria-checked={turnMode === key}
                       className={"prof-chip" + (turnMode === key ? " on" : "")}
-                      onClick={() => pickTurnMode(key)}>{label}</button>
+                      onClick={() => pickTurnMode(key)}>{key === "global" ? `跟随全局 · ${globalTurns} 轮` : label}</button>
                   ))}
                 </div>
                 {turnMode === "turns" && (
@@ -914,10 +981,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </div>
           </div>
 
+          </div>
+
+          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "reply"}>
           {/* 生成设置：这两个旋钮管"怎么说"，与用哪个模型无关，所以单独一张卡 */}
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
-              <div className="pf-set-title">生成设置</div>
+              <div className="pf-set-title">回复生成</div>
               <div className="pf-set-row">
                 <div className="pf-set-label">
                   <span title="越高越有创意、越低越稳。全局默认 0.8。">温度</span>
@@ -925,7 +995,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 <div className="pf-set-ctl" role="radiogroup" aria-label="温度">
                   <button type="button" role="radio" aria-checked={features.temperature === -1}
                     className={"prof-chip" + (features.temperature === -1 ? " on" : "")}
-                    onClick={() => setFeatures({ ...features, temperature: -1 })}>跟随全局</button>
+                    onClick={() => setFeatures({ ...features, temperature: -1 })}>跟随全局 · 0.8</button>
                   {TEMP_PRESETS.map((t) => (
                     <button key={t} type="button" role="radio" aria-checked={features.temperature === t}
                       className={"prof-chip" + (features.temperature === t ? " on" : "")}
@@ -953,8 +1023,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
 
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
-              <div className="pf-set-title"><span>聊天框显示</span></div>
-              <div className="pf-set-sub">只决定聊天界面里显不显示。</div>
+              <div className="pf-set-title"><span>聊天显示</span></div>
+              <div className="pf-set-sub">只影响聊天界面的显示，不改变对话内容。</div>
               <div className="pf-comp-grid">
                 {CHAT_DISPLAY_ITEMS.map((item) => (
                   <label key={item.key} className="pf-comp-item" title={item.hint}>
@@ -967,24 +1037,40 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </div>
           )}
 
+          </div>
+
+          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "tools"}>
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
               <div className="pf-set-title"><span>工具</span></div>
-              <div className="pf-set-sub">能主动做的每件事对应一个工具。带开关的由你决定开不开；标「常开」的一直在。</div>
+              <div className="pf-set-sub">关闭总开关后，所有工具都不可用。看时间 / 翻记忆默认开，也可以按这位联系人单独关。</div>
+              <div className="pf-comp-grid">
+                <label className="pf-comp-item pf-tools-master" title="关掉后一个工具都拿不到：看时间、翻记忆、联网这些全部不可用。">
+                  <input type="checkbox" checked={features.tools === true}
+                    onChange={(e) => setFeatures({ ...features, tools: e.target.checked })} />
+                  <span className="pf-comp-name">允许使用工具</span>
+                </label>
+              </div>
+              {modelTools !== null && !modelTools.on && features.tools === true && (
+                <div className="pf-tools-warn">
+                  当前生效模型档「{modelTools.model}」没勾「工具调用」，总开关开了也不会带任何工具——去 设置 → 模型档 把「工具调用」勾上。
+                </div>
+              )}
               <div className="pf-comp-grid">
                 {TOOL_ITEMS.map((row) =>
                   row.kind === "toggle" ? (
-                    <label key={row.label} className="pf-comp-item" title={row.hint(who)}>
+                    <label key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint(who)}>
                       <input
                         type="checkbox"
                         checked={features[row.key] === true}
+                        disabled={features.tools !== true}
                         onChange={(e) => setFeatures({ ...features, [row.key]: e.target.checked })}
                       />
                       <span className="pf-comp-name">{row.label}</span>
                     </label>
                   ) : (
-                    <div key={row.label} className="pf-comp-item" title={row.hint}>
-                      <span className="pf-comp-tag">{row.kind === "always" ? "常开" : "在「技能」页"}</span>
+                    <div key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint}>
+                      <span className="pf-comp-tag">在「技能」页</span>
                       <span className="pf-comp-name">{row.label}</span>
                     </div>
                   ),
@@ -1012,6 +1098,9 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </div>
           )}
 
+          </div>
+
+          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "care"}>
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
               <div className="pf-set-title">
@@ -1020,7 +1109,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   <BookOpen size={13} strokeWidth={1.8} />{consBusy ? "整理中…" : "立即整理记忆"}
                 </button>
               </div>
-              <div className="pf-set-sub">这些增强默认全关，开哪项由你决定；「记忆提取」一直开着，想关也能关。</div>
+              <div className="pf-set-sub">按需开启。只有「记忆提取」默认开启。</div>
               {consNote && <div className="pf-comp-note">{consNote}</div>}
 
               <div className="pf-comp-grid">
@@ -1055,6 +1144,9 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 </div>
               </div>
 
+              <details className="pf-advanced-settings">
+                <summary>生活线与关系状态（可选）</summary>
+                <div className="pf-advanced-body">
               <div className="pf-set-row pf-set-col">
                 <div className="pf-set-label">
                   <span title={`${who}会据此说「我刚到家」这类有生活感的话。`}>{who}的作息（可选）</span>
@@ -1140,6 +1232,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   />
                 </div>
               </div>
+                </div>
+              </details>
             </div>
           )}
 
@@ -1173,6 +1267,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
               )}
             </div>
           )}
+          </div>
+          </div>
         </div>
       )}
       {mode === "edit" && (visitedPages.has("memory") || page === "memory") && (
@@ -1255,3 +1351,24 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     </div>
   );
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

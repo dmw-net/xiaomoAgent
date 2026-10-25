@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Search, Plus, Pencil, FileDown, Archive, ArchiveRestore, FileUp, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
 import { contactsApi, searchApi } from "../api";
 import type { MessageHit, MemoryHit } from "../types/search";
@@ -79,6 +80,20 @@ export default function Sidebar({ current, onPick, onLeaveCurrent, onContactsCha
 
   useDismiss(menu !== null, () => setMenu(null));
   useDismiss(menuOpen && menu === null, () => setMenuOpen(false));
+
+  // 右键菜单贴边收拢：菜单本体 portal 到 body（见下方渲染处——#side 的 backdrop-filter
+  // 会把 position:fixed 的后代变成相对自己定位，菜单既跑偏又被列表裁掉），坐标仍是
+  // 视口系，所以贴右缘/底缘时要往回收，不能甩出屏幕。
+  const itemMenuRef = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    const el = itemMenuRef.current;
+    if (!el || !menu) return;
+    const pad = 8;
+    const left = Math.min(Math.max(menu.x, pad), window.innerWidth - el.offsetWidth - pad);
+    const top = Math.min(Math.max(menu.y, pad), window.innerHeight - el.offsetHeight - pad);
+    el.style.left = Math.round(Math.max(pad, left)) + "px";
+    el.style.top = Math.round(Math.max(pad, top)) + "px";
+  }, [menu]);
 
   // 搜索改到后端筛：人设正文不再随列表下发（它曾占列表响应体的 48%，而这份列表
   // 前台每 10 秒整份重拉一次且 no-store），本地那份 identity 也随之没有了。
@@ -317,11 +332,20 @@ export default function Sidebar({ current, onPick, onLeaveCurrent, onContactsCha
         </div>
       </div>
       <input ref={mdRef} type="file" accept=".md,text/markdown" hidden onChange={onMdFile} />
-      <Splitter left="calc(64px + var(--side-w, 248px) - 3px)" />
+      {/* 分隔条与右键菜单同一个坑：#side 开着玻璃（backdrop-filter）时，fixed 后代的
+          定位基准会改挂到 #side——整体右移一个 Rail 宽、越界拖出横向滚动条。
+          portal 到 body 让它回到视口坐标，left 里自带的 --rail-w 也就重新对上了。 */}
+      {createPortal(
+        <Splitter left="calc(var(--rail-w) + var(--side-w, var(--side-w-default)) - 3px)" />,
+        document.body,
+      )}
 
-      {/* 右键菜单：编辑资料 / 导出人格文档 / 归档 */}
-      {menu && (
-        <div className="msgmenu" style={{ left: menu.x, top: menu.y }} data-keep-menu
+      {/* 右键菜单：编辑资料 / 导出人格文档 / 归档。
+          必须 portal 到 body：#side 开着玻璃时带 backdrop-filter，而 filter/backdrop-filter
+          的元素是 position:fixed 后代的包含块——留在原地的话 left/top 会按 #side 的左上角算，
+          菜单整体跑偏，还被列表的 overflow 裁掉半截（「编辑资料」只剩半行就是它）。 */}
+      {menu && createPortal(
+        <div className="msgmenu" ref={itemMenuRef} style={{ left: menu.x, top: menu.y }} data-keep-menu
           onClick={(e) => e.stopPropagation()}>
           <button type="button" onClick={() => { onOpenProfile("edit", menu.contact.id); setMenu(null); }}>
             <span className="lb"><Pencil size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />编辑资料</span>
@@ -337,7 +361,8 @@ export default function Sidebar({ current, onPick, onLeaveCurrent, onContactsCha
             <span className="lb"><Archive size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />归档</span>
             <span className="nt">数据保留，做完可立刻撤销</span>
           </button>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* 右上角「＋」下拉：微信把它放页头，联系人再多也不用滑到列表末尾 */}

@@ -250,7 +250,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
   const panelFor = (key: Tab): PanelAria => panelAria("st", key);
   const list = tab === "calls" ? callsPage : tab === "turns" ? turnsPage : null;
   const tabs: Array<{ key: Tab; label: string }> = [
-    { key: "overview", label: "状态与配置" },
+    { key: "overview", label: "概览" },
     { key: "usage", label: "模型用量" },
   ];
   // 调用记录 / 最近处理 / 记忆测试都是排障面，只留开发者模式（= 后端 DEV_MODE，`npm run dev` 起才有）。
@@ -266,7 +266,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
 
   /** 每个 tab 一句话说明，渲染在分段控件下方，切 tab 即换。 */
   const TAB_DESC: Record<Tab, string> = {
-    overview: "现在这套配置长什么样、跑得怎么样：模型、能力、通道、运行。只读；想改就点各卡片右上角的「去设置」。",
+    overview: "先看健康结论，再看模型、能力、通道与运行详情。这里只读；要修改时从对应卡片进入设置。",
     usage: "模型用了多少、哪个模型用得多、和谁聊的；统计近 30 天。",
     calls: "模型调用的每一次动作——回消息、整理记忆、主动找你、画图，成没成都在这里。QQ/微信投递不在这儿，点「通道投递」。",
     turns: "最近的消息是怎么被处理的：成功、失败，还是仍在进行中。",

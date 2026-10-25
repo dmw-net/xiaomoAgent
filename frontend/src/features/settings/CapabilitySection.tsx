@@ -110,6 +110,13 @@ function EndpointForm({ group, initial, names, onClose, onSaved }: {
 
   return (
     <Modal onClose={onClose} label={`${f.id ? "编辑" : "添加"}${group.title}端点`} className="ml-form">
+      <div className="ml-form-head">
+        <div>
+          <div className="modal-title">{f.id ? "编辑端点档" : "添加端点档"}</div>
+          <div className="modal-sub">{group.title} · 保存后立即生效</div>
+        </div>
+        <button type="button" className="ml-btn" title="关闭" aria-label="关闭" onClick={onClose}><X size={16} /></button>
+      </div>
       <div className="preset-row">
         {group.presets.map((p) => (
           <button key={p.label} type="button" className="preset"
@@ -203,7 +210,6 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
   const linked = card?.linkedToMain === true;
   const ready = form.saved?.capabilitiesReady?.[group.name] === true;
   const active = profiles.find((p) => p.id === activeId) ?? null;
-  const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
   const [banner, setBanner] = useState<Banner>(null);
@@ -240,27 +246,31 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
         : "未配置：这类功能要专门的模型名，不能跟主模型共用";
 
   return (
-    <details className="card card-pad cap-card" open={open} onToggle={(e) => setOpen(e.currentTarget.open)}>
-      <summary>
-        <div className="cap-head">
-          <div>
-            <div className="subhead">{group.title}</div>
-            <div className="hint">{group.desc}</div>
-            <div className="hint cap-using" id={"cap-" + group.name + "-using"}>现在用：{using}</div>
+    <details className="settings-panel cap-card">
+      <summary className="cap-summary">
+        <div className="cap-summary-main">
+          <div className="cap-title-line">
+            <span className="cap-title">{group.title}</span>
+            <span className="cap-subtitle">{ready ? "配置完整，可以直接使用" : "尚未配置"}</span>
           </div>
-          <span className={"cap-state " + (ready ? "on" : "off")} id={"cap-" + group.name + "-state"}>
-            {ready ? "已就绪" : "未配置"}
-          </span>
+          <div className="cap-using" id={"cap-" + group.name + "-using"}>{using}</div>
         </div>
+        <span className={"cap-state " + (ready ? "on" : "off")} id={"cap-" + group.name + "-state"}>
+          {ready ? "已就绪" : "未配置"}
+        </span>
+      </summary>
+
+      <div className="cap-body">
+        <p className="cap-body-desc">{group.desc}</p>
         {linked ? (
-          <div className="preset-row cap-pro-row" onClick={(e) => { e.preventDefault(); }}>
+          <div className="cap-picker">
             <PickList label={group.title + "用哪一份主模型档"} value={activeId} options={pickOptions} disabled={busy}
               empty={profiles.length === 0 ? "「主对话模型」里还没有档" : "未选择"}
               onChange={(v) => run({ op: "activate", id: v }, v === "" ? "已回到跟随主模型" : "已改用选中的那一份")} />
-            <span className="hint">选的就是「主对话模型」里存的那几份；要加或删去那一页。</span>
+            <span className="hint">从「主对话模型」已保存的端点档里选择；新增或删除请去上一页。</span>
           </div>
         ) : (
-          <div className="preset-row cap-pro-row" onClick={(e) => e.preventDefault()}>
+          <div className="cap-profile-list">
             {profiles.map((p) => (
               <span key={p.id} className={"cap-prof" + (p.id === activeId ? " on" : "")}>
                 <button type="button" disabled={busy || p.id === activeId}
@@ -284,22 +294,23 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
             {profiles.length === 0 && <span className="hint">还没存过端点档</span>}
           </div>
         )}
-      </summary>
 
-      {banner && <div className={"banner show " + banner.kind}><div className="body">{banner.text}</div></div>}
-      <div className="actions">
-        {!linked && (
-          <button type="button" className="btn sm" disabled={busy} onClick={() => setEditing({ ...EMPTY })}>
-            <Plus size={13} />添加端点
-          </button>
-        )}
-        {!linked && activeId !== "" && (
-          <button type="button" className="btn ghost sm" disabled={busy}
-            onClick={() => run({ op: "activate", id: "" }, "已回到跟随主模型")}>
-            跟随主模型
-          </button>
-        )}
+        {banner && <div className={"banner show " + banner.kind}><div className="body">{banner.text}</div></div>}
+        <div className="cap-actions">
+          {!linked && (
+            <button type="button" className="btn sm" disabled={busy} onClick={() => setEditing({ ...EMPTY })}>
+              <Plus size={13} />添加端点
+            </button>
+          )}
+          {!linked && activeId !== "" && (
+            <button type="button" className="btn ghost sm" disabled={busy}
+              onClick={() => run({ op: "activate", id: "" }, "已回到跟随主模型")}>
+              跟随主模型
+            </button>
+          )}
+        </div>
       </div>
+
       {editing !== null && (
         <EndpointForm group={group} initial={editing} names={names} onClose={() => setEditing(null)}
           onSaved={(text) => {
@@ -315,14 +326,21 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
 
 /** 分区②：能力模型。五张卡同构——各自存几份端点档、点一份启用，一份都没启用就跟随主模型。 */
 export default function CapabilitySection({ form }: { form: SettingsForm }): JSX.Element {
+  const readyCount = CAPABILITY_GROUPS.filter((g) => form.saved?.capabilitiesReady?.[g.name] === true).length;
   return (
-    <div className="section">
+    <div className="section capability-section" id="settings-capabilities">
       <h2>能力模型</h2>
       <div className="desc">
-        聊天、看图、听音、说话、画图可以各配一个模型；不配就跟着主模型走。
-        语音和画图例外——要填各自的模型，用聊天的模型名会失败。
+        聊天、看图、听音、说话、画图可以各配一个模型；没单独配置的能力会跟随主模型。
       </div>
-      {CAPABILITY_GROUPS.map((g) => <CapCard key={g.name} group={g} form={form} />)}
+      <div className="settings-overview-strip">
+        <span><b>{readyCount}</b> / {CAPABILITY_GROUPS.length} 项能力已就绪</span>
+        <span>展开一项即可更换模型或新增端点档。</span>
+      </div>
+      <div className="settings-disclosure-list">
+        {CAPABILITY_GROUPS.map((g) => <CapCard key={g.name} group={g} form={form} />)}
+      </div>
     </div>
   );
 }
+

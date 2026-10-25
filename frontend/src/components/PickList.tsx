@@ -10,7 +10,7 @@ export type PickOption = { value: string; label: string; hint?: string; disabled
  * 自绘下拉：一个按钮 + portal 到 body 的选择层（沿用联系人切换器那一套定位与轻关）。
  *
  * 为什么不用原生 `<select>`：它的弹层不吃应用主题，暗色下就是系统那块浅蓝补丁
- * （legacy.css 早写了这条口径）。为什么用下拉而不是一排 chips：档名是
+ * （foundation.css 早写了这条口径）。为什么用下拉而不是一排 chips：档名是
  * 「供应商 · 模型名」这种长串，档一多 chips 会换行成三四排，选中哪份也看不出来。
  */
 export default function PickList({ value, options, onChange, label, width = 264, empty, disabled }: {

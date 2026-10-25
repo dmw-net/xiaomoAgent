@@ -1,4 +1,4 @@
-/* React 新增组件的样式（复用 legacy.css 里的主题变量与设计语言）。 */
+/* React 新增组件的样式（复用 foundation.css 里的主题变量与设计语言）。 */
 
 .s-item { cursor: pointer; }
 
@@ -174,19 +174,6 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   .pf:not([data-page="persona"]) .pf-gender-hint { display: none; }
 }
 
-/* 界面 tab：色系 swatch 与自定义取色 */
-.acc-head { margin-top: var(--space-6); }
-.acc-btn { display: inline-flex; align-items: center; gap: var(--space-2); }
-.acc-dot { width: 12px; height: 12px; border-radius: 50%; flex: none; box-shadow: inset 0 0 0 1px rgba(0,0,0,.15); }
-.acc-custom {
-  min-height: var(--tap-min);
-  display: inline-flex; align-items: center; gap: var(--space-2); cursor: pointer;
-  font-size: var(--text-note); color: var(--text-muted); padding: var(--space-1) var(--space-4);
-  border: 1px dashed var(--border); border-radius: var(--radius-md);
-}
-.acc-custom input[type="color"] {
-  width: 18px; height: 18px; padding: 0; border: none; background: none; cursor: pointer;
-}
 
 /* 能力模型 tab：配置档行 */
 .cap-pro-row { margin-top: var(--space-3); align-items: center; }
@@ -268,7 +255,7 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   font-family: inherit;
 }
 .pf-editor:focus { outline: none; border-color: var(--accent-ink); }
-.pf-editor.mono { font-family: Consolas, "Cascadia Mono", monospace; font-size: var(--text-note); }
+.pf-editor.mono { font-family: var(--font-mono); font-size: var(--text-note); }
 .pf-foot { font-size: var(--text-sm); color: var(--text-subtle); margin-top: var(--space-4); line-height: 1.6; }
 /* 每段人格的字数/上限（右下角小字）与整份脚注里的 token 成本——改之前就看得见"每轮要注入多少"。 */
 .pf-sec-count { align-self: flex-end; font-size: var(--text-aux); color: var(--text-subtle); font-variant-numeric: tabular-nums; }
@@ -470,7 +457,7 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
 }
 .s-search input::placeholder { color: var(--text-subtle); }
 /* 归档行不再整行压透明度：同一个 .62 落在三种底色上是三个对比度，
-   legacy.css 顶部早就为这件事立过口径（「用不透明度代替色值就会随底色漂移」），
+   foundation.css 顶部早就为这件事立过口径（「用不透明度代替色值就会随底色漂移」），
    这里改成按颜色分级。 */
 .s-archived .s-name, .s-archived .s-r2 { color: var(--text-subtle); }
 .s-archived .s-ava { filter: grayscale(.5); }
@@ -550,22 +537,14 @@ button.tool-card.open { border-style: solid; border-bottom-left-radius: 0; borde
 }
 #settings .card .subhead:not(:first-child) { margin-top: var(--space-8); }
 .preset-row { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-6); }
-/* 主题风格那一排：三个叠在一起的色点（底 / 卡片 / 强调）。比一行文字更早说清
-   它是什么材质——用户不用逐个点开看效果再切回来。 */
-button.preset.theme-btn { display: inline-flex; align-items: center; gap: var(--space-2); }
-.theme-swatch { display: inline-flex; align-items: center; }
-.theme-swatch i {
-  width: 12px; height: 12px; border-radius: 50%; flex: none;
-  box-shadow: inset 0 0 0 1px rgb(var(--shadow-tint) / .22);
-}
-.theme-swatch i + i { margin-left: -4px; }
+
 button.preset {
   padding: var(--space-2) var(--space-5); border-radius: var(--radius-full);
   font-size: var(--text-note); color: var(--text-muted);
   border: 1px solid var(--border); background: var(--bg-sunken);
-  transition: border-color var(--dur-fast), color var(--dur-fast);
+  transition: border-color var(--dur-fast), color var(--dur-fast), translate var(--dur-fast) var(--ease-out);
 }
-button.preset:hover { border-color: var(--accent-ink); color: var(--accent-ink); }
+button.preset:hover { border-color: var(--accent-ink); color: var(--accent-ink); translate: 0 -1px; }
 button.preset[aria-pressed="true"] {
   background: var(--accent-soft); border-color: var(--accent-ink); color: var(--accent-ink); font-weight: 600;
 }
@@ -1105,7 +1084,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .qq-code {
   flex: 1; min-width: 180px; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
   background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text);
-  font-family: var(--font-mono, ui-monospace, monospace); font-size: var(--text-base);
+  font-family: var(--font-mono); font-size: var(--text-base);
   letter-spacing: .06em; user-select: all; word-break: break-all;
 }
 .wx-close:hover { color: var(--text); }
@@ -1162,11 +1141,13 @@ button.adv-chip.on {
 button.ctx-btn {
   display: inline-flex; align-items: center; gap: var(--space-2);
   font-size: var(--text-aux); color: var(--text-subtle); cursor: pointer;
-  padding: var(--space-1) var(--space-4); border-radius: var(--radius-full);
+  padding: 3px 8px; border-radius: var(--radius-full);
   border: 1px solid transparent; background: transparent;
   font-variant-numeric: tabular-nums;
 }
 button.ctx-btn:hover { border-color: var(--border); color: var(--text); background: var(--bg-elevated); }
+.ctx-pct { color: var(--text-muted); font-weight: 600; }
+button.ctx-btn:hover .ctx-pct { color: var(--text); }
 .ctx-ring { width: 14px; height: 14px; flex: none; }
 .ctx-ring-bg, .ctx-ring-fg { fill: none; stroke-width: 2.4; }
 .ctx-ring-bg { stroke: var(--bg-sunken); }
@@ -1174,7 +1155,7 @@ button.ctx-btn:hover { border-color: var(--border); color: var(--text); backgrou
 .ctx-ring.hot .ctx-ring-fg { stroke: var(--danger); }
 .ctx-backdrop { position: fixed; inset: 0; z-index: var(--z-backdrop); }
 .ctx-pop {
-  position: absolute; bottom: calc(100% + var(--space-4)); right: 0; z-index: var(--z-pop);
+  position: absolute; bottom: calc(100% + var(--space-4)); right: 0; z-index: var(--z-subpop);
   width: 264px; padding: var(--space-5) var(--space-5);
   border: 1px solid var(--border-strong); border-radius: var(--radius-2xl);
   background: var(--bg-elevated); box-shadow: var(--shadow-menu);
@@ -1394,6 +1375,22 @@ button.bar-btn:disabled { opacity: var(--alpha-disabled); cursor: wait; }
 .asst-acts { display: inline-flex; align-items: center; gap: var(--space-1); }
 .asst-head .contact-chip { margin-top: 0; }
 .asst-body { flex: 1; min-height: 0; display: flex; position: relative; }
+/* 确认卡片浮在聊天层上方（z-index 高于设置屏 1）：confirm 档下等待用户真实点击的
+   不可逆操作摆在这里——同意/拒绝是后端确认凭证的唯一注入口。 */
+.asst-pending {
+  position: absolute; top: 10px; left: 12px; right: 12px; z-index: 2;
+  display: flex; flex-direction: column; gap: 8px; pointer-events: none;
+}
+.asst-pending-item {
+  pointer-events: auto;
+  background: var(--bg-elevated); border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: 12px; padding: 12px 14px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+}
+.asst-pending-head { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+.asst-pending-head svg { color: var(--warning); flex: none; }
+.asst-pending-detail { margin: 6px 0 10px 22px; font-size: 12px; opacity: 0.75; line-height: 1.5; }
+.asst-pending-actions { display: flex; gap: 8px; justify-content: flex-end; }
 /* 助手设置是弹窗里的第二屏，盖在聊天那层上（聊天不卸载，草稿与流式都留着）。
    资料页本来就有自己的滚动与悬浮保存条，这里只给它一个有界的高度。 */
 .asst-settings { position: absolute; inset: 0; z-index: 1; background: var(--bg-elevated); display: flex; }
@@ -1473,6 +1470,16 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 999px;
   padding: 2px var(--space-3);
 }
+/* 工具总开关占满一整行，和下面的单工具清单分开一档 */
+.pf-tools-master { grid-column: 1 / -1; }
+/* 总开关关着时，单工具清单整块降透明度：能看见还有什么、但明确不可操作 */
+.pf-comp-off { opacity: var(--alpha-disabled, 0.55); }
+.pf-comp-off input[type="checkbox"] { cursor: not-allowed; }
+/* 模型档没勾「工具调用」时的提示行：这是排障关键信息，用危险色调而不是灰注脚 */
+.pf-tools-warn {
+  font-size: var(--text-sm); line-height: 1.6; color: var(--danger);
+  background: var(--danger-soft); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
+}
 .pf-comp-item:has(.pf-comp-tag) { cursor: default; }
 .pf-comp-input {
   width: 100%; font: inherit; font-size: var(--text-base); resize: vertical;
@@ -1512,7 +1519,9 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
    只读卡片 + 顶部提醒条。两列自适应：单列时长值一行读不完，
    三列时「近 24 小时」这类会被压成竖排。 */
 .ov-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-5); flex-wrap: wrap; }
-.ov-head h2 { margin: 0; }
+/* 从前这条只重置了 margin，字号落在浏览器默认的 22.5px/700——比全站任何一级
+   区块标题都大还很黑。收进刻度：与设置分区同级（20px/600）。 */
+.ov-head h2 { margin: 0; font-size: var(--text-2xl); font-weight: 600; }
 .ov-head .actions { margin-top: 0; flex: 1 1 auto; justify-content: flex-end; }
 /* 连通测试结果要整行才读得下，跟在按钮后面换行 */
 .ov-head .actions .ping-out { flex-basis: 100%; margin-top: var(--space-3); text-align: left; }
@@ -1550,18 +1559,6 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   color: var(--danger);
 }
 
-.ov-alerts {
-  display: flex; flex-direction: column; gap: var(--space-3);
-  margin-bottom: var(--space-7); padding: var(--space-5) var(--space-6); border-radius: var(--radius-xl);
-  border: 1px solid color-mix(in srgb, var(--warning) 30%, var(--border));
-  background: var(--warning-soft);
-}
-.ov-alerts-h { font-size: var(--text-aux); color: var(--text-muted); }
-.ov-alert { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; font-size: var(--text-base); }
-/* baseline 对齐下圆点会沉到文字中线下面，抬回来（与 .check .led 同一口径） */
-.ov-alert .led { position: relative; top: -2px; }
-.ov-alert b { font-weight: 600; }
-.ov-alert .d { color: var(--text-muted); }
 
 /* 修建议里指向别的 tab 的内联链接：红色跟着 .fix 走，只有下划线表示「可点」 */
 .ov-link {
@@ -1593,7 +1590,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
    整段替掉，非 reduce 的常规路径就一起坏了。 */
 @keyframes spin-fade { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
 
-/* 空态文字口径：字号与颜色收这一处，盒子的留白（padding/line-height）在 legacy.css
+/* 空态文字口径：字号与颜色收这一处，盒子的留白（padding/line-height）在 foundation.css
    那一组同名规则里。两份以前各写一套 padding、`.empty` 还在 legacy 里定义了两遍，
    现在只剩一条真源。 */
 .empty, .empty-state, .s-empty, .switch-empty, .ml-empty {
@@ -1640,7 +1637,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 .onb-body label > input { display: block; width: 100%; margin-top: var(--space-2); }
 .onb-body label > textarea { display: block; width: 100%; margin-top: var(--space-2); font: inherit; resize: vertical; }
 .onb-proto { margin: 0 0 var(--space-8); color: var(--text-muted); font-size: var(--text-note); }
-.onb-proto code { font-family: var(--font-mono, ui-monospace, monospace); }
+.onb-proto code { font-family: var(--font-mono); }
 .onb-chips { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-10); }
 .onb-msg { margin: 0 0 var(--space-8); font-size: var(--text-note); }
 .onb-msg.ok { color: var(--accent-ink); }
@@ -1659,7 +1656,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 /* 人设那一步整份文档摊开：等宽小字、行距够，改起来像在自己写东西 */
 .onb-persona {
   display: block; width: 100%; margin-bottom: var(--space-8); font-size: var(--text-note);
-  line-height: 1.75; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace);
+  line-height: 1.75; resize: vertical; font-family: var(--font-mono);
 }
 .onb-foot {
   display: flex; justify-content: space-between; align-items: center;
@@ -1712,3 +1709,276 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   0% { transform: translateX(-105%); }
   100% { transform: translateX(295%); }
 }
+
+
+/* 模型浮层的二级页（思考强度）：主列表顶部一行入口，点进去换成档位面板。
+   协议差异留在设置页，日常聊天只暴露「关闭 / 低 / 中 / 高」这类用户真正会做的选择。 */
+.model-think-entry { margin-top: var(--space-4); }
+.model-think-entry .model-go { transform: rotate(-90deg); color: var(--text-subtle); }
+.model-back {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; margin-left: calc(var(--space-2) * -1);
+  border: none; border-radius: var(--radius-sm); background: transparent;
+  color: var(--text-subtle); cursor: pointer;
+}
+.model-back:hover { color: var(--text); background: var(--bg-hover); }
+.think-levels {
+  display: flex; gap: var(--space-2); margin-top: var(--space-4);
+  padding: var(--space-2); border-radius: var(--radius-lg); background: var(--bg-sunken);
+}
+.think-level {
+  flex: 1; min-width: 0; min-height: 36px; padding: 0 var(--space-2);
+  border: 1px solid transparent; border-radius: var(--radius-md);
+  background: transparent; color: var(--text-muted); font-size: var(--text-note); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.think-level:hover:not(:disabled) { background: var(--bg-elevated); color: var(--text); }
+.think-level.on {
+  background: var(--bg-elevated); border-color: var(--accent-ink); color: var(--accent-ink); font-weight: 600;
+  box-shadow: var(--shadow-xs);
+}
+.think-level:disabled { opacity: var(--alpha-disabled); cursor: wait; }
+.think-pop-note { margin-top: var(--space-4); font-size: var(--text-sm); line-height: 1.6; color: var(--text-subtle); }
+
+/* 输入区模型快捷切换：与思考强度并排，但展示的是“这一位联系人用哪份模型档”。
+   选项按供应商 + 模型名排好，长名字在触发钮里截断，完整值放 title。 */
+.model-wrap { position: relative; flex: none; max-width: min(260px, 30vw); }
+.model-trigger {
+  display: inline-flex; align-items: center; gap: var(--space-2); max-width: 100%;
+  height: 30px; padding: 0 var(--space-4);
+  border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-elevated); color: var(--text-muted);
+  font-size: var(--text-aux); white-space: nowrap; cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.model-trigger:hover, .model-trigger[aria-expanded="true"] {
+  border-color: var(--border-strong); background: var(--bg-hover); color: var(--text);
+}
+.model-trigger-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.model-trigger .flip { transform: rotate(180deg); }
+.model-trigger svg:last-child { flex: none; transition: transform var(--dur-fast) var(--ease-out); }
+.model-pop {
+  /* 不能用 --z-pop(41)：浮层会伸进左栏，而中栏搜索框是 sticky + z 50，
+     会压在它上面（真实现过：模型列表被联系人列表盖住半边）。
+     借 --z-subpop(65) 抬到所有栏内 sticky 元素之上。 */
+  position: absolute; right: 0; bottom: calc(100% + var(--space-4)); z-index: var(--z-subpop);
+  width: min(360px, calc(100vw - 24px)); max-height: min(420px, 58vh); overflow-y: auto;
+  padding: var(--space-5);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-2xl);
+  background: var(--bg-elevated); box-shadow: var(--shadow-menu);
+  animation: cardIn var(--dur-fast) var(--ease-out);
+}
+.model-pop-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4); }
+.model-pop-head > span { flex: none; font-size: var(--text-base); font-weight: 600; color: var(--text); }
+.model-pop-head small { min-width: 0; text-align: right; font-size: var(--text-cap); color: var(--text-subtle); line-height: 1.5; }
+.model-options { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-4); }
+.model-option {
+  display: flex; align-items: center; gap: var(--space-4); width: 100%;
+  padding: var(--space-3) var(--space-4); border: 1px solid transparent; border-radius: var(--radius-lg);
+  background: transparent; color: var(--text-muted); text-align: left; cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.model-option:hover:not(:disabled) { background: var(--bg-sunken); color: var(--text); }
+.model-option.on { border-color: var(--border-strong); background: var(--bg-sunken); color: var(--text); }
+.model-option:disabled { opacity: var(--alpha-disabled); cursor: wait; }
+.model-option-copy { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+.model-option-copy b { font-size: var(--text-note); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-option-copy small { font-size: var(--text-cap); color: var(--text-subtle); }
+.model-option > svg { flex: none; color: var(--accent-ink); }
+.model-pop-empty { margin-top: var(--space-4); padding: var(--space-4); border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text-subtle); font-size: var(--text-sm); line-height: 1.6; }
+.model-manage { width: 100%; margin-top: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: transparent; color: var(--text-muted); font-size: var(--text-note); cursor: pointer; }
+.model-manage:hover { border-color: var(--border-strong); background: var(--bg-hover); color: var(--text); }
+@media (max-width: 760px), (max-height: 520px) {
+  .model-wrap { max-width: 132px; }
+  .model-trigger { height: 34px; }
+  .model-pop {
+    position: fixed; left: 12px; right: 12px; bottom: calc(72px + env(safe-area-inset-bottom, 0px));
+    width: auto; max-height: min(480px, 62vh);
+  }
+}
+@media (max-width: 520px) {
+  .model-wrap { max-width: 34px; }
+  .model-trigger { width: 34px; justify-content: center; padding: 0; }
+  .model-trigger-label, .model-trigger > svg:last-child { display: none; }
+}
+/* 通用确认框的主按钮沿用强调色；危险按钮仍由 .del-row button.danger 接手。 */
+.modal-card .del-row button.primary {
+  background: var(--accent); border-color: transparent; color: var(--accent-text);
+}
+.modal-card .del-row button.primary:hover:not(:disabled) { background: var(--accent-hover); }
+
+
+/* 思考设置收成一张卡：默认强度、聊天里可选的档位是主信息，
+   接口字段名收进折叠区，避免把实现细节铺成三个并列选项。 */
+.think-settings {
+  padding: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-sunken);
+}
+.think-settings > label { margin-bottom: var(--space-4); }
+.think-settings .form-row { gap: var(--space-6); }
+.think-settings .form-row > .field { margin-bottom: 0; }
+.thinking-compat {
+  margin-top: var(--space-5); padding-top: var(--space-4);
+  border-top: 1px dashed var(--border-strong);
+}
+.thinking-compat > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  font-size: var(--text-note); color: var(--text-subtle);
+}
+.thinking-compat > summary::-webkit-details-marker { display: none; }
+.thinking-compat > summary::before { content: "▸ "; }
+.thinking-compat[open] > summary::before { content: "▾ "; }
+.thinking-compat[open] > summary { margin-bottom: var(--space-4); color: var(--text-muted); }
+
+/* ── 设置页：壁纸与玻璃卡 ───────────────────────────────────── */
+/* 预设缩略网格：每格一张迷你渐变（动态预设不在这里跑动画，色斑即印象） */
+.wp-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(88px, 1fr));
+  gap: var(--space-3); margin-top: var(--space-4);
+}
+.wp-thumb {
+  position: relative; aspect-ratio: 16 / 10; border-radius: var(--radius-lg);
+  border: 1px solid var(--border); overflow: hidden; cursor: pointer;
+  padding: 0; background: var(--bg-sunken);
+  transition: border-color var(--dur-fast), box-shadow var(--dur-fast), translate var(--dur-fast) var(--ease-out);
+}
+.wp-thumb:hover { translate: 0 -1px; border-color: var(--border-strong); }
+.wp-thumb[aria-pressed="true"] {
+  border-color: var(--accent-ink);
+  box-shadow: 0 0 0 2px var(--accent-glow);
+}
+.wp-thumb .wp-thumb-face {
+  position: absolute; inset: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+}
+.wp-thumb .wp-thumb-label {
+  position: absolute; left: 0; right: 0; bottom: 0;
+  padding: 2px var(--space-2);
+  font-size: var(--text-xs); color: #fff; text-align: center;
+  background: linear-gradient(transparent, rgba(0, 0, 0, .45));
+  text-shadow: 0 1px 2px rgba(0, 0, 0, .4);
+}
+/* 关闭那一格：不是渐变，是一根纤细的斜杠。斜线画在伪元素上（1.5px、圆角、半透明），
+   再垫一点从左上角渗进来的强调色微光——「关」也有质感，不只是一块灰底。 */
+.wp-thumb.wp-thumb-off .wp-thumb-face {
+  background:
+    radial-gradient(130% 110% at 18% 0%, color-mix(in srgb, var(--accent) 8%, transparent), transparent 58%),
+    var(--bg-sunken);
+}
+.wp-thumb.wp-thumb-off .wp-thumb-face::before {
+  content: "";
+  position: absolute; left: 50%; top: 50%;
+  width: 1.5px; height: 74%;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--border-strong) 82%, transparent);
+  transform: translate(-50%, -50%) rotate(45deg);
+}
+.wp-thumb.wp-thumb-off .wp-thumb-label { color: var(--text-muted); text-shadow: none; background: none; }
+
+/* 星空预设的缩略图是活的：缩略即预览——迷你星野 + 一道更亮、更快的循环流星，
+   让用户在选之前就知道这是一段动效而不是一张静态图。
+   面积小、只碰 transform/opacity；跟大层一样不受系统「减少动态」约束（内容预览）。 */
+.wp-thumb .wp-thumb-face[data-wp-preview="starry"] {
+  background: linear-gradient(180deg, #0b1026, #25224e 60%, #3d3564);
+}
+.wp-thumb .wp-thumb-face[data-wp-preview="starry"]::before {
+  content: ""; position: absolute; inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 9px 12px, rgba(255,255,255,.95), transparent 100%),
+    radial-gradient(.8px .8px at 34px 30px, rgba(214,226,255,.8), transparent 100%),
+    radial-gradient(1.2px 1.2px at 58px 8px, rgba(255,244,214,.9), transparent 100%),
+    radial-gradient(.7px .7px at 46px 52px, rgba(255,255,255,.65), transparent 100%),
+    radial-gradient(1px 1px at 18px 60px, rgba(255,255,255,.55), transparent 100%);
+  background-size: 70px 64px;
+  animation: wp-thumb-twinkle 4.5s ease-in-out infinite;
+}
+.wp-thumb .wp-thumb-face[data-wp-preview="starry"]::after {
+  content: ""; position: absolute;
+  top: 22%; left: 58%;
+  width: 58px; height: 2px;
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg, #fff 0%, rgba(255,250,235,.9) 12%, rgba(184,210,255,.44) 58%, rgba(184,210,255,0) 100%);
+  box-shadow: 0 0 5px rgba(225, 239, 255, .75), 0 0 11px rgba(137, 174, 255, .4);
+  transform: rotate(-33deg);
+  opacity: 0;
+  animation: wp-thumb-meteor 5.6s linear .9s infinite;
+}
+@keyframes wp-thumb-twinkle {
+  0%, 100% { opacity: .6; } 50% { opacity: 1; }
+}
+@keyframes wp-thumb-meteor {
+  0%   { translate: 0 0; opacity: 0; }
+  3%   { opacity: 0; }
+  6%   { opacity: 1; }
+  17%  { translate: -46px 27px; opacity: 0; }
+  100% { translate: -46px 27px; opacity: 0; }
+}
+
+/* 壁纸调节滑块（遮暗/模糊）：全局目前只有这里用，样式从简 */
+.wp-slider-row { display: flex; align-items: center; gap: var(--space-4); margin-top: var(--space-4); }
+.wp-slider-row > label { flex: none; font-size: var(--text-note); color: var(--text-muted); white-space: nowrap; }
+.wp-slider-row > output { flex: none; min-width: 3em; text-align: right; font-size: var(--text-note); color: var(--text-subtle); font-variant-numeric: tabular-nums; }
+input[type="range"] {
+  flex: 1; appearance: none; -webkit-appearance: none; height: 4px; border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--border-strong) 45%, transparent); outline: none; cursor: pointer;
+}
+input[type="range"]::-webkit-slider-thumb {
+  appearance: none; -webkit-appearance: none;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--accent); border: 2px solid var(--bg-elevated);
+  box-shadow: 0 1px 3px rgb(var(--shadow-tint) / .3);
+}
+input[type="range"]::-moz-range-thumb {
+  width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--bg-elevated);
+  background: var(--accent); box-shadow: 0 1px 3px rgb(var(--shadow-tint) / .3);
+}
+input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 4px; }
+/* 「我的壁纸」收藏格：缩略图就是文件本身（视频取首帧），右上角 × 删除。
+   图片/视频必须显式铺满 16:10 卡片——只写 object-fit 时，替换元素仍按原图尺寸参与
+   绝对定位，2048px 壁纸会从左上角被裁出一块白边，看起来就像"上传后变成白图"。 */
+.wp-thumb-item {
+  position: relative;
+  min-width: 0;
+}
+.wp-thumb-item .wp-thumb {
+  display: block;
+  width: 100%;
+}
+.wp-thumb-lib .wp-thumb-label {
+  background: linear-gradient(transparent, rgba(0, 0, 0, .55));
+}
+.wp-thumb-del {
+  position: absolute; top: 5px; right: 5px; z-index: 2;
+  width: 24px; height: 24px; min-width: 0; min-height: 0; padding: 0;
+  border: 1px solid rgba(255, 255, 255, .22);
+  border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(15, 13, 11, .66);
+  color: #fff;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, .32);
+  -webkit-backdrop-filter: blur(8px);
+  backdrop-filter: blur(8px);
+  opacity: 0;
+  transition: opacity var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
+}
+/* 视觉上仍是 24px 小圆，触控命中区向外扩到 44px，不参与视觉尺寸。 */
+.wp-thumb-del::after {
+  content: "";
+  position: absolute; inset: -10px;
+  border-radius: 50%;
+}
+.wp-thumb-item:hover .wp-thumb-del,
+.wp-thumb-item:focus-within .wp-thumb-del,
+.wp-thumb-del:focus-visible { opacity: 1; }
+.wp-thumb-del:hover {
+  background: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 74%, white);
+}
+.wp-thumb-del:active { scale: .92; }
+@media (hover: none) {
+  .wp-thumb-del { opacity: 1; }
+}
+

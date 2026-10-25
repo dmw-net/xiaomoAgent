@@ -13,7 +13,7 @@ export type Caps = Record<CapabilityName, boolean>;
 
 /** 还不知道就绪状态时的保守值：宁可少显示入口，也不要给出点了就报错的按钮。 */
 export const CAPS_OFF: Caps = {
-  memoryExtract: false, imageVision: false, imageGeneration: false, speechToText: false, textToSpeech: false,
+  memoryExtract: false, imageVision: false, imageGeneration: false, speechToText: false, textToSpeech: false, embedding: false,
 };
 
 let cache: Caps | null = null;

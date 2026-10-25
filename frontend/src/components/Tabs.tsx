@@ -15,12 +15,14 @@ export const panelAria = (base: string, key: string): PanelAria =>
     spread 上去等于什么都不加，不会留下指向不存在 tab 的引用。 */
 export type PanelAria = { role?: "tabpanel"; "aria-labelledby"?: string };
 
-export default function Tabs<T extends string>({ tabs, value, onChange, base }: {
+export default function Tabs<T extends string>({ tabs, value, onChange, base, orientation = "horizontal" }: {
   tabs: Array<{ key: T; label: string }>;
   value: T;
   onChange: (key: T) => void;
   /** 给了才输出 tab 元素 id，供面板用 panelAria() 回指。 */
   base?: string;
+  /** 视觉方向；键盘同时支持方向键与 Home/End，不因方向限制功能。 */
+  orientation?: "horizontal" | "vertical";
 }): JSX.Element {
   const onKeyDown = useTabSelect();
   const listRef = useRef<HTMLDivElement>(null);
@@ -77,7 +79,7 @@ export default function Tabs<T extends string>({ tabs, value, onChange, base }: 
 
   return (
     <div className={"seg" + (edges.left ? " fade-left" : "") + (edges.right ? " fade-right" : "")}
-      ref={listRef} role="tablist" aria-orientation="horizontal" onKeyDown={onKeyDown}>
+      ref={listRef} role="tablist" aria-orientation={orientation} onKeyDown={onKeyDown}>
       {tabs.map((t) => (
         <button key={t.key} type="button" role="tab" aria-selected={value === t.key}
           id={base ? `${base}-tab-${t.key}` : undefined}

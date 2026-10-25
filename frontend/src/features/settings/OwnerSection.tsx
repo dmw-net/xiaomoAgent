@@ -67,7 +67,7 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
   };
 
   return (
-    <div className="section">
+    <div className="section owner-section" id="settings-owner">
       <h2>我的资料</h2>
       <div className="desc">所有联系人共通的「你」；每位联系人的设定在各自资料页里。</div>
       <div className="card card-pad">
@@ -142,3 +142,4 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
     </div>
   );
 }
+

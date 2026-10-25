@@ -2,6 +2,7 @@
 
 /** 模型自述的能力开关（与后端 ModelCaps 对齐）。 */
 export type ModelCaps = {
+  /** 未勾选时不声明、也不执行任何工具。 */
   tools: boolean;
   vision: boolean;
   thinking: boolean;
@@ -10,6 +11,10 @@ export type ModelCaps = {
 };
 
 export type ThinkingLevelId = "low" | "medium" | "high" | "xhigh" | "max";
+
+export const THINKING_LEVEL_LABELS: Record<ThinkingLevelId, string> = {
+  low: "低", medium: "中", high: "高", xhigh: "超高", max: "极致",
+};
 
 /** 思考参数形态，与后端 ThinkingParam 对齐（三处声明收在这一处）。 */
 export type ThinkingParamId = "effort" | "templateKw" | "thinkingType";
@@ -52,7 +57,7 @@ export type ProfileItem = {
   active?: boolean;
 } & ModelMeta;
 
-export type CapabilityName = "memoryExtract" | "imageVision" | "imageGeneration" | "speechToText" | "textToSpeech";
+export type CapabilityName = "memoryExtract" | "imageVision" | "imageGeneration" | "speechToText" | "textToSpeech" | "embedding";
 
 /** 一张能力卡上的一份端点档：与「主对话模型」的档同构，只是字段少（没有 mode/思考形态）。 */
 export type CapabilityEndpoint = {
@@ -110,6 +115,10 @@ export type SettingsSnapshot = {
 /** 技能行与后端同源（磁盘目录的扫描结果，不是数据库行）：见仓库根 shared/api.ts。 */
 import type { SkillEntry } from "../../../shared/api";
 export type { SkillEntry };
+
+/** 扩展快照与后端同源（kv 登记表 + 诊断）：见仓库根 shared/api.ts。 */
+import type { ExtensionSnapshot, ExtensionSnapshotEntry, ExtensionDiagnostic, ExtensionToolKind } from "../../../shared/api";
+export type { ExtensionSnapshot, ExtensionSnapshotEntry, ExtensionDiagnostic, ExtensionToolKind };
 
 /**
  * 技能写入口（新建 / 覆盖 / 删除）的回包：整份清单 + 刚落盘那一份的扫描结果。

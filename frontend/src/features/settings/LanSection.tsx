@@ -200,13 +200,11 @@ export function LanSection() {
   const autoPending = state !== null && state.portSetting === 0 && state.port !== 0 && state.portNext === 0;
 
   return (
-    <div className="card card-pad lan-card" style={{ marginTop: 12 }}>
-      <div className="lan-head">
+    <section className="settings-panel lan-card" id="settings-lan">
+      <div className="settings-panel-head lan-head">
         <div>
-          <div className="subhead">手机与远程访问</div>
-          <div className="hint">
-            默认仅本机可访问。同一 Wi-Fi 打开开关；外网需自配内网穿透。
-          </div>
+          <h3>手机与远程访问</h3>
+          <p>默认仅本机可访问。同一 Wi-Fi 可开启手机访问；公网使用需自行配置内网穿透。</p>
         </div>
         {state !== null && (
           <span className={`lan-state${enabled ? " on" : ""}`}>
@@ -314,8 +312,8 @@ export function LanSection() {
             )}
           </div>
 
-          <div className="lan-block">
-            <div className="lan-block-title">远程访问（内网穿透）</div>
+          <details className="lan-block lan-disclosure">
+            <summary className="lan-block-title">远程访问（内网穿透）</summary>
             <div className="hint">小茉不做穿透，只负责固定端口和放行隧道域名。</div>
             <div className="lan-remote-grid" style={{ marginTop: 12 }}>
               <div className="field">
@@ -367,7 +365,7 @@ export function LanSection() {
                 {hostNote !== "" && <div className="lan-note">{hostNote}</div>}
               </div>
             </div>
-          </div>
+          </details>
 
           {state.bindError !== "" && (
             <div className="lan-note bad" role="alert">上次打开失败：{state.bindError}</div>
@@ -375,6 +373,7 @@ export function LanSection() {
           {note !== "" && <div className="lan-note" role="status">{note}</div>}
         </>
       )}
-    </div>
+    </section>
   );
 }
+

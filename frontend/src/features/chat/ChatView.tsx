@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, ChevronDown, ChevronLeft, ChevronUp, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, Search, X } from "lucide-react";
-import { ApiError, chatApi, contactsApi, memoryApi, proactiveApi } from "../../api";
+import { ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, Search, X } from "lucide-react";
+import { ApiError, chatApi, contactsApi, memoryApi, proactiveApi, settingsApi } from "../../api";
 import { refreshContacts } from "../../lib/contactsStore";
-import { DATA_WIPED_EVENT } from "../../lib/ui-prefs";
+import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
 import { CAPS_OFF, cachedCaps, loadCaps, type Caps } from "../../lib/capsStore";
 import OnboardingChecklist from "../onboarding/Checklist";
 import { exportPersonaMd } from "../../lib/persona-doc";
 import { dayLabel, dayOf, clockOf } from "../../lib/datetime";
 import { fmtTokens } from "../../lib/format";
+import { profilePicks } from "../../lib/providers";
 import { blobToDataUrl, fileToImageBlob } from "../../lib/image";
 import { CLOCK_EVENT, getClockPref, type ClockPref } from "../../lib/ui-prefs";
 import { offerUndo } from "../../lib/undo";
@@ -18,15 +19,23 @@ import { useLiveReveal } from "../../hooks/useLiveReveal";
 import { useNotices } from "../../hooks/useNotices";
 import { CHAT_RESIZE_EVENT } from "../../hooks/useResizeSignal";
 import Avatar from "../../components/Avatar";
+import { avatarToneStyle } from "../../lib/avatar-tone";
 import MessageMenu, { type MenuState } from "./MessageMenu";
 import Modal from "../../components/Modal";
 import MessageRowItem from "./MessageRow";
 import ToolCard from "./ToolCard";
 import ChatMap, { type ChatMapNode } from "./ChatMap";
 import { PENDING_TTL_MS, PROACTIVE_GAP_MS, PULL_IDLE_STEPS, PULL_INTERVAL_MS, TURN_WATCH_MAX_TRIES, WATCH_PULL_EVERY } from "./constants";
-import type { ContextUsage, MessageRow } from "../../types";
+import { THINKING_LEVEL_LABELS, type ContextUsage, type MessageRow, type ThinkingControl, type ThinkingLevelId } from "../../types";
 
 type Pending = { text: string; at: number; imgs: string[]; localId: string; turnId?: string; failed?: boolean; queued?: boolean; outbox?: boolean };
+type ModelOption = { value: string; label: string; detail: string };
+
+/** 会丢掉或重写已有内容的聊天动作，一律先经过同一个确认框。 */
+type PendingChatConfirm =
+  | { kind: "edit-switch"; m: MessageRow; textOnly: boolean }
+  | { kind: "regenerate"; m: MessageRow }
+  | { kind: "retract"; m: MessageRow };
 
 /** 消息流的渲染节点：普通消息之间插日分隔；时间戳落在气泡内，不再占独立行。 */
 type ListNode =
@@ -220,18 +229,23 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 名字别叫 draft——那是输入框里**他**的草稿（见下面 line 160）。
    */
   const [streamText, setStreamText] = useState("");
-  /** 当前这份草稿属于哪一轮：本轮第一条真气泡一上屏，草稿就退场（见 draftRetired）。 */
+  /** 当前这份草稿属于哪一轮：本轮真气泡已取回、且逐字揭示完成后，草稿才退场。 */
   const draftTurnRef = useRef<string | null>(null);
-  /** 本轮的气泡是否已经上屏。分条是逐条落的，草稿是整段，不撤会把同一句话摆两遍。 */
-  const draftRetired = draftTurnRef.current !== null && msgs.some((m) =>
+  /** 本轮的真气泡是否已经被某一拍轮询取回。 */
+  const draftHasBubble = draftTurnRef.current !== null && msgs.some((m) =>
     m.role === "assistant" && m.kind === "chat" && m.turn_id === draftTurnRef.current);
   /**
-   * 草稿气泡什么时候活着：还在飞、或打完字但这一轮的气泡还没取回来（后者就是
-   * 「消失一下再出现」那个空窗，靠这个条件补上）。气泡一上屏立刻退场。
+   * 逐字揭示必须活到目标文本全部显完。单条模式里后端会先把定稿气泡落库、下一拍才把
+   * turn 标成 done；若只按“气泡上屏”就撤草稿，用户会看到打字打到一半突然被整段替换。
+   * 开着逐字时，等 typing 结束且 reveal.done 才让真气泡接手；分条模式不显示草稿，
+   * 仍按原来的 450ms 一条条出现。
    */
+  const reveal = useLiveReveal(streamText, streamText !== "");
+  const draftRetired = draftHasBubble && (!streamReveal || (!typing && reveal.done));
   const draftLive = (typing || streamText !== "") && !draftRetired;
-  /** 草稿的逐字显示：收到的那一坨只是目标文本，界面一拍一拍追上去（见 lib/live-reveal）。 */
-  const draftShown = useLiveReveal(streamText, draftLive);
+  /** 只有真的在逐字显示正文时才隐藏同轮定稿气泡，三个点阶段不受影响。 */
+  const draftTyping = streamReveal && streamText !== "" && draftLive;
+  const draftShown = reveal.text;
   const [busy, setBusy] = useState(false);
   const [modelReady, setModelReady] = useState<boolean | null>(null);
   /** 首次设置走完没有。默认 true：老用户不该在第一次轮询回来之前先看见那张清单闪一下。 */
@@ -239,10 +253,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   /** 人设还是出厂那份：跟着那一趟轮询回来，清单据此决定「改改人设」这行算不算完成。 */
   const [personaIsDefault, setPersonaIsDefault] = useState(false);
   const [editingId, setEditingId] = useState<number | null>(null);
-  const [failure, setFailure] = useState<{ id: string; error: string | null } | null>(null);
+  /** 最新一轮没回上来的横幅状态。empty = 轮子 done 了却一条回复气泡都没有（模型回了空）：
+   *  失败重试那条路后端对 done 轮是拒收的，重试入口得换「重新生成」。 */
+  const [failure, setFailure] = useState<{ id: string; error: string | null; empty?: boolean } | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
   // 删除的二次确认：微信式居中弹窗（菜单只留短标签，说明文字放这里）。
   const [delTarget, setDelTarget] = useState<MessageRow | null>(null);
+  // 切编辑目标、重新生成、撤回共用同一张确认框：菜单只负责发起，不再点一下就直接改数据。
+  const [pendingConfirm, setPendingConfirm] = useState<PendingChatConfirm | null>(null);
   // 会话内搜索：只搜当前联系人，命中后按窗口跳转。
   const [searchOpen, setSearchOpen] = useState(false);
   const [searchQ, setSearchQ] = useState("");
@@ -279,11 +297,124 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       .then((d) => { setCtx(d); setCtxErr(""); })
       .catch((e: Error) => { setCtx(null); setCtxErr(e.message); });
   }, [cid]);
+
+  // ── 思考强度：收进模型选择浮层做二级区（不再是并排的独立按钮）──
+  const [thinking, setThinking] = useState<ThinkingControl | null>(null);
+  const [thinkBusy, setThinkBusy] = useState(false);
+  const loadThinking = useCallback((): void => {
+    void chatApi.fetchThinkingControl(cid)
+      .then(setThinking)
+      .catch(() => setThinking(null));
+  }, [cid]);
+  useEffect(() => { loadThinking(); }, [loadThinking]);
+
+  // ── 聊天模型快捷切换：只改这一位联系人的绑定，不动全局主模型 ──
+  const chatModelScope = cid ?? msgScope ?? "";
+  const modelSwitchable = cid === undefined && chatModelScope !== "";
+  const [modelOptions, setModelOptions] = useState<ModelOption[]>([]);
+  const [modelProfileId, setModelProfileId] = useState("");
+  const [globalModelName, setGlobalModelName] = useState("");
+  const [globalModelReady, setGlobalModelReady] = useState(false);
+  const [globalModelEcho, setGlobalModelEcho] = useState(false);
+  const [modelOpen, setModelOpen] = useState(false);
+  /** 模型浮层的二级页：主列表 / 思考强度。开浮层永远回到主列表。 */
+  const [modelPane, setModelPane] = useState<"models" | "think">("models");
+  const [modelBusy, setModelBusy] = useState(false);
+  const [modelError, setModelError] = useState("");
+  const modelWrapRef = useRef<HTMLDivElement>(null);
+  const loadModels = useCallback((): void => {
+    if (!modelSwitchable) return;
+    void Promise.all([
+      settingsApi.fetchSettings(),
+      contactsApi.fetchContact(chatModelScope),
+    ])
+      .then(([settings, contact]) => {
+        const profiles = settings.profiles ?? [];
+        const byId = new Map(profiles.map((profile) => [profile.id, profile]));
+        setModelOptions(profilePicks(profiles, settings.providerNames ?? {}).map((pick) => ({
+          value: pick.value,
+          label: byId.get(pick.value)?.label || pick.label,
+          detail: byId.get(pick.value)?.name || (byId.get(pick.value)?.mode === "echo" ? "演示模式" : pick.label),
+        })));
+        setGlobalModelName(settings.model?.name || "");
+        setGlobalModelReady(settings.modelReady === true);
+        setGlobalModelEcho(settings.model?.mode === "echo");
+        setModelProfileId(contact.contact.model_profile ?? "");
+        setModelError("");
+      })
+      .catch((error: Error) => setModelError(error.message));
+  }, [chatModelScope, modelSwitchable]);
+  useDismiss(modelOpen, () => setModelOpen(false), modelWrapRef);
+  useEffect(() => {
+    if (!modelSwitchable) return;
+    loadModels();
+    const sync = (): void => loadModels();
+    window.addEventListener(SETTINGS_CHANGED_EVENT, sync);
+    return () => window.removeEventListener(SETTINGS_CHANGED_EVENT, sync);
+  }, [loadModels, modelSwitchable]);
+  const toggleModel = (): void => {
+    setCtxOpen(false);
+    if (!modelOpen) { setModelPane("models"); loadModels(); loadThinking(); }
+    setModelOpen((v) => !v);
+  };
+  const chooseModel = (profileId: string): void => {
+    if (!modelSwitchable || modelBusy || profileId === modelProfileId) return;
+    setModelBusy(true);
+    contactsApi.updateContact(chatModelScope, { modelProfile: profileId })
+      .then(() => {
+        setModelProfileId(profileId);
+        setModelOpen(false);
+        addNotice(profileId === "" ? "已改为跟随全局模型" : "这位联系人的模型已切换", { info: true });
+        refreshContacts();
+        loadThinking();
+        loadCtx();
+        void pullRef.current?.();
+      })
+      .catch((error: Error) => addNotice("模型没切成：" + error.message, { info: true }))
+      .finally(() => setModelBusy(false));
+  };
+  const globalModelStatus = globalModelEcho ? "演示模式" : globalModelReady ? (globalModelName || "已就绪") : "未就绪";
+  const currentModelLabel = modelProfileId !== ""
+    ? modelOptions.find((item) => item.value === modelProfileId)?.label ?? "已绑定模型"
+    : `跟随全局 · ${globalModelStatus}`;
+  // "off" 是关思考：对 effort 形态是尽力而为（不发强度字段），开关形态才是真关。
+  const chooseThinking = (level: ThinkingLevelId | "off"): void => {
+    if (!thinking) return;
+    const selected = level === "off" ? thinking.thinking.off === true : !thinking.thinking.off && thinking.thinking.level === level;
+    if (selected || thinkBusy) return;
+    const before = thinking;
+    const optimistic: ThinkingControl = { ...thinking, thinking: level === "off"
+      ? { ...thinking.thinking, off: true }
+      : { ...thinking.thinking, off: false, level } };
+    setThinking(optimistic);
+    setThinkBusy(true);
+    chatApi.setThinkingLevel(level, cid)
+      .then((next) => {
+        setThinking(next);
+        // 强度改在模型档上：档被多位联系人共享、或改的是全局主模型时，必须说破——
+        // 不然用户以为只动了当前这位，别的联系人跟着变了却没人知道。
+        const shared = next.appliedTo;
+        const change = level === "off" ? "思考已关闭" : `思考强度已切到「${THINKING_LEVEL_LABELS[level]}」`;
+        addNotice(shared?.scope === "profile" && shared.contacts > 1
+          ? `${change}（「${shared.label}」由 ${shared.contacts} 位联系人共用，一起改了）`
+          : shared?.scope === "global"
+            ? `${change}（这是全局主模型「${shared.label}」的设置）`
+            : change, { info: true });
+      })
+      .catch((error: Error) => {
+        // 回滚只认自己那份乐观快照：在途期间 loadThinking 可能已用服务器最新状态
+        // 刷过 thinking，按引用比较，别把新快照打回旧值。
+        setThinking((cur) => (cur === optimistic ? before : cur));
+        addNotice("没切成思考强度：" + error.message, { info: true });
+      })
+      .finally(() => setThinkBusy(false));
+  };
   // 这两个浮层此前只认「点遮罩」，键盘用户按 Esc 什么都不会发生。
   // 浮层本体标 data-keep-menu，内部点击才不会被 useDismiss 误判成外部点击。
   useDismiss(ctxOpen, () => { setCtxOpen(false); });
 
   const toggleCtx = (): void => {
+    setModelOpen(false);
     setCtxOpen((v) => !v);
     if (!ctxOpen) loadCtx();
   };
@@ -368,6 +499,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     || pausedRef.current
     || (logRef.current !== null && logRef.current.offsetParent === null), []);
   const pullInflight = useRef(false);
+  const pullAllInflight = useRef(false);
   const iptRef = useRef<HTMLTextAreaElement>(null);
 
   const nearBottom = useCallback((): boolean => {
@@ -430,7 +562,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   // ── 拉取（放 ref 里：轮询与各动作都调最新版，不必进依赖数组） ──
   const pullRef = useRef<() => Promise<void>>();
   const pullAllRef = useRef<() => Promise<void>>();
-  const pullTurnRef = useRef<(turnId: string) => Promise<void>>();
+  const pullTurnRef = useRef<(turnId: string) => Promise<MessageRow[]>>();
   /** 比当前最早那条更早、还没进界面的行数（服务端报的，0 = 已经到顶）。
    *  从前是 `返回行数 >= 200` 反推，那个 200 前后端各写一遍，改一边就悄悄失效。 */
   const [olderLeft, setOlderLeft] = useState(0);
@@ -445,6 +577,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    *  少清一次就会在屏幕上挂着一段已经不代表的回答。 */
   const retireDraft = (): void => { draftTurnRef.current = null; setStreamText(""); };
   const watchStopRef = useRef<(() => void) | null>(null);
+  /** 被 barge-in 打断的旧轮：它已插的气泡是服务端删掉的，两种拉取（增量按 id、全量按 id 合并）
+   *  都看不见删除。本地先撤下，等新轮收尾后再按轮窄取校准一次（打断收尾在旧执行体的
+   *  下一个检查点才落库，立刻窄取可能太早）。 */
+  const interruptedTurnsRef = useRef<Set<string>>(new Set());
   const watch = useCallback((turnId: string, opts: { fullRedraw?: boolean } = {}) => {
     watchStopRef.current?.();
     let stopped = false;
@@ -466,10 +602,17 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         .then((turn) => {
           if (stopped) return;
           failDelay = 1200;
-          const over = turn.status === "done" || turn.status === "failed" || tries > TURN_WATCH_MAX_TRIES;
-          // 草稿只认 running 期的 reply：done 之后同一列是整轮定稿，再显示一遍就和真气泡撞车了。
-          // 结束这一拍**不清**它——清了到气泡上屏之间会露出一个往返的空窗（"打完字又没了"）。
-          if (!over) {
+          // cancelled 也算收尾：别的入口（另一台设备/手机端）打断这一轮时，轮询状态永远
+          // 停在 cancelled —— 不认的话 watch 会空转满 300 拍，界面上「正在回复」挂死。
+          const over = turn.status === "done" || turn.status === "failed" || turn.status === "cancelled" || tries > TURN_WATCH_MAX_TRIES;
+          const finished = turn.status === "done";
+          // 定稿正文只认 done：failed 轮的 reply 列可能还留着断气前的半截草稿，
+          // watch 超时（tries 耗尽）的轮连 done 都没到。把它们交给逐字揭示，草稿会永远
+          // 等不到接手的真气泡（该轮不再有气泡上屏，draftHasBubble 恒假），挂死在屏幕上。
+          // 结束这一拍**不清**已认定的 done 定稿——清了到气泡上屏之间会露出一个往返的空窗。
+          if (!over || (finished && turn.reply)) {
+            // done 这一拍也把定稿正文交给逐字揭示：单条模式必须让最后一段字打完，
+            // 再由下方真气泡接手，不能在中途整段闪换。
             if (turn.reply) draftTurnRef.current = turnId;
             setStreamText(String(turn.reply ?? ""));
           }
@@ -484,12 +627,42 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             setTyping(false);
             setBusy(false);
             idleTicksRef.current = 0; // 刚有动静：轮询回到最快档
-            if (turn.status !== "done" && turn.status !== "failed") {
+            if (turn.status === "failed") {
+              // 失败必须当场说破：此前只有 checkTurnState（首屏/有新消息那一拍）会立横幅，
+              // watch 的收尾一路静默 —— 模型挂掉后「正在回复」一灭就什么都不剩，
+              // 会话里凭空少一条。横幅（详情+重试）与轻提示双保险，重试成功后一起收掉。
+              setFailure({ id: turnId, error: turn.error ?? null });
+              addNotice("这条没回上来，点重试再试一次", { retryTurnId: turnId });
+            } else if (turn.status === "cancelled") {
+              // 这一轮在别处被终止（整轮不留痕，行已从服务端删掉）：本地已插的半截气泡
+              // 两种拉取都看不见删除，登记下来由下面的收尾按轮窄取校准。
+              interruptedTurnsRef.current.add(turnId);
+            } else if (turn.status !== "done") {
               addNotice("联系人半天没回话，可以再试一次", { retryTurnId: turnId });
             }
             // 等重绘真的把气泡取回来再撤草稿：setMsgs 在这一步里先落地，
             // 于是"气泡出现"和"草稿退场"是同一次渲染，中间不露底。
-            void redraw().finally(() => { retireDraft(); });
+            // 逐字模式例外：草稿要活到 reveal.done；done 之外的收尾（failed / watch 超时）
+            // 真气泡可能永远不来，必须当场撤，不能交给 draftHasBubble 判。
+            void redraw().then(async () => {
+              // done 但一轮下来连一条回复气泡都没有（模型回了空、或收尾时产物被清）：
+              // 界面上就是"她没说话"，必须留一句提示 + 重答入口，不能无声无息。
+              // 只查 reply 为空的 done 轮——正常完成时气泡必然随 redraw 落地，不多打这一发。
+              if (finished && !turn.reply) {
+                const rows = await pullTurnRef.current?.(turnId);
+                if (rows && !rows.some((m) => m.role === "assistant" && m.kind === "chat")) {
+                  setFailure({ id: turnId, error: turn.error ?? null, empty: true });
+                  addNotice("这条回复是空的，可以重新答一次", { info: true });
+                }
+              }
+            }).finally(() => {
+              if (!streamReveal || !turn.reply || !finished) retireDraft();
+              // 被打断的旧轮：新轮收尾时它的清理早已落库，按轮窄取把本地残留校准掉。
+              if (interruptedTurnsRef.current.size > 0) {
+                for (const tid of interruptedTurnsRef.current) void pullTurnRef.current?.(tid);
+                interruptedTurnsRef.current.clear();
+              }
+            }).catch(() => { /* 重绘/空回复检查失败：下一拍轮询照旧，别留未处理的拒绝 */ });
             return;
           }
           setTimeout(tick, 900);
@@ -512,7 +685,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         });
     };
     tick();
-  }, [addNotice, cid, dropNotices, asleep]);
+  }, [addNotice, cid, dropNotices, asleep, streamReveal]);
   useEffect(() => () => watchStopRef.current?.(), []);
 
   // 数据被整库清空：模块级那份种子缓存必须当场作废。
@@ -537,8 +710,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     pendingTurnRef.current = turnId;
     setBusy(true);
     setTyping(true);
+    // 旧的同轮失败提示先收掉：重试再失败会挂新的，不收就连点几次堆几条一样的。
+    dropNotices((n) => n.retryTurnId === turnId);
     chatApi.retryTurn(turnId, cid)
-      .then(() => watch(turnId))
+      .then(() => {
+        // 这一轮重新在跑了：失败横幅还挂着就是自相矛盾的状态（横幅说失败、顶栏说在线）。
+        setFailure(null);
+        return watch(turnId);
+      })
       .catch(() => {
         setTyping(false);
         setBusy(false);
@@ -546,7 +725,28 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         retireDraft();
         addNotice("没重试上，稍后再试", { info: true });
       });
-  }, [addNotice, watch]);
+  }, [addNotice, dropNotices, watch]);
+
+  /** 空回复那一轮的补答入口：轮子已经 done，失败重试的后端不收（"已经成功了，不用重试"），
+   *  得走「重新生成」——它对 done 轮开放；空回复的多半就是最新一轮，照常分条落库。 */
+  const regenerateEmpty = useCallback((turnId: string): void => {
+    if (pendingTurnRef.current) { addNotice("上一条还在回，稍等一下", { info: true }); return; }
+    pendingTurnRef.current = turnId;
+    setBusy(true);
+    setTyping(true);
+    chatApi.regenerateTurn(turnId, cid)
+      .then(() => {
+        setFailure(null);
+        return watch(turnId);
+      })
+      .catch((error: Error) => {
+        pendingTurnRef.current = null;
+        setTyping(false);
+        setBusy(false);
+        retireDraft();
+        addNotice("没重答成：" + error.message, { info: true });
+      });
+  }, [addNotice, cid, watch]);
 
   /**
    * 本会话最近一轮处理单的下场：失败给横幅，**还在飞的把界面接上**。
@@ -560,11 +760,15 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 而"她还在回话时发新的一句 = 打断重来"是设计好的 barge-in，不能被恢复状态杀掉。
    */
   const checkTurnState = useCallback(async (): Promise<void> => {
+    // 空闲与否要在**请求前**定格：await 期间用户可能 barge-in 发了新句、pendingTurnRef
+    // 已换成新轮。不复核的话，迟到的旧响应会把 ref 改写回旧轮并 watch(旧轮)——
+    // watch 开头的 watchStopRef 把新轮的监控杀掉，新回复从此无人认领。
+    const wasIdle = pendingTurnRef.current === null;
     try {
       const recent = await chatApi.fetchRecentTurns(1, cid ?? msgScope);
       const t = recent.turns?.[0];
       setFailure(t && t.status === "failed" ? { id: t.id, error: t.error } : null);
-      if (t && (t.status === "queued" || t.status === "running") && pendingTurnRef.current === null) {
+      if (t && (t.status === "queued" || t.status === "running") && wasIdle && pendingTurnRef.current === null) {
         pendingTurnRef.current = t.id;
         setTyping(true);
         watch(t.id, { fullRedraw: true });
@@ -614,7 +818,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       pendingsRef.current = pend;
       setPendings([...pend]);
     }
-    if (toAdd.length) setMsgs((prev) => [...prev, ...toAdd]);
+    // 追加也走按 id 合并，不是裸 concat：并发的 pullAll 刚把水位回拨过的话（见下），
+    // toAdd 里会混进已经上屏的行，裸追加就把同一气泡渲染两份。
+    if (toAdd.length) setMsgs((prev) => mergeRows(prev, toAdd));
     if (toAdd.length) idleTicksRef.current = 0;
     if (toAdd.length || pendingsRef.current.length > 0) await checkTurnState();
     if (toAdd.length) reportRead();
@@ -622,8 +828,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
 
   pullRef.current = async (): Promise<void> => {
     // 在途保护：turn 轮询每拍都会顺手拉一次消息，与 2.5s 的空闲链并发；
-    // 弱网下后发先至会让 lastIdRef 倒挂、把同一批消息重复推进列表。
-    if (pullInflight.current) return;
+    // 弱网下后发先至会让 lastIdRef 倒挂、把同一批消息重复推进列表。全量在飞时同样让路。
+    if (pullInflight.current || pullAllInflight.current) return;
     pullInflight.current = true;
     try {
       await pullOnce();
@@ -633,6 +839,18 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   };
 
   pullAllRef.current = async (): Promise<void> => {
+    // 与 pullOnce 同一套在飞保护：连点两次「撤销编辑」之类会并发两个全量，
+    // 后落地的那份把 lastIdRef 按更旧的快照改写。
+    if (pullAllInflight.current) return;
+    pullAllInflight.current = true;
+    try {
+      await pullAllOnce();
+    } finally {
+      pullAllInflight.current = false;
+    }
+  };
+
+  const pullAllOnce = async (): Promise<void> => {
     const data = await chatApi.fetchAllMessages(cid);
     setModelReady(data.modelReady);
     setOnboardingDone(data.onboardingDone);
@@ -641,7 +859,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     if (editingRef.current !== null) return;
     let maxId = 0;
     for (const m of data.messages) if (m.id > maxId) maxId = m.id;
-    lastIdRef.current = maxId;
+    // 水位只进不退：并发跑过一拍增量的话，lastIdRef 可能已经被推到比这份全量快照
+    // 更新的位置——直接赋值会倒退，下一拍增量把已上屏的消息再推一遍。
+    if (maxId > lastIdRef.current) lastIdRef.current = maxId;
     // 只清"还在飞"的占位。failed 的是故意留下来的——它带「没发出去 / 重试」，
     // 用户随时可能点那个重试。整段清空的话，网络抖一次之后打过的字和重试入口
     // 一起从界面上消失，而且没有任何地方还能找回来（消息从没落库）。
@@ -659,18 +879,20 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 只重取一条处理单的行并就地合并：撤回 / 删除 / 停止 / 改一句文字都只动那一轮，
    * 为一行变化重敲整页（实测首屏 500 行 / 250 KB / 线上 57 KB）不值。
    * 合并按 id 重排——messagesForTurn 给的是升序，落回原位置即可。
+   * 返回服务端这一轮的行：watch 收尾要用它判断"done 了却没气泡"的空回复。
    */
-  pullTurnRef.current = async (turnId: string): Promise<void> => {
+  pullTurnRef.current = async (turnId: string): Promise<MessageRow[]> => {
     const data = await chatApi.fetchTurnMessages(turnId, cid);
-    if (editingRef.current !== null) return;
+    if (editingRef.current !== null) return data.messages;
     setMsgs((prev) => reuseRows(prev,
       [...prev.filter((m) => m.turn_id !== turnId), ...data.messages].sort((a, b) => a.id - b.id)));
+    return data.messages;
   };
 
   /** 只动某一轮的操作之后该重取什么：能按轮窄取就窄取；
    *  行上没有 turn_id（这列是后加的，老数据可能为空）才退回整页重敲。
    *  两个 ref 里装的永远是最新实现，所以本回调身份稳定、不必进任何依赖。 */
-  const pullAffected = useCallback((turnId?: string | null): Promise<void> =>
+  const pullAffected = useCallback((turnId?: string | null): Promise<unknown> =>
     (turnId ? pullTurnRef.current?.(turnId) : pullAllRef.current?.()) ?? Promise.resolve(), []);
 
   /**
@@ -705,10 +927,17 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     const attachments = [...imgsRef.current];
     const outboxContactId = cid ?? msgScope ?? "";
     if (!text && attachments.length === 0) return;
+    /** 被这句打断的旧轮（barge-in）；202 回来后再做清理。 */
+    let interrupted: string | null = null;
     if (pendingTurnRef.current) {
+      interrupted = pendingTurnRef.current;
       // barge-in：她还在回上一条时发这句 = 打断旧轮、按新的一句重来（后端每联系人单飞）。
       // 旧轮不插任何气泡，给一句轻提示说明它去哪了——免得"回复消失了"变成悬案。
       addNotice("已停止上一条回复，按你这句重来", { info: true });
+      // 旧草稿当场退场：从现在到 watch() 接手之间隔着 say() 的往返，不清的话
+      // draftTurnRef 还指着旧轮，草稿会被就地锚定插到新占位气泡上面。
+      watchStopRef.current?.();
+      retireDraft();
     }
     stickRef.current = true;
     userHoldRef.current = false;   // 自己发了一句 = 明确要看她的回答，把自动跟随收回来
@@ -729,15 +958,32 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         // 把 turnId 回填到这条占位上：之后按单认领，连发两句相同的话也不会互相错认。
         pendingsRef.current = pendingsRef.current.map((p) => (p.localId === localId ? { ...p, turnId: data.turnId } : p));
         setPendings([...pendingsRef.current]);
+        const prior = interrupted;
+        if (prior !== null) {
+          // 旧轮已确认被打断（202 = 服务端收下了新轮、起跑时会作废旧轮）：它已插的气泡
+          // 是服务端删掉的，增量拉取和按 id 合并的全量都看不见删除——本地按同一口径
+          // 先撤下，再按轮窄取校准。立刻窄取可能还太早（旧执行体在下一个检查点收尾），
+          // 所以同时登记下来，新轮 watch 收尾时会再校准一次。
+          interruptedTurnsRef.current.add(prior);
+          setMsgs((prev) => prev.filter((x) => x.turn_id !== prior || x.role === "user"));
+          void pullTurnRef.current?.(prior);
+        }
         return pullRef.current?.().then(() => watch(data.turnId));
       })
       .catch((error: Error) => {
         const retryable = navigator.onLine === false || (error instanceof ApiError && error.code === "NETWORK")
           || /超时|fetch|network|网络/i.test(error.message);
         if (retryable) {
-          if (outboxContactId) enqueueOutbox({ clientId: localId, contactId: outboxContactId, text, attachments });
-          pendingsRef.current = pendingsRef.current.map((p) => (p.localId === localId ? { ...p, queued: true, failed: false, outbox: true } : p));
-          addNotice("网络暂时不可用，已放进待发箱，联网后自动发送", { info: true });
+          if (outboxContactId) {
+            enqueueOutbox({ clientId: localId, contactId: outboxContactId, text, attachments });
+            pendingsRef.current = pendingsRef.current.map((p) => (p.localId === localId ? { ...p, queued: true, failed: false, outbox: true } : p));
+            addNotice("网络暂时不可用，已放进待发箱，联网后自动发送", { info: true });
+          } else {
+            // 没有作用域可入队（cid 与 msgScope 都为空的挂载）：标成"待发送"却没有任何
+            // 东西会去发它，TTL 还豁免 queued 项——比失败态更坑。留失败态让用户手动重试。
+            pendingsRef.current = pendingsRef.current.map((p) => (p.localId === localId ? { ...p, failed: true } : p));
+            addNotice("没发出去，点这条消息重试", { info: true });
+          }
         } else {
           // 非网络错误不清掉这条——留成失败态，用户能点它重试（无网络时话不能白打）。
           pendingsRef.current = pendingsRef.current.map((p) => (p.localId === localId ? { ...p, failed: true } : p));
@@ -813,7 +1059,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     const unsubscribe = subscribeOutbox(sync);
     const sent = (event: Event): void => {
       const d = (event as CustomEvent<{ contactId?: string; clientId?: string }>).detail;
-      if (!d || d.contactId !== cid || !d.clientId) return;
+      // 入队用的作用域是 cid ?? msgScope（send 里同一套），判定必须同源——
+      // 只比 cid 的话，msgScope 挂载（助手工作区）下发送成功事件永远对不上号，
+      // 待发气泡撤不下来，只能靠下一拍轮询按文本全等回落认领。
+      if (!d || !d.clientId || d.contactId !== (cid ?? msgScope ?? "")) return;
       pendingsRef.current = pendingsRef.current.filter((p) => p.localId !== d.clientId);
       setPendings([...pendingsRef.current]);
       void pullRef.current?.();
@@ -953,8 +1202,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     }
   }, []);
 
-  const startEdit = useCallback((m: MessageRow, textOnly = false): void => {
-    if (editingRef.current !== null || busyGuard()) return;
+  /** 真正切换到某条消息的编辑态；确认框和首条进入都走这里。 */
+  const beginEdit = useCallback((m: MessageRow, textOnly = false): void => {
     editingRef.current = m.id;
     editingRoleRef.current = m.role;
     editingTurnRef.current = m.turn_id ?? null;
@@ -963,9 +1212,40 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     setEditImgs(Array.isArray(m.attachments) ? m.attachments : []);
     setEditTextOnly(textOnly && m.role === "user");
     setMenu(null);
+    setPendingConfirm(null);
     // 打开编辑不跳底：视口该停在正在改的那条上（大厂惯例），
     // 跳底只发生在「保存后对话从这里重建」的那一刻。
-  }, [busyGuard]);
+  }, []);
+
+  const startEdit = useCallback((m: MessageRow, textOnly = false): void => {
+    setMenu(null);
+    if (editingRef.current === m.id) return;
+    if (busyGuard()) return;
+    if (editingRef.current !== null) {
+      // 不静默拦截，也不直接吞掉当前编辑内容：先问一句，确认后把编辑态转给这一条。
+      setPendingConfirm({ kind: "edit-switch", m, textOnly });
+      return;
+    }
+    beginEdit(m, textOnly);
+  }, [beginEdit, busyGuard]);
+
+  /** 确认框只在这里落地真正动作：确认前不改数据，取消就保持原样。 */
+  const acceptPendingConfirm = (): void => {
+    const target = pendingConfirm;
+    setPendingConfirm(null);
+    if (!target) return;
+    // 弹窗开着的时候目标可能已经被删/被作废（另一端停止、重答中）。按 id 从最新列表
+    // 重取一行再动手——拿陈旧行去 regenerate/retract 会打到失效目标上，
+    // 拿它填编辑框则会把已被取代的内容当原文。
+    const fresh = msgs.find((m) => m.id === target.m.id);
+    if (!fresh) {
+      addNotice("这条消息已经不在了", { info: true });
+      return;
+    }
+    if (target.kind === "edit-switch") beginEdit(fresh, target.textOnly);
+    else if (target.kind === "regenerate") doRegenerate(fresh);
+    else doRetract(fresh);
+  };
 
   const cancelEdit = useCallback((): void => {
     editingRef.current = null;
@@ -1056,6 +1336,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       if (m.kind === "tool") {
         // 关掉「工具调用过程」就整条不渲染：留痕仍在库里，状态页也照常看得见
         if (!showTools) continue;
+        // 工具卡也算"一天里的话"：跨天落在工具卡上时同样要出日分隔，
+        // 否则前一天的回复和今天的第一句之间什么标记都没有。
+        const dayChanged = lastDay === null || dayOf(m.created_at) !== lastDay;
+        if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: dayLabel(m.created_at) });
         out.push({ t: "tool", m });
         lastDay = dayOf(m.created_at);
         lastAt = m.created_at;
@@ -1084,12 +1368,22 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
        就地重答——重答写回原行号（后端），落点在本轮现有消息之后；草稿跟着同一个位置，
        才不会出现"先在最后一条输出、完成后跳回原位"。本轮的行还没进列表（刚发出去、
        只有本地占位）时留在末尾，与以前一致。
-       条件不是 draftLive：本轮第一条真气泡上屏后草稿退场，但"还有话要来"的三个点
-       要继续挂在这一轮后面（typing 仍为真），所以按可见性判。 */
-    if (typing || draftShown !== "") {
-      const anchor = draftTurnRef.current ?? pendingTurnRef.current;
+       条件就是 draftLive：逐字揭示完成后草稿必须真正退场，否则会与同轮真气泡并存；
+       typing 为真但还没有正文时 draftLive 仍为真，三个点照常挂在锚点后面。 */
+    if (draftLive) {
+      // 在飞的那一轮优先于草稿正文所属的轮：两者不一致只可能是窗口期——新轮已经开跑、
+      // 旧草稿还没退场（重答/编辑打断、或新消息进来），这时草稿是旧轮的残影，
+      // 落点必须跟着新轮走，否则占位会插在旧回复后面、比它新的消息之前。
+      const anchor = pendingTurnRef.current ?? draftTurnRef.current;
       let at = -1;
-      if (anchor !== null) {
+      // 还有**在飞**的占位气泡（刚发出、还没被真消息认领）时，锚点只可能是旧轮
+      // （新轮的用户消息还没进列表），就地锚定会把"正在回复"插到用户刚发的那句上面
+      // ——这时草稿一律垫到末尾。离线待发（outbox/queued）与失败态不算在飞：
+      // 它们的新轮还不存在，不该阻止重答较早轮次时的就地锚定。
+      // 同一窗口期还有另一副面孔：占位刚被轮询认领、pendings 已清空，但 say() 的响应
+      // 还没回来把 pendingTurnRef 回填——typing 还亮着，锚同样是旧轮，一样垫到末尾。
+      if (anchor !== null && !pendings.some((p) => !p.failed && !p.outbox)
+          && !(typing && pendingTurnRef.current === null)) {
         for (const [i, n] of out.entries()) {
           if ((n.t === "msg" || n.t === "tool") && n.m.turn_id === anchor) at = i;
         }
@@ -1097,9 +1391,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       out.splice(at >= 0 ? at + 1 : out.length, 0, { t: "draft" });
     }
     return out;
-    // typing/draftShown 是草稿的可见性与内容；锚定的轮号只在换轮时随这些状态一起变，
-    // 所以不必（也不能）把 ref 本身写进依赖。
-  }, [msgs, pendings, clockPref, showTools, typing, draftShown]);
+    // typing/draftShown 是草稿的可见性与内容（typing 还参与上面"发送在飞"那个窗口期的判定）；
+    // 锚定的轮号只在换轮时随这些状态一起变，所以不必（也不能）把 ref 本身写进依赖。
+  }, [msgs, pendings, clockPref, showTools, draftLive, typing]);
 
   /** 贴底时把"看到哪儿了"推到最新：不这么做，第一次往上翻会把整段历史都算成"没看的新消息"
    *  （首屏不滚动就不触发 scroll，光靠 scroll 事件更新会漏掉这一档）。 */
@@ -1394,7 +1688,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     setSearchBusy(true);
     void chatApi.fetchMessagesAround(hit.id, cid)
       .then((d) => {
-        setMsgs(d.messages);
+        // 按 id 合并，不是整表替换：命中很早的一条时窗口装不下整段会话，替换会把
+        // 窗口外已加载的消息全丢掉——增量拉取只认 id > 水位，永远补不回来，
+        // 看起来就是"后面的聊天记录没了"。合并保住已加载的所有页，窗口行照常落位。
+        setMsgs((prev) => mergeRows(prev, d.messages));
         setOlderLeft(d.olderRemaining);
         stickRef.current = false;
         userHoldRef.current = true;
@@ -1865,7 +2162,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} />
           <div className="bubble">
             {streamReveal && draftShown !== ""
-              ? <span className="draft-text">{draftShown}{typing && <span className="draft-caret" aria-hidden="true" />}</span>
+              ? <span className="draft-text">{draftShown}{(typing || !reveal.done) && <span className="draft-caret" aria-hidden="true" />}</span>
               : <span className="typing"><i /><i /><i /></span>}
           </div>
         </div>
@@ -1929,6 +2226,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         return <ToolCard key={n.m.id} m={n.m} contactAvatar={contactAvatar} contactName={characterName} onImageClick={openZoom} />;
       case "msg": {
         const m = n.m;
+        // 单条逐字期间，同轮定稿气泡已经在库里/列表里了，但必须等草稿打完再露出来。
+        if (draftTyping && m.role === "assistant" && m.kind === "chat" && m.turn_id === draftTurnRef.current) return null;
         if (editingId === m.id) {
           const mine = m.role === "user";
           return (
@@ -1938,6 +2237,15 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             <div key={m.id} className={"msg-row editing gap " + (mine ? "me" : "her")} data-id={m.id}>
               {!mine && <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} />}
               <div className="editbox">
+                <div className="editbox-head">
+                  <div className="editbox-heading">
+                    <span className="editbox-title"><Pencil size={13} strokeWidth={1.9} />编辑{mine ? "我的消息" : "这条回复"}</span>
+                    <span className="editbox-mode">{editTextOnly ? "仅改文字 · 后续保留" : mine ? "保存后从这句重新回复" : "仅修改文本 · 不重新生成"}</span>
+                  </div>
+                  <button type="button" className="editbox-close" title="取消编辑" aria-label="取消编辑" onClick={cancelEdit}>
+                    <X size={15} />
+                  </button>
+                </div>
                 {editImgs.length > 0 && (
                   /* 与气泡同序：图在上、文字在下（MessageRow 就是先 msg-imgs 后 msg-text）。
                      不设"添加图片"按钮——粘贴是编辑态唯一的加图入口。
@@ -1955,10 +2263,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                   </div>
                 )}
                 {editTextOnly && (
-                  <div className="edit-note">只改这句文字，后面的对话原样保留（图片不动）</div>
+                  <div className="edit-note">只改这句文字，后面的对话和图片都原样保留。</div>
                 )}
                 <textarea
-                  rows={2} autoFocus value={editDraft} ref={editBoxRef}
+                  rows={3} autoFocus value={editDraft} ref={editBoxRef}
+                  placeholder="编辑消息内容…"
                   onChange={(e) => { setEditDraft(e.target.value); autoGrow(e.target); }}
                   onPaste={onPasteEditFiles}
                   onKeyDown={(e) => {
@@ -1966,15 +2275,22 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                     if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) submitEdit();
                   }}
                 />
-                <div className="hint">
-                  {mine
-                    ? "改完联系人会从这句重新往下聊，图片可以直接粘贴。"
-                    : "只修改这条回复的文字，不会重新生成。"}
-                  <span className="kbd-only">Ctrl+Enter 保存</span>
+                <div className="editbox-foot">
+                  <span className="editbox-hint">
+                    {mine
+                      ? (editTextOnly ? "保存后不会重新生成回复。" : "保存后会从这句重新往下聊，图片可直接粘贴。")
+                      : "只修改这条回复的文字，不会重新生成。"}
+                  </span>
+                  <span className="editbox-count" aria-label={`${editDraft.length} 个字符`}>{editDraft.length}</span>
+                  <span className="kbd-only editbox-kbd">Ctrl+Enter</span>
                 </div>
-                <div className="row2">
+                <div className="editbox-actions">
                   <button type="button" className="btn sm" onClick={cancelEdit}>取消</button>
-                  <button type="button" className="primary sm" onClick={submitEdit}>保存</button>
+                  <button type="button" className="primary sm" onClick={submitEdit}
+                    disabled={(editDraft.trim() === "" && editImgs.length === 0)}>
+                    <Check size={13} strokeWidth={2.3} />
+                    {mine && !editTextOnly ? "保存并重新回复" : "保存修改"}
+                  </button>
                 </div>
               </div>
               {mine && <Avatar className="msg-ava mine" src={ownerAvatar || undefined} name={ownerName || "我"} />}
@@ -2007,18 +2323,27 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           </button>
         ) : null}
         <div className="who-wrap">
-          <div className="who">{characterName}</div>
-          <div className="sub">
-            <span className={"dot " + chatStatus.tone} id="dot" />
-            {/* 演示模式是首启用户第一眼看到的状态——不给出口，他就只能去翻文档。
-                who-wrap 整块是 pointer-events:none（居中标题不吃点击），所以这里单独放开这一行。 */}
-            {modelReady === false && onOpenModelSettings ? (
-              <button type="button" className="ctx-link stat-link" id="stat" onClick={onOpenModelSettings}>
-                还没接入模型 · 去设置
-              </button>
-            ) : (
-              <span id="stat">{chatStatus.text}</span>
-            )}
+          {onEditProfile ? (
+            <button type="button" className="who-ava-btn" title="查看联系人资料" aria-label={`查看${characterName}的资料`} onClick={onEditProfile}>
+              <Avatar className="who-ava" src={contactAvatar || undefined} name={characterName} style={avatarToneStyle(characterName)} />
+            </button>
+          ) : (
+            <Avatar className="who-ava" src={contactAvatar || undefined} name={characterName} style={avatarToneStyle(characterName)} />
+          )}
+          <div className="who-copy">
+            <div className="who">{characterName}</div>
+            <div className="sub">
+              <span className={"dot " + chatStatus.tone} id="dot" />
+              {/* 演示模式是首启用户第一眼看到的状态——不给出口，他就只能去翻文档。
+                  who-wrap 整块是 pointer-events:none（居中标题不吃点击），所以这里单独放开这一行。 */}
+              {modelReady === false && onOpenModelSettings ? (
+                <button type="button" className="ctx-link stat-link" id="stat" onClick={onOpenModelSettings}>
+                  还没接入模型 · 去设置
+                </button>
+              ) : (
+                <span id="stat">{chatStatus.text}</span>
+              )}
+            </div>
           </div>
         </div>
         <div className="right">
@@ -2170,8 +2495,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
 
         {failure && (
           <div className="notice">
-            联系人没回上来
-            <button type="button" className="retry" onClick={() => retry(failure.id)}>重试</button>
+            {failure.empty ? "这条回复是空的" : "联系人没回上来"}
+            <button type="button" className="retry"
+              onClick={() => (failure.empty ? regenerateEmpty(failure.id) : retry(failure.id))}>
+              {failure.empty ? "重新答一次" : "重试"}
+            </button>
             {failure.error && (
               <details className="notice-detail">
                 <summary>详情</summary>
@@ -2302,6 +2630,109 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               <span className="kbd-only">Enter 发送 · Shift+Enter 换行</span>
               <span className="touch-only">长按消息可复制 / 编辑 / 撤回</span>
             </span>
+            {modelSwitchable && (
+              <div className="model-wrap" ref={modelWrapRef}>
+                <button type="button" className="model-trigger" aria-haspopup="dialog"
+                  aria-expanded={modelOpen} aria-label="切换聊天模型" title={currentModelLabel}
+                  onClick={toggleModel}>
+                  <Cpu size={14} strokeWidth={1.9} />
+                  <span className="model-trigger-label">模型 · {currentModelLabel}</span>
+                  <ChevronDown size={12} strokeWidth={2} className={modelOpen ? "flip" : ""} />
+                </button>
+                {modelOpen && (
+                  <div className="model-pop" role="dialog" aria-label="聊天模型" data-keep-menu>
+                    {modelPane === "think" && thinking ? (
+                      <>
+                        <div className="model-pop-head">
+                          <button type="button" className="model-back" aria-label="返回模型列表"
+                            onClick={() => setModelPane("models")}>
+                            <ChevronLeft size={14} strokeWidth={2.2} />
+                          </button>
+                          <span>思考强度</span>
+                          <small title={`${thinking.provider} · ${thinking.model}`}>{thinking.provider} · {thinking.model}</small>
+                        </div>
+                        <div className="think-levels" role="radiogroup" aria-label="选择思考强度">
+                          <button type="button" role="radio" aria-checked={thinking.thinking.off === true}
+                            className={"think-level" + (thinking.thinking.off ? " on" : "")}
+                            disabled={thinkBusy} onClick={() => chooseThinking("off")}>
+                            关闭
+                          </button>
+                          {thinking.thinking.levels.map((level) => (
+                            <button key={level} type="button" role="radio"
+                              aria-checked={!thinking.thinking.off && thinking.thinking.level === level}
+                              className={"think-level" + (!thinking.thinking.off && thinking.thinking.level === level ? " on" : "")}
+                              disabled={thinkBusy} onClick={() => chooseThinking(level)}>
+                              {THINKING_LEVEL_LABELS[level]}
+                            </button>
+                          ))}
+                        </div>
+                        <div className="think-pop-note">
+                          越高想得更久更深入，也更慢。关闭后不再指定强度，由模型自行决定。下一条回复起生效。
+                        </div>
+                      </>
+                    ) : modelError !== "" ? (
+                      <>
+                        <div className="model-pop-head">
+                          <span>聊天模型</span>
+                          <small>只影响这位联系人 · 下一条生效</small>
+                        </div>
+                        <div className="model-pop-empty">模型列表没读到：{modelError}</div>
+                      </>
+                    ) : (
+                      <>
+                        <div className="model-pop-head">
+                          <span>聊天模型</span>
+                          <small>只影响这位联系人 · 下一条生效</small>
+                        </div>
+                        {thinking?.thinking.switchable && (
+                          // 思考强度做成二级页入口：排在模型列表之前，不用滚到长列表底下去找。
+                          <button type="button" className="model-option model-think-entry"
+                            aria-haspopup="dialog" onClick={() => { loadThinking(); setModelPane("think"); }}>
+                            <span className="model-option-copy">
+                              <b>思考强度</b>
+                              <small>{thinking.thinking.off ? "已关闭" : thinking.thinking.level ? THINKING_LEVEL_LABELS[thinking.thinking.level] : "未设置"}</small>
+                            </span>
+                            <ChevronDown size={15} strokeWidth={2.2} className="model-go" />
+                          </button>
+                        )}
+                        <div className="model-options" role="radiogroup" aria-label="选择聊天模型">
+                          <button type="button" role="radio" aria-checked={modelProfileId === ""}
+                            className={"model-option" + (modelProfileId === "" ? " on" : "")}
+                            disabled={modelBusy} onClick={() => chooseModel("")}>
+                            <span className="model-option-copy">
+                              <b>跟随全局</b>
+                              <small>全局模型 · {globalModelStatus}</small>
+                            </span>
+                            {modelProfileId === "" && <Check size={15} strokeWidth={2.4} />}
+                          </button>
+                          {modelOptions.map((item) => (
+                            <button key={item.value} type="button" role="radio"
+                              aria-checked={modelProfileId === item.value}
+                              className={"model-option" + (modelProfileId === item.value ? " on" : "")}
+                              disabled={modelBusy} onClick={() => chooseModel(item.value)}>
+                              <span className="model-option-copy">
+                                <b>{item.label}</b>
+                                <small>{item.detail || "绑定到这位联系人的对话"}</small>
+                              </span>
+                              {modelProfileId === item.value && <Check size={15} strokeWidth={2.4} />}
+                            </button>
+                          ))}
+                        </div>
+                        {modelOptions.length === 0 && (
+                          <div className="model-pop-empty">还没有可切换的模型档。先在设置里添加并保存一份。</div>
+                        )}
+                        {onOpenModelSettings && (
+                          <button type="button" className="model-manage"
+                            onClick={() => { setModelOpen(false); onOpenModelSettings(); }}>
+                            管理模型档
+                          </button>
+                        )}
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
             <div className="ctx-wrap">
               <button type="button" className="ctx-btn" id="ctxBtn" data-keep-menu onClick={toggleCtx}
                 title={ctx
@@ -2315,7 +2746,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                     strokeDasharray={ctx ? ((ctx.used / ctx.limit) * 34.56).toFixed(2) + " 34.56" : "0 34.56"}
                     transform="rotate(-90 7 7)" />
                 </svg>
-                {ctx ? `${Math.round((ctx.used / ctx.limit) * 100)}% · ${fmtTokens(ctx.used)} / ${fmtTokens(ctx.limit)}` : "—"}
+                {/* 常驻只给结论；完整用量在悬浮提示和点击后的浮层里。 */}
+                {ctx
+                  ? (
+                    <>
+                      <span className="ctx-pct">{Math.round((ctx.used / ctx.limit) * 100)}%</span>
+                    </>
+                  )
+                  : "—"}
               </button>
               {ctxOpen && ctx && (
                 <>
@@ -2393,9 +2831,36 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       </div>
 
       {menu && <MessageMenu menu={menu} setMenu={setMenu} addNotice={addNotice}
-        onEdit={startEdit} onReedit={reeditRetracted} onRetract={doRetract}
+        onEdit={startEdit} onReedit={reeditRetracted}
+        onRetract={(mm) => { setMenu(null); setPendingConfirm({ kind: "retract", m: mm }); }}
         onRequestDelete={(mm) => { setMenu(null); setDelTarget(mm); }}
-        onRegenerate={doRegenerate} onRemember={rememberMessage} />}
+        onRegenerate={(mm) => { setMenu(null); setPendingConfirm({ kind: "regenerate", m: mm }); }}
+        onRemember={rememberMessage} />}
+
+      {pendingConfirm && (
+        <Modal label="操作确认" onClose={() => setPendingConfirm(null)}>
+          <div className="del-title">
+            {pendingConfirm.kind === "edit-switch" ? "切换编辑到这条消息？"
+              : pendingConfirm.kind === "regenerate" ? "重新生成这条回复？"
+                : "撤回这条消息？"}
+          </div>
+          <div className="del-note">
+            {pendingConfirm.kind === "edit-switch"
+              ? "当前正在编辑的内容还没保存，切换后会丢弃；新打开的这一条不会立即改动。"
+              : pendingConfirm.kind === "regenerate"
+                ? "当前这条回答会被新的回答替换，后面的对话保持不动。重新生成期间不能发送其他消息。"
+                : `撤回后${characterName}不会再记得这句，但会留下一条“已撤回”记录。`}
+          </div>
+          <div className="del-row">
+            <button type="button" onClick={() => setPendingConfirm(null)}>取消</button>
+            <button type="button" className={pendingConfirm.kind === "retract" ? "danger" : "primary"}
+              onClick={acceptPendingConfirm}>
+              {pendingConfirm.kind === "edit-switch" ? "切换编辑"
+                : pendingConfirm.kind === "regenerate" ? "重新生成" : "撤回"}
+            </button>
+          </div>
+        </Modal>
+      )}
 
       {delTarget && (
         <Modal label="删除确认" onClose={() => setDelTarget(null)}>
@@ -2446,3 +2911,5 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     </div>
   );
 }
+
+

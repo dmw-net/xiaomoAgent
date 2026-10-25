@@ -2,6 +2,9 @@ import { useEffect, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss } from "../hooks/useDismiss";
 
+/** 多层弹窗共享一个页面滚动锁；计数器避免内层关闭时误解锁外层。 */
+let openModalCount = 0;
+
 /**
  * 通用弹窗：点遮罩关闭、Esc 关闭、role=dialog + aria-modal。
  * 此前 WeChatSection / ModelSection / MemoryPanel 各写一套，
@@ -18,6 +21,14 @@ export default function Modal({ onClose, label, className = "", head, children }
   children: ReactNode;
 }): JSX.Element {
   const cardRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    openModalCount += 1;
+    document.documentElement.classList.add("modal-open");
+    return () => {
+      openModalCount = Math.max(0, openModalCount - 1);
+      if (openModalCount === 0) document.documentElement.classList.remove("modal-open");
+    };
+  }, []);
   // 卡片本体就是"内部"：点它不关，点遮罩关。开层那一发手势不会被这里看到
   // （useDismiss 听的是 pointerdown，比这个监听器存在更早），所以不需要时间宽限。
   useDismiss(true, onClose, cardRef);
@@ -26,7 +37,9 @@ export default function Modal({ onClose, label, className = "", head, children }
   useEffect(() => {
     const back = document.activeElement as HTMLElement | null;
     // preventScroll：焦点该进弹窗，但不该因此卷动背景列表
-    cardRef.current?.querySelector<HTMLElement>("input:not([disabled]), textarea, button")?.focus({ preventScroll: true });
+    const firstField = cardRef.current?.querySelector<HTMLElement>("input:not([disabled]), textarea:not([disabled]), select:not([disabled])");
+    const firstAction = cardRef.current?.querySelector<HTMLElement>("button:not([disabled]), [tabindex]:not([tabindex=\"-1\"])");
+    (firstField ?? firstAction)?.focus({ preventScroll: true });
     // 焦点陷阱：Tab 走到最后一个可聚焦元素就绕回第一个（Shift+Tab 反向）。
     // 只监听卡片内部，不给背景加 inert —— 两个弹窗叠着时不会互相解锁。
     const card = cardRef.current;

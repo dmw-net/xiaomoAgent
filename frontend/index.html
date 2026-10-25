@@ -10,8 +10,6 @@
 <script>(function(){
   var KEY = "xiaomo.theme";
   var AKEY = "xiaomo.accent";
-  var SKEY = "xiaomo.themeStyle";
-  var STYLES = ["warm", "classic", "night", "paper"];
   function resolve(mode){
     if (mode === 'light' || mode === 'dark') return mode;
     try {
@@ -40,7 +38,7 @@
   // 「压深(浅底) / 提亮(深底)」方向挪 —— 两个角色会同时变好。
   function adapt(hex, dark){
     var ink = dark ? '#23130a' : '#ffffff';
-    var bg  = dark ? '#171310' : '#efe7da';
+    var bg  = dark ? '#141311' : '#f4f2ed';
     var dir = dark ? '#ffffff' : '#000000';
     var h = hex, t = 0;
     while (t < 0.78 && (cr(h, ink) < 4.5 || cr(h, bg) < 4.5)) {
@@ -67,41 +65,51 @@
     var a = adapt(hex, dark);
     s.setProperty('--accent', a.accent);
     s.setProperty('--accent-hover', mix(a.accent, dark ? '#ffffff' : '#000000', dark ? 0.18 : 0.12));
-    s.setProperty('--accent-soft', mix(a.accent, dark ? '#2a221c' : '#fffdfa', dark ? 0.85 : 0.88));
+    s.setProperty('--accent-soft', mix(a.accent, dark ? '#32211a' : '#fffefb', dark ? 0.85 : 0.88));
     s.setProperty('--accent-text', a.ink);
-    s.setProperty('--accent-ink', dark ? a.accent : mix(a.accent, '#26211b', 0.35));
+    s.setProperty('--accent-ink', dark ? a.accent : mix(a.accent, '#201d18', 0.35));
     // 选中态那圈同色辉光跟着自定义色走，否则换色后（比如换成湖蓝）还亮着赤陶的光
     s.setProperty('--accent-glow', 'color-mix(in srgb, ' + a.accent + ' 22%, transparent)');
   }
-  // 主题风格（材质与配色家族）。属性必须首帧前就挂上，否则先按暖房铺一遍再跳到
-  // 夜航——那一下整屏闪白/闪暖，比不做主题还难看。
-  function getStyle(){
+  // 旧版四套“主题风格”已经下线。首帧前把用户当时的色感迁移到强调色，
+  // 清掉旧键和旧属性，避免残留皮肤继续影响 CSS 或让老用户无感丢配置。
+  try {
+    var legacyStyle = localStorage.getItem('xiaomo.themeStyle') || '';
+    var legacyAccent = { classic: '#22c55e', night: '#d9821c', paper: '#2f6fed' };
+    if (!localStorage.getItem(AKEY) && legacyAccent[legacyStyle]) {
+      localStorage.setItem(AKEY, legacyAccent[legacyStyle]);
+    }
+    localStorage.removeItem('xiaomo.themeStyle');
+  } catch(e) {}
+  document.documentElement.removeAttribute('data-theme-style');
+  // 壁纸是否开着（读同一份 xiaomo.wallpaper，lib/wallpaper.ts 的 getWallpaper 同一套语义）。
+  // 壁纸模式下界面走专属适配：固定暗色基底 + 玻璃表面，浅色/深色偏好暂存不动，
+  // 关掉壁纸后由 __refreshTheme 原样恢复——这是「壁纸是第三种形态」而不是第四套皮肤。
+  function wallpaperOn(){
     try {
-      var v = localStorage.getItem(SKEY) || 'warm';
-      return STYLES.indexOf(v) >= 0 ? v : 'warm';
-    } catch(e){ return 'warm'; }
-  }
-  function applyStyle(style){
-    var s2 = STYLES.indexOf(style) >= 0 ? style : 'warm';
-    document.documentElement.setAttribute('data-theme-style', s2);
-    // 自定义强调色是"叠加在主题之上"的：soft/ink/glow 这些派生色要按当前主题重算
-    applyAccent(getAccent());
-    try { localStorage.setItem(SKEY, s2); } catch(e) {}
+      var d = JSON.parse(localStorage.getItem('xiaomo.wallpaper') || 'null');
+      if (!d || typeof d !== 'object') return false;
+      if (d.kind === 'preset') return true;
+      return d.kind === 'media' && typeof d.url === 'string' && d.url.indexOf('/media/') === 0;
+    } catch(e) { return false; }
   }
   function apply(mode){
-    document.documentElement.setAttribute('data-theme', resolve(mode));
+    document.documentElement.setAttribute('data-theme', wallpaperOn() ? 'dark' : resolve(mode));
     document.documentElement.setAttribute('data-theme-mode', mode);
     applyAccent(getAccent());
     try { localStorage.setItem(KEY, mode); } catch (e) {}
+    // Rail 快捷菜单与设置页的高亮各自持有 state，谁改了主题都要广播一声，
+    // 否则两处读同一份 data-theme-mode 却只在挂载/系统切换时重画，高亮会各说各话。
+    document.dispatchEvent(new CustomEvent('xiaomo:themechange'));
   }
-  document.documentElement.setAttribute('data-theme-style', getStyle());
   var saved = 'system';
   try { saved = localStorage.getItem(KEY) || 'system'; } catch (e) {}
   apply(saved);
-  // 暴露给页面脚本，供主题切换控件调用
-  window.__setThemeMode = apply;
+  // 暴露给页面脚本，供主题切换控件调用（saved 要同步更新，__refreshTheme 才能恢复到最新偏好）
+  window.__setThemeMode = function(m){ saved = m; apply(m); };
   window.__setThemeAccent = applyAccent;
-  window.__setThemeStyle = applyStyle;
+  // 壁纸开/关后由 lib/wallpaper.ts 调用：按持久化偏好重算明暗（壁纸模式强制暗底）
+  window.__refreshTheme = function(){ apply(saved); };
   // 跟随系统时要响应系统切换
   try {
     window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', function(){
@@ -109,6 +117,119 @@
       if (mode === 'system') apply('system');
     });
   } catch (e) {}
+})();</script>
+<script>
+/* 壁纸与玻璃：与主题同一套防闪白纪律——属性和壁纸层都要首帧前就位。
+ * React 起来后 lib/wallpaper.ts 会接管重建（window.__applyWallpaper），
+ * 这段只负责把首屏那层画出来，逻辑保持一份极简副本。 */
+(function(){
+  var WPKEY = "xiaomo.wallpaper";
+  var PRESETS = ["starry"];
+  // 与主题脚本里的同名判断同一套语义（两个 IIFE 不共享作用域，各留一份极简副本）
+  function wallpaperOn(){
+    try {
+      var d = JSON.parse(localStorage.getItem(WPKEY) || "null");
+      if (!d || typeof d !== "object") return false;
+      if (d.kind === "preset") return true;
+      return d.kind === "media" && typeof d.url === "string" && d.url.indexOf("/media/") === 0;
+    } catch(e) { return false; }
+  }
+  function readPref(){
+    try {
+      var d = JSON.parse(localStorage.getItem(WPKEY) || "null");
+      if (!d || typeof d !== "object") return null;
+      var rawS = Number(d.surface);
+      return {
+        kind: d.kind === "preset" || d.kind === "media" ? d.kind : "none",
+        preset: typeof d.preset === "string" ? d.preset : "",
+        url: typeof d.url === "string" && d.url.indexOf("/media/") === 0 ? d.url : "",
+        surface: isFinite(rawS) ? Math.max(0, Math.min(80, Math.round(rawS))) : 26
+      };
+    } catch (e) { return null; }
+  }
+  // 玻璃模式的不透明度档（透明度只在玻璃开启时生效，与 lib/wallpaper.ts 同一套换算）
+  function applySurface(surface){
+    var s = document.documentElement.style;
+    var gw = Math.max(50, 100 - surface * 0.7);
+    var chrome = Math.min(92, Math.max(56, gw + 4));
+    s.setProperty("--wp-glass-wash", gw + "%");
+    s.setProperty("--wp-glass-chrome", chrome + "%");
+    s.setProperty("--wp-glass-card", Math.min(94, Math.max(64, gw + 8)) + "%");
+    s.setProperty("--wp-glass-modal", Math.min(94, Math.max(88, gw + 24)) + "%");
+  }
+  function clearSurface(){
+    var s = document.documentElement.style;
+    var names = ["--wp-glass-wash","--wp-glass-chrome","--wp-glass-card","--wp-glass-modal"];
+    for (var i = 0; i < names.length; i++) s.removeProperty(names[i]);
+  }
+  function fail(root){
+    root.removeAttribute("data-wallpaper");
+    clearSurface();
+    var old = document.getElementById("wp-layer");
+    if (old) old.remove();
+  }
+  function applyWallpaper(){
+    var root = document.documentElement;
+    var p = readPref();
+    if (!p || p.kind === "none" || (p.kind === "preset" && PRESETS.indexOf(p.preset) < 0) || (p.kind === "media" && !p.url)) {
+      fail(root);
+      return;
+    }
+    root.setAttribute("data-wallpaper", p.kind);
+    applySurface(p.surface);
+    var old = document.getElementById("wp-layer");
+    if (old) old.remove();
+    var layer = document.createElement("div");
+    layer.id = "wp-layer";
+    layer.setAttribute("aria-hidden", "true");
+    if (p.kind === "preset") {
+      layer.setAttribute("data-wp", p.preset);
+      var noise = document.createElement("div");
+      noise.className = "wp-noise";
+      layer.appendChild(noise);
+      // 星空两层视差（元素空壳，样式在 ::before/::after）——与 lib/wallpaper.ts 的 buildPreset 保持同构
+      var stars = document.createElement("div");
+      stars.className = "wp-stars";
+      layer.appendChild(stars);
+      // 五道流星各有长短、角度和节奏，叠成稀疏流星雨；两份构建逻辑必须同构
+      var meteors = document.createElement("div");
+      meteors.className = "wp-meteors";
+      for (var i = 0; i < 5; i++) {
+        var meteor = document.createElement("span");
+        meteor.className = "wp-meteor";
+        meteors.appendChild(meteor);
+      }
+      layer.appendChild(meteors);
+    } else {
+      layer.setAttribute("data-wp-media", "1");
+      var media = /\.(mp4|webm)$/i.test(p.url)
+        ? document.createElement("video")
+        : document.createElement("img");
+      media.className = "wp-media";
+      media.src = p.url;
+      if (media.tagName === "VIDEO") {
+        media.autoplay = true; media.loop = true; media.muted = true;
+        media.setAttribute("playsinline", "");
+      } else {
+        media.alt = "";
+      }
+      media.setAttribute("aria-hidden", "true");
+      media.addEventListener("error", function(){ fail(root); });
+      layer.appendChild(media);
+    }
+    document.body ? document.body.insertBefore(layer, document.body.firstChild)
+                  : document.documentElement.appendChild(layer);
+  }
+  function applyGlass(on){
+    if (on) document.documentElement.setAttribute("data-glass", "on");
+    else document.documentElement.removeAttribute("data-glass");
+  }
+  applyWallpaper();
+  // 玻璃不再是独立开关：壁纸开着 = 界面自动进入壁纸适配（半透明玻璃表面）。
+  // 之后壁纸的开关由 lib/wallpaper.ts 在 applyWallpaper 里同步这块属性。
+  applyGlass(wallpaperOn());
+  window.__setGlass = applyGlass;
+  window.__applyWallpaper = applyWallpaper;
 })();</script>
 </head>
 <body>

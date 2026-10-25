@@ -35,8 +35,11 @@ type Draft = {
   underProvider: boolean;
 };
 
+/* 与后端 defaultModelCaps 对齐：新档默认按「支持工具」处理——工具是历史行为，
+   端点不兼容由运行时探测兜底（吃 400 后按端点降级）。默认不勾的后果是联系人
+   设置里的工具开关全部失效（实测踩过）。 */
 const NO_CAPS: ModelCaps = {
-  tools: false, vision: false, thinking: false,
+  tools: true, vision: false, thinking: false,
   thinkingOnly: false, customProtocol: false,
 };
 
@@ -49,7 +52,7 @@ const emptyDraft = (): Draft => ({
 const CAP_DEFS: Array<{ key: keyof ModelCaps; label: string }> = [
   { key: "tools", label: "工具调用" },
   { key: "vision", label: "图片输入" },
-  { key: "thinking", label: "思考模式" },
+  { key: "thinking", label: "支持思考" },
   { key: "thinkingOnly", label: "仅思考模式" },
   { key: "customProtocol", label: "自定义协议" },
 ];
@@ -268,7 +271,7 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
   const [provBusy, setProvBusy] = useState(false);
   const [showProvKey, setShowProvKey] = useState(false);
   // 窄屏不横滑供应商列表（手机上滑十行很难点准），改成一个自绘的下拉菜单。
-  // 不用原生 select：它的弹层不吃主题，暗色下是系统那块浅蓝补丁（见 legacy.css 那条注释）。
+  // 不用原生 select：它的弹层不吃主题，暗色下是系统那块浅蓝补丁（见 foundation.css 那条注释）。
   const [dropOpen, setDropOpen] = useState(false);
   // 判定全在 useDismiss：它听 pointerdown，打开那一发的按下比监听器存在更早，
   // 不会"点开即关"，所以这里不需要任何时间宽限。
@@ -363,7 +366,7 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
   );
 
   return (
-    <div className="section">
+    <div className="section" id="settings-models">
       <h2>主对话模型</h2>
       <div className="desc">这里存你接入的模型，一份一个，随时切换。加好后先点「测试连接」。</div>
 
@@ -463,8 +466,11 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
           <Modal onClose={() => { setDraft(null); }}
             label={draft.id ? "编辑模型" : draft.underProvider ? "添加模型" : "添加供应商"} className="ml-form">
             <div className="ml-form-head">
-              <div className="subhead">{draft.id ? "编辑模型" : draft.underProvider ? "添加模型" : "添加供应商"}</div>
-              <button type="button" className="ml-btn" title="取消" aria-label="取消" onClick={() => setDraft(null)}><X size={15} /></button>
+              <div>
+                <div className="modal-title">{draft.id ? "编辑模型" : draft.underProvider ? "添加模型" : "添加供应商"}</div>
+                <div className="modal-sub">地址与密钥为同一家供应商共用；模型参数可以分别配置。</div>
+              </div>
+              <button type="button" className="ml-btn" title="关闭" aria-label="关闭" onClick={() => setDraft(null)}><X size={16} /></button>
             </div>
             {!draft.underProvider && (
             <div className="preset-row">
@@ -560,63 +566,65 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
                     </label>
                   ))}
                 </div>
-                <div className="hint">聊天收到图片时，直接交给这个模型识别（就不用另配图片理解）。</div>
+                <div className="hint">按服务商文档勾真实能力。不勾「工具调用」时，请求不会携带工具定义，也不会执行任何工具；普通聊天不受影响。</div>
               </div>
 
-              <div className="field">
-                <label>思考参数形态</label>
-                <div className="adv-chips">
-                  {THINKING_PARAM_DEFS.map((p) => (
-                    <button key={p.id} type="button" className={"adv-chip" + (draft.thinkingParam === p.id ? " on" : "")}
-                      onClick={() => set({ thinkingParam: p.id })}>{p.label}</button>
-                  ))}
-                </div>
-                <div className="hint">
-                  {THINKING_PARAM_DEFS.find((p) => p.id === draft.thinkingParam)?.hint}
-                </div>
-              </div>
-
-              {draft.thinkingParam === "effort" ? (
-                <div className="form-row">
-                  <div className="field">
-                    <label>默认思考强度</label>
+              <div className="field think-settings">
+                <label>思考</label>
+                {draft.thinkingParam === "effort" ? (
+                  <div className="form-row">
+                    <div className="field">
+                      <label>默认强度</label>
+                      <div className="adv-chips">
+                        <button type="button" className={"adv-chip" + (draft.thinkingLevel === "" ? " on" : "")}
+                          onClick={() => set({ thinkingLevel: "" })}>自动</button>
+                        {THINKING_DEFS.map((l) => (
+                          <button key={l.id} type="button"
+                            className={"adv-chip" + (draft.thinkingLevel === l.id ? " on" : "")}
+                            onClick={() => set({ thinkingLevel: l.id })}>{l.label}</button>
+                        ))}
+                      </div>
+                      <div className="hint">聊天输入区可以随时切换；「自动」按中等强度发送。</div>
+                    </div>
+                    <div className="field">
+                      <label>聊天里可选</label>
+                      <div className="adv-chips">
+                        {THINKING_DEFS.map((l) => (
+                          <button key={l.id} type="button"
+                            className={"adv-chip" + (draft.thinkingLevels.includes(l.id) ? " on" : "")}
+                            onClick={() => toggleLevel(l.id)}>{l.label}</button>
+                        ))}
+                      </div>
+                      <div className="hint">只勾服务商真正支持的档位；一个都不勾就显示全部。</div>
+                    </div>
+                  </div>
+                ) : (
+                  <>
                     <div className="adv-chips">
-                      <button type="button" className={"adv-chip" + (draft.thinkingLevel === "" ? " on" : "")}
-                        onClick={() => set({ thinkingLevel: "" })}>跟随模型</button>
-                      {THINKING_DEFS.map((l) => (
-                        <button key={l.id} type="button"
-                          className={"adv-chip" + (draft.thinkingLevel === l.id ? " on" : "")}
-                          onClick={() => set({ thinkingLevel: l.id })}>{l.label}</button>
+                      {THINKING_MODE_CHIPS.map((m) => (
+                        <button key={m.id || "follow"} type="button" className={"adv-chip" + (draft.thinkingMode === m.id ? " on" : "")}
+                          onClick={() => set({ thinkingMode: m.id })}>{m.label}</button>
                       ))}
                     </div>
-                    <div className="hint">勾了「思考模式」才会带强度；不选就用中等。</div>
-                  </div>
-                  <div className="field">
-                    <label>这个模型支持哪几档</label>
-                    <div className="adv-chips">
-                      {THINKING_DEFS.map((l) => (
-                        <button key={l.id} type="button"
-                          className={"adv-chip" + (draft.thinkingLevels.includes(l.id) ? " on" : "")}
-                          onClick={() => toggleLevel(l.id)}>{l.label}</button>
-                      ))}
+                    <div className="hint">
+                      这类模型只有开关、没有强度。默认开思考的模型若想关掉，选「关」。
                     </div>
-                    <div className="hint">去掉服务商没有的档位。</div>
-                  </div>
-                </div>
-              ) : (
-                <div className="field">
-                  <label>思考开关</label>
+                  </>
+                )}
+                <details className="thinking-compat">
+                  <summary>接口格式不兼容时再改</summary>
                   <div className="adv-chips">
-                    {THINKING_MODE_CHIPS.map((m) => (
-                      <button key={m.id || "follow"} type="button" className={"adv-chip" + (draft.thinkingMode === m.id ? " on" : "")}
-                        onClick={() => set({ thinkingMode: m.id })}>{m.label}</button>
+                    {THINKING_PARAM_DEFS.map((p) => (
+                      <button key={p.id} type="button" className={"adv-chip" + (draft.thinkingParam === p.id ? " on" : "")}
+                        onClick={() => set({ thinkingParam: p.id })}>{p.label}</button>
                     ))}
                   </div>
                   <div className="hint">
-                    「跟随模型」= 不指定，按服务商自己的默认来。想关掉一个默认开思考的模型，选「关」。
+                    {THINKING_PARAM_DEFS.find((p) => p.id === draft.thinkingParam)?.hint}
+                    普通模型保持「reasoning_effort」即可；只有服务商明确换了字段名时才需要改。
                   </div>
-                </div>
-              )}
+                </details>
+              </div>
 
               <div className="form-row">
                 <div className="field">
@@ -773,4 +781,6 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
     </div>
   );
 }
+
+
 

@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
+import { X } from "lucide-react";
 import { LanSection } from "./LanSection";
 import type { ThemeMode } from "../../types/ui";
-import { getAccent, setAccent, getClockPref, setClockPref, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getThemeStyle, setThemeStyle, type ClockPref, type ThemeStyle } from "../../lib/ui-prefs";
+import { ACCENT_PRESETS, getAccent, setAccent, getClockPref, setClockPref, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getWallpaper, setWallpaper, getWallpaperLibrary, addWallpaperLibraryItem, removeWallpaperLibraryItem, WALLPAPER_LIB_EVENT, DEFAULT_WALLPAPER, type ClockPref, type WallpaperPref, type WallpaperItem } from "../../lib/ui-prefs";
+import { WALLPAPER_PRESETS, wallpaperPreset } from "../../lib/wallpaper";
 import Modal from "../../components/Modal";
 import { pickDirectory, relaunchApp } from "../../lib/native-dialog";
-import { dataTransferApi, settingsApi } from "../../api";
+import { dataTransferApi, settingsApi, wallpaperApi } from "../../api";
 import { disableNotifications, enableNotifications, getNotifyPref, notificationSupported } from "../../lib/notify";
 
 /** 当前主题档（与 Rail 的快捷菜单读同一个真源：html[data-theme-mode]）。 */
@@ -18,27 +20,8 @@ const MODES: Array<{ key: ThemeMode; label: string }> = [
   { key: "system", label: "跟随系统" },
 ];
 
-/**
- * 四套主题风格：同一套骨架（三栏 + 气泡）下的四种材质与配色。
- * 每一格给三个色点（底 / 卡片 / 强调），不必逐个点开就知道它是什么材质。
- * 色值只用于这一格预览，真正的取值在 legacy.css 的 [data-theme-style="…"] 里。
- */
-const THEMES: Array<{ key: ThemeStyle; label: string; hint: string; swatch: [string, string, string] }> = [
-  { key: "warm", label: "暖房", hint: "暖纸 + 赤陶，层级靠柔光", swatch: ["#f8f4ed", "#fffefb", "#ac4e2a"] },
-  { key: "classic", label: "薄荷", hint: "浅灰白 + 薄荷绿，迁移前的旧观感", swatch: ["#faf9f7", "#ffffff", "#22c55e"] },
-  { key: "night", label: "夜航", hint: "深蓝底 + 一盏蜜金", swatch: ["#12161d", "#1a2029", "#e4a951"] },
-  { key: "paper", label: "和纸", hint: "暖纸 + 墨蓝，标题换宋体", swatch: ["#f6f1e8", "#fffdf8", "#2f5ea8"] },
-];
-
-/** 预设色系（空 = 跟随主题）。颜色一眼看出是哪个。 */
-const ACCENTS: Array<{ hex: string; label: string }> = [
-  { hex: "", label: "主题默认" },
-  { hex: "#22c55e", label: "薄荷" },
-  { hex: "#2f6fed", label: "湖蓝" },
-  { hex: "#6f5bd8", label: "紫罗兰" },
-  { hex: "#3b9e8e", label: "青瓷" },
-  { hex: "#d9821c", label: "琥珀" },
-];
+/** 强调色只是个性化点缀；材质、字体、层级和语义色始终使用同一套品牌底座。 */
+const ACCENTS = ACCENT_PRESETS;
 
 const CLOCKS: Array<{ key: ClockPref; label: string; hint: string }> = [
   { key: "auto", label: "智能", hint: "换天显示日期，隔得久在气泡右下角标一次时间" },
@@ -46,7 +29,9 @@ const CLOCKS: Array<{ key: ClockPref; label: string; hint: string }> = [
   { key: "off", label: "极简隐藏", hint: "不显示任何日期/时间" },
 ];
 
-/** 设置页「界面」tab：主题外观 / 色系 / 气泡时间 / 列表每页。后续同类偏好都收在这里。 */
+/** 图片/视频壁纸的客户端预检：给用户一个立刻的「太大了」，不等一次注定失败的上传。 */
+const WP_IMAGE_MAX = 5 * 1024 * 1024;
+const WP_VIDEO_MAX = 100 * 1024 * 1024;/** 设置页「体验与提醒」：显示模式、强调色、壁纸、聊天显示与通知。 */
 export default function AppearanceSection({
   scope,
   dataDir,
@@ -58,12 +43,16 @@ export default function AppearanceSection({
   desktop: { autostart: boolean; tray: boolean } | null;
 }): JSX.Element {
   const [mode, setMode] = useState<ThemeMode>(currentMode);
-  const [style, setStyleState] = useState<ThemeStyle>(getThemeStyle);
   const [accent, setAccentState] = useState(getAccent);
   const [clock, setClockState] = useState<ClockPref>(getClockPref);
   const [listPage, setListPage] = useState(getListPageSize);
-  // 「跟随主题」那一格的色点要显示当前主题自己的强调色——它是跟着风格走的，不是常量
-  const themeAccent = THEMES.find((t) => t.key === style)?.swatch[2] ?? "#ac4e2a";
+  const [wallpaper, setWallpaperState] = useState<WallpaperPref>(getWallpaper);
+  const [wallpaperLib, setWallpaperLib] = useState<WallpaperItem[]>(getWallpaperLibrary);
+  const [wpNote, setWpNote] = useState("");
+  const [wpBusy, setWpBusy] = useState(false);
+  const wpFileRef = useRef<HTMLInputElement | null>(null);
+  /** 壁纸开着 = 界面处于壁纸适配：浅色/深色暂停生效，显示模式控件换成状态徽标。 */
+  const wallpaperOn = wallpaper.kind !== "none";
   const [notifyOn, setNotifyOn] = useState(getNotifyPref);
   const [notifyNote, setNotifyNote] = useState("");
   // 桌面两项偏好：本地先给个值，等快照到了以服务端为准（desktop 为 null 时整卡不显示）。
@@ -97,16 +86,32 @@ export default function AppearanceSection({
   const setTransferError = (text: string): void => setTransferStatus({ kind: "bad", text });
   const setTransferOk = (text: string, percent?: number): void => setTransferStatus({ kind: "ok", text, percent });
 
-  // 跟随系统时，系统切换也要保持高亮正确
+  // 跟随系统时系统切换要跟着变；Rail 快捷菜单改了主题也要跟着变
+  // （index.html 在 __setThemeMode 里广播 xiaomo:themechange）。
   useEffect(() => {
     const paint = (): void => setMode(currentMode());
+    document.addEventListener("xiaomo:themechange", paint);
     try {
       window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", paint);
-      return () => window.matchMedia("(prefers-color-scheme: dark)").removeEventListener("change", paint);
-    } catch { return undefined; }
+      return () => {
+        document.removeEventListener("xiaomo:themechange", paint);
+        window.matchMedia("(prefers-color-scheme: dark)").removeEventListener("change", paint);
+      };
+    } catch {
+      document.removeEventListener("xiaomo:themechange", paint);
+      return undefined;
+    }
+  }, []);
+
+  // 我的壁纸收藏被增删（上传/删除都走 ui-prefs 的事件，这里只管跟着重读）
+  useEffect(() => {
+    const sync = (): void => setWallpaperLib(getWallpaperLibrary());
+    window.addEventListener(WALLPAPER_LIB_EVENT, sync);
+    return () => window.removeEventListener(WALLPAPER_LIB_EVENT, sync);
   }, []);
 
   const pick = (m: ThemeMode): void => {
+    if (wallpaperOn) return; // 壁纸模式下不提供明暗切换（控件已换成状态徽标，键盘用户也进不来）
     window.__setThemeMode?.(m);
     setMode(currentMode());
   };
@@ -116,18 +121,74 @@ export default function AppearanceSection({
     setAccentState(getAccent());
   };
 
-  /** 换风格顺带把强调色放回「跟随主题」：主题是一个完整方案，
-   *  留着上一套的强调色会让四套风格看着都差不多，等于白切。 */
-  const pickTheme = (key: ThemeStyle): void => {
-    setThemeStyle(key);
-    setStyleState(key);
-    setAccent("");
-    setAccentState(getAccent());
-  };
 
   const pickClock = (v: ClockPref): void => {
     setClockPref(v);
     setClockState(v);
+  };
+
+  const pickWallpaperPreset = (id: string): void => {
+    setWpNote("");
+    if (id === "") {
+      setWallpaper({ ...DEFAULT_WALLPAPER });
+    } else {
+      setWallpaper({ ...wallpaper, kind: "preset", preset: id, url: "" });
+    }
+    setWallpaperState(getWallpaper());
+  };
+
+  const patchWallpaper = (patch: Partial<WallpaperPref>): void => {
+    setWallpaper({ ...wallpaper, ...patch });
+    setWallpaperState(getWallpaper());
+  };
+
+  const pickLibraryWallpaper = (url: string): void => {
+    setWpNote("");
+    setWallpaper({ ...wallpaper, kind: "media", preset: "", url });
+    setWallpaperState(getWallpaper());
+  };
+
+  /** 删收藏：壁纸引用只在本设备，文件直接删掉不留孤儿；删的是当前这张就退回无壁纸。 */
+  const deleteLibraryWallpaper = (url: string): void => {
+    removeWallpaperLibraryItem(url);
+    setWallpaperLib(getWallpaperLibrary());
+    if (wallpaper.kind === "media" && wallpaper.url === url) {
+      setWallpaper({ ...DEFAULT_WALLPAPER, surface: wallpaper.surface });
+      setWallpaperState(getWallpaper());
+    }
+    void wallpaperApi.removeWallpaperFile(url);
+  };
+
+  const onWallpaperFile = (): void => {
+    const file = wpFileRef.current?.files?.[0];
+    if (wpFileRef.current) wpFileRef.current.value = "";
+    if (!file) return;
+    const isImage = file.type.startsWith("image/");
+    const isVideo = file.type === "video/mp4" || file.type === "video/webm";
+    if (!isImage && !isVideo) {
+      setWpNote("支持图片（png / jpg / webp / gif）或视频（mp4 / webm）。");
+      return;
+    }
+    if (isImage && file.size > WP_IMAGE_MAX) {
+      setWpNote(`图片太大了（${(file.size / 1024 / 1024).toFixed(1)}MB），需要在 5MB 以内。`);
+      return;
+    }
+    if (isVideo && file.size > WP_VIDEO_MAX) {
+      setWpNote(`视频太大了（${(file.size / 1024 / 1024).toFixed(0)}MB），需要在 100MB 以内。`);
+      return;
+    }
+    setWpBusy(true);
+    setWpNote("");
+    wallpaperApi.uploadWallpaper(file)
+      .then(({ url }) => {
+        addWallpaperLibraryItem(url);
+        setWallpaperLib(getWallpaperLibrary());
+        setWallpaper({ ...wallpaper, kind: "media", preset: "", url });
+        setWallpaperState(getWallpaper());
+        setWpNote("");
+      })
+      .catch((e: unknown) => setWpNote(`没能设置：${e instanceof Error ? e.message : String(e)}`))
+      .finally(() => setWpBusy(false));
   };
 
   const toggleNotify = (on: boolean): void => {
@@ -256,127 +317,204 @@ export default function AppearanceSection({
     <>
       {scope === "experience" && (
         <>
-      <div className="card card-pad">
-        <div className="subhead">主题风格</div>
-        <div className="hint">换一套材质与配色。切换风格会用回该风格的默认强调色。</div>
-        <div className="preset-row" role="group" aria-label="主题风格">
-          {THEMES.map((t) => (
-            <button key={t.key} type="button" className="preset theme-btn" aria-pressed={style === t.key}
-              title={t.hint} onClick={() => pickTheme(t.key)}>
-              <span className="theme-swatch" aria-hidden="true">
-                <i style={{ background: t.swatch[0] }} />
-                <i style={{ background: t.swatch[1] }} />
-                <i style={{ background: t.swatch[2] }} />
-              </span>
-              {t.label}
+      <section className="settings-panel appearance-panel" id="settings-appearance">
+        <div className="settings-panel-head">
+          <h3>外观</h3>
+          <p>一套稳定的产品视觉，只调整明暗与少量强调色。壁纸负责氛围，不再切换整套皮肤。</p>
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-row-label">
+            <b>显示模式</b>
+            <span>{wallpaperOn
+              ? "界面正按壁纸自动适配配色；关闭壁纸后这里恢复生效。"
+              : "「跟随系统」会随操作系统的深浅色自动切换。"}</span>
+          </div>
+          {wallpaperOn ? (
+            <div className="mode-badge" role="status">
+              <i aria-hidden="true" />
+              壁纸适配中
+            </div>
+          ) : (
+            <div className="choice-row" role="group" aria-label="显示模式">
+              {MODES.map((m) => (
+                <button key={m.key} type="button" className="choice" aria-pressed={mode === m.key}
+                  onClick={() => pick(m.key)}>{m.label}</button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="settings-row">
+          <div className="settings-row-label">
+            <b>强调色</b>
+            <span>只影响主按钮、选中态和少量重点信息，不改变页面材质。</span>
+          </div>
+          <div className="accent-picker" role="group" aria-label="强调色">
+            {ACCENTS.map((a) => (
+              <button key={a.label} type="button" className="accent-choice" aria-pressed={accent === a.hex}
+                title={a.label} onClick={() => pickAccent(a.hex)}>
+                <span className="accent-swatch" style={{ background: a.hex || "var(--brand-accent)" }} />
+                <span>{a.label}</span>
+              </button>
+            ))}
+            <label className="accent-custom" title="选择自定义强调色">
+              <input type="color" value={accent || "#a64b2f"}
+                aria-label="自定义强调色"
+                onChange={(e) => pickAccent(e.target.value)} />
+              <span className="accent-swatch accent-swatch-custom" />
+              <span>自定义</span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <section className="settings-panel wallpaper-panel" id="settings-wallpaper">
+        <div className="settings-panel-head">
+          <h3>壁纸</h3>
+          <p>壁纸是空间氛围的唯一来源。开启后界面自动进入壁纸适配：玻璃表面与专属配色一起生效，浅色 / 深色暂停。</p>
+        </div>
+        <div className="wp-grid" role="group" aria-label="壁纸">
+          <button type="button" className="wp-thumb wp-thumb-off"
+            aria-pressed={wallpaper.kind === "none"} onClick={() => pickWallpaperPreset("")}>
+            <span className="wp-thumb-face" aria-hidden="true" />
+            <span className="wp-thumb-label">无壁纸</span>
+          </button>
+          {WALLPAPER_PRESETS.map((p) => (
+            <button key={p.id} type="button" className="wp-thumb" aria-pressed={wallpaper.kind === "preset" && wallpaper.preset === p.id}
+              onClick={() => pickWallpaperPreset(p.id)}>
+              {wallpaperPreset(p.id)
+                ? <span className="wp-thumb-face" data-wp-preview={p.id} aria-hidden="true" />
+                : <span className="wp-thumb-face" style={{ background: p.swatch }} aria-hidden="true" />}
+              <span className="wp-thumb-label">{p.label}</span>
             </button>
           ))}
+          {wallpaperLib.map((item) => {
+            const isVideo = /\.(mp4|webm)$/i.test(item.url);
+            const active = wallpaper.kind === "media" && wallpaper.url === item.url;
+            return (
+              <div key={item.url} className="wp-thumb-item">
+                <button type="button" className="wp-thumb wp-thumb-lib" aria-pressed={active}
+                  onClick={() => pickLibraryWallpaper(item.url)}>
+                  {isVideo ? (
+                    <video className="wp-thumb-face" src={item.url} muted playsInline preload="metadata" aria-hidden="true" />
+                  ) : (
+                    <img className="wp-thumb-face" src={item.url} alt="" aria-hidden="true" />
+                  )}
+                  <span className="wp-thumb-label">{isVideo ? "视频" : "图片"}</span>
+                </button>
+                <button type="button" className="wp-thumb-del" aria-label="删除这张壁纸" title="删除这张壁纸"
+                  onClick={() => deleteLibraryWallpaper(item.url)}>
+                  <X size={13} strokeWidth={2.4} aria-hidden="true" />
+                </button>
+              </div>
+            );
+          })}
         </div>
-        <div className="subhead">明暗</div>
-        <div className="hint">「跟随系统」随系统的深浅色自动切换。</div>
-        <div className="preset-row" role="group" aria-label="明暗">
-          {MODES.map((m) => (
-            <button key={m.key} type="button" className="preset" aria-pressed={mode === m.key}
-              onClick={() => pick(m.key)}>{m.label}</button>
-          ))}
-        </div>
-        <div className="subhead acc-head">色系</div>
-        <div className="hint">换一套强调色，按钮和发送键都会跟着变。</div>
-        <div className="preset-row" role="group" aria-label="色系">
-          {ACCENTS.map((a) => (
-            <button key={a.label} type="button" className="preset acc-btn" aria-pressed={accent === a.hex}
-              onClick={() => pickAccent(a.hex)}>
-              <span className="acc-dot" style={{ background: a.hex || themeAccent }} />{a.label}
-            </button>
-          ))}
-          <label className="acc-custom" title="自定义任意颜色">
-            <input type="color" value={accent || themeAccent}
-              aria-label="自定义强调色"
-              onChange={(e) => pickAccent(e.target.value)} />
-            <span>自定义</span>
-          </label>
-        </div>
-      </div>
 
-      <div className="card card-pad" style={{ marginTop: 12 }}>
-        <div className="subhead">气泡时间</div>
-        <div className="hint">聊天里日期与时间的显示方式，只影响这台设备上的界面。</div>
-        <div className="preset-row" role="group" aria-label="气泡时间">
-          {CLOCKS.map((c) => (
-            <button key={c.key} type="button" className="preset" aria-pressed={clock === c.key}
-              title={c.hint} onClick={() => pickClock(c.key)}>{c.label}</button>
-          ))}
-        </div>
-        <div className="hint" style={{ marginTop: 6 }}>
-          {CLOCKS.find((c) => c.key === clock)?.hint}
-        </div>
-      </div>
+        {wallpaper.kind !== "none" && (
+          <div className="wp-slider-row">
+            <label htmlFor="wp-surface">界面通透度</label>
+            <input id="wp-surface" type="range" min={0} max={80} step={1} value={wallpaper.surface}
+              onChange={(e) => patchWallpaper({ surface: Number(e.target.value) })} />
+            <output>{wallpaper.surface}%</output>
+          </div>
+        )}
 
-      <div className="card card-pad" style={{ marginTop: 12 }}>
-        <div className="subhead">列表每页</div>
-        <div className="hint">
-          清单一类页面每页显示多少条。
+        <div className="settings-foot">
+          <button type="button" className="btn sm" disabled={wpBusy} onClick={() => wpFileRef.current?.click()}>
+            {wpBusy ? "正在上传…" : "上传图片 / 视频"}
+          </button>
+          <span className="hint">支持 PNG / JPG / WEBP / GIF / MP4 / WEBM</span>
+          <input ref={wpFileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif,video/mp4,video/webm"
+            style={{ display: "none" }} onChange={onWallpaperFile} />
         </div>
-        <div className="preset-row" role="group" aria-label="列表每页" style={{ marginTop: 6 }}>
-          {LIST_PAGE_SIZES.map((n) => (
-            <button key={n} type="button" className="preset" aria-pressed={listPage === n}
-              onClick={() => { setListPageSize(n); setListPage(n); }}>{LIST_PAGE_LABEL[n]}</button>
-          ))}
-        </div>
-      </div>
+        {wpNote && <div className="inline-note">{wpNote}</div>}
+      </section>
 
-      <div className="card card-pad" style={{ marginTop: 12 }}>
-        <div className="subhead">消息提醒</div>
-        <div className="hint">
-          后台有新消息、或收到主动消息时发系统通知；点通知回到那段会话。
+      <section className="settings-panel" id="settings-chat-display">
+        <div className="settings-panel-head">
+          <h3>聊天显示</h3>
+          <p>这些偏好只影响这台设备，不改动对话数据。</p>
         </div>
-        <div className="preset-row" role="group" aria-label="消息提醒" style={{ marginTop: 6 }}>
-          <button type="button" className="preset" aria-pressed={!notifyOn}
-            disabled={!notificationSupported()} onClick={() => toggleNotify(false)}>关闭</button>
-          <button type="button" className="preset" aria-pressed={notifyOn}
-            disabled={!notificationSupported()} onClick={() => toggleNotify(true)}>开启</button>
+
+        <div className="settings-row">
+          <div className="settings-row-label">
+            <b>气泡时间</b>
+            <span>{CLOCKS.find((c) => c.key === clock)?.hint}</span>
+          </div>
+          <div className="choice-row" role="group" aria-label="气泡时间">
+            {CLOCKS.map((c) => (
+              <button key={c.key} type="button" className="choice" aria-pressed={clock === c.key}
+                title={c.hint} onClick={() => pickClock(c.key)}>{c.label}</button>
+            ))}
+          </div>
         </div>
-        <div className="hint" style={{ marginTop: 6 }}>
-          {notifyNote || (notificationSupported() ? "权限由系统管理，可随时在这里关闭。" : "当前环境不支持系统通知。")}
+
+        <div className="settings-row">
+          <div className="settings-row-label">
+            <b>列表密度</b>
+            <span>管理类清单每页显示多少条。</span>
+          </div>
+          <div className="choice-row" role="group" aria-label="列表每页">
+            {LIST_PAGE_SIZES.map((n) => (
+              <button key={n} type="button" className="choice" aria-pressed={listPage === n}
+                onClick={() => { setListPageSize(n); setListPage(n); }}>{LIST_PAGE_LABEL[n]}</button>
+            ))}
+          </div>
         </div>
-      </div>
+      </section>
+
+      <section className="settings-panel" id="settings-notifications">
+        <div className="settings-panel-head">
+          <h3>消息提醒</h3>
+          <p>后台收到新消息时发送系统通知；点击通知会回到对应会话。</p>
+        </div>
+        <div className="settings-row compact">
+          <div className="settings-row-label">
+            <b>系统通知</b>
+            <span>{notifyNote || (notificationSupported() ? "权限由系统管理，可随时关闭。" : "当前环境不支持系统通知。")}</span>
+          </div>
+          <div className="choice-row" role="group" aria-label="消息提醒">
+            <button type="button" className="choice" aria-pressed={!notifyOn}
+              disabled={!notificationSupported()} onClick={() => toggleNotify(false)}>关闭</button>
+            <button type="button" className="choice" aria-pressed={notifyOn}
+              disabled={!notificationSupported()} onClick={() => toggleNotify(true)}>开启</button>
+          </div>
+        </div>
+      </section>
 
         </>
       )}
 
       {scope === "system" && (
-        <>
-      <div className="card card-pad" style={{ marginTop: 12 }}>
-        <div className="subhead">数据存储位置</div>
-        <div className="hint">
-          对话、记忆、图片、技能都在这个目录里。可改到别处（比如 D 盘），改时会把现有数据一起搬过去。
+        <div className="system-settings">
+      <section className="settings-panel" id="settings-storage">
+        <div className="settings-panel-head">
+          <h3>数据存储</h3>
+          <p>对话、记忆、图片、技能和设置都保存在本机。迁移目录时会把现有数据一起搬过去。</p>
         </div>
-        <div className="field">
-          <label>当前位置</label>
-          <div className="hint" style={{ wordBreak: "break-all" }}>
-            <code>{dataDir || "（开发模式：跟随项目 ./data）"}</code>
+        <div className="settings-row compact">
+          <div className="settings-row-label">
+            <b>当前位置</b>
+            <span style={{ wordBreak: "break-all" }}><code>{dataDir || "（开发模式：跟随项目 ./data）"}</code></span>
           </div>
+          <button type="button" className="btn sm" disabled={storeBusy} onClick={chooseFolder}>选择文件夹</button>
         </div>
-        <div className="actions">
-          <button type="button" className="pf-ghost" disabled={storeBusy} onClick={chooseFolder}>选择文件夹…</button>
-        </div>
-        {storeNote && <div className="hint" style={{ marginTop: 6 }}>{storeNote}</div>}
-      </div>
+        {storeNote && <div className="inline-note">{storeNote}</div>}
+      </section>
 
-      <div className="card card-pad" style={{ marginTop: 12 }}>
-        <div className="subhead">跨设备数据迁移</div>
-        <div className="hint">
-          导出包包含对话、记忆、联系人、模型设置、图片和自定义技能；也包含已保存的 API Key，请只通过可信方式传输。
-          如果“一键导出备份”被浏览器扩展中断，可以点“直接下载”。
+      <section className="settings-panel" id="settings-backup">
+        <div className="settings-panel-head">
+          <h3>备份与恢复</h3>
+          <p>导出包包含对话、记忆、联系人、模型设置、图片与技能，也包含已保存的 API Key，只通过可信方式传输。</p>
         </div>
-        <div className="actions" style={{ marginTop: 8 }}>
-          <button type="button" className="pf-ghost" disabled={exportBusy} onClick={doExport}>
-            {exportBusy ? "正在导出…" : "一键导出备份"}
+        <div className="settings-foot">
+          <button type="button" className="btn sm" disabled={exportBusy} onClick={doExport}>
+            {exportBusy ? "正在导出…" : "导出备份"}
           </button>
-          <a className="pf-ghost" href={dataTransferApi.EXPORT_URL} download>
-            直接下载
-          </a>
-          <button type="button" className="pf-ghost" disabled={transferBusy} onClick={pickImport}>
+          <a className="btn sm" href={dataTransferApi.EXPORT_URL} download>直接下载</a>
+          <button type="button" className="btn sm" disabled={transferBusy} onClick={pickImport}>
             选择备份并导入
           </button>
           <input ref={importFileRef} type="file" accept=".tar.gz,.tgz,application/gzip"
@@ -394,42 +532,45 @@ export default function AppearanceSection({
             </div>
           </div>
         )}
-      </div>
+      </section>
 
       <LanSection />
 
       {desktop !== null && (
-        <div className="card card-pad" style={{ marginTop: 12 }}>
-          <div className="subhead">开机与关窗</div>
-          <div className="hint">
-            窗口关闭后是否继续收发消息、主动找你，由下面两项决定。
+        <section className="settings-panel" id="settings-desktop">
+          <div className="settings-panel-head">
+            <h3>启动与关窗</h3>
+            <p>决定小茉是否在登录系统后自动启动，以及关闭窗口后是否继续在托盘运行。</p>
           </div>
 
-          <div className="field" style={{ marginTop: 8 }}>
-            <label>开机自动启动</label>
-            <div className="preset-row" role="group" aria-label="开机自动启动" style={{ marginTop: 6 }}>
-              <button type="button" className="preset" aria-pressed={!prefs.autostart}
+          <div className="settings-row">
+            <div className="settings-row-label">
+              <b>开机自动启动</b>
+              <span>登录系统后自动打开小茉。</span>
+            </div>
+            <div className="choice-row" role="group" aria-label="开机自动启动">
+              <button type="button" className="choice" aria-pressed={!prefs.autostart}
                 onClick={() => toggleDesktop("autostart", false)}>关闭</button>
-              <button type="button" className="preset" aria-pressed={prefs.autostart}
+              <button type="button" className="choice" aria-pressed={prefs.autostart}
                 onClick={() => toggleDesktop("autostart", true)}>开启</button>
             </div>
           </div>
 
-          <div className="field" style={{ marginTop: 12 }}>
-            <label>托盘常驻</label>
-            <div className="hint">
-              开启：关窗只是收进托盘继续运行，右键托盘图标选「退出小茉」才真正退出。关闭：关窗即退出。
+          <div className="settings-row">
+            <div className="settings-row-label">
+              <b>托盘常驻</b>
+              <span>开启后，关闭窗口只是收进托盘；需从托盘菜单主动退出。</span>
             </div>
-            <div className="preset-row" role="group" aria-label="托盘常驻" style={{ marginTop: 6 }}>
-              <button type="button" className="preset" aria-pressed={!prefs.tray}
+            <div className="choice-row" role="group" aria-label="托盘常驻">
+              <button type="button" className="choice" aria-pressed={!prefs.tray}
                 onClick={() => toggleDesktop("tray", false)}>关闭</button>
-              <button type="button" className="preset" aria-pressed={prefs.tray}
+              <button type="button" className="choice" aria-pressed={prefs.tray}
                 onClick={() => toggleDesktop("tray", true)}>开启</button>
             </div>
           </div>
 
-          {prefsNote !== "" && <div className="hint" style={{ marginTop: 6 }}>{prefsNote}</div>}
-        </div>
+          {prefsNote !== "" && <div className="inline-note">{prefsNote}</div>}
+        </section>
       )}
 
       {importFile !== null && (
@@ -477,8 +618,11 @@ export default function AppearanceSection({
           </div>
         </Modal>
       )}
-        </>
+        </div>
       )}
     </>
   );
 }
+
+
+

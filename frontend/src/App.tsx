@@ -1,6 +1,7 @@
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from "react";
 import Rail from "./components/Rail";
 import Sidebar from "./components/Sidebar";
+import Titlebar from "./components/Titlebar";
 import AboutDialog from "./components/AboutDialog";
 import UndoBar from "./components/UndoBar";
 import type { SettingsTab } from "./features/settings/SettingsView";
@@ -47,7 +48,10 @@ export default function App(): JSX.Element {
   /** 首次设置弹窗。完成标记存服务端 kv（settings.onboarding），桌面与手机打开同一份数据不会各弹一次。 */
   const [onboarding, setOnboarding] = useState(false);
   const [profile, setProfile] = useState<ProfileTarget>(null);
-  const [settingsTab, setSettingsTab] = useState<SettingsTab>("owner");
+  const [settingsTab, setSettingsTab] = useState<SettingsTab>("home");
+  /** 导航意图的序号：同一目的地连点两次（如在设置里逛着又点左上角头像回「我的资料」）
+   *  也要生效。initialTab 相同的时候 effect 不会重跑，得靠这个计数器顶它一下。 */
+  const [settingsNavSeq, setSettingsNavSeq] = useState(0);
   const [settingsAdvanced, setSettingsAdvanced] = useState(false);
   /** 访问过的顶层视图保留挂载：切走只是 display:none，回来不再重新挂载、拉数据。 */
   const [visitedViews, setVisitedViews] = useState<Set<ViewKey>>(() => new Set([view]));
@@ -250,6 +254,7 @@ export default function App(): JSX.Element {
   /** 点左上角头像：直达设置页「全局用户资料」。 */
   const openProfilePage = useCallback((): void => {
     setSettingsTab("owner");
+    setSettingsNavSeq((n) => n + 1);
     setProfile(null);
     navigate("settings");
   }, [navigate]);
@@ -259,6 +264,7 @@ export default function App(): JSX.Element {
   const openModelSettings = useCallback((): void => {
     setSettingsTab("model");
     setSettingsAdvanced(true);
+    setSettingsNavSeq((n) => n + 1);
     setProfile(null);
     navigate("settings");
   }, [navigate]);
@@ -266,6 +272,7 @@ export default function App(): JSX.Element {
   /** 总览卡片右上角的跳转：落到设置页对应的 tab。 */
   const openSettingsTab = useCallback((tab: SettingsTab): void => {
     setSettingsTab(tab);
+    setSettingsNavSeq((n) => n + 1);
     setProfile(null);
     navigate("settings");
   }, [navigate]);
@@ -339,6 +346,9 @@ export default function App(): JSX.Element {
 
   return (
     <>
+    {/* 桌面无边框窗口的页内标题栏（浏览器/手机端渲染为 null）：必须挂在 #shell 之外——
+        它是 fixed 定位的窗口级 UI，不该进三栏网格，z 档也要压过弹层。 */}
+    <Titlebar />
     <div id="shell" ref={shellRef} className={[wideShell ? "wide" : "", chatListPage ? "chat-list-on" : "", chatFull ? "chat-full" : ""].join(" ").trim() || undefined}>
       <Rail
         active={activeView}
@@ -383,7 +393,7 @@ export default function App(): JSX.Element {
         )}
         {(visitedViews.has("settings") || view === "settings") && (
           <div className={"view" + (view === "settings" && !profile ? " active" : "")} id="view-settings">
-            <SettingsView onChanged={refreshContactMeta} initialTab={settingsTab} revealAdvanced={settingsAdvanced} onOwnerAvatar={setOwnerAvatar} />
+            <SettingsView onChanged={refreshContactMeta} initialTab={settingsTab} navSeq={settingsNavSeq} revealAdvanced={settingsAdvanced} onOwnerAvatar={setOwnerAvatar} />
           </div>
         )}
         {(visitedViews.has("chat") || view === "chat") && (
@@ -448,3 +458,4 @@ export default function App(): JSX.Element {
     </>
   );
 }
+

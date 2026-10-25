@@ -1,0 +1,259 @@
+/*
+ * 小茉 · Quiet Studio 设计令牌
+ *
+ * 全站只有一套产品视觉：明暗由 data-theme 决定，强调色由运行时变量覆盖，
+ * 壁纸只负责氛围。不要再增加“换一套皮肤”的维度——那会让对比度、层级和
+ * 响应式组合失控。所有组件都应只消费这里的语义令牌，不写散落色值。
+ */
+
+:root,
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg:            #f4f2ed;
+  --bg-elevated:   #fffefb;
+  --bg-sunken:     #ebe8e1;
+  --bg-hover:      #e8e4dc;
+
+  --border:        #dfdad0;
+  --border-strong: #b5aea2;
+
+  --text:          #201d18;
+  --text-muted:    #5f5a51;
+  --text-subtle:   #6f6a61;
+
+  --brand-accent:  #a64b2f;
+  --accent:        #a64b2f;
+  --accent-hover:  #8f3f27;
+  --accent-soft:   #f4e4dc;
+  --accent-text:   #fffaf6;
+  --accent-ink:    #914128;
+  --accent-lift:   #000;
+  --accent-ink-hover: color-mix(in srgb, var(--accent-ink) 82%, var(--text));
+  --accent-glow:   color-mix(in srgb, var(--accent) 18%, transparent);
+
+  --success:       #466b4d;
+  --success-soft:  #edf2e9;
+  --warning:       #7b6130;
+  --warning-soft:  #f7efdd;
+  --danger:        #ad3449;
+  --danger-soft:   #faeaed;
+
+  /* 自己的气泡跟随所选强调色：皮肤体系下线后，强调色是唯一的个性化维度，
+     品牌面不能锁死在赤陶上。对比度由 index.html 的 adapt() 保障——
+     它保证 --accent 与 --accent-text 在明暗两档下都 ≥4.5:1。 */
+  --bubble-mine:       var(--accent);
+  --bubble-mine-text:  var(--accent-text);
+  --bubble-theirs:     #fffefb;
+  --bubble-theirs-text:#201d18;
+  --bubble-shadow:     0 1px 2px rgb(var(--shadow-tint) / .06), 0 8px 24px -18px rgb(var(--shadow-tint) / .28);
+  --chat-scene: radial-gradient(ellipse 70% 52% at 92% -4%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 62%),
+                radial-gradient(ellipse 48% 42% at 8% 104%, rgb(190 150 96 / .055), transparent 58%);
+
+  --dot-red: #c43936;
+  --warn-text: #96681f;
+  --ctx-system: #7666ca;
+  --ctx-memory: #4b86c7;
+  --ctx-tools: #477f59;
+  --ctx-history: #c48725;
+  --ctx-images: #c45a8a;
+
+  --ava-mine:      #4d6680;
+  --ava-mine-text: #f4f8fc;
+  --ava-c1: #a64b2f;
+  --ava-c2: #8a6840;
+  --ava-c3: #65713f;
+  --ava-c4: #4f6d69;
+  --ava-c5: #765b6b;
+  --ava-c6: #596a83;
+
+  --msg-time:      #685d4c;
+  --msg-time-mine: color-mix(in srgb, var(--accent-text) 74%, transparent);
+  --bubble-proactive: #faf5ec;
+  --bubble-proactive-border: #eadbc3;
+
+  --col: 960px;
+  --chat-col: clamp(760px, 70vw, 960px);
+  --rail-w: 76px;
+  --side-w-default: 272px;
+  --nav-h: 64px;
+
+  --shadow-tint: 44 37 30;
+  --shadow-sm: 0 1px 2px rgb(var(--shadow-tint) / .06), 0 1px 3px rgb(var(--shadow-tint) / .04);
+  --shadow-md: 0 2px 10px rgb(var(--shadow-tint) / .08), 0 1px 3px rgb(var(--shadow-tint) / .04);
+  --shadow-xs: 0 1px 3px rgb(var(--shadow-tint) / .07);
+  --shadow-card: 0 1px 2px rgb(var(--shadow-tint) / .04), 0 12px 32px -24px rgb(var(--shadow-tint) / .32);
+  --shadow-menu-sm: 0 6px 24px rgb(var(--shadow-tint) / .14);
+  --shadow-menu: 0 12px 36px rgb(var(--shadow-tint) / .18);
+  --shadow-menu-dark: 0 8px 24px rgb(var(--shadow-tint) / .32);
+  --shadow-modal: 0 20px 64px rgb(var(--shadow-tint) / .22);
+  --shadow-dialog: 0 24px 72px rgb(var(--shadow-tint) / .26);
+  --shadow-toast: 0 8px 28px rgb(var(--shadow-tint) / .20);
+  --shadow-side-mobile: 0 0 48px rgb(var(--shadow-tint) / .24);
+  --shadow-fab: 0 8px 24px rgb(var(--shadow-tint) / .20);
+
+  --overlay-alpha: rgb(28 20 14 / .42);
+  --overlay-scrim: rgb(38 28 20 / .56);
+
+  --radius-xs:  4px;
+  --radius-sm:  6px;
+  --radius-md:  10px;
+  --radius-lg:  12px;
+  --radius-xl:  16px;
+  --radius-2xl: 20px;
+  --radius-3xl: 24px;
+  --radius-full: 999px;
+
+  --text-xs:    11px;
+  --text-cap:   11.5px;
+  --text-sm:    12px;
+  --text-aux:   12.5px;
+  --text-note:  13px;
+  --text-base:  13.5px;
+  --text-md:    14px;
+  --text-lg:    15px;
+  --text-xl:    17px;
+  --text-2xl:   20px;
+  --text-3xl:   30px;
+
+  --space-1:  4px;
+  --space-2:  8px;
+  --space-3:  8px;
+  --space-4:  12px;
+  --space-5:  12px;
+  --space-6:  16px;
+  --space-7:  16px;
+  --space-8:  20px;
+  --space-10: 24px;
+  --space-12: 32px;
+
+  --z-proactive-badge: 1;
+  --z-dock: 6;
+  --z-splitter: 30;
+  --z-backdrop: 40;
+  --z-pop: 41;
+  --z-notice: 50;
+  --z-menu: 60;
+  --z-subpop: 65;
+  --z-toast: 70;
+  --z-drawer: 75;
+  --z-scrim: 78;
+  --z-dialog: 79;
+  --z-modal: 80;
+  --z-switcher: 100;
+  --z-photo: 120;
+  --z-chat-pop: 90;
+
+  --alpha-disabled: .5;
+  --focus-ring: var(--accent-ink);
+  --edge-float: var(--border);
+
+  --kb: 0px;
+  --enter-delay: 0ms;
+  --ax: 50%;
+  --side-w: var(--side-w-default);
+  --s-ava-bg: var(--accent);
+
+  --font-body: -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", "PingFang SC",
+               "Hiragino Sans GB", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  --font-display: var(--font-body);
+  --font-mono: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg:            #141311;
+  --bg-elevated:   #1d1b18;
+  --bg-sunken:     #100f0d;
+  --bg-hover:      #28241f;
+
+  --border:        #342f29;
+  --border-strong: #5c554b;
+
+  --text:          #f1ede6;
+  --text-muted:    #b3aba0;
+  --text-subtle:   #9b9287;
+
+  --brand-accent:  #df8260;
+  --accent:        #df8260;
+  --accent-hover:  #eb9272;
+  --accent-soft:   #32211a;
+  --accent-text:   #24120b;
+  --accent-ink:    #e78c68;
+  --accent-lift:   #fff;
+  --accent-ink-hover: color-mix(in srgb, var(--accent-ink) 82%, var(--text));
+  --accent-glow:   color-mix(in srgb, var(--accent) 22%, transparent);
+
+  --success:       #86ab86;
+  --success-soft:  #1d231b;
+  --warning:       #d0a967;
+  --warning-soft:  #241f15;
+  --danger:        #dd8a94;
+  --danger-soft:   #291a1e;
+
+  --bubble-mine:       var(--accent);
+  --bubble-mine-text:  var(--accent-text);
+  --bubble-theirs:     #25211d;
+  --bubble-theirs-text:#f1ede6;
+  --bubble-shadow:     0 1px 3px rgb(var(--shadow-tint) / .32), 0 0 0 1px rgb(255 255 255 / .025);
+  --chat-scene: radial-gradient(ellipse 70% 52% at 92% -4%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 62%),
+                radial-gradient(ellipse 48% 42% at 8% 104%, rgb(190 150 96 / .04), transparent 58%);
+
+  --dot-red: #c94d4d;
+  --warn-text: #d8a952;
+  --ctx-system: #9a8bf0;
+  --ctx-memory: #6fa8ea;
+  --ctx-tools: #67a87c;
+  --ctx-history: #e6b054;
+  --ctx-images: #e684b8;
+
+  --ava-mine:      #46617d;
+  --ava-mine-text: #e6eef8;
+  --ava-c1: #d9754d;
+  --ava-c2: #bd9a6c;
+  --ava-c3: #9aa473;
+  --ava-c4: #7ba09b;
+  --ava-c5: #a7869a;
+  --ava-c6: #8296b8;
+
+  --msg-time:      #b6aa99;
+  --msg-time-mine: color-mix(in srgb, var(--accent-text) 74%, transparent);
+  --bubble-proactive: #231c14;
+  --bubble-proactive-border: #3d3122;
+
+  --shadow-tint: 0 0 0;
+  --shadow-sm: 0 1px 2px rgb(0 0 0 / .35), 0 1px 3px rgb(0 0 0 / .20);
+  --shadow-md: 0 2px 10px rgb(0 0 0 / .40), 0 1px 3px rgb(0 0 0 / .25);
+  --shadow-xs: 0 1px 3px rgb(0 0 0 / .20);
+  --shadow-card: 0 1px 2px rgb(0 0 0 / .34), 0 14px 32px -16px rgb(0 0 0 / .58);
+  --shadow-menu-sm: 0 6px 24px rgb(0 0 0 / .30);
+  --shadow-menu: 0 12px 36px rgb(0 0 0 / .38);
+  --shadow-menu-dark: 0 8px 24px rgb(0 0 0 / .50);
+  --shadow-modal: 0 20px 64px rgb(0 0 0 / .46);
+  --shadow-dialog: 0 24px 72px rgb(0 0 0 / .52);
+  --shadow-toast: 0 8px 28px rgb(0 0 0 / .42);
+  --shadow-side-mobile: 0 0 48px rgb(0 0 0 / .50);
+  --shadow-fab: 0 8px 24px rgb(0 0 0 / .40);
+
+  --overlay-alpha: rgb(0 0 0 / .58);
+  --overlay-scrim: rgb(8 5 4 / .70);
+
+  --alpha-disabled: .44;
+  --edge-float: #5f574f;
+}
+
+/* 触控下限必须和带 data-theme 的基础选择器同特异度，否则 32px 会压死窄屏 44px。 */
+:root[data-theme] { --tap-min: 32px; }
+
+@media (pointer: coarse), (max-width: 760px), (max-height: 520px) {
+  :root[data-theme] { --tap-min: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --dur-fast: .01ms;
+    --dur-base: .01ms;
+    --dur-slow: .01ms;
+  }
+}

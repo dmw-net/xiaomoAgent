@@ -1,307 +1,5 @@
-/* 主题变量与全局基础样式。React 迁移完成后从后端 src/web/*.ts 的 CSS 常量一次性收编，
-   此后本文件即样式真源，直接在此维护（文件名沿用历史叫法）。 */
-:root,
-:root[data-theme="light"] {
-  color-scheme: light;
-
-  /* 底色层次：暖纸。从最底（页面）到最高（浮层），每层只差一点点明度；
-     基调取米白偏暖而不是中性灰白——一眼看过去像纸，不像屏幕。 */
-  --bg:            #f8f4ed;
-  --bg-elevated:   #fffefb;
-  --bg-sunken:     #f2ece2;
-  --bg-hover:      #efe8dd;
-
-  /* 描边：层级改由光影承担，描边退成一层很淡的纸纹。 */
-  --border:        #eae1d3;
-  --border-strong: #b1a492;   /* 输入框靠它自证可输入；原来的冷灰在暖底上几乎看不见 */
-
-  /* 文字：三级就够，别做五级。色相跟着底色偏暖——纯黑压暖纸会显脏。 */
-  --text:          #26211b;
-  --text-muted:    #5f5648;
-  --text-subtle:   #6d6255;   /* 压 sunken 4.94、压 elevated 6.3 */
-
-  /* 强调色：赤陶。比设计稿那支 #c2603f 压深一档——白字压它要过 4.5:1，
-     明快的橙红只到 4.17；深一档仍读作同一支颜色，按钮文字才站得住。 */
-  --accent:        #ac4e2a;
-  --accent-hover:  #93421f;
-  --accent-soft:   #f5e6dc;
-  --accent-text:   #fff6f0;
-  --accent-ink:    #9c4426;
-  /* 按钮高光往哪边偏：必须往"离字色更远"的方向，否则越亮越糊。
-     浅色档（按钮字是亮色）往黑偏，暗档（按钮字是深墨）往白偏；
-     薄荷·浅色是唯一"深字压亮底"的例外，它自己覆写。 */
-  --accent-lift:   #000;
-  /* 链接 hover 用的是"文字用的强调色"再往正文色靠一点——和按钮填充的
-     --accent-hover 不是一回事：后者管的是底，前者管的是字。 */
-  --accent-ink-hover: color-mix(in srgb, var(--accent-ink) 82%, var(--text));
-  /* 选中/在线那圈同色光晕：暖房里「她在那儿」靠"被点亮"，不靠描边 */
-  --accent-glow:   rgba(172, 78, 42, .18);
-
-  /* 语义色：都压过饱和度，暖底上别出现"红绿灯" */
-  --success:       #4a6b4d;
-  --success-soft:  #edf1e7;
-  --warning:       #7d6231;
-  --warning-soft:  #f7efdf;
-  --danger:        #b0344a;   /* 赤陶是橙红，错误色就得往正红/绛红挪，否则链接和报错同色 */
-  --danger-soft:   #faeaed;
-
-  /* 气泡：她的是暖白信纸，我的是赤陶实色 */
-  --bubble-mine:       #ac4e2a;
-  --bubble-mine-text:  #fff6f0;
-  --bubble-theirs:     #fffdfa;
-  --bubble-theirs-text:#26211b;
-  /* 气泡轻投影：暖底上纯色气泡贴同色底会显得很平，极淡的一层托起来即可，
-     别做成卡片悬浮。 */
-  --bubble-shadow:     0 1px 2px rgb(var(--shadow-tint) / .07), 0 2px 8px rgb(var(--shadow-tint) / .05);
-  /* 对话画布的场景光：右上一抹极淡的赤陶晕，左下一点暖砂，让聊天底不再是死平的一块。 */
-  --chat-scene: radial-gradient(ellipse 72% 58% at 88% -4%, rgba(172, 78, 42, .07), transparent 62%),
-                radial-gradient(ellipse 52% 44% at 10% 102%, rgba(190, 150, 96, .07), transparent 58%);
-  /* 未读角标 / 失败叹号是红底白字：原 #e64340 压白字只有 4.01:1（11-12px 字，
-     要 4.5），加深到 #c43936 → 5.27:1；它当纯圆点时的对比要求只有 3:1，仍满足。 */
-  --dot-red: #c43936; --warn-text: #9a6b1f;
-  --ctx-system: #7c6bd6; --ctx-memory: #4c8dd6; --ctx-tools: #4a8a5f; --ctx-history: #d9962e; --ctx-images: #d65f9c;
-  /* 「我」的首字母头像底色：与她的赤陶区分，用一支压灰的暖蓝 */
-  --ava-mine:      #4f6a86;
-  /* 「我」的头像首字母：底色是压灰的蓝，字色必须独立于 --accent-text——
-     暗档的 --accent-text 是"压按钮的深墨"，直接拿来压这块深蓝只有 2.2:1。 */
-  --ava-mine-text: #f2f6fb;
-  /* 联系人首字母头像的暖陶瓷色阶：全站都同一支赤陶就没人有身份，
-     按名字哈希落到其中一档（见 lib/avatar-tone）。六档都压过白字 4.5:1。 */
-  --ava-c1: #ac4e2a; --ava-c2: #8a6a3f; --ava-c3: #67713f;
-  --ava-c4: #4f6d6a; --ava-c5: #7a5a6b; --ava-c6: #5a6a86;
-  /* 气泡右下角的时间戳：原来用 opacity:.55 表达，同一个 .55 在三种底色上
-     分别是 3.79 / 3.54 / 4.67 —— 用不透明度代替色值就会随底色漂移。 */
-  --msg-time:      #6a5c3f;
-  --msg-time-mine: #fdeee6;   /* 我的气泡改深赤陶后，这一档从"压深"翻成"提亮" */
-  --bubble-proactive:  #fbf5ea;
-  --bubble-proactive-border: #ecdec4;
-
-  /* 内容列统一宽度：各视图不一致的 max-width 会让导航切换时整列左右跳位 */
-  --col: 880px;
-  /* 聊天页专用：画布铺满右栏，文字与输入区仍收在可读列内。
-     大屏宽到 1120px 就停，窄屏自然回落到左右 32px 安全边距。 */
-  --chat-col: clamp(900px, 64vw, 1120px);
-
-  /* 阴影色相：所有投影都从这一支派生，换主题只换这一个值。
-     冷灰的影子压在暖纸上会发脏，暖褐的影子压在冷底上又会发黄。 */
-  --shadow-tint: 74 55 38;
-  --shadow-sm: 0 1px 2px rgb(var(--shadow-tint) / .06), 0 1px 3px rgb(var(--shadow-tint) / .04);
-  --shadow-md: 0 2px 8px rgb(var(--shadow-tint) / .08), 0 1px 2px rgb(var(--shadow-tint) / .04);
-
-  /* 圆角阶：xs / sm / md / lg / xl / 2xl / 3xl / pill */
-  --radius-xs:  5px;
-  --radius-sm:  7px;
-  --radius-md:  9px;
-  --radius-lg:  11px;
-  --radius-xl:  13px;
-  --radius-2xl: 16px;
-  --radius-3xl: 19px;
-  --radius-full: 999px;
-
-  /* 阴影层级（从小到大，仅用于浮层与卡片） */
-  --shadow-menu-sm:  0 6px 24px rgb(var(--shadow-tint) / .16);
-  --shadow-menu:     0 10px 32px rgb(var(--shadow-tint) / .22);
-  --shadow-menu-dark: 0 8px 24px rgb(var(--shadow-tint) / .35);
-  --shadow-modal:    0 14px 44px rgb(var(--shadow-tint) / .24);
-  --shadow-dialog:   0 22px 64px rgb(var(--shadow-tint) / .30);
-  --shadow-toast:    0 4px 16px rgb(var(--shadow-tint) / .28);
-  --shadow-side-mobile: 0 0 40px rgb(var(--shadow-tint) / .35);
-  --shadow-fab:      0 6px 18px rgb(var(--shadow-tint) / .24);
-  --shadow-xs:       0 1px 3px rgb(var(--shadow-tint) / .08);
-  /* 卡片投影：一层贴地的暗边 + 一层散开的柔光。层级靠它和底色差说话，
-     1px 描边只留一圈几乎看不见的暖发丝线。 */
-  --shadow-card:     0 1px 2px rgb(var(--shadow-tint) / .05), 0 7px 20px -8px rgb(var(--shadow-tint) / .16);
-
-  /* 遮罩透明度：统一 overlay / scrim 的半透明覆盖层 */
-  --overlay-alpha: rgba(28, 20, 14, .42);
-  --overlay-scrim: rgba(38, 28, 20, .56);
-
-  /* 字号阶：10.5 / 11 / 11.5 / 12 / 12.5 / 13 / 13.5 / 15 / 16 / 20。
-     aux 与 note 补齐此前缺的两档 —— 12px 与 12.5px 合计占全站字号声明的 35%，
-     没有这两档，字号令牌化推不动。 */
-  --text-xs:    10.5px;  /* 角标 / eyebrow / 单位 */
-  --text-cap:   11px;     /* 时间戳 / 耗时 */
-  --text-sm:    11.5px;   /* 次要说明 / hint / badge */
-  --text-aux:   12px;     /* 列表次要字段 / 元信息 */
-  --text-note:  12.5px;   /* 卡片副文 —— 全站最高频 */
-  --text-base:  13px;     /* 控件与表单默认 */
-  --text-md:    13.5px;   /* 正文 / 输入 */
-  --text-lg:    15px;     /* 视图标题 */
-  --text-xl:    16px;     /* 弹窗标题 */
-  --text-2xl:   20px;     /* KPI 数字 */
-  --text-3xl:   28px;     /* 页标题（状态 / 设置） */
-
-  /* 间距阶：4px 为基础单位 */
-  --space-1:  4px;
-  --space-2:  6px;
-  --space-3:  8px;
-  --space-4:  10px;
-  --space-5:  12px;
-  --space-6:  14px;
-  --space-7:  16px;
-  --space-8:  18px;
-  --space-10: 24px;
-  --space-12: 32px;
-
-  /* 浮层层级：一档一个用途，相邻档留 10 的余量好插新层。
-     此前 21 处 z-index 散落 13 个野值，且有两处真实压盖：
-     .msgmenu 与 .net-tip 同为 60（断网时提示条压住菜单顶部项）、
-     .switch-pop 与「关于」遮罩同为 90（关于开着时下拉浮在它上面）。*/
-  --z-proactive-badge: 1;
-  --z-dock: 6;
-  --z-splitter: 30;
-  --z-backdrop: 40;
-  --z-pop: 41;
-  --z-notice: 50;      /* 断网提示让位给菜单，否则顶部菜单项读不到 */
-  --z-menu: 60;
-  --z-subpop: 65;
-  --z-toast: 70;
-  --z-drawer: 75;
-  --z-scrim: 78;
-  --z-dialog: 79;
-  --z-modal: 80;       /* 「关于」就是个弹窗，不该另立一档 */
-  --z-switcher: 100;   /* 切换下拉必须盖住包括关于在内的所有弹层 */
-  --z-photo: 120;
-  /* 布局尺寸：底部导航条高 / Rail 宽 / 侧栏默认宽。
-     58px 从前手写 4 处、64px 3 处、248px 连 JS 里共 5 处，
-     改一次要翻两个文件加一份 localStorage 回退值。 */
-  --nav-h: 58px;
-  --rail-w: 64px;
-  --side-w-default: 248px;
-  /* 禁用态只留一档观感：从前 .5 / .55 / .6 三种散在 8 处，同一层「按不动」给出三种强度。
-     但"同一个 α"不等于"同一个观感"——.55 压在浅色卡片上是 3.7:1，压在暗色卡片上是 5.2:1，
-     暗档的灰按钮看着像能点。所以按明暗各给一档，让两边落在同一个有效对比度上。
-     禁用控件 WCAG 本就豁免，这里追的不是 4.5，是"八档看起来一样灰"。 */
-  --alpha-disabled: .55;
-  /* 焦点环。不能用 --accent：薄荷那支绿压页面底只有 2.4:1，达不到非文字元素 3:1。
-     --accent-ink 是"当文字用的强调色"，八档都已验证 ≥4.5，同色系只是压深一档。 */
-  --focus-ring: var(--accent-ink);
-  /* 浮层边线。浅色档浮层比遮罩后的页面亮，靠明度差就够了（≈3:1）；
-     暗档两头都接近纯黑，明度差只有 1.2:1、黑投影压黑底又看不见——
-     只能靠一根提亮的边线把浮层圈出来。各暗档在下方按 2.8:1 单独给值。 */
-  --edge-float: var(--border);
-  /* 会话里弹到 body 上的浮层（消息操作菜单、轻提示）。它们必须盖过助手弹窗(79)与
-     模态(80)：那两层从前嵌在会话子树里跟着祖先的 transform 定位，改成 portal 之后就
-     只由这张全局阶梯说话，留在 60/70 会被弹窗压在下面看不见。 */
-  --z-chat-pop: 90;
-  /* 运行期变量：由 lib/keyboard.ts、Splitter、消息菜单和头像色调写到
-     documentElement / 元素内联样式上。这里给默认值——JS 还没跑时也有可用的退化值，
-     同时让 IDE 的自定义属性检查能解析到声明（否则会报 Cannot resolve custom property）。 */
-  --kb: 0px;
-  --enter-delay: 0ms;
-  --ax: 50%;
-  --side-w: var(--side-w-default);
-  --s-ava-bg: var(--accent);
-}
-
-:root[data-theme="dark"] {
-  color-scheme: dark;
-
-  --bg:            #171310;
-  --bg-elevated:   #211b16;
-  --bg-sunken:     #100d0b;
-  --bg-hover:      #2a221c;
-
-  --border:        #352c24;
-  --border-strong: #5a4b3d;
-
-  --text:          #f0eae2;
-  --text-muted:    #b0a495;
-  --text-subtle:   #988b7b;   /* 压 elevated 5.18；暗档不能沿用明档那支暖灰，会糊成一片 */
-
-  /* 强调色：深色档不把浅色拉黑，底子偏暖、强调色反而提亮一档 */
-  --accent:        #e0784f;
-  --accent-hover:  #eb8a63;
-  --accent-soft:   #2f2119;
-  --accent-text:   #23130a;
-  --accent-ink:    #e68b62;
-  --accent-lift:   #fff;
-  --accent-glow:   rgba(224, 120, 79, .22);
-
-  --success:       #86ab86;
-  --success-soft:  #1d231b;
-  --warning:       #d0a967;
-  --warning-soft:  #241f15;
-  --danger:        #dd8a94;
-  --danger-soft:   #291a1e;
-
-  --bubble-mine:       #a9532f;
-  --bubble-mine-text:  #fdeee6;   /* 深赤陶压亮字 4.9:1；沿用明档那支深字只有 2.6 */
-  --bubble-theirs:     #29211b;
-  --bubble-theirs-text:#f0eae2;
-  --bubble-shadow:     0 1px 3px rgb(var(--shadow-tint) / .34), 0 0 0 1px rgba(255, 255, 255, .03);
-  --chat-scene: radial-gradient(ellipse 72% 58% at 88% -4%, rgba(224, 120, 79, .07), transparent 62%),
-                radial-gradient(ellipse 52% 44% at 10% 102%, rgba(190, 150, 96, .04), transparent 58%);
-  --dot-red: #c43936; --warn-text: #d8a952;
-  --ctx-system: #9a8bf0; --ctx-memory: #6fa8ea; --ctx-tools: #67a87c; --ctx-history: #e6b054; --ctx-images: #e684b8;
-  --ava-mine:      #46617d;
-  --ava-mine-text: #e6eef8;
-  /* 联系人首字母头像的暖陶瓷色阶（暗档：提亮的同族色，字压深色） */
-  --ava-c1: #d9754d; --ava-c2: #bd9a6c; --ava-c3: #9aa473;
-  --ava-c4: #7ba09b; --ava-c5: #a7869a; --ava-c6: #8296b8;
-  /* 暗档两种气泡底色差得远（#29211b 与 #a9532f），一个时间戳色不可能同时
-     压住两边，必须分侧给值。 */
-  --msg-time:      #b6aa99;
-  --msg-time-mine: #fdeee6;
-  --bubble-proactive:  #231c14;
-  --bubble-proactive-border: #3d3122;
-
-  /* 暗档的投影就是纯黑，不带色相：暖黑底上再加暖影子会糊成一片 */
-  --shadow-tint: 0 0 0;
-  /* 暗档的禁用态要压到 .44 才和浅色档一样"灰"（见浅色档 --alpha-disabled 的注释） */
-  --alpha-disabled: .44;
-  --edge-float: #5f574f;
-  --shadow-sm: 0 1px 2px rgb(var(--shadow-tint) / .35), 0 1px 3px rgb(var(--shadow-tint) / .2);
-  --shadow-md: 0 2px 10px rgb(var(--shadow-tint) / .4), 0 1px 3px rgb(var(--shadow-tint) / .25);
-
-  --radius-xs:  5px;
-  --radius-sm:  7px;
-  --radius-md:  9px;
-  --radius-lg:  11px;
-  --radius-xl:  13px;
-  --radius-2xl: 16px;
-  --radius-3xl: 19px;
-  --radius-full: 999px;
-
-  --shadow-menu-sm:  0 6px 24px rgb(var(--shadow-tint) / .30);
-  --shadow-menu:     0 10px 32px rgb(var(--shadow-tint) / .38);
-  --shadow-menu-dark: 0 8px 24px rgb(var(--shadow-tint) / .50);
-  --shadow-modal:    0 14px 44px rgb(var(--shadow-tint) / .42);
-  --shadow-dialog:   0 22px 64px rgb(var(--shadow-tint) / .50);
-  --shadow-toast:    0 4px 16px rgb(var(--shadow-tint) / .42);
-  --shadow-side-mobile: 0 0 40px rgb(var(--shadow-tint) / .50);
-  --shadow-fab:      0 6px 18px rgb(var(--shadow-tint) / .40);
-  --shadow-xs:       0 1px 3px rgb(var(--shadow-tint) / .20);
-  /* 暗档的卡片投影要用更黑、更散的一层，纯 1px 描边在暖黑底上根本读不出层级 */
-  --shadow-card:     0 1px 2px rgb(var(--shadow-tint) / .34), 0 10px 26px -10px rgb(var(--shadow-tint) / .58);
-
-  /* 暗底本身就近纯黑，沿用明档的 .40/.50 压不出层次，弹窗看着不像浮起来 */
-  --overlay-alpha: rgb(var(--shadow-tint) / .58);
-  --overlay-scrim: rgba(10, 6, 4, .70);
-
-  --text-xs:    10.5px;  /* 角标 / eyebrow / 单位 */
-  --text-cap:   11px;     /* 时间戳 / 耗时 */
-  --text-sm:    11.5px;   /* 次要说明 / hint / badge */
-  --text-aux:   12px;     /* 列表次要字段 / 元信息 */
-  --text-note:  12.5px;   /* 卡片副文 —— 全站最高频 */
-  --text-base:  13px;     /* 控件与表单默认 */
-  --text-md:    13.5px;   /* 正文 / 输入 */
-  --text-lg:    15px;     /* 视图标题 */
-  --text-xl:    16px;     /* 弹窗标题 */
-  --text-2xl:   20px;     /* KPI 数字 */
-  --text-3xl:   28px;     /* 页标题（状态 / 设置） */
-
-  --space-1:  4px;
-  --space-2:  6px;
-  --space-3:  8px;
-  --space-4:  10px;
-  --space-5:  12px;
-  --space-6:  14px;
-  --space-7:  16px;
-  --space-8:  18px;
-  --space-10: 24px;
-  --space-12: 32px;
-}
+/* 基础主题令牌已迁移到 theme.css。
+   此处保留文件头，旧规则继续消费同一组语义变量。 */
 
 /* ── 动效令牌（明暗共用）────────────────────────────────────────
    从前全站散着 .1 / .12 / .13 / .14 / .15 / .16 / .18 / .22 八种时长和裸 ease，
@@ -332,8 +30,12 @@ html, body {
 body {
   background: var(--bg);
   color: var(--text);
-  font: 15px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
-        "Hiragino Sans GB", "Microsoft YaHei", "Noto Sans SC", sans-serif;
+  /* 字号与行高在这里定基准（聊天正文 15px/1.65 的阅读节奏）；字族只认 theme.css
+     的 --font-body 一份真源，别在这里再抄一份栈。font-optical-sizing 让
+     Segoe UI Variable 这类可变字体按字号自动挑 Display/Text 变体：小字更清晰，
+     大标题收得更紧。 */
+  font: 15px/1.65 var(--font-body);
+  font-optical-sizing: auto;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   font-variant-numeric: tabular-nums;
@@ -384,7 +86,7 @@ input, textarea {
   outline: none;
 }
 
-::selection { background: var(--accent-soft); color: var(--text); }
+/* 选区颜色统一在 experience.css 一处定义（22% 强调色混合），这里不再重复 */
 
 /* 滚动条：细、不抢眼，暗色下也不突兀 */
 * { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
@@ -736,6 +438,9 @@ input, textarea {
 /* 输入区（微信 PC 式）：无边框扁平输入 + 底栏（左快捷键提示，右绿色发送按钮） */
 #composer {
   position: relative;
+  /* 输入区是聊天流之上的独立浮层。这里必须建立明确的 stacking context：
+     否则内部模型弹窗的 z-index 只在本层有效，仍会被消息行的「主动」徽标压住。 */
+  z-index: var(--z-dock);
   padding: 0 var(--chat-gutter) calc(12px + env(safe-area-inset-bottom, 0px));
   border-top: 1px solid var(--border);
   background: var(--bg-elevated);
@@ -869,7 +574,7 @@ input, textarea {
 .del-row button:hover { border-color: var(--border-strong); color: var(--text); }
 /* 危险按钮：浅底 + 语义色字 + 语义色描边。
    从前是白字压 var(--danger)，暗档 #d08b81 上只有约 2.8:1——这套界面里最要看清的
-   两个按钮（删联系人、删消息）反而最看不清。app.css 后来立了同一口径，但那条选择器
+   两个按钮（删联系人、删消息）反而最看不清。components.css 后来立了同一口径，但那条选择器
    写的是 button.primary.danger，管不到这里的裸 .danger，同一个 bug 只修了一个入口。 */
 .del-row button.danger { color: var(--danger); background: var(--danger-soft); border-color: var(--danger); }
 
@@ -917,37 +622,71 @@ input, textarea {
 }
 .retracted-tip:hover { border-color: var(--border-strong); color: var(--text-muted); }
 
-/* 编辑态：就地替换气泡，不弹窗——弹窗会让人失去"我在改哪一句"的位置感 */
+/* 编辑态：就地替换气泡，不弹窗——弹窗会让人失去"我在改哪一句"的位置感。
+   编辑框本身是一张完整的小卡片：标题、输入、后果说明、动作分层，而不是一根裸 textarea。 */
 .editbox {
-  max-width: min(78%, 520px);
+  width: min(78%, 620px); max-width: min(78%, 620px);
   display: flex; flex-direction: column; gap: var(--space-4);
-  padding: var(--space-5) var(--space-6) var(--space-5);
-  border-radius: var(--radius-sm);
+  padding: var(--space-5) var(--space-6);
+  border-radius: var(--radius-lg);
   background: var(--bg-elevated);
-  /* 一圈 accent 绿边和聊天输入框的绿框是同一个毛病：编辑态靠「顶替气泡位置 + 头像列」
-     已经足够表意，绿边只会让整块变成页面上最吵的东西。换成与其它卡片一致的 hairline。 */
-  border: 1px solid var(--border);
+  border: 1px solid var(--border-strong);
+  box-shadow: var(--shadow-card);
+  transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out);
 }
+.editbox:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 52%, var(--border));
+  box-shadow: var(--shadow-card), 0 0 0 3px var(--accent-glow);
+}
+.editbox-head { display: flex; align-items: flex-start; gap: var(--space-4); }
+.editbox-heading { min-width: 0; display: flex; flex-direction: column; gap: 2px; flex: 1; }
+.editbox-title {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  font-size: var(--text-base); font-weight: 600; color: var(--text);
+}
+.editbox-mode { font-size: var(--text-sm); color: var(--text-subtle); line-height: 1.5; }
+.editbox-close {
+  flex: none; display: inline-flex; align-items: center; justify-content: center;
+  width: 28px; height: 28px; margin: -2px -4px 0 0; border: none; border-radius: var(--radius-md);
+  background: transparent; color: var(--text-subtle); cursor: pointer;
+}
+.editbox-close:hover { background: var(--bg-hover); color: var(--text); }
 .editbox textarea {
   /* 长到这里就出滚动条：原来是 overflow:hidden + JS 另算一个高度上限，
      两个上限打架，超出的那截既看不见也滚不动，改长消息时像内容被吞了。 */
-  width: 100%; resize: none; overflow-y: auto;
-  font-size: var(--text-lg); line-height: 1.55;
-  min-height: 24px; max-height: min(220px, 34vh); max-height: min(220px, 34dvh);
+  width: 100%; resize: none; overflow-y: auto; box-sizing: border-box;
+  font-size: var(--text-md); line-height: 1.65;
+  min-height: 82px; max-height: min(240px, 36vh); max-height: min(240px, 36dvh);
   color: var(--text);
-  /* 照搬聊天输入框：透明底、无边框、文字直接落在容器上，不另套一个输入块 */
-  background: transparent;
-  border: none;
-  padding: 0;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4) var(--space-5);
+  transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
 }
-.editbox textarea:focus, .editbox textarea:focus-visible { box-shadow: none; }
+.editbox textarea::placeholder { color: var(--text-subtle); }
+.editbox textarea:focus, .editbox textarea:focus-visible {
+  outline: none; border-color: var(--accent-ink); background: var(--bg);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 12%, transparent);
+}
 /* 「只改文字」模式下的后果说明：这一句改了之后面动不动，必须当场看得见。 */
 .edit-note {
-  padding: 0 var(--space-3) var(--space-1);
-  font-size: var(--text-sm); color: var(--text-subtle);
+  padding: var(--space-3) var(--space-4);
+  border-radius: var(--radius-md); background: var(--accent-soft);
+  font-size: var(--text-sm); color: var(--text-muted); line-height: 1.5;
 }
-.editbox .hint { font-size: var(--text-sm); line-height: 1.6; color: var(--text-subtle); }
-.editbox .row2 { display: flex; gap: var(--space-3); justify-content: flex-end; }
+.editbox-foot { display: flex; align-items: center; gap: var(--space-3); min-width: 0; }
+.editbox-hint { min-width: 0; flex: 1; font-size: var(--text-sm); line-height: 1.55; color: var(--text-subtle); }
+.editbox-count {
+  flex: none; font-size: var(--text-cap); color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+.editbox-kbd {
+  flex: none; padding: 2px var(--space-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); background: var(--bg-sunken); color: var(--text-subtle);
+}
+.editbox-actions { display: flex; gap: var(--space-3); justify-content: flex-end; }
+.editbox-actions .primary { display: inline-flex; align-items: center; gap: var(--space-2); }
 
 /* 被编辑取代的消息：折叠成一行，不删。
    删掉会让"我刚才说的话去哪了"变成无法回答的问题；留着又太吵，所以折叠。 */
@@ -1075,6 +814,18 @@ input, textarea {
 .rail-menu .menu-theme button[aria-pressed="true"] {
   background: var(--accent-soft); color: var(--accent-ink); border-color: transparent;
 }
+/* 壁纸模式下浅色/深色暂停生效：菜单里摆一枚状态徽标，讲清楚"为什么现在没有主题可切" */
+.rail-menu .wp-mode-chip {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin: 0 var(--space-1); padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md); border: 1px solid color-mix(in srgb, var(--accent) 26%, var(--border));
+  background: var(--accent-soft); color: var(--accent-ink);
+  font-size: var(--text-aux);
+}
+.rail-menu .wp-mode-chip i {
+  flex: none; width: 6px; height: 6px; border-radius: 50%;
+  background: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow);
+}
 .menu-sep { height: 1px; background: var(--border); margin: var(--space-1) var(--space-2); }
 .rail-menu .menu-item {
   display: flex; align-items: center; gap: var(--space-4); width: 100%;
@@ -1085,7 +836,7 @@ input, textarea {
 .rail-menu .menu-item svg { width: 17px; height: 17px; color: var(--text-subtle); }
 
 /* ── 关于弹窗 ──
-   遮罩/圆角/阴影/焦点陷阱全部由通用 <Modal> 提供（app.css 的 .modal-card，
+   遮罩/圆角/阴影/焦点陷阱全部由通用 <Modal> 提供（components.css 的 .modal-card，
    后加载、同权重会盖掉这里），所以只留这块内容特有的宽度和居中排版，
    并用 .modal-card.about-card 提权，与 .ml-form.modal-card 同一套路。 */
 .modal-card.about-card {
@@ -1402,11 +1153,10 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
    同一个位置同一件事，写一次两边同用；上下留白也一并拉平（见 #status .head）。 */
 .head h1, .head-row h1 {
   margin: var(--space-7) 0 var(--space-5);
-  /* 30px/700 是在"喊"，不是在做标题。压到 28px/600、收紧字距，读起来更笃定，
-     也给下面的分组留出呼吸。 */
+  /* 30px/700 是在"喊"，不是在做标题。压到 30px/600 读起来更笃定；
+     中文标题不收紧字距（全角字面自带满幅），分层靠字重与字号。 */
   font-size: var(--text-3xl);
   font-weight: 600;
-  letter-spacing: -.005em;
 }
 
 /* ① 召回试验台 */
@@ -1535,7 +1285,7 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
   font-style: normal; color: var(--text-muted);
   background: var(--bg-sunken);
   padding: 0 var(--space-1); border-radius: var(--radius-xs);
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-cap);
 }
 
@@ -1543,7 +1293,7 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
    这里从前写的是 `.empty-state { @extend .empty; }`（三行）——@extend 是 Sass 语法，
    纯 CSS 里浏览器把整条声明块丢掉，而构建没有预处理管它：产物 dist 里原样躺着
    `.empty-state,.s-empty,.ml-empty{@extend .empty;}`，于是这句「统一」从来没生效过。
-   要共用就老老实实写组选择器。字号/颜色口径在 app.css 末尾那一组里。 */
+   要共用就老老实实写组选择器。字号/颜色口径在 components.css 末尾那一组里。 */
 .empty, .empty-state, .s-empty, .ml-empty, .switch-empty {
   padding: var(--space-6) var(--space-5); text-align: center; line-height: 1.8;
 }
@@ -1634,7 +1384,7 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 .check .k { font-size: var(--text-md); flex: none; width: 76px; color: var(--text-muted); }
 .check .v { font-size: var(--text-md); flex: 1; min-width: 0; word-break: break-word; }
 .check .v code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-note); padding: 1px var(--space-2); border-radius: var(--radius-xs);
   background: var(--bg-sunken); border: 1px solid var(--border);
 }
@@ -1644,7 +1394,7 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
   font-size: var(--text-aux); color: var(--danger); line-height: 1.6;
 }
 .check .fix code {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   background: var(--bg-sunken); padding: 0 var(--space-1); border-radius: var(--radius-xs);
 }
 .check.has-fix { flex-wrap: wrap; }
@@ -1718,13 +1468,13 @@ tbody tr:hover td { background: var(--bg-hover); }
 td.num { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--text-muted); }
 td.state { white-space: nowrap; }
 td.mono {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-aux); color: var(--text-muted);
 }
 td .msg { color: var(--text-muted); font-size: var(--text-note); word-break: break-word; }
 .ok-mark { color: var(--success); }
 .bad-mark { color: var(--danger); }
-.code-tag { font-family: ui-monospace, monospace; font-size: var(--text-sm); }
+.code-tag { font-family: var(--font-mono); font-size: var(--text-sm); }
 
 .row-failed td { background: var(--danger-soft); }
 .row-failed:hover td { background: var(--danger-soft); }
@@ -1755,7 +1505,7 @@ td .raw-hint {
 .raw-close:hover { background: var(--bg-hover); color: var(--text); }
 .raw-body {
   margin: 0; max-height: min(46vh, 420px); max-height: min(46dvh, 420px); overflow: auto;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
   font-size: var(--text-sm); line-height: 1.6; color: var(--text-muted);
   white-space: pre-wrap; word-break: break-word;
   background: var(--bg-sunken); border: 1px solid var(--border);
@@ -1779,7 +1529,7 @@ td .raw-hint {
   background: var(--bg-sunken); border: 1px solid var(--border);
   font-size: var(--text-note); line-height: 1.7; color: var(--text-muted);
   white-space: pre-wrap; word-break: break-word;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-family: var(--font-mono);
 }
 .ping-out.bad { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 24%, var(--border)); color: var(--danger); }
 .ping-out.good { background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 24%, var(--border)); color: var(--success); }
@@ -2018,12 +1768,12 @@ button.sm { padding: var(--space-3) var(--space-5); font-size: var(--text-note);
 .msg-row.me .link-card-desc { color: color-mix(in srgb, var(--bubble-mine-text) 78%, transparent); }
 .msg-row.me .link-card-icon { background: color-mix(in srgb, #fff 18%, transparent); color: var(--bubble-mine-text); }
 .md-h { font-weight: 600; }
-.md-code { background: var(--bg-sunken); border-radius: var(--radius-xs); padding: 0 var(--space-1); font-family: ui-monospace, Consolas, monospace; font-size: .92em; }
+.md-code { background: var(--bg-sunken); border-radius: var(--radius-xs); padding: 0 var(--space-1); font-family: var(--font-mono); font-size: .92em; }
 .md-pre {
   margin: var(--space-2) 0; padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md); background: var(--bg-sunken);
   white-space: pre-wrap; word-break: break-word; overflow-x: auto;
-  font-family: ui-monospace, Consolas, monospace; font-size: .92em; line-height: 1.55;
+  font-family: var(--font-mono); font-size: .92em; line-height: 1.55;
 }
 
 /* ── Batch3：断网提示条 ── */
@@ -2048,19 +1798,8 @@ button.sm { padding: var(--space-3) var(--space-5); font-size: var(--text-note);
 .s-sec { font-size: var(--text-sm); color: var(--text-subtle); padding: var(--space-2) var(--space-4) var(--space-1); display: flex; align-items: center; gap: var(--space-2); }
 .s-clear { margin-left: auto; border: none; background: transparent; color: var(--text-subtle); font-size: var(--text-sm); cursor: pointer; }
 .s-hit .s-r2 { color: var(--text-muted); }
-/* 触控档的基础值必须挂在独立的 :root 上。此前它写在明主题块里，而明主题的
-   选择器是 :root, :root[data-theme="light"] —— 带上属性选择器后特异度升到
-   0,2,0，反过来压死了下面窄屏媒体查询里的裸 :root(0,1,0)。实测结果：44px 档
-   只在暗主题生效，明主题静默退回 32px。 */
-:root { --tap-min: 32px; }
-
-/* ── 触控目标下限 ────────────────────────────────────────────
-   实测过短边不达标的都是关键路径：记忆卡的「纠正/删除」约 17px、发送失败
-   的原地重试 18px、窄屏唯一的资料入口 32px。逐个改要碰 20 套图标按钮，
-   这里用一个档位统抬，桌面与窄屏只差一行媒体查询。 */
-@media (max-width: 760px), (max-height: 520px) {
-  :root { --tap-min: 44px; }
-}
+/* 触控目标下限由 theme.css 统一给出；不要在组件层重复定义，否则主题与媒体查询
+   会重新陷入特异度竞争。 */
 
 button, [role="button"], summary, .wx-check, .check { min-height: var(--tap-min); }
 
@@ -2098,260 +1837,287 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
 
 
 
-/* ══ 主题风格 ═══════════════════════════════════════════════════════
-   同一套骨架（三栏 + 气泡）下的四套材质。暖房是 :root 上的基线，这里是另外三套的覆盖。
-   风格与明暗正交：风格决定"什么材质"，data-theme 决定"开不开灯"，所以每一套都要写两档。
-   选择器统一写成 [data-theme-style][data-theme]（0,3,0），比基线的 :root[data-theme] 高一级——
-   否则末尾追加的明档块会在暗色下把基线暗档盖掉。 */
+/* 主题风格层已移除：产品只保留明暗、强调色和壁纸三个正交维度。 */
 
-/* ── 薄荷：迁移前的旧观感，浅灰白 + 薄荷绿，层级靠 1px 描边 ── */
-:root[data-theme-style="classic"][data-theme="light"] {
-  --shadow-tint: 30 27 24;
-  --bg:            #faf9f7;
-  --bg-elevated:   #ffffff;
-  --bg-sunken:     #f2f0ed;
-  --bg-hover:      #f0eeeb;
-  --border:        #e6e3de;
-  --border-strong: #a9a49c;
-  --text:          #1f1d1a;
-  --text-muted:    #6b6660;
-  --text-subtle:   #6e6860;
-  --accent:        #22c55e;
-  --accent-hover:  #16a34a;
-  --accent-soft:   #e9f9ef;
-  --accent-text:   #10291a;
-  --accent-ink:    #14763a;   /* 原 #16a34a 压页面底 3.13；#15803d 压下沉面仍只有 4.41 */
-  --accent-glow:   rgba(34, 197, 94, .16);
-  --success: #456e51; --success-soft: #edf3ee;
-  --warning: #7d6331; --warning-soft: #f7f1e4;
-  --danger:  #a3564c; --danger-soft:  #f8eeec;
-  --bubble-mine:       #95ec69;
-  --bubble-mine-text:  #111b0c;
-  --bubble-theirs:     #ffffff;
-  --bubble-theirs-text:#1f1d1a;
-  --bubble-shadow: 0 1px 2px rgb(var(--shadow-tint) / .06), 0 0 0 1px rgb(var(--shadow-tint) / .03);
-  --chat-scene: radial-gradient(ellipse 70% 55% at 88% 0%, rgba(34, 197, 94, .06), transparent 60%),
-                radial-gradient(ellipse 50% 40% at 12% 100%, rgba(34, 197, 94, .035), transparent 55%);
-  --ava-mine: #3f6bb8; --ava-mine-text: #f4f7fd;
-  --accent-lift: #fff;   /* 这套是深字压亮绿底，高光得往白偏 */
-  /* 旧观感里联系人头像就是同一支绿，六档全指回强调色 */
-  --ava-c1: #22c55e; --ava-c2: #22c55e; --ava-c3: #22c55e;
-  --ava-c4: #22c55e; --ava-c5: #22c55e; --ava-c6: #22c55e;
-  --msg-time:      #57533f;
-  --msg-time-mine: #57533f;
-  --bubble-proactive:  #fbf6ec;
-  --bubble-proactive-border: #ecdcc2;
-  --overlay-alpha: rgba(0, 0, 0, .40);
-  --overlay-scrim: rgba(9, 12, 20, .50);
+/* ── 壁纸与玻璃（个性化层）──────────────────────────────────────
+   壁纸是 body 下面的一个固定层（#wp-layer，z-index:-1，由 lib/wallpaper.ts 管理）；
+   界面各表面改用 color-mix 半透明，壁纸从底下透出来。
+   玻璃不再是独立开关：html[data-glass="on"] 跟着壁纸走（壁纸开着就开），
+   给 Rail / 侧栏 / 弹窗这几块固定表面加 backdrop-filter。
+   纪律：模糊只给「不随内容滚动的大块表面」——
+   滚动容器自己开 backdrop-filter 是 WebView 上单条最贵的样式（见 components.css 同款告诫）。 */
+
+#wp-layer {
+  position: fixed; inset: 0; z-index: -1;
+  overflow: hidden; pointer-events: none;
 }
-:root[data-theme-style="classic"][data-theme="dark"] {
-  --shadow-tint: 0 0 0;
-  --bg:            #121211;
-  --bg-elevated:   #1a1a19;
-  --bg-sunken:     #0d0d0c;
-  --bg-hover:      #232322;
-  --border:        #2a2a28;
-  --border-strong: #5c5c57;
-  --text:          #ecebe8;
-  --text-muted:    #9b968f;
-  --text-subtle:   #9b958d;   /* 原 #8b857d 压选中行的强调浅底只有 3.89 */
-  --accent:        #3eb575;
-  --accent-hover:  #4ec985;
-  --accent-soft:   #17301f;
-  --accent-text:   #06210f;
-  --accent-ink:    #5ed58a;
-  --accent-glow:   rgba(62, 181, 117, .20);
-  --success: #7fae8c; --success-soft: #1b241d;
-  --warning: #cfa963; --warning-soft: #241f16;
-  --danger:  #d08b81; --danger-soft:  #251b19;
-  --bubble-mine:       #3eb575;
-  --bubble-mine-text:  #06210f;
-  --bubble-theirs:     #2c2c2c;
-  --bubble-theirs-text:#ecebe8;
-  --bubble-shadow: 0 1px 3px rgb(var(--shadow-tint) / .28), 0 0 0 1px rgba(255, 255, 255, .03);
-  --chat-scene: radial-gradient(ellipse 70% 55% at 88% 0%, rgba(62, 181, 117, .06), transparent 60%),
-                radial-gradient(ellipse 50% 40% at 12% 100%, rgba(62, 181, 117, .03), transparent 55%);
-  --ava-mine: #35527f; --ava-mine-text: #e2ebf8;
-  --edge-float: #585855;
-  --ava-c1: #3eb575; --ava-c2: #3eb575; --ava-c3: #3eb575;
-  --ava-c4: #3eb575; --ava-c5: #3eb575; --ava-c6: #3eb575;
-  --msg-time:      #b8b2aa;
-  --msg-time-mine: #06210f;
-  --bubble-proactive:  #221d15;
-  --bubble-proactive-border: #3b3021;
-  --overlay-alpha: rgba(0, 0, 0, .58);
-  --overlay-scrim: rgba(4, 6, 10, .68);
+#wp-layer .wp-media {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: cover; display: block;
+}
+/* 极淡噪点：渐变在低色深屏上有可见条带，一层碎点把台阶打断 */
+#wp-layer .wp-noise {
+  position: absolute; inset: 0;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='140' height='140'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.045'/%3E%3C/svg%3E");
 }
 
-/* ── 夜航：深蓝底 + 一盏蜜金。层级靠明度，圆角整体大一档 ── */
-:root[data-theme-style="night"][data-theme="light"] {
-  --shadow-tint: 20 28 44;
-  --bg:            #f4f6f9;
-  --bg-elevated:   #ffffff;
-  --bg-sunken:     #ebeef3;
-  --bg-hover:      #e7ebf1;
-  --border:        #e0e4ea;
-  --border-strong: #a3abb8;
-  --text:          #171a20;
-  --text-muted:    #555d69;
-  --text-subtle:   #616a77;   /* 原 #67707d 压 sunken 只有 4.31 */
-  --accent:        #9a6a0c;
-  --accent-hover:  #855b0a;
-  --accent-soft:   #f6efdd;
-  --accent-text:   #fffaef;
-  --accent-ink:    #8a5f0b;
-  --accent-glow:   rgba(154, 106, 12, .18);
-  --success: #44694f; --success-soft: #eaf0ea;
-  --warning: #8a6414; --warning-soft: #f8f1e0;
-  --danger:  #a83a4e; --danger-soft:  #f9e9ec;
-  --bubble-mine:       #2e3b52;
-  --bubble-mine-text:  #eef2f9;
-  --bubble-theirs:     #ffffff;
-  --bubble-theirs-text:#171a20;
-  --bubble-shadow: 0 1px 2px rgb(var(--shadow-tint) / .07), 0 2px 8px rgb(var(--shadow-tint) / .05);
-  --chat-scene: radial-gradient(ellipse 72% 58% at 88% -4%, rgba(154, 106, 12, .06), transparent 62%),
-                radial-gradient(ellipse 52% 44% at 10% 102%, rgba(46, 59, 82, .06), transparent 58%);
-  --ava-mine: #4d5f80; --ava-mine-text: #eef2f9;
-  --ava-c1: #34506e; --ava-c2: #6b5324; --ava-c3: #3f6350;
-  --ava-c4: #4c4a74; --ava-c5: #6d4056; --ava-c6: #2f5f66;
-  --msg-time:      #5c5544;
-  --msg-time-mine: #cfd8e6;
-  --bubble-proactive:  #f6f0e2;
-  --bubble-proactive-border: #e6dcc2;
-  --overlay-alpha: rgba(0, 0, 0, .42);
-  --overlay-scrim: rgba(9, 14, 24, .56);
-  --radius-sm:  8px;
-  --radius-md:  10px;
-  --radius-lg:  12px;
-  --radius-xl:  14px;
-  --radius-2xl: 18px;
-  --radius-3xl: 22px;
+/* 内置预设「星空流星」：三层视差星空（密星闪烁 + 亮星缓漂）+ 星云微光 + 五道流星。
+   性能纪律：动画只碰 transform/opacity；星云的柔光直接烘进渐变里——
+   从前在动画层上叠 filter: blur(80px) + mix-blend-mode: screen，每帧都要重采样，
+   是整块壁纸最贵的一条样式，视觉上却和预柔化渐变几乎分不出差别。
+   页面不可见时 html[data-wp-paused] 统一暂停（lib/wallpaper.ts 管）；
+   reduced-motion 不作用于壁纸内容——它是用户显式选中的动态素材。 */
+#wp-layer[data-wp="starry"] { background: linear-gradient(180deg, #090e22 0%, #1d1b3e 60%, #352f5c 100%); }
+/* 星云微光：柔边径向渐变直接当光源用，慢速漂移制造纵深 */
+#wp-layer[data-wp="starry"]::before {
+  content: ""; position: absolute; inset: -18%;
+  background:
+    radial-gradient(30% 26% at 28% 22%, rgba(94, 82, 190, .32), transparent 68%),
+    radial-gradient(26% 22% at 76% 66%, rgba(214, 122, 150, .24), transparent 70%),
+    radial-gradient(22% 20% at 58% 12%, rgba(64, 108, 190, .18), transparent 72%);
+  will-change: transform;
+  animation: wp-drift 64s ease-in-out infinite alternate;
 }
-:root[data-theme-style="night"][data-theme="dark"] {
-  --shadow-tint: 0 0 0;
-  --bg:            #12161d;
-  --bg-elevated:   #1a2029;
-  --bg-sunken:     #0e1218;
-  --bg-hover:      #1e2836;
-  --border:        #232c3a;
-  --border-strong: #4c5a70;
-  --text:          #e9e7e2;
-  --text-muted:    #a6aeb9;
-  --text-subtle:   #8b95a3;
-  --accent:        #e4a951;
-  --accent-hover:  #efb968;
-  --accent-soft:   #2a2318;
-  --accent-text:   #231a06;
-  --accent-ink:    #ecb566;
-  --accent-glow:   rgba(228, 169, 81, .22);
-  --success: #7fae8c; --success-soft: #16211b;
-  --warning: #d7b06a; --warning-soft: #241f14;
-  --danger:  #d68d94; --danger-soft:  #261a1e;
-  --bubble-mine:       #2e3b52;
-  --bubble-mine-text:  #e9edf4;
-  --bubble-theirs:     #1a2029;
-  --bubble-theirs-text:#e9e7e2;
-  --bubble-shadow: 0 1px 3px rgb(var(--shadow-tint) / .35), 0 0 0 1px rgba(255, 255, 255, .03);
-  --chat-scene: radial-gradient(ellipse 72% 58% at 88% -4%, rgba(228, 169, 81, .07), transparent 62%),
-                radial-gradient(ellipse 52% 44% at 10% 102%, rgba(90, 120, 180, .05), transparent 58%);
-  --ava-mine: #3f5470; --ava-mine-text: #e6ecf6;
-  --edge-float: #525962;
-  --ava-c1: #e4a951; --ava-c2: #7fa8c4; --ava-c3: #6fae95;
-  --ava-c4: #9a8fd0; --ava-c5: #c98fa6; --ava-c6: #5f8fa8;
-  --msg-time:      #a9b1bd;
-  --msg-time-mine: #cfd8e6;
-  --bubble-proactive:  #1e1a12;
-  --bubble-proactive-border: #3a3220;
-  --overlay-alpha: rgba(0, 0, 0, .60);
-  --overlay-scrim: rgba(6, 9, 14, .72);
-  --radius-sm:  8px;
-  --radius-md:  10px;
-  --radius-lg:  12px;
-  --radius-xl:  14px;
-  --radius-2xl: 18px;
-  --radius-3xl: 22px;
+/* 地平线辉光 + 暗角：静态一层，把画面重心压住，零动画成本 */
+#wp-layer[data-wp="starry"]::after {
+  content: ""; position: absolute; inset: 0;
+  background:
+    radial-gradient(120% 46% at 50% 108%, rgba(122, 108, 208, .20), transparent 62%),
+    radial-gradient(140% 110% at 50% 40%, transparent 58%, rgba(4, 6, 18, .5) 100%);
+}
+/* 星空两层：密的小星负责「闪」，疏的亮星负责「漂」，视差感来自两层速度差 */
+.wp-stars { position: absolute; inset: 0; }
+.wp-stars::before {
+  content: ""; position: absolute; inset: -10%;
+  background-image:
+    radial-gradient(1.2px 1.2px at 22px 34px, rgba(255,255,255,.9), transparent 100%),
+    radial-gradient(1px 1px at 120px 88px, rgba(255,255,255,.65), transparent 100%),
+    radial-gradient(1.6px 1.6px at 210px 40px, rgba(255,244,214,.85), transparent 100%),
+    radial-gradient(1px 1px at 66px 140px, rgba(214,226,255,.7), transparent 100%),
+    radial-gradient(1.2px 1.2px at 170px 178px, rgba(255,255,255,.5), transparent 100%);
+  background-size: 240px 220px;
+  animation: wp-twinkle 6.5s ease-in-out infinite;
+}
+.wp-stars::after {
+  content: ""; position: absolute; inset: -12%;
+  background-image:
+    radial-gradient(2.2px 2.2px at 48px 26px, rgba(255,255,255,.95), transparent 100%),
+    radial-gradient(1.8px 1.8px at 188px 120px, rgba(214,226,255,.85), transparent 100%),
+    radial-gradient(2.6px 2.6px at 128px 196px, rgba(255,240,200,.9), transparent 100%),
+    radial-gradient(1.6px 1.6px at 240px 64px, rgba(255,255,255,.7), transparent 100%);
+  background-size: 320px 300px;
+  animation: wp-star-drift 92s linear infinite;
+}
+/* 流星：五道光痕各有大小、俯角、路线和节奏，整体是稀疏流星雨而不是复制粘贴。
+   光痕从亮头向左下拖尾；亮度、光晕和头部都烘进渐变/阴影里，动画仍然只碰
+   translate/opacity，避免 filter 在每一帧重采样整条光痕。 */
+.wp-meteors { position: absolute; inset: 0; }
+.wp-meteors .wp-meteor {
+  position: absolute;
+  top: var(--meteor-top);
+  left: var(--meteor-left);
+  width: var(--meteor-length, 260px);
+  height: var(--meteor-thickness, 2.5px);
+  border-radius: var(--radius-full);
+  background: linear-gradient(90deg,
+    #fff 0%,
+    rgba(255, 252, 242, .98) 6%,
+    rgba(224, 237, 255, .72) 30%,
+    rgba(156, 190, 255, .28) 66%,
+    rgba(123, 157, 255, 0) 100%);
+  box-shadow:
+    0 0 4px rgba(225, 239, 255, .6),
+    0 0 14px rgba(142, 179, 255, .34);
+  transform: rotate(var(--meteor-angle, -32deg)) scale(var(--meteor-scale, 1));
+  transform-origin: 0 50%;
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: wp-meteor var(--meteor-duration, 11s) linear var(--meteor-delay, 0s) infinite;
+}
+/* 亮头：在光痕前端补一颗小而锐的白点，和长尾形成真正的流星方向感 */
+.wp-meteors .wp-meteor::before {
+  content: "";
+  position: absolute;
+  left: -2px; top: 50%;
+  width: var(--meteor-head, 6px); height: var(--meteor-head, 6px);
+  border-radius: 50%;
+  background: #fff;
+  box-shadow:
+    0 0 4px 1px rgba(255, 255, 255, .95),
+    0 0 12px 3px rgba(180, 207, 255, .7);
+  transform: translate(-50%, -50%);
 }
 
-/* ── 和纸：暖纸 + 墨蓝，标题换宋体，气泡当信纸 ── */
-:root[data-theme-style="paper"][data-theme="light"] {
-  --shadow-tint: 70 55 30;
-  --bg:            #f3ede1;
-  --bg-elevated:   #fffdf8;
-  --bg-sunken:     #ece2d0;
-  --bg-hover:      #e8ddc9;
-  --border:        #e0d4be;
-  --border-strong: #a99a80;
-  --text:          #2b241b;
-  --text-muted:    #5f5645;
-  --text-subtle:   #675d49;   /* 原 #756a56 压强调浅底 4.41、压悬停面 4.32 */
-  --accent:        #2f5ea8;
-  --accent-hover:  #274e8d;
-  --accent-soft:   #e5eaf5;
-  --accent-text:   #f4f7fd;
-  --accent-ink:    #2b538f;
-  --accent-glow:   rgba(47, 94, 168, .16);
-  --success: #47694f; --success-soft: #e9efe6;
-  --warning: #7d6231; --warning-soft: #f6eedc;
-  --danger:  #a83a4e; --danger-soft:  #f7e8eb;
-  --bubble-mine:       #2f5ea8;
-  --bubble-mine-text:  #f4f7fd;
-  --bubble-theirs:     #fffdf8;
-  --bubble-theirs-text:#2b241b;
-  --bubble-shadow: 0 1px 2px rgb(var(--shadow-tint) / .07), 0 2px 8px rgb(var(--shadow-tint) / .05);
-  --chat-scene: radial-gradient(ellipse 70% 55% at 88% -4%, rgba(47, 94, 168, .06), transparent 62%),
-                radial-gradient(ellipse 60% 50% at 8% 104%, rgba(180, 150, 100, .08), transparent 58%);
-  --ava-mine: #7b6248; --ava-mine-text: #faf5ec;
-  --ava-c1: #2f5ea8; --ava-c2: #3f6f5a; --ava-c3: #6b5a89;
-  --ava-c4: #8a5a4a; --ava-c5: #4a6b7a; --ava-c6: #7a6a2f;
-  --msg-time:      #6b5f47;
-  --msg-time-mine: #dfe7f5;
-  --bubble-proactive:  #f8f0dd;
-  --bubble-proactive-border: #e6d8bb;
-  --overlay-alpha: rgba(40, 30, 18, .45);
-  --overlay-scrim: rgba(40, 30, 18, .55);
-  --font-display: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+.wp-meteors .wp-meteor:nth-child(1) {
+  --meteor-top: 8%; --meteor-left: 30%;
+  --meteor-length: 320px; --meteor-thickness: 3px; --meteor-head: 7px;
+  --meteor-angle: -31deg; --meteor-travel-x: -58vw; --meteor-travel-y: 35vh;
+  --meteor-duration: 8.4s; --meteor-delay: .7s;
 }
-:root[data-theme-style="paper"][data-theme="dark"] {
-  --shadow-tint: 0 0 0;
-  --bg:            #17140f;
-  --bg-elevated:   #211c15;
-  --bg-sunken:     #100e0a;
-  --bg-hover:      #2a241b;
-  --border:        #362e22;
-  --border-strong: #5c4f3a;
-  --text:          #f0e9db;
-  --text-muted:    #b3a68e;
-  --text-subtle:   #9a8d76;
-  --accent:        #7fa3e0;
-  --accent-hover:  #93b3ea;
-  --accent-soft:   #1c2534;
-  --accent-text:   #0d1526;
-  --accent-ink:    #8fb0e6;
-  --accent-glow:   rgba(127, 163, 224, .22);
-  --success: #86ab86; --success-soft: #1a2118;
-  --warning: #d0a967; --warning-soft: #241f15;
-  --danger:  #dd8a94; --danger-soft:  #291a1e;
-  --bubble-mine:       #2f4f86;
-  --bubble-mine-text:  #eef3fb;
-  --bubble-theirs:     #241f18;
-  --bubble-theirs-text:#f0e9db;
-  --bubble-shadow: 0 1px 3px rgb(var(--shadow-tint) / .34), 0 0 0 1px rgba(255, 255, 255, .03);
-  --chat-scene: radial-gradient(ellipse 70% 55% at 88% -4%, rgba(127, 163, 224, .07), transparent 62%),
-                radial-gradient(ellipse 60% 50% at 8% 104%, rgba(180, 150, 100, .05), transparent 58%);
-  --ava-mine: #7a6244; --ava-mine-text: #f4efe4;
-  --edge-float: #5f574a;
-  --ava-c1: #7fa3e0; --ava-c2: #6fae95; --ava-c3: #a58fd0;
-  --ava-c4: #d08f7a; --ava-c5: #5f97a8; --ava-c6: #c0a85a;
-  --msg-time:      #b5a890;
-  --msg-time-mine: #dce6f6;
-  --bubble-proactive:  #221c13;
-  --bubble-proactive-border: #3d3320;
-  --overlay-alpha: rgba(0, 0, 0, .58);
-  --overlay-scrim: rgba(10, 7, 4, .70);
-  --font-display: "Noto Serif SC", "Songti SC", "STSong", "SimSun", serif;
+.wp-meteors .wp-meteor:nth-child(2) {
+  --meteor-top: 3%; --meteor-left: 68%;
+  --meteor-length: 220px; --meteor-thickness: 2px; --meteor-head: 5px;
+  --meteor-angle: -37deg; --meteor-travel-x: -48vw; --meteor-travel-y: 30vh;
+  --meteor-scale: .82; --meteor-duration: 13.2s; --meteor-delay: 4.1s;
+}
+.wp-meteors .wp-meteor:nth-child(3) {
+  --meteor-top: 24%; --meteor-left: 84%;
+  --meteor-length: 370px; --meteor-thickness: 3.5px; --meteor-head: 8px;
+  --meteor-angle: -28deg; --meteor-travel-x: -64vw; --meteor-travel-y: 32vh;
+  --meteor-scale: 1.08; --meteor-duration: 10.8s; --meteor-delay: 7.8s;
+}
+.wp-meteors .wp-meteor:nth-child(4) {
+  --meteor-top: 15%; --meteor-left: 52%;
+  --meteor-length: 180px; --meteor-thickness: 1.6px; --meteor-head: 4px;
+  --meteor-angle: -34deg; --meteor-travel-x: -40vw; --meteor-travel-y: 26vh;
+  --meteor-scale: .66; --meteor-duration: 6.6s; --meteor-delay: 2.8s;
+}
+.wp-meteors .wp-meteor:nth-child(5) {
+  --meteor-top: 37%; --meteor-left: 28%;
+  --meteor-length: 250px; --meteor-thickness: 2px; --meteor-head: 5px;
+  --meteor-angle: -26deg; --meteor-travel-x: -46vw; --meteor-travel-y: 27vh;
+  --meteor-scale: .9; --meteor-duration: 15.2s; --meteor-delay: 11.2s;
 }
 
-/* 主题可以换标题字（和纸用宋体）。没设 --font-display 的主题落到 inherit，等于不干预。 */
-.head h1, .head-row h1, #bar .who, .modal-title, .pf-name, .s-listhead .lt {
-  font-family: var(--font-display, inherit);
+@keyframes wp-meteor {
+  0%, 2% { translate: 0 0; opacity: 0; }
+  4%     { opacity: .95; }
+  11%    { translate: var(--meteor-travel-x, -46vw) var(--meteor-travel-y, 28vh); opacity: 0; }
+  100%   { translate: var(--meteor-travel-x, -46vw) var(--meteor-travel-y, 28vh); opacity: 0; }
 }
+
+@keyframes wp-drift {
+  from { transform: translate(-3%, -2.2%) rotate(0deg) scale(1); }
+  to   { transform: translate(3%, 2.2%) rotate(6deg) scale(1.06); }
+}
+/* 亮星层的视差漂移：极慢的平移 + 微小的呼吸，和密星层的闪烁拉开时间尺度 */
+@keyframes wp-star-drift {
+  0%   { translate: 0 0; opacity: .85; }
+  50%  { opacity: 1; }
+  100% { translate: -46px 30px; opacity: .85; }
+}
+@keyframes wp-twinkle {
+  0%, 100% { opacity: .55; } 50% { opacity: 1; }
+}
+
+/* 壁纸与玻璃的关系：透明度是壁纸模式的属性——半透明规则全部挂在 [data-glass="on"] 下，
+   而 data-glass 由 lib/wallpaper.ts 按壁纸开关自动挂摘（首帧由 index.html 引导脚本裁决）。 */
+:root[data-wallpaper] {
+  /* 壁纸取色只提供一个低饱和深色底座；没有取到色时用星空的蓝灰作为稳定兜底。 */
+  --wp-tint: hsl(250 12% 15%);
+  /* 壁纸会把任意明度的照片压到界面下面。沿用暗色主题的正文色，但把次级文字整体提亮：
+     半透明表面上的 12–13px 小字比实底卡片更怕对比度不足。 */
+  --text: #fbf8f3;
+  --text-muted: #d6cfc5;
+  --text-subtle: #bcb3a8;
+  --border: #453f38;
+  --border-strong: #665e54;
+}
+/* Rail 的图标/短标签直接压在照片上，次级文字色在浅色壁纸上仍偏薄；壁纸模式提一档。 */
+:root[data-wallpaper] #rail .rbtn { color: var(--text-muted); }
+:root[data-wallpaper] #rail .rbtn.active { color: var(--accent-ink); }
+html[data-glass="on"] .view { background: color-mix(in srgb, var(--wp-tint) var(--wp-glass-wash, 50%), transparent); }
+html[data-glass="on"] #view-chat { background: var(--chat-scene), color-mix(in srgb, var(--wp-tint) var(--wp-glass-wash, 50%), transparent); }
+html[data-glass="on"] #rail,
+html[data-glass="on"] #side {
+  background: color-mix(in srgb, var(--wp-tint) var(--wp-glass-chrome, 40%), transparent);
+}
+/* 会话顶栏在 .view 里面，底下已经有一层 wash。这里不再叠第二层深色底，
+   只保留模糊与压暗，让最终材质和侧栏玻璃一致。 */
+html[data-glass="on"] #bar { background: transparent; }
+/* 手机端「消息」标签的整屏列表把 #side 底色覆写成 --bg（见上面的媒体查询），跟着让 */
+html[data-glass="on"] #shell.chat-list-on #side { background: color-mix(in srgb, var(--wp-tint) var(--wp-glass-wash, 50%), transparent); }
+html[data-glass="on"] .card,
+html[data-glass="on"] .list-card,
+html[data-glass="on"] .settings-panel,
+html[data-glass="on"] .settings-hub-list { background: color-mix(in srgb, var(--wp-tint) var(--wp-glass-card, 45%), transparent); }
+
+/* 设置页的标题和左侧分类原来直接躺在壁纸上：面板再清楚，页头与导航仍会失去可读性。
+   这里把它们也做成两块轻度玻璃，而不是给正文加不稳定的文字阴影。 */
+html[data-glass="on"] #settings .head-row,
+html[data-glass="on"] .settings-nav {
+  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--wp-tint) var(--wp-glass-chrome, 45%), transparent);
+  box-shadow: var(--shadow-xs);
+}
+html[data-glass="on"] #settings .head-row {
+  padding: 16px 18px;
+  border-radius: 16px;
+}
+html[data-glass="on"] .settings-nav {
+  padding: 12px;
+  border-radius: 16px;
+}
+
+/* 玻璃拟态：模糊是玻璃的主要质感，下重手——Rail/侧栏 36px，卡片 22px。
+   卡片以前不敢开 blur 是怕「一屏几十张卡滚动时每帧重采样」，实测 WebView2
+   上几十个中小面积 backdrop 层可接受（真正贵的是整屏滚动容器开模糊，仍然不开）。
+   不透明度由界面透明度滑块驱动（--wp-glass-*，见 wallpaper.ts 的换算），
+   各档都有保底——玻璃靠 blur 提供对比度，底太透时文字会压在高频壁纹上救不回来。 */
+html[data-glass="on"] #rail,
+html[data-glass="on"] #side {
+  -webkit-backdrop-filter: blur(36px) saturate(1.4);
+  backdrop-filter: blur(36px) saturate(1.4);
+}
+html[data-glass="on"] #bar {
+  -webkit-backdrop-filter: blur(36px) saturate(1.4);
+  backdrop-filter: blur(36px) saturate(1.4);
+}
+html[data-glass="on"] .card,
+html[data-glass="on"] .list-card,
+html[data-glass="on"] .settings-panel,
+html[data-glass="on"] .settings-hub-list {
+  -webkit-backdrop-filter: blur(22px) saturate(1.25);
+  backdrop-filter: blur(22px) saturate(1.25);
+}
+html[data-glass="on"] #settings .head-row,
+html[data-glass="on"] .settings-nav {
+  -webkit-backdrop-filter: blur(20px) saturate(1.25);
+  backdrop-filter: blur(20px) saturate(1.25);
+}
+html[data-glass="on"] .modal-card {
+  background: color-mix(in srgb, var(--wp-tint) var(--wp-glass-modal, 72%), transparent);
+  -webkit-backdrop-filter: blur(28px) saturate(1.25);
+  backdrop-filter: blur(28px) saturate(1.25);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* 壁纸动效不受系统「减少动态」约束：它是用户显式选中的内容（和视频壁纸自动播放同一权益），
+     不是界面装饰——在这台机器上系统关过动画，用户看到的星空就永远是死图。
+     界面自身的动效依旧全部尊重该偏好（见各组件的 reduce 块）。 */
+}
+
+/* 页面不可见（lib/wallpaper.ts 挂 html[data-wp-paused]）：壁纸动效统一停表。
+   不用 display:none——恢复时要无级接回，play-state 比 reset 便宜也不闪帧。 */
+html[data-wp-paused] #wp-layer[data-wp]::before,
+html[data-wp-paused] .wp-stars::before,
+html[data-wp-paused] .wp-stars::after,
+html[data-wp-paused] .wp-meteors .wp-meteor { animation-play-state: paused; }
+
+/* ── 桌面无边框窗口的页内标题栏（components/Titlebar.tsx）────────
+   只在 html.native-frame（桌面壳且原生装饰已关）生效。整条透明：
+   壁纸从底下透出来，只有三个按钮浮在右上角。z 档压过 --z-photo(120)，
+   弹窗开着也得能关窗口——这是原生标题栏一直有的能力。 */
+html.native-frame { --frame-h: 36px; }
+html.native-frame #shell {
+  height: calc(100dvh - var(--frame-h, 36px) - var(--kb, 0px));
+  margin-top: var(--frame-h, 36px);
+}
+.titlebar {
+  position: fixed; top: 0; left: 0; right: 0;
+  height: var(--frame-h, 36px); z-index: 200;
+  display: flex; align-items: center;
+  user-select: none;
+}
+.titlebar-btns { margin-left: auto; display: flex; height: 100%; }
+.titlebar-btn {
+  width: 46px; height: 100%;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-muted);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.titlebar-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+.titlebar-btn:hover { background: var(--bg-hover); color: var(--text); }
+.titlebar-btn:active { background: color-mix(in srgb, var(--bg-hover) 70%, var(--border)); }
+.titlebar-close:hover { background: #c42b1c; color: #fff; }
+.titlebar-close:active { background: #b02618; color: #fff; }

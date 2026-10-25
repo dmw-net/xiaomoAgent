@@ -203,7 +203,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   };
 
   return (
-    <div className="card card-pad pf-model-card wx-card">
+    <div className="card card-pad pf-model-card wx-card qq-card">
       <div className="wx-head">
         <div>
           <div className="pf-set-title">QQ 连接</div>

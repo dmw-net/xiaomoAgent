@@ -1,9 +1,19 @@
 import { cq, deleteJson, getJson, postJson, putJson } from "./client";
-import type { ContextUsage, MessageRow, TurnRow } from "../types";
+import type { ContextUsage, MessageRow, ThinkingControl, ThinkingLevelId, TurnRow } from "../types";
 
 /** 上下文占用（当前联系人）：打开浮层时拉一次。 */
 export function fetchContextUsage(cid?: string): Promise<ContextUsage> {
   return getJson(cq("/api/context/usage", cid));
+}
+
+/** 当前联系人的模型思考控制面：输入区的强度快捷开关用。 */
+export function fetchThinkingControl(cid?: string): Promise<ThinkingControl> {
+  return getJson(cq("/api/model/thinking", cid));
+}
+
+/** 切换当前模型的思考强度；"off" 关思考（选档位会自动把模式拨回开）。 */
+export function setThinkingLevel(level: ThinkingLevelId | "off", cid?: string): Promise<ThinkingControl> {
+  return postJson(cq("/api/model/thinking", cid), { level });
 }
 
 /** 增量拉取：只要 since 之后的新消息。 */

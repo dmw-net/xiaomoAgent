@@ -28,6 +28,17 @@ function when(ts: number): string {
   return ts > Date.now() ? whenText(ts) : relTime(ts);
 }
 
+/** 把原始错误翻成用户先能理解的一句话；完整技术信息留在可展开区。 */
+function friendlyModelError(code?: string, message?: string): string {
+  const text = `${code ?? ""} ${message ?? ""}`.toLowerCase();
+  if (/timeout|timed out|超时/.test(text)) return "模型响应超时";
+  if (/401|403|unauthorized|forbidden|api.?key|鉴权|密钥/.test(text)) return "模型密钥无效或没有权限";
+  if (/429|rate.?limit|quota|额度|限流/.test(text)) return "模型调用被限流或额度不足";
+  if (/non.?json|json|parse|格式/.test(text)) return "模型返回格式异常";
+  if (/network|fetch|econn|dns|连接/.test(text)) return "连接不上模型服务";
+  return "模型调用失败";
+}
+
 /** 卡片：一个标题 + 每行自己的灯。标题上的灯取各行里「会进提醒条」的那些，最差的那个。 */
 function Card({ title, rows, goto }: {
   title: string;
@@ -51,7 +62,7 @@ function Card({ title, rows, goto }: {
 
 const CAP_LABEL: Record<CapabilityName, string> = {
   imageVision: "图片理解", speechToText: "语音识别", textToSpeech: "语音合成", memoryExtract: "记忆整理",
-  imageGeneration: "图像生成",
+  imageGeneration: "图像生成", embedding: "向量化记忆",
 };
 /** 未就绪时分别意味着什么：只说「未配置」等于让人去猜少了什么功能。 */
 const CAP_OFF: Record<CapabilityName, string> = {
@@ -60,6 +71,7 @@ const CAP_OFF: Record<CapabilityName, string> = {
   textToSpeech: "未配置：回复没有朗读按钮",
   memoryExtract: "用的那个模型没配好：对话可能记不成长期记忆",
   imageGeneration: "未配置：画不出图（开关开着也没用）",
+  embedding: "未配置：记忆召回退回纯关键词（不影响其它功能）",
 };
 const CHANNEL_LABEL: Record<string, string> = { web: "网页", wechat: "微信" };
 
@@ -110,9 +122,12 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
     ...(d.lastModelError ? [{
       led: (errRecent ? "warn" : "ok") as Led, k: "最近失败",
       silent: !errRecent,
-      note: errRecent ? `最近一次调用失败：${d.lastModelError.code || "未知"}` : undefined,
-      v: <>{when(Date.parse(d.lastModelError.at ?? ""))} · <code>{d.lastModelError.code || "未知"}</code>{" "}
-        {String(d.lastModelError.message || "").slice(0, 70)}</>,
+      note: errRecent ? `最近一次调用失败：${friendlyModelError(d.lastModelError.code, d.lastModelError.message)}` : undefined,
+      v: <>{when(Date.parse(d.lastModelError.at ?? ""))} · {friendlyModelError(d.lastModelError.code, d.lastModelError.message)}</>,
+      fix: <details className="error-detail">
+        <summary>查看技术详情</summary>
+        <pre>{d.lastModelError.code || "UNKNOWN"}{d.lastModelError.message ? `\n${d.lastModelError.message}` : ""}</pre>
+      </details>,
     } as Row] : []),
   ];
 
@@ -220,28 +235,28 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   const alerts = cards
     .map((c) => ({ title: c.title, rows: c.rows.filter((r) => !r.silent && r.led !== "ok" && r.note), goto: c.goto }))
     .filter((c) => c.rows.length > 0);
+  const summaryLed = alerts.reduce<Led>((acc, a) => worse(acc, a.rows.reduce<Led>((x, r) => worse(x, r.led), "ok")), "ok");
+  const summaryTitle = alerts.length === 0 ? "一切正常" : `${alerts.length} 项需要处理`;
+  const summaryText = alerts.length === 0
+    ? "模型、能力和消息通道都已就绪，暂时没有需要你处理的事情。"
+    : alerts.flatMap((a) => a.rows.map((r) => r.note)).filter(Boolean).join("；");
 
   return (
     <div className="section" {...panel}>
       <div className="ov-head">
-        <h2>状态与配置</h2>
+        <h2>运行概览</h2>
         <div className="actions">{actions}</div>
       </div>
       <div className="ov-desc">这套配置整体跑得怎么样。想改就点各卡片右上角的「去设置」；某位联系人的主动性、记忆和微信绑定在联系人的资料页里。</div>
-      {notice && <div className="ov-note bad" role="status">{notice}</div>}
-      {alerts.length > 0 && (
-        <div className="ov-alerts" role="status">
-          <div className="ov-alerts-h">{alerts.length} 项需要你留意</div>
-          {alerts.map((a) => (
-            <div key={a.title} className="ov-alert">
-              <span className={"led " + a.rows.reduce<Led>((acc, r) => worse(acc, r.led), "ok")} />
-              <b>{a.title}</b>
-              <span className="d">{a.rows.map((r) => r.note).join("；")}</span>
-              {a.goto && <button type="button" className="ov-goto" onClick={a.goto.on}>{a.goto.label}</button>}
-            </div>
-          ))}
+      <div className={`ov-summary ${summaryLed}`}>
+        <span className="ov-summary-dot" aria-hidden="true" />
+        <div className="ov-summary-copy">
+          <b>{summaryTitle}</b>
+          <span>{summaryText}</span>
         </div>
-      )}
+      </div>
+      {notice && <div className="ov-note bad" role="status">{notice}</div>}
+
       <div className="ov-grid">
         {cards.map((c) => <Card key={c.title} title={c.title} rows={c.rows} goto={c.goto} />)}
       </div>

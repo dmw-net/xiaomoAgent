@@ -7,7 +7,7 @@ import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
 import { CAPS_OFF, cachedCaps, loadCaps, type Caps } from "../../lib/capsStore";
 import OnboardingChecklist from "../onboarding/Checklist";
 import { exportPersonaMd } from "../../lib/persona-doc";
-import { dayLabel, dayOf, clockOf } from "../../lib/datetime";
+import { dayLabel, dayTimeLabel, dayOf, clockOf } from "../../lib/datetime";
 import { fmtTokens } from "../../lib/format";
 import { profilePicks } from "../../lib/providers";
 import { blobToDataUrl, fileToImageBlob } from "../../lib/image";
@@ -1339,7 +1339,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         // 工具卡也算"一天里的话"：跨天落在工具卡上时同样要出日分隔，
         // 否则前一天的回复和今天的第一句之间什么标记都没有。
         const dayChanged = lastDay === null || dayOf(m.created_at) !== lastDay;
-        if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: dayLabel(m.created_at) });
+        if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: clockPref === "auto" ? dayTimeLabel(m.created_at) : dayLabel(m.created_at) });
         out.push({ t: "tool", m });
         lastDay = dayOf(m.created_at);
         lastAt = m.created_at;
@@ -1347,8 +1347,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         continue;
       }
       const dayChanged = lastDay === null || dayOf(m.created_at) !== lastDay;
-      if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: dayLabel(m.created_at) });
-      // 时间进气泡右下角：每条显示=全带；智能=隔得久才带；极简=全无
+      if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: clockPref === "auto" ? dayTimeLabel(m.created_at) : dayLabel(m.created_at) });
+      // 智能模式的当天首条时间放在日分隔里；气泡右下角只在隔得久时补带。每条显示=全带；极简=全无
       const showClock = clockPref === "always"
         || (clockPref === "auto" && !dayChanged && m.created_at - lastAt > PROACTIVE_GAP_MS);
       const gap = dayChanged || lastRole !== m.role || m.created_at - lastAt >= PROACTIVE_GAP_MS;

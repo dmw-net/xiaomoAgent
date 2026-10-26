@@ -24,7 +24,7 @@ const MODES: Array<{ key: ThemeMode; label: string }> = [
 const ACCENTS = ACCENT_PRESETS;
 
 const CLOCKS: Array<{ key: ClockPref; label: string; hint: string }> = [
-  { key: "auto", label: "智能", hint: "换天显示日期，隔得久在气泡右下角标一次时间" },
+  { key: "auto", label: "智能", hint: "换天显示日期与当天首条时间，隔得久再在气泡右下角标一次时间" },
   { key: "always", label: "每条显示", hint: "每条气泡右下角都带时间" },
   { key: "off", label: "极简隐藏", hint: "不显示任何日期/时间" },
 ];

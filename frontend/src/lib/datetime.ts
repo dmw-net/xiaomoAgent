@@ -26,6 +26,11 @@ export function clockOf(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
+/** 日分隔条带首条消息的具体时刻：今天 11:30 / 10 月 18 日 周日 11:30。 */
+export function dayTimeLabel(ts: number): string {
+  return `${dayLabel(ts)} ${clockOf(ts)}`;
+}
+
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前。 */
 export function relTime(ts: number): string {
   const diff = Date.now() - ts;

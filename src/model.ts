@@ -62,6 +62,11 @@ export type CallOptions = {
    */
   onReasoning?: (text: string, reasoningTokens: number) => void;
   /**
+   * 流式思考出口：每来一段推理就交出**本次调用的累计推理**，供处理单草稿位实时落库。
+   * 与 onReasoning 的终态回调并行存在：前者让 UI 在第一个 token 就能看见，后者负责最终持久化。
+   */
+  onReasoningDelta?: (accumulated: string) => void;
+  /**
    * 正文草稿出口：流式下每来一段就交一次**累计正文**（不是增量），调用方自己节流。
    * 传了它才会发 `stream: true` —— 抽取/主动性/ping/视觉这些"要的是结构而不是过程"的
    * 调用不传，行为与今天一字不差。界面那一侧拿它当"她正在写的这一句"，见 agent.ts 的 draftWriter。
@@ -80,6 +85,34 @@ function wireOuterSignal(controller: AbortController, options: CallOptions): () 
   if (outer.aborted) controller.abort();
   else outer.addEventListener("abort", onAbort, { once: true });
   return () => outer.removeEventListener("abort", onAbort);
+}
+
+/**
+ * 可重臂的请求超时器。非流式请求从发起到收完整包一直计时；流式请求则在
+ * 收到响应头后改为「多久没收到有效增量」的静默超时，每来一段正文/思考/工具参数
+ * 就重新计时。这样连续吐字超过 90 秒也不会被误杀，但服务端只发心跳、不产出内容时仍会失败。
+ */
+function createAbortClock(controller: AbortController, timeoutMs: number): {
+  arm: () => void;
+  clear: () => void;
+  timedOut: () => boolean;
+} {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let expired = false;
+  const clear = (): void => {
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      timer = undefined;
+    }
+  };
+  const arm = (): void => {
+    clear();
+    timer = setTimeout(() => {
+      expired = true;
+      controller.abort();
+    }, timeoutMs);
+  };
+  return { arm, clear, timedOut: () => expired };
 }
 
 export type ModelErrorCode =
@@ -303,9 +336,13 @@ export async function callModel(messages: ChatMessage[], options: CallOptions = 
  * 放在 extraBody 合并之前：手工填的「额外参数」仍能覆盖它。
  */
 export function applyThinkingParams(body: Record<string, unknown>, settings: ModelSettings): void {
-  // 只认显式的 on/off。老档里没有 thinkingMode 这个字段（读出来是 undefined），
+  // 只认显式的 auto/on/off。老档里没有 thinkingMode 这个字段（读出来是 undefined），
   // 不能顺手当成"关"——那会让所有模板系档位一夜之间不再思考。
-  const mode = settings.thinkingMode === "on" || settings.thinkingMode === "off" ? settings.thinkingMode : "";
+  const mode = settings.thinkingMode === "auto" || settings.thinkingMode === "on" || settings.thinkingMode === "off"
+    ? settings.thinkingMode
+    : "";
+  // 跟随模型：不发任何思考字段，把决定权交给服务商。
+  if (mode === "auto") return;
   if (settings.thinkingParam === "templateKw") {
     if (mode === "") return;
     const prev = body.chat_template_kwargs;
@@ -415,6 +452,8 @@ async function readChatStream(
   response: Response,
   onContent: ((accumulated: string) => void) | undefined,
   holdMs: number,
+  onProgress?: () => void,
+  onReasoning?: (accumulated: string) => void,
 ): Promise<{ content: string; reasoning: string; toolCalls: Array<{ id: string; name: string; args: string }> | null; usage: ChatUsage | null; raw: string }> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("流式响应没有可读的响应体");
@@ -440,7 +479,14 @@ async function readChatStream(
     const delta = frame.choices?.[0]?.delta;
     if (!delta) return;
     const rc = delta.reasoning_content ?? delta.reasoning;
-    if (typeof rc === "string" && rc !== "") reasoning += rc;
+    const hasReasoning = typeof rc === "string" && rc !== "";
+    const hasContent = typeof delta.content === "string" && delta.content !== "";
+    const hasToolCalls = Array.isArray(delta.tool_calls) && delta.tool_calls.length > 0;
+    if (hasReasoning || hasContent || hasToolCalls) onProgress?.();
+    if (hasReasoning) {
+      reasoning += rc;
+      onReasoning?.(reasoning);
+    }
     if (Array.isArray(delta.tool_calls)) {
       sawToolCallDelta = true;
       delta.tool_calls.forEach((tc, position) => {
@@ -455,8 +501,8 @@ async function readChatStream(
         calls.set(index, slot);
       });
     }
-    if (typeof delta.content === "string" && delta.content !== "") {
-      content += delta.content;
+    if (hasContent) {
+      content += String(delta.content);
       if (holding && holdFrom === 0) holdFrom = Date.now();
       if (!sawToolCallDelta && !holding) onContent?.(content);
     }
@@ -539,11 +585,13 @@ async function attempt(
   const settings = callSettings(options);
   const url = endpoint(settings);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const abortClock = createAbortClock(controller, settings.timeoutMs);
+  abortClock.arm();
   const unwire = wireOuterSignal(controller, options);
   const started = Date.now();
   const purpose = options.purpose ?? "chat";
   const attr = attribution(options);
+  let streamStarted = false;
   // 只有要草稿的调用才问服务商要流：抽取/主动性/ping/视觉不传 onDelta，一个字段都不多发。
   const streaming = options.onDelta !== undefined && !streamUnsupportedFor(settings);
 
@@ -581,8 +629,11 @@ async function attempt(
 
     // 只有服务端真给了 event-stream 才走流式那一支。
     // 这一支的请求体里没有 tools，所以这一轮必然产出正文，草稿不用等观察窗（holdMs=0）。
-    const streamed = streaming && response.ok && isEventStream(response)
-      ? await readChatStream(response, options.onDelta, 0)
+    // 响应头到了就从「整包总时限」切换成「块间静默时限」；之后每收到一块都会重臂。
+    streamStarted = streaming && response.ok && isEventStream(response);
+    if (streamStarted) abortClock.arm();
+    const streamed = streamStarted
+      ? await readChatStream(response, options.onDelta, 0, () => abortClock.arm(), options.onReasoningDelta)
       : null;
     const elapsedMs = Date.now() - started;
     const text = streamed ? streamed.raw : await response.text();
@@ -691,7 +742,7 @@ async function attempt(
     const elapsedMs = Date.now() - started;
     const causeDetail = causeChain(error);
     const aborted = isAbort(error);
-    const timedOut = aborted && elapsedMs >= settings.timeoutMs - 500;
+    const timedOut = aborted && abortClock.timedOut();
     const code: ModelErrorCode = aborted
       ? "TIMEOUT"
       : looksLikeNetworkError(error)
@@ -701,7 +752,9 @@ async function attempt(
     const modelError = new ModelError({
       code,
       message: timedOut
-        ? `请求超时（${elapsedMs}ms，上限 ${settings.timeoutMs}ms）`
+        ? streamStarted
+          ? `流式响应静默超时（${settings.timeoutMs}ms 没有收到新数据）`
+          : `请求超时（${elapsedMs}ms，上限 ${settings.timeoutMs}ms）`
         : aborted
           ? `请求被中断（${elapsedMs}ms）`
           : `请求失败：${error instanceof Error ? error.message : String(error)}`,
@@ -726,7 +779,7 @@ async function attempt(
     });
     throw modelError;
   } finally {
-    clearTimeout(timer);
+    abortClock.clear();
     unwire();
   }
 }
@@ -819,11 +872,13 @@ async function callModelWithToolsInner(
 
   const url = endpoint(settings);
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), settings.timeoutMs);
+  const abortClock = createAbortClock(controller, settings.timeoutMs);
+  abortClock.arm();
   const unwire = wireOuterSignal(controller, options);
   const started = Date.now();
   const purpose = options.purpose ?? "chat";
   const attr = attribution(options);
+  let streamStarted = false;
   const streaming = options.onDelta !== undefined && !streamUnsupportedFor(settings);
 
   const body: Record<string, unknown> = {
@@ -851,8 +906,11 @@ async function callModelWithToolsInner(
     });
     // 与 attempt 同一套：帧先拼成与非流式同形的报文，工具调用聚合与日志都只有一份代码。
     // 这一支带 tools，一轮可能是"正文 + 工具调用"，所以给草稿 300ms 观察窗（见 readChatStream）。
-    const streamed = streaming && response.ok && isEventStream(response)
-      ? await readChatStream(response, options.onDelta, 300)
+    // 流式下同样按「块间静默」计时，不限制一整轮回答的总时长。
+    streamStarted = streaming && response.ok && isEventStream(response);
+    if (streamStarted) abortClock.arm();
+    const streamed = streamStarted
+      ? await readChatStream(response, options.onDelta, 300, () => abortClock.arm(), options.onReasoningDelta)
       : null;
     const elapsedMs = Date.now() - started;
     const text = streamed ? streamed.raw : await response.text();
@@ -926,9 +984,12 @@ async function callModelWithToolsInner(
   } catch (error) {
     if (error instanceof ModelError) throw error;
     const elapsedMs = Date.now() - started;
+    const timedOut = isAbort(error) && abortClock.timedOut();
     const modelError = new ModelError({
       code: isAbort(error) ? "TIMEOUT" : looksLikeNetworkError(error) ? "NETWORK" : "UNKNOWN",
-      message: `工具调用请求失败：${error instanceof Error ? error.message : String(error)}`,
+      message: timedOut && streamStarted
+        ? `流式响应静默超时（${settings.timeoutMs}ms 没有收到新数据）`
+        : `工具调用请求失败：${error instanceof Error ? error.message : String(error)}`,
       elapsedMs,
       url,
       model: settings.name,
@@ -936,7 +997,7 @@ async function callModelWithToolsInner(
     logModelCall({ turnId: options.turnId, purpose, ok: false, cancelled: isAbort(error), code: modelError.code, model: settings.name, url, elapsedMs, message: modelError.message, requestBody: body, contactId: attr.contactId, profileId: attr.profileId });
     throw modelError;
   } finally {
-    clearTimeout(timer);
+    abortClock.clear();
     unwire();
   }
 }

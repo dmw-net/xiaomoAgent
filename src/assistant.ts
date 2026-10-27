@@ -122,13 +122,14 @@ function removePending(id: string): PendingAction | null {
  * 而不是继续往下编排已经没依据的步骤。
  */
 function guardDangerous(
-  tool: string, args: Record<string, unknown>, context: { contactId: string },
+  tool: string, args: Record<string, unknown>, context: { contactId: string; assistantPermission?: AssistantPermission },
   title: string, detail: string, run: () => unknown,
 ): unknown {
-  const tier = assistantPermission();
+  // 这一轮启动时的权限快照优先：用户切档后不该让在飞的一轮半路改规则。
+  const tier = context.assistantPermission ?? assistantPermission();
   if (tier === "auto") return run();
   if (tier === "readonly") {
-    return { ok: false, error: "当前助手权限档位为只读，不能改配置。用户可以在 设置 → 技能与工具 里调整档位。" };
+    return { ok: false, error: "当前助手权限档位为只读，不能改配置。用户可以在设置助手的输入区下方切换权限。" };
   }
   const token = typeof args.__confirmActionId === "string" ? args.__confirmActionId : "";
   if (token !== "") {
@@ -814,7 +815,7 @@ export const ASSISTANT_TOOLS: ToolDef[] = [
 ];
 
 /** 助手的系统提示词：身份 + 纪律 + 每轮注入的实时状态。 */
-export function buildAssistantSystemPrompt(): string {
+export function buildAssistantSystemPrompt(permission: AssistantPermission = assistantPermission()): string {
   const s = statusSnapshot();
   const skills = skillCatalogSection();
   return [
@@ -849,11 +850,11 @@ export function buildAssistantSystemPrompt(): string {
       "替用户写清单时密钥放 headers、绝不拼进 URL；" +
       "set_script_gate 开启前必须把「JS 会在本机执行、模型可决定传入参数」这条风险讲明白并征得同意。",
     // 档位纪律按当前档注入，说的永远是此刻真成立的规则。
-    ...(assistantPermission() === "confirm"
+    ...(permission === "confirm"
       ? ["- 当前是「变更前确认」档：删除扩展、导入扩展、开启 JS 执行许可这类不可逆操作会自动弹出确认卡片，" +
          "你发起一次后停下等用户点击即可——卡片的结果会作为新消息回到对话里；不要重复发起，也不要用口头追问代替确认。"]
       : []),
-    ...(assistantPermission() === "readonly"
+    ...(permission === "readonly"
       ? ["- 当前是「只读」档：你没有任何改配置的工具。回答配置问题、给出界面操作路径即可，不要承诺替用户改。"]
       : []),
     ...(skills === "" ? [] : [skills]),

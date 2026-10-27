@@ -14,6 +14,7 @@ import { modelConfig, modelReadyNow, personaConfig } from "./settings.ts";
 import { db } from "./db.ts";
 import { applyRecap, getContact, pronounOf } from "./contacts.ts";
 import { ownerPronoun } from "./persona.ts";
+import { getConversation, updateConversationSummary } from "./conversations.ts";
 
 /** 攒够这么多条还没折叠的旧消息才刷一次：太少不值得一次模型调用。 */
 const RECAP_MIN_PENDING = 8;
@@ -24,10 +25,11 @@ const RECAP_BATCH = 40;
 /** 梗概正文的字数硬顶（提示词里也这么要求，落库再兜一次）。 */
 const RECAP_CHARS = 200;
 
-type RecapRow = { id: number; role: string; text: string };
+type RecapRow = { id: number; role: string; text: string; sender_name?: string | null };
 
 /** 正在刷梗概的联系人（同一联系人同时只跑一份，与整理同理）。 */
 const inFlight = new Set<string>();
+const conversationInFlight = new Set<string>();
 
 /**
  * 窗口左边界之外、且还没折叠进梗概的消息。
@@ -64,8 +66,56 @@ export function buildRecapInput(
   rows: RecapRow[],
   ownerPron: string,
 ): string {
-  const lines = rows.map((row) => `${row.role === "user" ? ownerPron : "我"}：${row.text}`).join("\n");
+  const lines = rows.map((row) => `${row.role === "user" ? (row.sender_name || ownerPron) : "我"}：${row.text}`).join("\n");
   return `已有梗概：${previous.trim() === "" ? "（还没有）" : previous.trim()}\n\n新丢掉的对话：\n${lines}`;
+}
+
+function pendingConversationRows(conversationId: string, oldestKeptId: number): RecapRow[] {
+  const conv = getConversation(conversationId);
+  const upto = conv?.summary_upto ?? 0;
+  return db.prepare(
+    `SELECT id, role, text, sender_name FROM messages
+     WHERE conversation_id = ? AND superseded_at IS NULL AND kind != 'tool'
+       AND id > ? AND id < ?
+     ORDER BY id ASC LIMIT ?`,
+  ).all(conversationId, upto, oldestKeptId, RECAP_BATCH) as unknown as RecapRow[];
+}
+
+/** Conversation 级滚动摘要：群聊尤其需要，私聊也可用；失败不阻断回复。 */
+export async function maybeRefreshConversationSummary(
+  conversationId: string,
+  oldestKeptId: number,
+): Promise<void> {
+  const conv = getConversation(conversationId);
+  if (!conv || !conv.enabled || oldestKeptId <= 0 || conversationInFlight.has(conversationId)) return;
+  const contact = getContact(conv.contact_id);
+  if (!contact || !contact.features.recap) return;
+  const effective = contactModelSettings(conv.contact_id) ?? modelConfig();
+  if (!modelReadyNow(effective)) return;
+  conversationInFlight.add(conversationId);
+  try {
+    const rows = pendingConversationRows(conversationId, oldestKeptId);
+    if (rows.length < RECAP_MIN_PENDING) return;
+    const ownerPron = ownerPronoun(personaConfig().owner.gender);
+    const messages: ChatMessage[] = [
+      { role: "system", content: buildRecapSystem(ownerPron, pronounOf(contact.gender)) },
+      { role: "user", content: buildRecapInput(conv.summary, rows, ownerPron) },
+    ];
+    const raw = await callModelJson<{ recap?: unknown }>(messages, {
+      purpose: "recap",
+      maxTokens: 400,
+      contactId: conv.contact_id,
+      capability: "memoryExtract",
+    });
+    const text = typeof raw?.recap === "string" ? raw.recap.trim().slice(0, RECAP_CHARS) : "";
+    const lastId = rows[rows.length - 1]?.id ?? 0;
+    updateConversationSummary(conversationId, text === "" ? conv.summary : text, lastId);
+    console.log(`[recap] ${conv.title || conversationId} 折叠 ${rows.length} 条 → 会话摘要 ${text.length} 字`);
+  } catch (error) {
+    console.warn(`[recap] 会话摘要刷新失败（${conversationId}）：${error instanceof Error ? error.message : String(error)}`);
+  } finally {
+    conversationInFlight.delete(conversationId);
+  }
 }
 
 /**

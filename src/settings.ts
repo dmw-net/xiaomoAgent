@@ -79,8 +79,13 @@ export type ThinkingLevel = "low" | "medium" | "high" | "xhigh" | "max";
  */
 export type ThinkingParam = "effort" | "templateKw" | "thinkingType";
 
-/** 开关系形态下的取值："" = 一个字段都不发（听模型的），"on"/"off" = 显式开或显式关。 */
-export type ThinkingMode = "" | "on" | "off";
+/**
+ * 思考开关意图：
+ * - "auto" = 跟随模型，不发送开关/强度字段；
+ * - "on" / "off" = 显式开或关；
+ * - "" = 老配置的未声明值，继续沿用旧行为，避免升级后悄悄改请求体。
+ */
+export type ThinkingMode = "" | "auto" | "on" | "off";
 
 export const THINKING_LEVELS: Array<{ id: ThinkingLevel; label: string }> = [
   { id: "low", label: "低" },
@@ -120,9 +125,9 @@ export function sanitizeThinkingParam(v: unknown): ThinkingParam {
   return THINKING_PARAMS.has(String(v)) ? (v as ThinkingParam) : "effort";
 }
 
-/** 开关形态的取值：只认 on/off，其它一律回"不发字段"。 */
+/** 思考意图的取值：只认 auto/on/off，其它一律回"兼容旧配置"。 */
 export function sanitizeThinkingMode(v: unknown): ThinkingMode {
-  return v === "on" || v === "off" ? v : "";
+  return v === "auto" || v === "on" || v === "off" ? v : "";
 }
 
 function sanitizeTokenLimit(v: unknown): number {

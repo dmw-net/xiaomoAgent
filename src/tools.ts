@@ -20,7 +20,7 @@ import { describePeriod, nowText, ownerPronoun } from "./persona.ts";
 import { capabilityReady, personaConfig } from "./settings.ts";
 import { generateImage, IMAGE_DAILY_LIMIT, imagesToday } from "./model.ts";
 import { keywords, lastUserMessageText, queryVector, recallExplained } from "./memory.ts";
-import { ASSISTANT_TOOLS, ASSISTANT_WRITE_TOOLS, assistantPermission, isAssistant } from "./assistant.ts";
+import { ASSISTANT_TOOLS, ASSISTANT_WRITE_TOOLS, assistantPermission, isAssistant, type AssistantPermission } from "./assistant.ts";
 import { SKILL_TOOL, usableSkills } from "./skills.ts";
 import { WEB_TOOLS } from "./search.ts";
 import { extensionToolDefs } from "./extensions.ts";
@@ -33,8 +33,14 @@ export type ToolContext = {
   lastUserAt: number | null;
   /** 当前对话的联系人——记忆完全隔离，检索只在此联系人的记忆里。 */
   contactId: string;
+  /** 当前会话：群聊记忆只召回本群/当前成员/全局三类。 */
+  conversationId?: string;
+  /** 群发言成员 openid；私聊为空。 */
+  memberId?: string;
   /** 本轮处理单 id：出图这类要落调用记录的动作用它，好和这一轮对上。 */
   turnId: string | null;
+  /** 设置助手这一轮启动时的权限快照；中途在界面切档不改变本轮行为。 */
+  assistantPermission?: AssistantPermission;
 };
 
 /**
@@ -95,16 +101,17 @@ const TOOLS: ToolDef[] = [
       // 直接回空等于这轮工具白跑，界面只会看到一句「没找到相关的」。
       // 退而求其次：拿他最近一句原话当查询——那是最贴近记忆库词汇的选择。
       const asked = String(args.query ?? "").trim();
-      const lastText = lastUserMessageText(context.contactId, asked);
+      const lastText = lastUserMessageText(context.contactId, asked, context.conversationId);
       const query = asked !== "" ? asked : lastText;
       if (query === "") return { events: [], note: "没有可用的检索词" };
       // 查询向量在兜底词确定后再算，两条查询共用一个向量（端点只打一次）。
       const vector = await queryVector(query);
-      let explained = recallExplained(context.contactId, query, 8, { markUsed: true, vector });
+      const scope = { conversationId: context.conversationId, memberId: context.memberId };
+      let explained = recallExplained(context.contactId, query, 8, { markUsed: true, vector, scope });
       // 一击未中再扩一次：把他的原话并进查询再筛。≤2 个关键词时第一轮已经并过（见
       // memory.ts 的 expandQuery），所以只在关键词够多时补这一手；向量沿用（两句话并查语义不变）。
       if (explained.events.length === 0 && keywords(query).length > 2 && lastText !== "" && lastText !== query) {
-        explained = recallExplained(context.contactId, `${query} ${lastText}`, 8, { markUsed: true, vector });
+        explained = recallExplained(context.contactId, `${query} ${lastText}`, 8, { markUsed: true, vector, scope });
       }
       return {
         events: explained.events.map((e) => ({
@@ -249,11 +256,11 @@ const SELFIE_FRAMING =
  * 技能与联网都是全局形态：磁盘上那份说明、那张能出网的网卡，对所有会话都成立，
  * 所以联网只在陪伴这一路按联系人开关，助手那边由白名单自己带。
  */
-function visibleTools(contactId?: string): ToolDef[] {
+function visibleTools(contactId?: string, permissionOverride?: AssistantPermission): ToolDef[] {
   const skillTools = usableSkills().length > 0 ? [SKILL_TOOL] : [];
   if (contactId && isAssistant(contactId)) {
     // 只读档把写工具整组摘掉：不声明 = 模型调不到，比运行时拦截干净。
-    const base = assistantPermission() === "readonly"
+    const base = (permissionOverride ?? assistantPermission()) === "readonly"
       ? ASSISTANT_TOOLS.filter((t) => !ASSISTANT_WRITE_TOOLS.has(t.name))
       : ASSISTANT_TOOLS;
     return [...base, ...WEB_TOOLS, ...skillTools];
@@ -282,8 +289,8 @@ function visibleTools(contactId?: string): ToolDef[] {
 }
 
 /** OpenAI tools 协议的声明格式（function calling）。设置助手有自己的一套白名单工具。 */
-export function toolDefsForApi(contactId?: string): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
-  return visibleTools(contactId).map((tool) => ({
+export function toolDefsForApi(contactId?: string, permissionOverride?: AssistantPermission): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  return visibleTools(contactId, permissionOverride).map((tool) => ({
     type: "function" as const,
     function: { name: tool.name, description: tool.description, parameters: tool.parameters },
   }));
@@ -291,7 +298,7 @@ export function toolDefsForApi(contactId?: string): Array<{ type: "function"; fu
 
 /** 执行一个工具调用。永不抛异常——失败返回结构化错误，让模型知情并继续。 */
 export async function executeTool(name: string, argsJson: string, context: ToolContext): Promise<ToolResult> {
-  const tool = visibleTools(context.contactId).find((t) => t.name === name);
+  const tool = visibleTools(context.contactId, context.assistantPermission).find((t) => t.name === name);
   if (!tool) return { ok: false, error: `未知工具：${name}` };
 
   let args: Record<string, unknown> = {};

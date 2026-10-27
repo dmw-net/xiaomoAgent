@@ -11,19 +11,26 @@ import { capabilityExplicit, capabilityReady, effectiveRecentTurns, modelConfig,
 import { executeTool, toolDefsForApi, type ToolContext } from "./tools.ts";
 import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
 import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getContact } from "./contacts.ts";
-import { buildAssistantSystemPrompt, isAssistant, pinAssistantToActiveProfile } from "./assistant.ts";
-import { maybeRefreshRecap } from "./recap.ts";
+import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssistantToActiveProfile, type AssistantPermission } from "./assistant.ts";
+import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "./reply-segmentation.ts";
 import { dataUrlBytes, mediaDataUrl, releaseMediaFiles } from "./media.ts";
 import type { CapabilityName } from "./settings.ts";
+import { getConversation, localConversationId, touchConversation, type Conversation } from "./conversations.ts";
 
 export type TurnRow = {
   id: string;
   channel: string;
   text: string;
   contact_id: string | null;
+  conversation_id?: string | null;
+  trigger_message_id?: string | null;
+  trigger_ids?: string | null;
+  context_start_id?: number | null;
   status: "queued" | "running" | "done" | "failed" | "cancelled";
   reply: string | null;
+  /** 流式思考的累计草稿；只走 /api/turn 给界面看，不参与上下文。 */
+  reasoning_draft?: string | null;
   error: string | null;
   created_at: number;
   finished_at: number | null;
@@ -38,17 +45,30 @@ export function createTurn(input: {
   channel: string;
   text: string;
   contactId: string;
+  conversationId?: string;
   attachments?: string[];
+  /** 平台消息 id：QQ 群/私聊的被动回复窗口与去重都靠它。 */
+  triggerMessageId?: string | null;
+  triggerIds?: string[];
+  contextStartId?: number | null;
   /** 离线发件箱幂等键；同一联系人 + 同一键只会建出一条处理单。 */
   clientId?: string;
 }): void {
+  const conversationId = input.conversationId || localConversationId(input.contactId);
   db.prepare(
-    `INSERT INTO turns (id, channel, text, contact_id, attachments, client_id, status, created_at) VALUES (?, ?, ?, ?, ?, ?, 'queued', ?)`,
+    `INSERT INTO turns
+       (id, channel, text, contact_id, conversation_id, trigger_message_id, trigger_ids, context_start_id,
+        attachments, client_id, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
   ).run(
     input.id,
     input.channel,
     input.text,
     input.contactId,
+    conversationId,
+    input.triggerMessageId ?? null,
+    input.triggerIds && input.triggerIds.length > 0 ? JSON.stringify(input.triggerIds) : null,
+    input.contextStartId ?? null,
     input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null,
     input.clientId || null,
     Date.now(),
@@ -72,15 +92,28 @@ export function insertMessage(input: {
   kind?: "chat" | "proactive" | "tool";
   turnId?: string | null;
   contactId: string;
+  /** 缺省落到联系人的本地会话，历史调用无需逐处改签名。 */
+  conversationId?: string;
+  senderId?: string | null;
+  senderName?: string | null;
+  sourceMessageId?: string | null;
+  replyToMessageId?: string | null;
+  atBot?: boolean;
+  sourceMeta?: string | null;
   attachments?: string[];
   /** 模型这一轮的思考原文（仅用于界面折叠回看；不进上下文、不进记忆抽取）。 */
   reasoning?: string | null;
   /** 工具卡的可展开详情（仅 kind=tool 用；不进上下文回放，滚出窗口即 NULL）。 */
   toolDetail?: string | null;
 }): number {
+  const conversationId = input.conversationId || localConversationId(input.contactId);
+  const now = Date.now();
   const result = db
     .prepare(
-      `INSERT INTO messages (channel, role, text, kind, turn_id, contact_id, attachments, reasoning, tool_detail, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO messages
+         (channel, role, text, kind, turn_id, contact_id, conversation_id, sender_id, sender_name,
+          source_message_id, reply_to_message_id, at_bot, source_meta, attachments, reasoning, tool_detail, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.channel,
@@ -89,11 +122,19 @@ export function insertMessage(input: {
       input.kind ?? "chat",
       input.turnId ?? null,
       input.contactId,
+      conversationId,
+      input.senderId ?? null,
+      input.senderName ?? null,
+      input.sourceMessageId ?? null,
+      input.replyToMessageId ?? null,
+      input.atBot === true ? 1 : 0,
+      input.sourceMeta ?? null,
       input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null,
       input.reasoning ?? null,
       input.toolDetail ?? null,
-      Date.now(),
+      now,
     );
+  touchConversation(conversationId, now);
   return Number(result.lastInsertRowid);
 }
 
@@ -158,20 +199,20 @@ export function deleteAssistantMessagesForTurn(turnId: string): number {
  * 那就是自欺欺人。上下文过滤必须发生在这一个地方，而不是在界面上做样子。
  */
 /** 这段会话聊了多少轮（活着的 user 消息数）：按会话比例回放时要拿它当分母。 */
-export function countLiveTurns(contactId: string): number {
+export function countLiveTurns(contactId: string, conversationId = localConversationId(contactId)): number {
   return (db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND superseded_at IS NULL AND kind != 'tool' AND role = 'user'`)
-    .get(contactId) as { c: number }).c;
+    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool' AND role = 'user'`)
+    .get(contactId, conversationId) as { c: number }).c;
 }
 
 /** 生效回放轮数：联系人覆盖 > 全局应用内覆盖 > .env > 默认（与模型绑定同一套分层）。
  *  返回 ALL_TURNS(-1) 表示这位要带全部历史。
  *  features.turnPct > 0 时它优先：带「这段会话总轮数 × 百分比」的最近轮 ——
  *  轮数是固定形状，比例会随这段关系聊了多久自己伸缩。 */
-export function effectiveRecentTurnsFor(contactId: string): number {
+export function effectiveRecentTurnsFor(contactId: string, conversationId = localConversationId(contactId)): number {
   const c = getContact(contactId);
   const pct = c?.features.turnPct ?? 0;
-  if (pct > 0) return Math.max(1, Math.ceil(countLiveTurns(contactId) * pct / 100));
+  if (pct > 0) return Math.max(1, Math.ceil(countLiveTurns(contactId, conversationId) * pct / 100));
   const t = c?.recent_turns ?? 0;
   if (t === ALL_TURNS) return ALL_TURNS;
   return t > 0 ? t : effectiveRecentTurns();
@@ -190,30 +231,29 @@ export function historyTokenCapFor(contactId: string, settings: { maxInputTokens
 
 export function recentMessages(
   contactId: string,
-  limitTurns = effectiveRecentTurnsFor(contactId),
-  /**
-   * 只取到这条消息为止（含）。重答**较早**的一轮时必须把窗口截到那一轮，
-   * 否则默认取的"最近窗口"会把那一轮**之后**的对话也带进去——
-   * 于是模型看到的最后一句根本不是它要重答的那句，答得头头是道却答错了问题（实测踩过）。
-   */
+  limitTurns?: number,
+  /** 只取到这条消息为止（含），重答较早一轮时用它截断窗口。 */
   upToMessageId?: number | null,
-): Array<{ id: number; role: string; text: string; attachments: string | null; turn_id: string | null }> {
-  const live = `contact_id = ? AND superseded_at IS NULL AND kind != 'tool'`;
+  conversationId = localConversationId(contactId),
+): Array<{
+  id: number; role: string; text: string; attachments: string | null; turn_id: string | null;
+  sender_id?: string | null; sender_name?: string | null; at_bot?: number;
+}> {
+  const turns = limitTurns ?? effectiveRecentTurnsFor(contactId, conversationId);
+  const live = `contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool'`;
   const cap = upToMessageId === undefined || upToMessageId === null ? "" : " AND id <= ?";
   const capArgs: number[] = cap === "" ? [] : [upToMessageId as number];
-  // 窗口边界 = 倒数第 N 条「你说的话」。按轮数定位，而不是"取 N*2+8 行再倒着数"——
-  // 她的回复是分条落库的，一轮可以有好几行，按行数猜会把窗口悄悄缩小。
-  // turn_id 必须带出来：toChatMessages 靠它把同一轮的气泡合回一条 assistant 消息。
-  const cols = `id, role, text, attachments, turn_id`;
-  // 「全部」不做窗口边界：直接走下面那条无 id>=? 的分支，把整段历史带出来。
-  // 真正的重量由 token 预算兜底（trimHistoryToBudget 会丢掉装不下的老轮）。
-  const boundary = limitTurns === ALL_TURNS ? undefined : db
+  const cols = `id, role, text, attachments, turn_id, sender_id, sender_name, at_bot`;
+  const boundary = turns === ALL_TURNS ? undefined : db
     .prepare(`SELECT id FROM messages WHERE ${live}${cap} AND role = 'user' ORDER BY id DESC LIMIT 1 OFFSET ?`)
-    .get(contactId, ...capArgs, Math.max(1, limitTurns) - 1) as { id: number } | undefined;
+    .get(contactId, conversationId, ...capArgs, Math.max(1, turns) - 1) as { id: number } | undefined;
   return (boundary
-    ? db.prepare(`SELECT ${cols} FROM messages WHERE ${live}${cap} AND id >= ? ORDER BY id ASC`).all(contactId, ...capArgs, boundary.id)
-    : db.prepare(`SELECT ${cols} FROM messages WHERE ${live}${cap} ORDER BY id ASC`).all(contactId, ...capArgs)
-  ) as unknown as Array<{ id: number; role: string; text: string; attachments: string | null; turn_id: string | null }>;
+    ? db.prepare(`SELECT ${cols} FROM messages WHERE ${live}${cap} AND id >= ? ORDER BY id ASC`).all(contactId, conversationId, ...capArgs, boundary.id)
+    : db.prepare(`SELECT ${cols} FROM messages WHERE ${live}${cap} ORDER BY id ASC`).all(contactId, conversationId, ...capArgs)
+  ) as unknown as Array<{
+    id: number; role: string; text: string; attachments: string | null; turn_id: string | null;
+    sender_id?: string | null; sender_name?: string | null; at_bot?: number;
+  }>;
 }
 
 // 消息行的形状是前后端契约，唯一真源在 shared/api.ts。
@@ -221,7 +261,7 @@ import type { MessageRow } from "../shared/api.ts";
 
 export type { MessageRow };
 
-const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, attachments, turn_id, reasoning, tool_detail";
+const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, conversation_id, sender_id, sender_name, source_message_id, reply_to_message_id, at_bot, attachments, turn_id, reasoning, tool_detail";
 
 /** attachments 存的是 JSON 字符串；对界面下发前解析成数组，脏数据按无附件处理。 */
 function withParsedAttachments(row: MessageRow & { attachments: unknown }): MessageRow {
@@ -244,26 +284,26 @@ function withParsedAttachments(row: MessageRow & { attachments: unknown }): Mess
 export const CHAT_FIRST_PAGE = 500;
 export const CHAT_EARLIER_PAGE = 200;
 
-export function messagesSince(contactId: string, sinceId: number, limit = 100): MessageRow[] {
+export function messagesSince(contactId: string, sinceId: number, limit = 100, conversationId = localConversationId(contactId)): MessageRow[] {
   const rows = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
-    .all(contactId, sinceId, limit) as unknown as Array<MessageRow & { attachments: unknown }>;
+    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
+    .all(contactId, conversationId, sinceId, limit) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments);
 }
 
 /** 这一位库里总共有多少条消息（含已失效的）——界面上那句「共 N 条」。 */
-export function countMessagesFor(contactId: string): number {
+export function countMessagesFor(contactId: string, conversationId = localConversationId(contactId)): number {
   const row = db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ?`)
-    .get(contactId) as { c: number };
+    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ?`)
+    .get(contactId, conversationId) as { c: number };
   return row.c;
 }
 
 /** 比 beforeId 更早的还有多少条——决定「载入更早」要不要继续显示、上面报什么数。 */
-export function countMessagesBefore(contactId: string, beforeId: number): number {
+export function countMessagesBefore(contactId: string, beforeId: number, conversationId = localConversationId(contactId)): number {
   const row = db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND id < ?`)
-    .get(contactId, beforeId) as { c: number };
+    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ? AND id < ?`)
+    .get(contactId, conversationId, beforeId) as { c: number };
   return row.c;
 }
 
@@ -294,10 +334,10 @@ export function messagesForTurn(turnId: string, contactId?: string): MessageRow[
  * 为什么需要全量模式（all=1）：编辑会让**已经渲染过的**消息变成失效态，而增量拉取
  * （id > since）看不到旧消息的状态变化，所以编辑之后必须整体重绘一次。
  */
-export function messagesBefore(contactId: string, beforeId: number, limit = CHAT_EARLIER_PAGE): MessageRow[] {
+export function messagesBefore(contactId: string, beforeId: number, limit = CHAT_EARLIER_PAGE, conversationId = localConversationId(contactId)): MessageRow[] {
   const rows = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
-    .all(contactId, beforeId, limit) as unknown as Array<MessageRow & { attachments: unknown }>;
+    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
+    .all(contactId, conversationId, beforeId, limit) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments).reverse();
 }
 
@@ -315,37 +355,38 @@ export function searchMessages(text: string, limit = 50): MessageHit[] {
     .all(likePattern(text), limit) as unknown as MessageHit[];
 }
 
-export function allMessages(contactId: string, limit = CHAT_FIRST_PAGE): MessageRow[] {
+export function allMessages(contactId: string, limit = CHAT_FIRST_PAGE, conversationId = localConversationId(contactId)): MessageRow[] {
   const rows = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? ORDER BY id DESC LIMIT ?`)
-    .all(contactId, Math.min(1000, Math.max(1, limit))) as unknown as Array<MessageRow & { attachments: unknown }>;
+    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? ORDER BY id DESC LIMIT ?`)
+    .all(contactId, conversationId, Math.min(1000, Math.max(1, limit))) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments).reverse();
 }
 
 /** 会话内搜索：只在当前联系人、仍有效且不是工具卡的正文里找。 */
-export function searchMessagesForContact(contactId: string, text: string, limit = 200): MessageRow[] {
+export function searchMessagesForContact(contactId: string, text: string, limit = 200, conversationId = localConversationId(contactId)): MessageRow[] {
   const rows = db
     .prepare(
       `SELECT ${MESSAGE_COLUMNS} FROM messages
-       WHERE contact_id = ? AND superseded_at IS NULL AND kind != 'tool' AND text LIKE ? ESCAPE '\\'
+       WHERE contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool' AND text LIKE ? ESCAPE '\\'
        ORDER BY id DESC LIMIT ?`,
     )
-    .all(contactId, likePattern(text), Math.min(500, Math.max(1, limit))) as unknown as Array<MessageRow & { attachments: unknown }>;
+    .all(contactId, conversationId, likePattern(text), Math.min(500, Math.max(1, limit))) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments);
 }
 
 /** 搜索命中不在当前窗口时，取命中消息前后各半页，直接把它带进视口。 */
-export function messagesAround(contactId: string, messageId: number, limit = 160): MessageRow[] | null {
-  const anchor = db.prepare("SELECT id FROM messages WHERE id = ? AND contact_id = ?").get(messageId, contactId) as { id: number } | undefined;
+export function messagesAround(contactId: string, messageId: number, limit = 160, conversationId = localConversationId(contactId)): MessageRow[] | null {
+  const anchor = db.prepare("SELECT id FROM messages WHERE id = ? AND contact_id = ? AND conversation_id = ?")
+    .get(messageId, contactId, conversationId) as { id: number } | undefined;
   if (!anchor) return null;
   const cap = Math.min(300, Math.max(40, limit));
   const beforeLimit = Math.floor(cap / 2) + 1;
   const before = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND id <= ? ORDER BY id DESC LIMIT ?`)
-    .all(contactId, messageId, beforeLimit) as unknown as Array<MessageRow & { attachments: unknown }>;
+    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id <= ? ORDER BY id DESC LIMIT ?`)
+    .all(contactId, conversationId, messageId, beforeLimit) as unknown as Array<MessageRow & { attachments: unknown }>;
   const after = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
-    .all(contactId, messageId, cap - before.length) as unknown as Array<MessageRow & { attachments: unknown }>;
+    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
+    .all(contactId, conversationId, messageId, cap - before.length) as unknown as Array<MessageRow & { attachments: unknown }>;
   return [...before.reverse(), ...after].map(withParsedAttachments);
 }
 
@@ -380,20 +421,28 @@ export function contactOfMessage(messageId: number): string | null {
  * 传了 = 只看这一个联系人的轮次——聊天页的失败横幅靠它，
  * 不过滤就会把别人的失败轮当成"本会话上一条回复失败了"，重试还会重跑别人的轮。
  */
-export function recentTurns(limit = 15, offset = 0, contactId?: string): TurnRow[] {
+export function recentTurns(limit = 15, offset = 0, contactId?: string, conversationId?: string): TurnRow[] {
   const safeLimit = Math.min(100, Math.max(1, limit));
   const safeOffset = Math.max(0, offset);
+  if (contactId !== undefined && conversationId !== undefined) {
+    return db
+      .prepare(
+        `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
+         FROM turns WHERE superseded_at IS NULL AND contact_id = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+      )
+      .all(contactId, conversationId, safeLimit, safeOffset) as unknown as TurnRow[];
+  }
   if (contactId !== undefined) {
     return db
       .prepare(
-        `SELECT id, channel, text, status, reply, error, created_at, finished_at
+        `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
          FROM turns WHERE superseded_at IS NULL AND contact_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       )
       .all(contactId, safeLimit, safeOffset) as unknown as TurnRow[];
   }
   return db
     .prepare(
-      `SELECT id, channel, text, status, reply, error, created_at, finished_at
+      `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
        FROM turns WHERE superseded_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
     )
     .all(safeLimit, safeOffset) as unknown as TurnRow[];
@@ -449,12 +498,12 @@ export function turnStats(): TurnStats {
  * 必须排除失效消息：如果你把"我今天在忙"编辑成了别的话，
  * 那句被改掉的话不该继续影响"她该不该主动找你"的判断。
  */
-export function lastUserMessageAt(contactId: string): number | null {
+export function lastUserMessageAt(contactId: string, conversationId = localConversationId(contactId)): number | null {
   const row = db
     .prepare(
-      `SELECT created_at FROM messages WHERE contact_id = ? AND role = 'user' AND superseded_at IS NULL ORDER BY id DESC LIMIT 1`,
+      `SELECT created_at FROM messages WHERE contact_id = ? AND conversation_id = ? AND role = 'user' AND superseded_at IS NULL ORDER BY id DESC LIMIT 1`,
     )
-    .get(contactId) as { created_at: number } | undefined;
+    .get(contactId, conversationId) as { created_at: number } | undefined;
   return row?.created_at ?? null;
 }
 
@@ -666,15 +715,20 @@ export type ContextUsage = {
  * 分母取该联系人生效模型填的「输入上限」，没填按 32K 保守估算——数字是估算，趋势是真的。
  * used 是**裁剪后**真正会发出去的量，被预算挡掉的轮数由 droppedByBudget 单独交代。
  */
-export function contextUsage(contactId: string): ContextUsage {
+export function contextUsage(contactId: string, conversationId?: string): ContextUsage {
   const cid = contactId === "" ? DEFAULT_CONTACT_ID : contactId;
-  const history = recentMessages(cid);
+  const convId = conversationId || localConversationId(cid);
+  const history = recentMessages(cid, undefined, null, convId);
   const lastUser = [...history].reverse().find((m) => m.role === "user");
   const card = contactCard(cid);
-  const lastAt = lastUserMessageAt(cid);
+  const lastAt = lastUserMessageAt(cid, convId);
   // 陪伴增强段两边同给：它们的开销进 system 项，不该被记到"记忆召回"头上。
   // includeNow 与 respondToTurn 同源：圆环量的是"下一次发消息会带什么"。
-  const companion = companionPromptExtras(getContact(cid), history[0]?.id);
+  const conv = getConversation(convId);
+  const companion = {
+    ...companionPromptExtras(getContact(cid), history[0]?.id),
+    ...(conv?.summary ? { conversationSummary: conv.summary } : {}),
+  };
   const includeNow = getContact(cid)?.features?.clock !== false;
   const bare = buildSystemPrompt([], { character: card, lastUserAt: lastAt, companion, includeNow });
   // 观测路径用 recallExplained（不写 last_used_at）：圆环随消息轮询刷新，
@@ -720,7 +774,7 @@ export function contextUsage(contactId: string): ContextUsage {
   const settingTurns = history.filter((m) => m.role === "user").length;
   // 「全部」这一档要能看见代价：整段历史（不受回放窗口限制）按同一套合并口径估的 token。
   // 只算文本，与圆环里的「对话历史」同一口径；图片另有一部分，不受此项影响。
-  const fullHistoryTokens = textsOf(toChatMessages(recentMessages(cid, ALL_TURNS)))
+  const fullHistoryTokens = textsOf(toChatMessages(recentMessages(cid, ALL_TURNS, null, convId)))
     .reduce((a, m) => a + estimateTokens(m.text) + 2, 0);
   return {
     model: settings.name,
@@ -731,7 +785,7 @@ export function contextUsage(contactId: string): ContextUsage {
     turns: kept.filter((m) => m.role === "user").length,
     totalTurns: liveTurns,
     fullHistory: { turns: liveTurns, tokens: fullHistoryTokens },
-    recentTurnsSetting: effectiveRecentTurnsFor(cid),
+    recentTurnsSetting: effectiveRecentTurnsFor(cid, convId),
     overflowTurns: Math.max(0, liveTurns - settingTurns),
     droppedByBudget: droppedTurns,
   };
@@ -973,8 +1027,10 @@ async function runAgentLoop(
   history: ChatMessage[],
   capability?: CapabilityName,
   signal?: AbortSignal,
-  /** 思考内容出口（多轮工具调用可能各带一段）：只给界面折叠用，绝不回灌进对话。 */
+  /** 思考内容终态出口（多轮工具调用可能各带一段）：只给界面折叠用，绝不回灌进对话。 */
   onReasoning?: (text: string, tokens: number) => void,
+  /** 思考流式出口：本次调用累计推理，和已完成轮次的推理拼成整轮实时草稿。 */
+  onReasoningDraft?: (text: string) => void,
   /** 工具产出的文件（出图）出口：循环里每产一张就交出去，由调用方挂到这条回复的附件上。 */
   onFiles?: (urls: string[]) => void,
   /**
@@ -989,10 +1045,22 @@ async function runAgentLoop(
    * 而取消有两个来源（进程内 signal + 库侧标记），只有它判得全。
    */
   cancelIfAborted?: () => boolean,
+  /** 发起这一轮时定下的助手权限；后续轮内切档不影响本轮。 */
+  assistantPermissionSnapshot?: AssistantPermission,
 ): Promise<string> {
   const base: ChatMessage[] = [{ role: "system", content: system }, ...history];
   // 温度：联系人设过就用她的，没设（-1）就留给 model.ts 的全局默认（0.8）。
   const temp = getContact(turn.contact_id ?? DEFAULT_CONTACT_ID)?.features.temperature ?? -1;
+  // 多轮工具调用各自会产出一段推理。已完成轮次固定下来，当前轮跟着流式增量更新，
+  // UI 始终拿到「这轮到目前为止」的完整思考，而不是等最终落库才突然出现。
+  const completedReasoning: string[] = [];
+  let currentReasoning = "";
+  const publishReasoningDraft = (): void => {
+    const parts = [...completedReasoning];
+    const live = currentReasoning.trim();
+    if (live !== "") parts.push(live);
+    onReasoningDraft?.(parts.join("\n\n"));
+  };
   const options: CallOptions = {
     purpose: "chat" as const,
     // 故意不传 maxTokens：回复长度该由模型档上的「输出上限」决定，
@@ -1002,7 +1070,19 @@ async function runAgentLoop(
     ...(temp >= 0 ? { temperature: temp } : {}),
     ...(capability ? { capability } : {}),
     ...(signal ? { signal } : {}),
-    ...(onReasoning ? { onReasoning } : {}),
+    ...(onReasoning || onReasoningDraft ? {
+      onReasoning: (text: string, tokens: number): void => {
+        const part = text.trim();
+        if (part !== "") completedReasoning.push(part);
+        currentReasoning = "";
+        onReasoning?.(text, tokens);
+        publishReasoningDraft();
+      },
+      onReasoningDelta: (accumulated: string): void => {
+        currentReasoning = accumulated;
+        publishReasoningDraft();
+      },
+    } : {}),
     ...(onDraft ? { onDelta: onDraft } : {}),
   };
 
@@ -1012,10 +1092,14 @@ async function runAgentLoop(
   // 都在 toolDefsForApi 里收口）——清单为空就不走工具路径，别给端点发空 tools 数组
   // （部分服务商对 tools: [] 直接 400）。
   const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
+  // 权限和工具清单在同一点快照：一轮开始后即使界面切档，本轮仍按启动时的规则跑完。
+  const permissionSnapshot = isAssistant(contactId)
+    ? (assistantPermissionSnapshot ?? assistantPermission())
+    : undefined;
   const effective = callSettings(options);
   // 门控读哪份 caps 由 toolCapsSettings 统一裁决：能力显式绑档=空 caps（不带）、
   // 能力隐式回落主模型端点=按联系人聊天档意图、普通调用=请求落到的配置本身。
-  const declaredTools = toolDefsForApi(contactId);
+  const declaredTools = toolDefsForApi(contactId, permissionSnapshot);
   if (
     !modelReadyNow(effective)
     || declaredTools.length === 0
@@ -1025,7 +1109,19 @@ async function runAgentLoop(
     return guardOverflow(base, () => callModel(base, options));
   }
 
-  const context: ToolContext = { lastUserAt: lastUserMessageAt(contactId), contactId, turnId: turn.id };
+  const conversationId = turn.conversation_id || localConversationId(contactId);
+  const triggerSender = turn.trigger_message_id
+    ? db.prepare("SELECT sender_id FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1")
+        .get(conversationId, turn.trigger_message_id) as { sender_id?: string | null } | undefined
+    : undefined;
+  const context: ToolContext = {
+    lastUserAt: lastUserMessageAt(contactId, conversationId),
+    contactId,
+    conversationId,
+    memberId: triggerSender?.sender_id ?? undefined,
+    turnId: turn.id,
+    assistantPermission: permissionSnapshot,
+  };
   const messages: ChatMessage[] = [...base];
   // 让路检查：没传（抽取/主动性那些副通道）就退化成只看 signal。
   const shouldYield = cancelIfAborted ?? ((): boolean => signal?.aborted === true);
@@ -1219,11 +1315,27 @@ function draftWriter(turnId: string): (text: string) => void {
   };
 }
 
+/**
+ * 思考草稿的落点：和 draftWriter 同一套节流、同一套条件写，但走单独的 reasoning_draft 列。
+ * 思考常常在正文之前就先流出来；共用 reply 会把正文写成半截推理，等正文到了还会互相覆盖。
+ */
+function reasoningDraftWriter(turnId: string): (text: string) => void {
+  let lastWrite = 0;
+  return (text) => {
+    const now = Date.now();
+    if (now - lastWrite < 180) return;
+    lastWrite = now;
+    db.prepare(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(text, turnId);
+  };
+}
+
 export async function respondToTurn(
   turn: TurnRow,
   opts: { isRetry?: boolean; collapseReply?: boolean } = {},
 ): Promise<string> {
   const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
+  const conversationId = turn.conversation_id || localConversationId(contactId);
+  const conversation = getConversation(conversationId);
   const attachments = parseAttachments(turn.attachments);
 
   // 单飞（barge-in）：同一联系人来了新消息 = 还在跑的旧轮被打断。
@@ -1232,7 +1344,7 @@ export async function respondToTurn(
   // 流式只喂草稿位（turns.reply），messages 里从来只有定稿，所以打断仍然没有"半截气泡"要解释——
   // 所以打断不需要"半截文本要不要保留"这套机制。
   const controller = new AbortController();
-  const prior = activeTurns.get(contactId);
+  const prior = activeTurns.get(conversationId);
   // 按 controller 身份判断，不按 turnId：编辑/重试会让**同一个** turnId 再进来一次，
   // 那时旧执行体同样必须死——只比 turnId 会放它过去，两个执行体并发写同一轮。
   if (prior && prior.controller !== controller) {
@@ -1246,22 +1358,22 @@ export async function respondToTurn(
   // 前端轮询到天荒地老，界面上没有任何错误，只有重启（sweepStaleTurns）才清得掉。
   try {
     for (const row of db.prepare(
-      `SELECT id FROM turns WHERE contact_id = ? AND id <> ? AND status IN ('queued','running')`,
-    ).all(contactId, turn.id) as Array<{ id: string }>) {
-      db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, finished_at = ? WHERE id = ?`)
+      `SELECT id FROM turns WHERE contact_id = ? AND conversation_id = ? AND id <> ? AND status IN ('queued','running')`,
+    ).all(contactId, conversationId, turn.id) as Array<{ id: string }>) {
+      db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`)
         .run(Date.now(), row.id);
       console.log(`[agent] turn ${row.id} 被别的进程打断（跨进程协作取消）`);
     }
   } catch (error) {
     const message = `启动失败：${error instanceof Error ? error.message : String(error)}`;
     try {
-      db.prepare(`UPDATE turns SET status = 'failed', error = ?, reply = NULL, finished_at = ? WHERE id = ?`)
+      db.prepare(`UPDATE turns SET status = 'failed', error = ?, reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`)
         .run(message, Date.now(), turn.id);
     } catch { /* 库本身连不上就没啥可做了，交给进程级兜底日志 */ }
-    if (activeTurns.get(contactId)?.turnId === turn.id) activeTurns.delete(contactId);
+    if (activeTurns.get(conversationId)?.turnId === turn.id) activeTurns.delete(conversationId);
     throw error;
   }
-  activeTurns.set(contactId, { turnId: turn.id, controller });
+  activeTurns.set(conversationId, { turnId: turn.id, controller });
   // 打断可能落在三个位置：模型请求在飞、分条落库的间隙、或刚回完还没落库。
   // 后两种 abort 杀不到任何东西，必须自己检查信号；取消时把已插的气泡清掉、草稿一起抹——
   // cancelled 的轮在对话里不留痕迹，界面上那半截草稿也跟着作废（条件写让它之后再也写不进去）。
@@ -1278,11 +1390,11 @@ export async function respondToTurn(
     // 覆写成 cancelled——否则重答的轮次会以「被新消息打断」收场、一句回复都不剩。
     // 注意只认「同一轮被重入」：普通 barge-in 登记的是**另一轮**，旧执行体仍要
     // 清掉自己那轮的半截气泡，不能因为登记换了人就把自己的尾巴留下。
-    const incumbent = activeTurns.get(contactId);
+    const incumbent = activeTurns.get(conversationId);
     const reentered = incumbent !== undefined && incumbent.controller !== controller && incumbent.turnId === turn.id;
     if (!reentered) {
       deleteAssistantMessagesForTurn(turn.id);
-      db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, finished_at = ? WHERE id = ?`).run(
+      db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`).run(
         Date.now(),
         turn.id,
       );
@@ -1293,7 +1405,7 @@ export async function respondToTurn(
 
   try {
     // 状态翻转也放进 try：万一 UPDATE 抛错，还能走下面的失败落库而不是黑洞。
-    db.prepare("UPDATE turns SET status = 'running', error = NULL WHERE id = ?").run(turn.id);
+    db.prepare("UPDATE turns SET status = 'running', error = NULL, reply = NULL, reasoning_draft = NULL WHERE id = ?").run(turn.id);
     /**
      * 重答一条**较早**的轮次时，新回复必须留在它原来位置上。
      * 消息表以自增 id 当时间轴（上下文窗口按 id 取、supersedeAfter 也按 id 比较），
@@ -1319,13 +1431,15 @@ export async function respondToTurn(
       }
     }
     if (!turnHasUserMessage(turn.id)) {
-      insertMessage({ channel: turn.channel, role: "user", text: turn.text, turnId: turn.id, contactId, attachments });
+      insertMessage({ channel: turn.channel, role: "user", text: turn.text, turnId: turn.id, contactId, conversationId, attachments });
     }
 
     // 联系人隔离：人格、记忆、上下文全部按这个联系人取——
     // A 记得的事 B 不知道，这是「完全隔离」路线的落地。
     // 设置助手例外：不抽陪伴记忆，用实时的产品状态提示词 + 白名单配置工具。
     const assistant = isAssistant(contactId);
+    // 这一轮从头到尾使用同一份权限；界面切换只影响之后启动的消息。
+    const assistantPermissionSnapshot = assistant ? assistantPermission() : undefined;
     if (assistant) pinAssistantToActiveProfile(); // 首次开口前把自己钉在当时的生效档上
     // 重答一轮时把上下文截到这一轮为止（见 recentMessages 的 upToMessageId）：
     // 不截就会把后面的对话当成"最新的话"，重答第 1 轮却回答第 3 轮的问题。
@@ -1334,15 +1448,24 @@ export async function respondToTurn(
       ? db.prepare(`SELECT id FROM messages WHERE turn_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1`)
         .get(turn.id) as { id: number } | undefined
       : undefined;
-    const rawRows = recentMessages(contactId, undefined, upToRow?.id ?? null);
+    const rawRows = recentMessages(contactId, undefined, upToRow?.id ?? null, conversationId);
     // 混合召回：查询句先向量化（embedding 能力没配/失败时自动退纯词面）。
-    const memories = assistant ? [] : await recallSmart(contactId, turn.text);
+    // 群聊还要带当前发言成员 openid，只召回 global + 本群 + 本成员三类记忆。
+    const triggerSender = conversation?.kind === "group" && turn.trigger_message_id
+      ? db.prepare(`SELECT sender_id, sender_name FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1`)
+          .get(conversationId, turn.trigger_message_id) as { sender_id?: string | null; sender_name?: string | null } | undefined
+      : undefined;
+    const memoryScope = { conversationId, memberId: triggerSender?.sender_id ?? undefined };
+    const memories = assistant ? [] : await recallSmart(contactId, turn.text, undefined, memoryScope);
     const system = assistant
-      ? buildAssistantSystemPrompt()
+      ? buildAssistantSystemPrompt(assistantPermissionSnapshot)
       : buildSystemPrompt(memories, {
           character: contactCard(contactId),
-          lastUserAt: lastUserMessageAt(contactId),
-          companion: companionPromptExtras(getContact(contactId), rawRows[0]?.id),
+          lastUserAt: lastUserMessageAt(contactId, conversationId),
+          companion: {
+            ...companionPromptExtras(getContact(contactId), rawRows[0]?.id),
+            ...(conversation?.summary ? { conversationSummary: conversation.summary } : {}),
+          },
           // [现在] 的硬拼时间行跟「看时间」能力同一开关（工具门控在 tools.visibleTools）
           includeNow: getContact(contactId)?.features?.clock !== false,
         });
@@ -1364,7 +1487,7 @@ export async function respondToTurn(
     const toolsOn = visionCall
       ? !capabilityExplicit("imageVision") && modelSettings.caps.tools === true
       : modelSettings.caps.tools === true;
-    const toolsJson = toolsOn ? JSON.stringify(toolDefsForApi(contactId)) : "[]";
+    const toolsJson = toolsOn ? JSON.stringify(toolDefsForApi(contactId, assistantPermissionSnapshot)) : "[]";
     const { kept: keptRows } = trimHistoryToBudget(historyRows, (rows) => {
       const p = contextParts({
         systemBare: system, systemFull: system, toolsJson,
@@ -1444,10 +1567,13 @@ export async function respondToTurn(
     const producedFiles: string[] = [];
     const reply = await runAgentLoop(turn, system, history, visionCapability, controller.signal,
       (text) => { if (text.trim() !== "") reasoningParts.push(text.trim()); },
+      reasoningDraftWriter(turn.id),
       (urls) => { producedFiles.push(...urls); },
-      draftWriter(turn.id), cancelIfAborted);
+      draftWriter(turn.id), cancelIfAborted, assistantPermissionSnapshot);
     if (cancelIfAborted()) return "";
     const reasoning = reasoningParts.join("\n\n");
+    // 收尾补最后一拍：节流器可能吃掉最后一段，定稿前必须让草稿与最终 reasoning 完全一致。
+    db.prepare(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(reasoning || null, turn.id);
     // 一条回复最多挂一张图：工具描述里已经要求"同一轮最多画一张"，这里再兜一道，
     // 免得 3 轮循环各画一张、气泡上挂出一串画廊。
     // 名字避开外层那个"本轮入站附件"attachments——那是他发来的图，这是她发出去的。
@@ -1471,7 +1597,7 @@ export async function respondToTurn(
           if (cancelIfAborted()) return "";
         }
         insertMessage({
-          channel: turn.channel, role: "assistant", text: parts[i] ?? "", turnId: turn.id, contactId,
+          channel: turn.channel, role: "assistant", text: parts[i] ?? "", turnId: turn.id, contactId, conversationId,
           // 一轮只挂一处：第一条气泡带这段思考与这张图，后面的气泡不重复显示
           ...(i === 0 && reasoning !== "" ? { reasoning } : {}),
           ...(i === 0 && outgoingImages.length > 0 ? { attachments: outgoingImages } : {}),
@@ -1487,24 +1613,30 @@ export async function respondToTurn(
       turn.id,
     );
 
-    // 微信镜像：绑定过微信的联系人，这一句（不分发起端）都要投到微信。
-    // deliverToContact 自身不抛错、未绑定静默跳过；动态 import 防止模块环。
-    // 画了图就得在镜像文字里说破：微信那条链路只发得出文字（媒体要 CDN + AES，见 wechat.ts 顶注），
-    // 不说她回了"给你画了一张"而对面什么都收不到。应用里那张图本来就在。
-    void import("./wechat.ts")
-      .then(({ wechat }) => wechat.deliverToContact(
-        contactId,
-        outgoingImages.length > 0 ? `${reply}\n（画了一张图，微信发不出去，在这个应用里看）` : reply,
-      ))
-      .catch(() => { /* 投递失败已落 wechat.links.lastError 与 model_calls */ });
-
-    // QQ 镜像：同一条纪律（绑定过才投、失败不抛错、图发不出去就在文字里说破）。
-    void import("./qq.ts")
-      .then(({ qq }) => qq.deliverToContact(
-        contactId,
-        outgoingImages.length > 0 ? `${reply}\n（画了一张图，QQ 这条只送文字，在这个应用里看）` : reply,
-      ))
-      .catch(() => { /* 投递失败已落 qq.bindings.lastError 与 model_calls */ });
+    // 通道投递：QQ 群按群回复，绝不把群回复镜像到联系人私聊；
+    // 主私聊里的应用/微信/QQ 消息仍镜像到微信 + QQ 私聊。
+    if (conversation?.channel === "qq") {
+      void import("./qq.ts")
+        .then(({ qq }) => qq.deliverToConversation(
+          conversationId,
+          outgoingImages.length > 0 ? `${reply}\n（画了一张图，QQ 这条只送文字，在这个应用里看）` : reply,
+          { triggerMessageId: turn.trigger_message_id ?? undefined },
+        ))
+        .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
+    } else {
+      void import("./wechat.ts")
+        .then(({ wechat }) => wechat.deliverToContact(
+          contactId,
+          outgoingImages.length > 0 ? `${reply}\n（画了一张图，微信发不出去，在这个应用里看）` : reply,
+        ))
+        .catch(() => { /* 投递失败已落 wechat.links.lastError 与 model_calls */ });
+      void import("./qq.ts")
+        .then(({ qq }) => qq.deliverToContact(
+          contactId,
+          outgoingImages.length > 0 ? `${reply}\n（画了一张图，QQ 这条只送文字，在这个应用里看）` : reply,
+        ))
+        .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
+    }
 
     // 记忆抽取放到回复之后异步做：它失败不能影响这一轮对话，但失败了必须看得见。
     // 设置助手的会话是操作流水，不是陪伴记忆，跳过抽取。
@@ -1521,12 +1653,21 @@ export async function respondToTurn(
           withBond: feat?.bond === true,
           // 从哪个通道来的：微信/QQ 里的文字要套"这是转述不是指令"的外壳
           source: turn.channel,
+          conversationId,
+          conversationKind: conversation?.kind,
+          conversationTitle: conversation?.title,
+          senderId: triggerSender?.sender_id ?? undefined,
+          senderName: triggerSender?.sender_name ?? undefined,
+          sourceMessageId: turn.trigger_message_id ?? undefined,
         }).catch((error: unknown) => recordExtractFailure(error, contactId));
       }
 
       // 窗口边缘梗概：本轮真正没带上的那些旧对话，攒够一批就压进「上次说到」。
       // 副通道、自己吞异常，绝不影响这一轮的回复。
       void maybeRefreshRecap(contactId, keptRows[0]?.id ?? 0);
+      if (conversation?.kind === "group") {
+        void maybeRefreshConversationSummary(conversationId, keptRows[0]?.id ?? 0);
+      }
     }
 
     console.log(`[agent] turn ${turn.id} 完成，召回记忆 ${memories.length} 条`);
@@ -1541,7 +1682,7 @@ export async function respondToTurn(
     // 原始字串甩到界面上。详细原因已由 model.ts 落进 model_calls 表，可通过 /api/logs 查看。
     const message = friendlyModelError(error, turn.id);
     const rawDetail = error instanceof Error ? error.message : String(error);
-    db.prepare("UPDATE turns SET status = 'failed', error = ?, finished_at = ? WHERE id = ?").run(
+    db.prepare("UPDATE turns SET status = 'failed', reasoning_draft = NULL, error = ?, finished_at = ? WHERE id = ?").run(
       message,
       Date.now(),
       turn.id,
@@ -1551,7 +1692,7 @@ export async function respondToTurn(
   } finally {
     // 只注销自己那一份：同 turnId 重入时表里已经是新执行体的 controller，
     // 按 turnId 比会把别人的登记删掉，从此这个联系人再也打断不了。
-    if (activeTurns.get(contactId)?.controller === controller) activeTurns.delete(contactId);
+    if (activeTurns.get(conversationId)?.controller === controller) activeTurns.delete(conversationId);
   }
 }
 
@@ -1599,7 +1740,7 @@ export async function retryTurn(turnId: string, opts: { regenerate?: boolean } =
   // 前端 watch 第一拍就读到 done，当场收工——「正在回复」闪一下就灭，
   // 而真正的回复要一秒后才落地（实测：46ms regenerate → 55ms 就重绘收尾）。
   // respondToTurn 里只按 id 排除自己，标成 queued 不会被它自己的打断逻辑误杀。
-  db.prepare(`UPDATE turns SET status = 'queued', reply = NULL, error = NULL, finished_at = NULL WHERE id = ?`).run(turnId);
+  db.prepare(`UPDATE turns SET status = 'queued', reply = NULL, reasoning_draft = NULL, error = NULL, finished_at = NULL WHERE id = ?`).run(turnId);
   turn.status = "queued";
 
   void respondToTurn(turn, { isRetry: true, collapseReply }).catch(() => {
@@ -1621,10 +1762,11 @@ export function cancelTurn(turnId: string): boolean {
   const turn = getTurn(turnId);
   if (!turn) return false;
   const changed = db.prepare(
-    `UPDATE turns SET status = 'cancelled', error = '已手动停止', reply = NULL, finished_at = ? WHERE id = ? AND status IN ('queued','running')`,
+    `UPDATE turns SET status = 'cancelled', error = '已手动停止', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ? AND status IN ('queued','running')`,
   ).run(Date.now(), turnId);
   if (turn.contact_id) {
-    const active = activeTurns.get(turn.contact_id);
+    const conversationId = turn.conversation_id || localConversationId(turn.contact_id);
+    const active = activeTurns.get(conversationId);
     if (active && active.turnId === turnId) active.controller.abort();
   }
   return Number(changed.changes) > 0;
@@ -1659,7 +1801,7 @@ function resetTurnForEdit(turnId: string, text: string, attachments: string[]): 
   // 附件必须跟着一起改：respondToTurn 重放图片读的是 turns.attachments，
   // 只改消息不改处理单，会出现「气泡里图变了、她看见的还是旧图」。
   db.prepare(
-    `UPDATE turns SET status = 'queued', reply = NULL, error = NULL, finished_at = NULL, superseded_at = NULL, text = ?, attachments = ? WHERE id = ?`,
+    `UPDATE turns SET status = 'queued', reply = NULL, reasoning_draft = NULL, error = NULL, finished_at = NULL, superseded_at = NULL, text = ?, attachments = ? WHERE id = ?`,
   ).run(text, attachments.length > 0 ? JSON.stringify(attachments) : null, turnId);
 }
 

@@ -154,6 +154,8 @@ export type CompanionSections = {
   lifeline?: string;
   /** 窗口边缘梗概（被丢掉的历史压成一段"上次说到"）。 */
   recap?: string;
+  /** 当前 Conversation 自己的滚动摘要（群聊不与其他群串）。 */
+  conversationSummary?: string;
   /** 关系温度计一行话（阶段/亲密度/情绪）。 */
   bondLine?: string;
 };
@@ -201,6 +203,9 @@ export function buildSystemPrompt(
       : "",
     companion?.recap
       ? `[上次说到]\n（回放窗口之外的对话只剩这段梗概，细节别编，需要就问）\n${companion.recap.trim().slice(0, COMPANION_BUDGET.recap)}`
+      : "",
+    companion?.conversationSummary
+      ? `[本会话摘要]\n（只属于当前会话，不能带到别的群或私聊）\n${companion.conversationSummary.trim().slice(0, COMPANION_BUDGET.recap)}`
       : "",
     `[记忆]\n${buildMemorySection(memories)}`,
     nowLine !== "" ? `[现在]\n${nowLine}` : scheduleLine !== "" ? `[作息]\n${scheduleLine}` : "",
@@ -281,7 +286,7 @@ export function nowText(now = new Date(), lastUserAt?: number | null, op = "TA")
 
 /** 把最近对话转成模型消息。只保留原话，不含任何中间产物。 */
 export function toChatMessages(
-  rows: Array<{ role: string; text: string; turn_id?: string | null }>,
+  rows: Array<{ role: string; text: string; turn_id?: string | null; sender_name?: string | null }>,
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
   const turns: Array<string | null> = [];
@@ -298,7 +303,10 @@ export function toChatMessages(
       last.content = `${last.content}\n${row.text}`;
       continue;
     }
-    out.push({ role: row.role as "user" | "assistant", content: row.text });
+    const content = row.role === "user" && (row.sender_name ?? "").trim() !== ""
+      ? `[${String(row.sender_name).trim()}] ${row.text}`
+      : row.text;
+    out.push({ role: row.role as "user" | "assistant", content });
     turns.push(tid);
   }
   return out;

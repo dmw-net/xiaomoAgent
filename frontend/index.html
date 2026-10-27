@@ -150,12 +150,12 @@
   // 玻璃模式的不透明度档（透明度只在玻璃开启时生效，与 lib/wallpaper.ts 同一套换算）
   function applySurface(surface){
     var s = document.documentElement.style;
-    var gw = Math.max(50, 100 - surface * 0.7);
-    var chrome = Math.min(92, Math.max(56, gw + 4));
+    var gw = Math.max(42, 100 - surface * 1.05);
+    var chrome = Math.min(96, Math.max(46, gw + 4));
     s.setProperty("--wp-glass-wash", gw + "%");
     s.setProperty("--wp-glass-chrome", chrome + "%");
-    s.setProperty("--wp-glass-card", Math.min(94, Math.max(64, gw + 8)) + "%");
-    s.setProperty("--wp-glass-modal", Math.min(94, Math.max(88, gw + 24)) + "%");
+    s.setProperty("--wp-glass-card", Math.min(94, Math.max(50, gw + 6)) + "%");
+    s.setProperty("--wp-glass-modal", Math.min(96, Math.max(86, gw + 28)) + "%");
   }
   function clearSurface(){
     var s = document.documentElement.style;
@@ -191,10 +191,10 @@
       var stars = document.createElement("div");
       stars.className = "wp-stars";
       layer.appendChild(stars);
-      // 五道流星各有长短、角度和节奏，叠成稀疏流星雨；两份构建逻辑必须同构
+      // 十四道流星分成近景/中景/远景；数量与 lib/wallpaper.ts、foundation.css 同构
       var meteors = document.createElement("div");
       meteors.className = "wp-meteors";
-      for (var i = 0; i < 5; i++) {
+      for (var i = 0; i < 14; i++) {
         var meteor = document.createElement("span");
         meteor.className = "wp-meteor";
         meteors.appendChild(meteor);

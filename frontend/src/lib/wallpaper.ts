@@ -32,6 +32,8 @@ export function wallpaperPreset(id: string): WallpaperPreset | null {
 }
 
 const LAYER_ID = "wp-layer";
+/** 流星数量与 foundation.css 的 nth-child 规格、index.html 的首帧副本保持一致。 */
+const STARRY_METEOR_COUNT = 14;
 /** 当前壁纸里的视频（若有）：页面藏进后台时暂停，回前台继续——别让用户看不见的动画吃电。 */
 let activeVideo: HTMLVideoElement | null = null;
 const DEFAULT_TINT = "hsl(250 12% 15%)";
@@ -114,10 +116,10 @@ function buildPreset(pref: WallpaperPref): HTMLElement {
   const stars = document.createElement("div");
   stars.className = "wp-stars";
   layer.appendChild(stars);
-  // 流星：五道子光痕各有长短、角度和节奏，叠成稀疏流星雨（CSS 动画，元素本身是空壳）
+  // 流星：十四道子光痕分成近景/中景/远景，CSS 按 nth-child 给出各自的轨迹与节奏。
   const meteors = document.createElement("div");
   meteors.className = "wp-meteors";
-  for (let i = 0; i < 5; i += 1) {
+  for (let i = 0; i < STARRY_METEOR_COUNT; i += 1) {
     const meteor = document.createElement("span");
     meteor.className = "wp-meteor";
     meteors.appendChild(meteor);
@@ -181,16 +183,17 @@ function buildMedia(pref: WallpaperPref, token: number): HTMLElement {
  */
 function applySurfaceVars(surface: number): void {
   const root = document.documentElement.style;
-  // 通透度仍保留完整手感，但最透一档也只让壁纸占一半左右：网页壁纸经常半屏纯白，
-  // 30% 的暗底不足以托住白字。50% 再叠加 chrome/card 与 backdrop 的轻压暗，才有稳定对比。
-  const gw = Math.max(50, 100 - surface * 0.7);
-  const chrome = Math.min(92, Math.max(56, gw + 4));
+  // 0 仍然是完全不透明，45 左右刚好让壁纸参与构图，80 则接近真正的薄玻璃。
+  // 从前 45 就落在 69% 左右，所有表面叠起来像深色塑料；线性下探后，默认档
+  // 的 wash 约 53%，再由方向光与顶缘高光维持层级，而不是靠把底压黑。
+  const gw = Math.max(42, 100 - surface * 1.05);
+  const chrome = Math.min(96, Math.max(46, gw + 4));
   root.setProperty("--wp-glass-wash", `${gw}%`);
   root.setProperty("--wp-glass-chrome", `${chrome}%`);
-  root.setProperty("--wp-glass-card", `${Math.min(94, Math.max(64, gw + 8))}%`);
+  root.setProperty("--wp-glass-card", `${Math.min(94, Math.max(50, gw + 6))}%`);
   // 弹窗下面永远垫着遮罩（暗色 scrim）：底太透时遮罩会隔着卡片透出来，
   // 整个弹窗看着像被一起压暗——弹窗是当前唯一该"亮"的表面，保底必须比内容区高一档。
-  root.setProperty("--wp-glass-modal", `${Math.min(94, Math.max(88, gw + 24))}%`);
+  root.setProperty("--wp-glass-modal", `${Math.min(96, Math.max(86, gw + 28))}%`);
 }
 
 function clearSurfaceVars(): void {

@@ -22,8 +22,10 @@ export function setNotifyPref(on: boolean): void {
   } catch { /* 无痕模式禁写也不该炸 */ }
 }
 
-function openContact(contactId: string): void {
-  window.dispatchEvent(new CustomEvent("xiaomo:open-contact", { detail: { contactId } }));
+function openContact(contactId: string, conversationId?: string, conversationTitle?: string, readOnly = false): void {
+  window.dispatchEvent(new CustomEvent("xiaomo:open-contact", {
+    detail: { contactId, conversationId, conversationTitle, readOnly },
+  }));
 }
 
 async function bindTauriAction(): Promise<void> {
@@ -34,7 +36,10 @@ async function bindTauriAction(): Promise<void> {
     await onAction((event) => {
       const extra = event.notification?.extra as Record<string, unknown> | undefined;
       const contactId = typeof extra?.contactId === "string" ? extra.contactId : "";
-      if (contactId) openContact(contactId);
+      const conversationId = typeof extra?.conversationId === "string" ? extra.conversationId : undefined;
+      const conversationTitle = typeof extra?.conversationTitle === "string" ? extra.conversationTitle : undefined;
+      const readOnly = extra?.readOnly === true;
+      if (contactId) openContact(contactId, conversationId, conversationTitle, readOnly);
     });
   } catch {
     tauriActionBound = false;
@@ -67,7 +72,14 @@ export function disableNotifications(): void {
   setNotifyPref(false);
 }
 
-export async function showMessageNotification(input: { title: string; body: string; contactId: string }): Promise<void> {
+export async function showMessageNotification(input: {
+  title: string;
+  body: string;
+  contactId: string;
+  conversationId?: string;
+  conversationTitle?: string;
+  readOnly?: boolean;
+}): Promise<void> {
   if (!getNotifyPref() || !notificationSupported()) return;
   const body = input.body.trim().slice(0, 120);
   try {
@@ -77,7 +89,12 @@ export async function showMessageNotification(input: { title: string; body: stri
       await sendNotification({
         title: input.title,
         body,
-        extra: { contactId: input.contactId },
+        extra: {
+          contactId: input.contactId,
+          conversationId: input.conversationId,
+          conversationTitle: input.conversationTitle,
+          readOnly: input.readOnly === true,
+        },
         autoCancel: true,
         group: "xiaomo-messages",
       });
@@ -87,7 +104,7 @@ export async function showMessageNotification(input: { title: string; body: stri
     const n = new Notification(input.title, { body, tag: "xiaomo-" + input.contactId });
     n.onclick = () => {
       window.focus();
-      openContact(input.contactId);
+      openContact(input.contactId, input.conversationId, input.conversationTitle, input.readOnly);
       n.close();
     };
   } catch { /* 通知失败不影响消息本身 */ }

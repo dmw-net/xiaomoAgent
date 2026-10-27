@@ -3,6 +3,21 @@
 /** 徽标集合：多一个值界面就会显示成空白，所以与后端保持同一份。 */
 export type QQStatus = "connected" | "connecting" | "disabled" | "attention" | "not-configured";
 
+export type QQConversationView = {
+  id: string;
+  kind: "private" | "group";
+  title: string;
+  /** auto = 平台群名；custom = 用户手动命名，平台事件不会覆盖。 */
+  titleSource: "auto" | "custom";
+  externalId: string;
+  enabled: boolean;
+  /** 机器人被移出群或群解散的时间；非 null 时只能查看历史，不能重新开启收件。 */
+  leftAt: number | null;
+  /** 当前群会话里的消息条数；清除历史的确认文案与空状态按它显示。 */
+  messageCount: number;
+  lastMessageAt: string;
+};
+
 export type QQBindingView = {
   id: string;
   contactId: string;
@@ -17,4 +32,6 @@ export type QQBindingView = {
   lastReceivedAt: string;
   lastSentAt: string;
   createdAt: string;
+  /** 这位机器人名下的 QQ 群会话；QQ 私聊已并入联系人主私聊。 */
+  conversations: QQConversationView[];
 };

@@ -1,11 +1,10 @@
-import { getJson, postJson } from "./client";
-import type { QQBindingView, QQStatus } from "../types";
+import { deleteJson, getJson, postJson } from "./client";
+import type { QQBindingView, QQConversationView, QQStatus } from "../types";
+export type { QQConversationView } from "../types";
 
 /**
- * QQ 通道接口。
- * 凭据（AppID/AppSecret）是**全局一份**——官方机器人是"一个机器人服务很多用户"，
- * 所以它挂在 /api/qq/credentials，不属于任何联系人；
- * 每联系人一条的只是 openid 绑定，挂在 /api/contacts/:id/qq。
+ * QQ 通道接口：每位联系人对应一个独立 BotAccount。
+ * 凭据与 openid 绑定按联系人隔离；QQ 私聊进主会话，群会话单独隔离。
  */
 
 export type QQSummary = {
@@ -26,25 +25,25 @@ export type QQSummary = {
  * 开始扫码建机器人：返回的 qrContent 是一个 https 链接（不是图片），
  * 界面渲成二维码给手机 QQ 扫。taskId 只用来轮询，密钥那一步全在服务端做。
  */
-export function beginQQCredentialQr(): Promise<{ taskId: string; qrContent: string; expiresInMs: number }> {
-  return postJson("/api/qq/qr");
+export function beginQQCredentialQr(contactId: string): Promise<{ taskId: string; qrContent: string; expiresInMs: number }> {
+  return postJson("/api/qq/qr?contactId=" + encodeURIComponent(contactId));
 }
 
-export function pollQQCredentialQr(taskId: string): Promise<{
+export function pollQQCredentialQr(contactId: string, taskId: string): Promise<{
   status: "waiting" | "created" | "expired" | "gone"; error: string; appId?: string;
 }> {
-  return getJson("/api/qq/qr/" + encodeURIComponent(taskId));
+  return getJson("/api/qq/qr/" + encodeURIComponent(taskId) + "?contactId=" + encodeURIComponent(contactId));
 }
 
 /**
  * 保存全局凭据。密钥那一栏留空或仍是掩码 = 不动原值（后端那条约定与模型密钥一致），
  * 所以"只改 AppID 不重填密钥"是支持的。返回的就是总览那份形状，不用回来再问一次。
  */
-export function saveQQCredentials(patch: { appId?: string; clientSecret?: string; enabled?: boolean }): Promise<QQSummary> {
-  return postJson("/api/qq/credentials", patch);
+export function saveQQCredentials(contactId: string, patch: { appId?: string; clientSecret?: string; enabled?: boolean }): Promise<QQSummary> {
+  return postJson("/api/qq/credentials?contactId=" + encodeURIComponent(contactId), { ...patch, contactId });
 }
 
-export function fetchQQBinding(contactId: string): Promise<{ binding: QQBindingView | null; configured: boolean; status: QQStatus }> {
+export function fetchQQBinding(contactId: string): Promise<{ binding: QQBindingView | null; configured: boolean; status: QQStatus; conversations: QQConversationView[] }> {
   return getJson(`/api/contacts/${encodeURIComponent(contactId)}/qq`);
 }
 
@@ -61,6 +60,33 @@ export function pollQQBind(contactId: string, attemptId: string): Promise<{
 
 export function setQQFlags(contactId: string, patch: { enabled?: boolean; proactive?: boolean }): Promise<{ binding: QQBindingView }> {
   return postJson(`/api/contacts/${encodeURIComponent(contactId)}/qq/flags`, patch);
+}
+
+export function setQQConversationEnabled(contactId: string, conversationId: string, enabled: boolean): Promise<unknown> {
+  return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/flags?contactId=${encodeURIComponent(contactId)}`, { enabled });
+}
+
+/** title=null 时恢复最近一次平台自动群名；自定义名不会被后续事件覆盖。 */
+export function renameQQConversation(
+  contactId: string,
+  conversationId: string,
+  title: string | null,
+): Promise<{ conversation: Pick<QQConversationView, "id" | "title" | "titleSource"> }> {
+  return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/title?contactId=${encodeURIComponent(contactId)}`, { title });
+}
+
+export function clearQQConversationHistory(
+  contactId: string,
+  conversationId: string,
+): Promise<{ messages: number; turns: number; memories: number; media: number }> {
+  return deleteJson(`/api/conversations/${encodeURIComponent(conversationId)}/history?contactId=${encodeURIComponent(contactId)}`);
+}
+
+export function removeQQConversation(
+  contactId: string,
+  conversationId: string,
+): Promise<{ removed: true; messages: number; turns: number; memories: number; media: number }> {
+  return deleteJson(`/api/conversations/${encodeURIComponent(conversationId)}?contactId=${encodeURIComponent(contactId)}`);
 }
 
 export function disconnectQQ(contactId: string): Promise<unknown> {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, Search, X } from "lucide-react";
 import { ApiError, chatApi, contactsApi, memoryApi, proactiveApi, settingsApi } from "../../api";
@@ -15,6 +15,7 @@ import { CLOCK_EVENT, getClockPref, type ClockPref } from "../../lib/ui-prefs";
 import { offerUndo } from "../../lib/undo";
 import { enqueueOutbox, flushOutbox, outboxForContact, subscribeOutbox } from "../../lib/outbox";
 import { useDismiss } from "../../hooks/useDismiss";
+import { useAnchoredPop } from "../../hooks/useAnchoredPop";
 import { useLiveReveal } from "../../hooks/useLiveReveal";
 import { useNotices } from "../../hooks/useNotices";
 import { CHAT_RESIZE_EVENT } from "../../hooks/useResizeSignal";
@@ -24,9 +25,11 @@ import MessageMenu, { type MenuState } from "./MessageMenu";
 import Modal from "../../components/Modal";
 import MessageRowItem from "./MessageRow";
 import ToolCard from "./ToolCard";
+import ThinkingBlock, { ThinkingLive } from "./ThinkingBlock";
 import ChatMap, { type ChatMapNode } from "./ChatMap";
+import ConversationSwitcher from "./ConversationSwitcher";
 import { PENDING_TTL_MS, PROACTIVE_GAP_MS, PULL_IDLE_STEPS, PULL_INTERVAL_MS, TURN_WATCH_MAX_TRIES, WATCH_PULL_EVERY } from "./constants";
-import { THINKING_LEVEL_LABELS, type ContextUsage, type MessageRow, type ThinkingControl, type ThinkingLevelId } from "../../types";
+import { THINKING_LEVEL_LABELS, type ContactConversationItem, type ContextUsage, type MessageRow, type ThinkingControl, type ThinkingQuickChoice } from "../../types";
 
 type Pending = { text: string; at: number; imgs: string[]; localId: string; turnId?: string; failed?: boolean; queued?: boolean; outbox?: boolean };
 type ModelOption = { value: string; label: string; detail: string };
@@ -137,7 +140,7 @@ function rememberDraft(key: string, text: string): void {
   }
 }
 
-export default function ChatView({ characterName, ownerName, ownerAvatar, contactAvatar, onSwitchContact, contactIdOverride, introChip, onBack, onEditProfile, onOpenSection, onOpenModelSettings, onOpenOnboarding, onContactArchived, msgScope, focusMessageId, onFocusHandled, onStatus, paused , showThinking = true, showTools = true, imageGenOn = false, streamReveal = true }: {
+export default function ChatView({ characterName, ownerName, ownerAvatar, contactAvatar, onSwitchContact, contactIdOverride, conversationId, conversationTitle, readOnly = false, onOpenLocal, conversations = [], onOpenConversation, introChip, onBack, onEditProfile, onOpenSection, onOpenModelSettings, onOpenOnboarding, onContactArchived, msgScope, focusMessageId, onFocusHandled, onStatus, paused , showThinking = true, showTools = true, imageGenOn = false, streamReveal = true, composerAccessory }: {
   characterName: string;
   ownerName: string;
   ownerAvatar: string;
@@ -148,6 +151,17 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   onSwitchContact?: (id: string) => void;
   /** 助手工作区：会话按派生联系人 id 隔离，不走全局当前联系人。 */
   contactIdOverride?: string;
+  /** QQ 群会话 id；空 = 联系人主私聊（应用/微信/QQ 私聊共用）。 */
+  conversationId?: string;
+  conversationTitle?: string;
+  /** 平台会话只读：输入框隐藏，禁止把它当成群成员发言。 */
+  readOnly?: boolean;
+  /** 从平台会话切回联系人本地对话。 */
+  onOpenLocal?: () => void;
+  /** 当前联系人名下的全部会话；有 QQ 来源时在顶栏显示来源切换器。 */
+  conversations?: ContactConversationItem[];
+  /** 在联系人内部切换上下文：null = 主私聊，字符串 = QQ 群。 */
+  onOpenConversation?: (conversationId: string | null, title?: string, readOnly?: boolean) => void;
   /** 空会话引导里的第一个示例问句。 */
   introChip?: string;
   /** 窄屏双页流：给了就在顶栏显示「←」返回列表，而不是联系人切换芯片。 */
@@ -178,9 +192,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   imageGenOn?: boolean;
   /** 流式渲染：开着才逐字追字显示草稿；关着（默认）只挂「正在输入」到整条弹出。助手弹窗不传=按开处理。 */
   streamReveal?: boolean;
+  /** 宿主放进输入区底栏的专属控件（目前只有设置助手的权限 chip）。 */
+  composerAccessory?: ReactNode;
 }): JSX.Element {
   const cid = contactIdOverride;
-  const cacheKey = msgScope ?? cid ?? "";
+  const cacheKey = (msgScope ?? cid ?? "") + (conversationId ? ":" + conversationId : ":local");
+  const hasGroupSources = conversations.some((conv) => conv.channel === "qq" && conv.kind === "group");
   const [msgs, setMsgs] = useState<MessageRow[]>(() => msgsSeed.get(cacheKey) ?? []);
   /**
    * 新消息入场动效的判定。
@@ -229,6 +246,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 名字别叫 draft——那是输入框里**他**的草稿（见下面 line 160）。
    */
   const [streamText, setStreamText] = useState("");
+  /** 这一轮的实时思考草稿：与正文分两列落库，确保思考先到、正文开始时也不会被抹掉。 */
+  const [streamReasoning, setStreamReasoning] = useState("");
+  /** 按轮次保存思考展开态：草稿气泡切到定稿气泡时沿用同一个值，不自动收起。 */
+  const [thinkingOpenTurns, setThinkingOpenTurns] = useState<Record<string, boolean>>({});
+  const setThinkingOpen = useCallback((turnId: string, open: boolean): void => {
+    setThinkingOpenTurns((prev) => prev[turnId] === open ? prev : { ...prev, [turnId]: open });
+  }, []);
   /** 当前这份草稿属于哪一轮：本轮真气泡已取回、且逐字揭示完成后，草稿才退场。 */
   const draftTurnRef = useRef<string | null>(null);
   /** 本轮的真气泡是否已经被某一拍轮询取回。 */
@@ -242,7 +266,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    */
   const reveal = useLiveReveal(streamText, streamText !== "");
   const draftRetired = draftHasBubble && (!streamReveal || (!typing && reveal.done));
-  const draftLive = (typing || streamText !== "") && !draftRetired;
+  const draftLive = (typing || streamText !== "" || streamReasoning !== "") && !draftRetired;
   /** 只有真的在逐字显示正文时才隐藏同轮定稿气泡，三个点阶段不受影响。 */
   const draftTyping = streamReveal && streamText !== "" && draftLive;
   const draftShown = reveal.text;
@@ -292,8 +316,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [ctx, setCtx] = useState<ContextUsage | null>(null);
   const [ctxOpen, setCtxOpen] = useState(false);
   const [ctxErr, setCtxErr] = useState("");
+  const ctxBtnRef = useRef<HTMLButtonElement>(null);
   const loadCtx = useCallback((): void => {
-    void chatApi.fetchContextUsage(cid)
+    void chatApi.fetchContextUsage(cid, conversationId)
       .then((d) => { setCtx(d); setCtxErr(""); })
       .catch((e: Error) => { setCtx(null); setCtxErr(e.message); });
   }, [cid]);
@@ -308,6 +333,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   }, [cid]);
   useEffect(() => { loadThinking(); }, [loadThinking]);
 
+  // 首个实时推理片段到达时自动展开；用户一旦手动收起，就不再被后续增量强行打开。
+  useEffect(() => {
+    const turnId = draftTurnRef.current;
+    if (!turnId || streamReasoning === "") return;
+    setThinkingOpenTurns((prev) => prev[turnId] === undefined ? { ...prev, [turnId]: true } : prev);
+  }, [streamReasoning]);
+
   // ── 聊天模型快捷切换：只改这一位联系人的绑定，不动全局主模型 ──
   const chatModelScope = cid ?? msgScope ?? "";
   const modelSwitchable = cid === undefined && chatModelScope !== "";
@@ -317,11 +349,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [globalModelReady, setGlobalModelReady] = useState(false);
   const [globalModelEcho, setGlobalModelEcho] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
-  /** 模型浮层的二级页：主列表 / 思考强度。开浮层永远回到主列表。 */
+  /** 模型浮层当前展开的区：模型列表 / 推理等级。开浮层永远回到模型列表。 */
   const [modelPane, setModelPane] = useState<"models" | "think">("models");
+  const [modelQuery, setModelQuery] = useState("");
   const [modelBusy, setModelBusy] = useState(false);
   const [modelError, setModelError] = useState("");
   const modelWrapRef = useRef<HTMLDivElement>(null);
+  const modelTriggerRef = useRef<HTMLButtonElement>(null);
   const loadModels = useCallback((): void => {
     if (!modelSwitchable) return;
     void Promise.all([
@@ -345,6 +379,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       .catch((error: Error) => setModelError(error.message));
   }, [chatModelScope, modelSwitchable]);
   useDismiss(modelOpen, () => setModelOpen(false), modelWrapRef);
+  const modelPopPos = useAnchoredPop(modelOpen, modelTriggerRef, 390);
   useEffect(() => {
     if (!modelSwitchable) return;
     loadModels();
@@ -354,7 +389,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   }, [loadModels, modelSwitchable]);
   const toggleModel = (): void => {
     setCtxOpen(false);
-    if (!modelOpen) { setModelPane("models"); loadModels(); loadThinking(); }
+    if (!modelOpen) { setModelPane("models"); setModelQuery(""); loadModels(); loadThinking(); }
     setModelOpen((v) => !v);
   };
   const chooseModel = (profileId: string): void => {
@@ -377,24 +412,54 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const currentModelLabel = modelProfileId !== ""
     ? modelOptions.find((item) => item.value === modelProfileId)?.label ?? "已绑定模型"
     : `跟随全局 · ${globalModelStatus}`;
-  // "off" 是关思考：对 effort 形态是尽力而为（不发强度字段），开关形态才是真关。
-  const chooseThinking = (level: ThinkingLevelId | "off"): void => {
+  const modelQueryText = modelQuery.trim().toLowerCase();
+  const visibleModels = modelQueryText === "" ? modelOptions : modelOptions.filter((item) =>
+    `${item.label} ${item.detail}`.toLowerCase().includes(modelQueryText));
+  const thinkingSummary = thinking === null
+    ? "未读取"
+    : thinking.thinking.mode === "auto"
+      ? "跟随模型"
+      : thinking.thinking.mode === "off"
+        ? "不指定"
+        : thinking.thinking.param !== "effort"
+          ? (thinking.thinking.mode === "on" ? "开启" : "跟随模型")
+          : thinking.thinking.level !== ""
+            ? THINKING_LEVEL_LABELS[thinking.thinking.level]
+            : "默认";
+  const reasoningAvailable = thinking?.thinking.switchable === true;
+  /** 明确开启思考时，首个正文片段到达前给出「正在思考」状态；跟随模型不冒充确定状态。 */
+  const thinkingLive = showThinking && thinking?.thinking.mode === "on";
+  const chooseThinking = (choice: ThinkingQuickChoice): void => {
     if (!thinking) return;
-    const selected = level === "off" ? thinking.thinking.off === true : !thinking.thinking.off && thinking.thinking.level === level;
+    const autoSelected = choice === "auto"
+      ? thinking.thinking.mode === "auto" || (thinking.thinking.param === "effort" && thinking.thinking.mode === "off") || (thinking.thinking.param !== "effort" && thinking.thinking.mode === "")
+      : false;
+    const selected = autoSelected
+      || (choice === "on" && thinking.thinking.mode === "on" && thinking.thinking.param !== "effort")
+      || (choice === "off" && thinking.thinking.mode === "off")
+      || (choice !== "auto" && choice !== "on" && choice !== "off"
+        && thinking.thinking.mode !== "off" && thinking.thinking.mode !== "auto" && thinking.thinking.level === choice);
     if (selected || thinkBusy) return;
     const before = thinking;
-    const optimistic: ThinkingControl = { ...thinking, thinking: level === "off"
-      ? { ...thinking.thinking, off: true }
-      : { ...thinking.thinking, off: false, level } };
+    const optimistic: ThinkingControl = { ...thinking, thinking: choice === "auto"
+      ? { ...thinking.thinking, mode: "auto", off: false, level: "" }
+      : choice === "on"
+        ? { ...thinking.thinking, mode: "on", off: false, level: "" }
+        : choice === "off"
+          ? { ...thinking.thinking, mode: "off", off: true, level: "" }
+          : { ...thinking.thinking, mode: "on", off: false, level: choice } };
     setThinking(optimistic);
     setThinkBusy(true);
-    chatApi.setThinkingLevel(level, cid)
+    chatApi.setThinkingLevel(choice, cid)
       .then((next) => {
         setThinking(next);
         // 强度改在模型档上：档被多位联系人共享、或改的是全局主模型时，必须说破——
         // 不然用户以为只动了当前这位，别的联系人跟着变了却没人知道。
         const shared = next.appliedTo;
-        const change = level === "off" ? "思考已关闭" : `思考强度已切到「${THINKING_LEVEL_LABELS[level]}」`;
+        const change = choice === "auto" ? "推理等级已改为跟随模型"
+          : choice === "on" ? "思考已开启"
+            : choice === "off" ? "思考已关闭"
+              : `推理等级已切到「${THINKING_LEVEL_LABELS[choice]}」`;
         addNotice(shared?.scope === "profile" && shared.contacts > 1
           ? `${change}（「${shared.label}」由 ${shared.contacts} 位联系人共用，一起改了）`
           : shared?.scope === "global"
@@ -405,13 +470,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         // 回滚只认自己那份乐观快照：在途期间 loadThinking 可能已用服务器最新状态
         // 刷过 thinking，按引用比较，别把新快照打回旧值。
         setThinking((cur) => (cur === optimistic ? before : cur));
-        addNotice("没切成思考强度：" + error.message, { info: true });
+        addNotice("没切成推理等级：" + error.message, { info: true });
       })
       .finally(() => setThinkBusy(false));
   };
   // 这两个浮层此前只认「点遮罩」，键盘用户按 Esc 什么都不会发生。
   // 浮层本体标 data-keep-menu，内部点击才不会被 useDismiss 误判成外部点击。
   useDismiss(ctxOpen, () => { setCtxOpen(false); });
+  const ctxPopPos = useAnchoredPop(ctxOpen, ctxBtnRef, 264);
 
   const toggleCtx = (): void => {
     setModelOpen(false);
@@ -535,7 +601,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     const onCleared = (e: Event): void => {
       const detail = (e as CustomEvent<{ contactId?: string }>).detail;
       if (cid === undefined || detail?.contactId !== cid) return;
-      void chatApi.fetchAllMessages(cid).then((data) => {
+      void chatApi.fetchAllMessages(cid, conversationId).then((data) => {
         let maxId = 0;
         for (const m of data.messages) if (m.id > maxId) maxId = m.id;
         lastIdRef.current = maxId;
@@ -575,7 +641,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    *  气泡行的（为了不甩到对话末尾），行号没变——增量拉取（id > since）永远看不到它变了。 */
   /** 草稿退场。结束/失败/停止/换轮都要走这里——草稿气泡现在会活到自己那轮的气泡上屏，
    *  少清一次就会在屏幕上挂着一段已经不代表的回答。 */
-  const retireDraft = (): void => { draftTurnRef.current = null; setStreamText(""); };
+  const retireDraft = (): void => { draftTurnRef.current = null; setStreamText(""); setStreamReasoning(""); };
   const watchStopRef = useRef<(() => void) | null>(null);
   /** 被 barge-in 打断的旧轮：它已插的气泡是服务端删掉的，两种拉取（增量按 id、全量按 id 合并）
    *  都看不见删除。本地先撤下，等新轮收尾后再按轮窄取校准一次（打断收尾在旧执行体的
@@ -583,6 +649,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const interruptedTurnsRef = useRef<Set<string>>(new Set());
   const watch = useCallback((turnId: string, opts: { fullRedraw?: boolean } = {}) => {
     watchStopRef.current?.();
+    // 新一轮（含重答同一轮）从默认展开重新开始，不继承上一轮用户收起后的状态。
+    setThinkingOpenTurns((prev) => {
+      if (!(turnId in prev)) return prev;
+      const next = { ...prev };
+      delete next[turnId];
+      return next;
+    });
     let stopped = false;
     let tries = 0;
     let failDelay = 1200;
@@ -610,10 +683,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           // watch 超时（tries 耗尽）的轮连 done 都没到。把它们交给逐字揭示，草稿会永远
           // 等不到接手的真气泡（该轮不再有气泡上屏，draftHasBubble 恒假），挂死在屏幕上。
           // 结束这一拍**不清**已认定的 done 定稿——清了到气泡上屏之间会露出一个往返的空窗。
-          if (!over || (finished && turn.reply)) {
+          if (!over || (finished && (turn.reply || turn.reasoning))) {
             // done 这一拍也把定稿正文交给逐字揭示：单条模式必须让最后一段字打完，
             // 再由下方真气泡接手，不能在中途整段闪换。
-            if (turn.reply) draftTurnRef.current = turnId;
+            if (turn.reply || turn.reasoning) draftTurnRef.current = turnId;
+            setStreamReasoning(String(turn.reasoning ?? ""));
             setStreamText(String(turn.reply ?? ""));
           }
           // 消息列表不必每拍都拉：草稿走的是 /api/turn 这一拍，气泡最快也只有分条那 450ms 一条。
@@ -765,7 +839,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     // watch 开头的 watchStopRef 把新轮的监控杀掉，新回复从此无人认领。
     const wasIdle = pendingTurnRef.current === null;
     try {
-      const recent = await chatApi.fetchRecentTurns(1, cid ?? msgScope);
+      const recent = await chatApi.fetchRecentTurns(1, cid ?? msgScope, conversationId);
       const t = recent.turns?.[0];
       setFailure(t && t.status === "failed" ? { id: t.id, error: t.error } : null);
       if (t && (t.status === "queued" || t.status === "running") && wasIdle && pendingTurnRef.current === null) {
@@ -787,13 +861,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     // 作用域必须显式带上：这一拍有可能是卸载之后才落地的（切联系人时在途的那一次拉取），
     // 省略 cid 会让 api 层回落去读**响应时刻**的全局联系人——A 的进度就记到了 B 头上，
     // B 的红点被凭空清掉还落了库。
-    contactsApi.markRead(cid ?? msgScope, id)
+    contactsApi.markRead(cid ?? msgScope, id, conversationId)
       .then(() => window.dispatchEvent(new Event("xiaomo:contacts-changed")))
       .catch(() => { lastReadSentRef.current = 0; });
-  }, [cid, msgScope]);
+  }, [cid, msgScope, conversationId]);
 
   const pullOnce = async (): Promise<void> => {
-    const data = await chatApi.fetchMessages(lastIdRef.current, cid);
+    const data = await chatApi.fetchMessages(lastIdRef.current, cid, conversationId);
     setModelReady(data.modelReady);
     setOnboardingDone(data.onboardingDone);
     setPersonaIsDefault(data.personaIsDefault === true);
@@ -851,7 +925,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   };
 
   const pullAllOnce = async (): Promise<void> => {
-    const data = await chatApi.fetchAllMessages(cid);
+    const data = await chatApi.fetchAllMessages(cid, conversationId);
     setModelReady(data.modelReady);
     setOnboardingDone(data.onboardingDone);
     setPersonaIsDefault(data.personaIsDefault === true);
@@ -882,7 +956,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 返回服务端这一轮的行：watch 收尾要用它判断"done 了却没气泡"的空回复。
    */
   pullTurnRef.current = async (turnId: string): Promise<MessageRow[]> => {
-    const data = await chatApi.fetchTurnMessages(turnId, cid);
+    const data = await chatApi.fetchTurnMessages(turnId, cid, conversationId);
     if (editingRef.current !== null) return data.messages;
     setMsgs((prev) => reuseRows(prev,
       [...prev.filter((m) => m.turn_id !== turnId), ...data.messages].sort((a, b) => a.id - b.id)));
@@ -952,7 +1026,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     if (iptRef.current) iptRef.current.style.height = "auto";
     setTyping(true);
 
-    chatApi.say(text, attachments, cid, localId)
+    chatApi.say(text, attachments, cid, localId, conversationId)
       .then((data) => {
         pendingTurnRef.current = data.turnId;
         // 把 turnId 回填到这条占位上：之后按单认领，连发两句相同的话也不会互相错认。
@@ -1024,7 +1098,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       return;
     }
     setTyping(true);
-    chatApi.say(p.text, p.imgs, cid, localId)
+    chatApi.say(p.text, p.imgs, cid, localId, conversationId)
       .then((data) => {
         pendingTurnRef.current = data.turnId;
         pendingsRef.current = pendingsRef.current.map((x) => (x.localId === localId ? { ...x, turnId: data.turnId, failed: false } : x));
@@ -1393,7 +1467,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     return out;
     // typing/draftShown 是草稿的可见性与内容（typing 还参与上面"发送在飞"那个窗口期的判定）；
     // 锚定的轮号只在换轮时随这些状态一起变，所以不必（也不能）把 ref 本身写进依赖。
-  }, [msgs, pendings, clockPref, showTools, draftLive, typing]);
+  }, [msgs, pendings, clockPref, showTools, draftLive, typing, streamReasoning]);
 
   /** 贴底时把"看到哪儿了"推到最新：不这么做，第一次往上翻会把整段历史都算成"没看的新消息"
    *  （首屏不滚动就不触发 scroll，光靠 scroll 事件更新会漏掉这一档）。 */
@@ -1551,7 +1625,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   // 滚动跟随：只在用户本来贴着底部时才自动滚
   useLayoutEffect(() => {
     if (stickRef.current) scrollDown(true);
-  }, [nodes, typing, notices, editingId, scrollDown]);
+  }, [nodes, typing, notices, editingId, streamReasoning, scrollDown]);
 
   // 草稿逐字那一档必须**瞬时**落底：走 smooth 的话动画被 30 次/秒重启，永远追不完，
   // 整页看着在慢慢往上爬——这就是用户报的「一直把气泡向上顶」。
@@ -1637,7 +1711,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     const seq = ++searchSeqRef.current;
     setSearchBusy(true);
     const timer = window.setTimeout(() => {
-      void chatApi.searchMessages(q, cid)
+      void chatApi.searchMessages(q, cid, conversationId)
         .then((d) => {
           if (seq !== searchSeqRef.current) return;
           setSearchHits(d.messages);
@@ -1686,7 +1760,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const jumpToSearchHit = useCallback((hit: MessageRow): void => {
     if (focusMessage(hit.id)) return;
     setSearchBusy(true);
-    void chatApi.fetchMessagesAround(hit.id, cid)
+    void chatApi.fetchMessagesAround(hit.id, cid, conversationId)
       .then((d) => {
         // 按 id 合并，不是整表替换：命中很早的一条时窗口装不下整段会话，替换会把
         // 窗口外已加载的消息全丢掉——增量拉取只认 id > 水位，永远补不回来，
@@ -2161,9 +2235,18 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         <div key="draft" className="msg-row her gap" id="typingRow">
           <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} />
           <div className="bubble">
+            {streamReasoning !== "" && (
+              <ThinkingBlock reasoning={streamReasoning} live={draftShown === ""} persistKey={draftTurnRef.current ?? undefined}
+                open={draftTurnRef.current ? (thinkingOpenTurns[draftTurnRef.current] ?? true) : false}
+                onOpenChange={(open) => { const turnId = draftTurnRef.current; if (turnId) setThinkingOpen(turnId, open); }} />
+            )}
             {streamReveal && draftShown !== ""
               ? <span className="draft-text">{draftShown}{(typing || !reveal.done) && <span className="draft-caret" aria-hidden="true" />}</span>
-              : <span className="typing"><i /><i /><i /></span>}
+              : streamReasoning === "" && thinkingLive
+                ? <ThinkingLive />
+                : streamReasoning === ""
+                  ? <span className="typing"><i /><i /><i /></span>
+                  : null}
           </div>
         </div>
       );
@@ -2308,7 +2391,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             onRetry={retry}
             ttsOn={caps.textToSpeech} onPlayTts={playTts}
             ttsPlaying={playingId === m.id} ttsBusy={ttsBusyId === m.id}
-            showThinking={showThinking} />
+            showThinking={showThinking}
+            thinkingOpen={m.turn_id ? thinkingOpenTurns[m.turn_id] : undefined}
+            onThinkingOpenChange={setThinkingOpen} />
         );
       }
     }
@@ -2342,6 +2427,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 </button>
               ) : (
                 <span id="stat">{chatStatus.text}</span>
+              )}
+              {onOpenConversation && hasGroupSources && (
+                <>
+                  <span className="sub-sep" aria-hidden="true">·</span>
+                  <ConversationSwitcher conversations={conversations} currentId={conversationId ?? null} onSelect={onOpenConversation} />
+                </>
               )}
             </div>
           </div>
@@ -2475,7 +2566,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               const first = msgs[0];
               if (!first) return;
               setEarlierBusy(true);
-              void chatApi.fetchEarlierMessages(first.id, cid).then((d) => {
+              void chatApi.fetchEarlierMessages(first.id, cid, conversationId).then((d) => {
                 if (d.messages.length > 0) setMsgs((prev) => [...d.messages, ...prev]);
                 // 还剩多少条由服务端报：从前这里用 `行数 >= 200` 反推，
                 // 那个 200 与后端页大小各写一遍，改一边就悄悄翻不到底。
@@ -2538,7 +2629,15 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         </div>
       )}
 
-      <div id="composer">
+      <div id="composer" className={readOnly ? "readonly" : undefined}>
+        {readOnly ? (
+          <div className="composer-readonly">
+            <span>QQ 群 · {conversationTitle || "群聊"} · 只读</span>
+            <small>群消息只能查看；要回复请在 QQ 群里直接 @机器人。</small>
+            {onOpenLocal && <button type="button" className="pf-ghost" onClick={onOpenLocal}>回到私聊</button>}
+          </div>
+        ) : (
+        <>
         {/* 输入区的上边框：一根可拖的分隔线。放在这儿而不是 textarea 自带的右下角柄——
             那个角紧挨着「发送」，容易点歪，而且离正在打字的地方最远。 */}
         <div
@@ -2630,82 +2729,130 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               <span className="kbd-only">Enter 发送 · Shift+Enter 换行</span>
               <span className="touch-only">长按消息可复制 / 编辑 / 撤回</span>
             </span>
+            {composerAccessory}
             {modelSwitchable && (
               <div className="model-wrap" ref={modelWrapRef}>
-                <button type="button" className="model-trigger" aria-haspopup="dialog"
+                <button type="button" ref={modelTriggerRef} className="model-trigger" aria-haspopup="dialog"
                   aria-expanded={modelOpen} aria-label="切换聊天模型" title={currentModelLabel}
                   onClick={toggleModel}>
                   <Cpu size={14} strokeWidth={1.9} />
-                  <span className="model-trigger-label">模型 · {currentModelLabel}</span>
+                  <span className="model-trigger-label">{currentModelLabel}</span>
+                  {reasoningAvailable && (
+                    <span className="model-trigger-think">{thinkingSummary}</span>
+                  )}
                   <ChevronDown size={12} strokeWidth={2} className={modelOpen ? "flip" : ""} />
                 </button>
-                {modelOpen && (
-                  <div className="model-pop" role="dialog" aria-label="聊天模型" data-keep-menu>
+                {modelOpen && createPortal(
+                  <div className="model-pop" role="dialog" aria-label="聊天模型" data-keep-menu
+                    style={modelPopPos ? { left: modelPopPos.left, bottom: modelPopPos.bottom, width: modelPopPos.width } : { visibility: "hidden" }}>
+                    <div className="model-pop-head">
+                      <span>模型与推理</span>
+                      <small>只影响这位联系人 · 下一条生效</small>
+                    </div>
+                    <div className="model-current">
+                      <div className="model-current-row">
+                        <span className="model-current-label">模型</span>
+                        <b title={currentModelLabel}>{currentModelLabel}</b>
+                      </div>
+                      <button type="button" className="model-current-row model-current-action"
+                        disabled={!reasoningAvailable} aria-expanded={modelPane === "think"}
+                        onClick={() => setModelPane((prev) => prev === "think" ? "models" : "think")}>
+                        <span className="model-current-label">推理等级</span>
+                        <span className="model-current-value">{reasoningAvailable ? thinkingSummary : "模型未启用思考"}</span>
+                        <ChevronDown size={14} strokeWidth={2.2}
+                          className={modelPane === "think" ? "model-current-chev up" : "model-current-chev"} />
+                      </button>
+                    </div>
+
                     {modelPane === "think" && thinking ? (
-                      <>
-                        <div className="model-pop-head">
-                          <button type="button" className="model-back" aria-label="返回模型列表"
-                            onClick={() => setModelPane("models")}>
-                            <ChevronLeft size={14} strokeWidth={2.2} />
+                      <div className="model-pane">
+                        <div className="model-section-head">
+                          <span>选择推理等级</span>
+                          <button type="button" className="model-back" onClick={() => setModelPane("models")}>
+                            <ChevronLeft size={13} strokeWidth={2.2} /> 返回模型
                           </button>
-                          <span>思考强度</span>
-                          <small title={`${thinking.provider} · ${thinking.model}`}>{thinking.provider} · {thinking.model}</small>
                         </div>
-                        <div className="think-levels" role="radiogroup" aria-label="选择思考强度">
-                          <button type="button" role="radio" aria-checked={thinking.thinking.off === true}
-                            className={"think-level" + (thinking.thinking.off ? " on" : "")}
-                            disabled={thinkBusy} onClick={() => chooseThinking("off")}>
-                            关闭
+                        <div className="reason-options" role="radiogroup" aria-label="选择推理等级">
+                          <button type="button" role="radio"
+                            aria-checked={thinking.thinking.mode === "auto" || (thinking.thinking.param === "effort" && thinking.thinking.mode === "off") || (thinking.thinking.param !== "effort" && thinking.thinking.mode === "")}
+                            className={"reason-option" + (thinking.thinking.mode === "auto" || (thinking.thinking.param === "effort" && thinking.thinking.mode === "off") || (thinking.thinking.param !== "effort" && thinking.thinking.mode === "") ? " on" : "")}
+                            disabled={thinkBusy} onClick={() => chooseThinking("auto")}>
+                            <span className="reason-option-copy">
+                              <b>跟随模型</b>
+                              <small>不发送推理强度，由服务商决定</small>
+                            </span>
+                            {(thinking.thinking.mode === "auto" || (thinking.thinking.param === "effort" && thinking.thinking.mode === "off") || (thinking.thinking.param !== "effort" && thinking.thinking.mode === "")) && <Check size={15} strokeWidth={2.4} />}
                           </button>
-                          {thinking.thinking.levels.map((level) => (
+                          {thinking.thinking.param === "effort" ? thinking.thinking.levels.map((level) => (
                             <button key={level} type="button" role="radio"
-                              aria-checked={!thinking.thinking.off && thinking.thinking.level === level}
-                              className={"think-level" + (!thinking.thinking.off && thinking.thinking.level === level ? " on" : "")}
+                              aria-checked={thinking.thinking.mode !== "off" && thinking.thinking.mode !== "auto" && thinking.thinking.level === level}
+                              className={"reason-option" + (thinking.thinking.mode !== "off" && thinking.thinking.mode !== "auto" && thinking.thinking.level === level ? " on" : "")}
                               disabled={thinkBusy} onClick={() => chooseThinking(level)}>
-                              {THINKING_LEVEL_LABELS[level]}
+                              <span className="reason-option-copy">
+                                <b>{THINKING_LEVEL_LABELS[level]}</b>
+                                <small>{level === "max" ? "最深、最慢，适合复杂问题" : level === "high" || level === "xhigh" ? "更深入，耗时更长" : level === "low" ? "更快，适合简单问题" : "平衡速度与深度"}</small>
+                              </span>
+                              {thinking.thinking.mode !== "off" && thinking.thinking.mode !== "auto" && thinking.thinking.level === level && <Check size={15} strokeWidth={2.4} />}
                             </button>
-                          ))}
+                          )) : (
+                            <>
+                              <button type="button" role="radio"
+                                aria-checked={thinking.thinking.mode === "on"}
+                                className={"reason-option" + (thinking.thinking.mode === "on" ? " on" : "")}
+                                disabled={thinkBusy} onClick={() => chooseThinking("on")}>
+                                <span className="reason-option-copy"><b>开启思考</b><small>显式向服务商发送开启字段</small></span>
+                                {thinking.thinking.mode === "on" && <Check size={15} strokeWidth={2.4} />}
+                              </button>
+                              <button type="button" role="radio"
+                                aria-checked={thinking.thinking.mode === "off"}
+                                className={"reason-option" + (thinking.thinking.mode === "off" ? " on" : "")}
+                                disabled={thinkBusy} onClick={() => chooseThinking("off")}>
+                                <span className="reason-option-copy"><b>关闭思考</b><small>显式向服务商发送关闭字段</small></span>
+                                {thinking.thinking.mode === "off" && <Check size={15} strokeWidth={2.4} />}
+                              </button>
+                            </>
+                          )}
                         </div>
                         <div className="think-pop-note">
-                          越高想得更久更深入，也更慢。关闭后不再指定强度，由模型自行决定。下一条回复起生效。
+                          {thinking.thinking.param === "effort"
+                            ? "强度越高想得越久，也更慢。跟随模型不会发送强度字段；有些服务商仍会按自己的默认思考。"
+                            : "这类模型只有开关。跟随模型不发送字段；开/关会显式覆盖服务商默认。"}
+                          下一条回复起生效。
                         </div>
-                      </>
+                      </div>
                     ) : modelError !== "" ? (
-                      <>
-                        <div className="model-pop-head">
-                          <span>聊天模型</span>
-                          <small>只影响这位联系人 · 下一条生效</small>
-                        </div>
+                      <div className="model-pane">
                         <div className="model-pop-empty">模型列表没读到：{modelError}</div>
-                      </>
+                      </div>
                     ) : (
-                      <>
-                        <div className="model-pop-head">
-                          <span>聊天模型</span>
-                          <small>只影响这位联系人 · 下一条生效</small>
+                      <div className="model-pane">
+                        <div className="model-section-head">
+                          <span>选择聊天模型</span>
+                          {globalModelEcho && <small>当前为演示模式</small>}
                         </div>
-                        {thinking?.thinking.switchable && (
-                          // 思考强度做成二级页入口：排在模型列表之前，不用滚到长列表底下去找。
-                          <button type="button" className="model-option model-think-entry"
-                            aria-haspopup="dialog" onClick={() => { loadThinking(); setModelPane("think"); }}>
-                            <span className="model-option-copy">
-                              <b>思考强度</b>
-                              <small>{thinking.thinking.off ? "已关闭" : thinking.thinking.level ? THINKING_LEVEL_LABELS[thinking.thinking.level] : "未设置"}</small>
-                            </span>
-                            <ChevronDown size={15} strokeWidth={2.2} className="model-go" />
-                          </button>
+                        {modelOptions.length > 6 && (
+                          <label className="model-filter">
+                            <Search size={14} strokeWidth={2} />
+                            <input value={modelQuery} onChange={(event) => setModelQuery(event.currentTarget.value)}
+                              placeholder="搜索模型或供应商" aria-label="搜索模型" />
+                            {modelQuery !== "" && (
+                              <button type="button" aria-label="清空搜索" onClick={() => setModelQuery("")}><X size={13} /></button>
+                            )}
+                          </label>
                         )}
                         <div className="model-options" role="radiogroup" aria-label="选择聊天模型">
-                          <button type="button" role="radio" aria-checked={modelProfileId === ""}
-                            className={"model-option" + (modelProfileId === "" ? " on" : "")}
-                            disabled={modelBusy} onClick={() => chooseModel("")}>
-                            <span className="model-option-copy">
-                              <b>跟随全局</b>
-                              <small>全局模型 · {globalModelStatus}</small>
-                            </span>
-                            {modelProfileId === "" && <Check size={15} strokeWidth={2.4} />}
-                          </button>
-                          {modelOptions.map((item) => (
+                          {(modelQueryText === "" || "跟随全局".includes(modelQueryText)) && (
+                            <button type="button" role="radio" aria-checked={modelProfileId === ""}
+                              className={"model-option" + (modelProfileId === "" ? " on" : "")}
+                              disabled={modelBusy} onClick={() => chooseModel("")}>
+                              <span className="model-option-copy">
+                                <b>跟随全局</b>
+                                <small>全局模型 · {globalModelStatus}</small>
+                              </span>
+                              {modelProfileId === "" && <Check size={15} strokeWidth={2.4} />}
+                            </button>
+                          )}
+                          {visibleModels.map((item) => (
                             <button key={item.value} type="button" role="radio"
                               aria-checked={modelProfileId === item.value}
                               className={"model-option" + (modelProfileId === item.value ? " on" : "")}
@@ -2721,20 +2868,24 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                         {modelOptions.length === 0 && (
                           <div className="model-pop-empty">还没有可切换的模型档。先在设置里添加并保存一份。</div>
                         )}
+                        {modelOptions.length > 0 && visibleModels.length === 0 && modelQueryText !== "" && (
+                          <div className="model-pop-empty">没有匹配的模型。</div>
+                        )}
                         {onOpenModelSettings && (
                           <button type="button" className="model-manage"
                             onClick={() => { setModelOpen(false); onOpenModelSettings(); }}>
                             管理模型档
                           </button>
                         )}
-                      </>
+                      </div>
                     )}
-                  </div>
+                  </div>,
+                  document.body
                 )}
               </div>
             )}
             <div className="ctx-wrap">
-              <button type="button" className="ctx-btn" id="ctxBtn" data-keep-menu onClick={toggleCtx}
+              <button type="button" ref={ctxBtnRef} className="ctx-btn" id="ctxBtn" data-keep-menu onClick={toggleCtx}
                 title={ctx
                   ? `联系人记得的范围：已用 ${Math.round((ctx.used / ctx.limit) * 100)}%（${fmtTokens(ctx.used)} / ${fmtTokens(ctx.limit)}）· 一共聊了 ${ctx.totalTurns ?? "?"} 轮、带上最近 ${ctx.turns ?? "?"} 轮`
                     + ((ctx.droppedByBudget ?? 0) > 0 ? ` · 更早的没带上 ${ctx.droppedByBudget} 轮` : "")
@@ -2755,63 +2906,70 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                   )
                   : "—"}
               </button>
-              {ctxOpen && ctx && (
+              {ctxOpen && ctx && (() => { const c = ctx; return createPortal(
                 <>
                   <div className="ctx-backdrop" onClick={() => setCtxOpen(false)} />
-                  <div className="ctx-pop" id="ctxPop" data-keep-menu>
+                  <div className="ctx-pop" id="ctxPop" data-keep-menu
+                    style={ctxPopPos ? { left: ctxPopPos.left, bottom: ctxPopPos.bottom, width: ctxPopPos.width } : { visibility: "hidden" }}>
                     <div className="ctx-pop-head">
                       <span>联系人记得的范围</span>
                       <button type="button" aria-label="关闭" onClick={() => setCtxOpen(false)}><X size={14} /></button>
                     </div>
                     <div className="ctx-pop-total">
-                      <b>{Math.round((ctx.used / ctx.limit) * 100)}%</b>
-                      <span>已使用 {fmtTokens(ctx.used)} / {fmtTokens(ctx.limit)}</span>
+                      <b>{Math.round((c.used / c.limit) * 100)}%</b>
+                      <span>已使用 {fmtTokens(c.used)} / {fmtTokens(c.limit)}</span>
                     </div>
                     {/* 轮不是条：一轮 = 他问一次 + 她答一次（可能分好几条气泡）。
                         总量与"当前带入"分开给，截断/丢弃才看得明白。 */}
                     <div className="ctx-pop-turns">
-                      一共聊了 {ctx.totalTurns ?? "—"} 轮 · 带上最近 {ctx.turns ?? "—"} 轮
+                      一共聊了 {c.totalTurns ?? "—"} 轮 · 带上最近 {c.turns ?? "—"} 轮
                     </div>
                     <div className="ctx-bar">
-                      {ctx.parts.map((p) => (
-                        <i key={p.key} data-k={p.key} style={{ width: (p.tokens / ctx.limit) * 100 + "%" }} title={p.label} />
+                      {c.parts.map((p) => (
+                        <i key={p.key} data-k={p.key} style={{ width: (p.tokens / c.limit) * 100 + "%" }} title={p.label} />
                       ))}
                     </div>
-                    {ctx.parts.map((p) => (
+                    {c.parts.map((p) => (
                       <div key={p.key} className="ctx-row">
                         <i className="ctx-legend" data-k={p.key} />
                         <span>{CTX_PART_LABEL[p.key] ?? p.label}</span>
-                        <span className="num">{fmtTokens(p.tokens)} · {(p.tokens / ctx.limit * 100).toFixed(1)}%</span>
+                        <span className="num">{fmtTokens(p.tokens)} · {(p.tokens / c.limit * 100).toFixed(1)}%</span>
                       </div>
                     ))}
-                    {(ctx.overflowTurns ?? 0) > 0 && (
+                    {(c.overflowTurns ?? 0) > 0 && (
                       <div className="ctx-row">
-                        <span className="ctx-warn">更早的没带上，只保留最近 {ctx.recentTurnsSetting ?? ctx.turns} 轮 · 想多带，去 编辑资料 → 回放轮数 调大</span>
+                        <span className="ctx-warn">更早的没带上，只保留最近 {c.recentTurnsSetting ?? c.turns} 轮 · 想多带，去 编辑资料 → 回放轮数 调大</span>
                       </div>
                     )}
                     {/* 预算截断单独一行：成因不是回放轮数，引导也就不是"调大轮数"。
                         上限没填时挡住它的是我们的 32K 保守估算，不是模型的真实天花板——必须说破。 */}
-                    {(ctx.droppedByBudget ?? 0) > 0 && (
+                    {(c.droppedByBudget ?? 0) > 0 && (
                       <div className="ctx-row">
                         <span className="ctx-warn">
-                          更早的没带上，还差 {ctx.droppedByBudget} 轮 · 想多带，去 编辑资料 → 回放轮数 调大
-                          {ctx.limitIsFallback
+                          更早的没带上，还差 {c.droppedByBudget} 轮 · 想多带，去 编辑资料 → 回放轮数 调大
+                          {c.limitIsFallback
                             ? <>，或先<button type="button" className="ctx-link" onClick={() => { setCtxOpen(false); onOpenModelSettings?.(); }}>去设置</button>填模型的输入上限</>
                             : "，或换个能记更多的模型"}
                           。
                         </span>
                       </div>
                     )}
-                    <div className="ctx-foot">数字是估算 · 模型 {ctx.model || "未配置"}</div>
+                    <div className="ctx-foot">数字是估算 · 模型 {c.model || "未配置"}</div>
                   </div>
-                </>
-              )}
-              {ctxOpen && !ctx && (
-                <div className="ctx-pop" data-keep-menu>
-                  <div className="ctx-foot">{ctxErr !== ""
-                    ? <>没读到，<button type="button" className="ctx-link" onClick={loadCtx}>重试</button></>
-                    : "读取中…"}</div>
-                </div>
+                </>,
+                document.body
+              ); })()}
+              {ctxOpen && !ctx && createPortal(
+                <>
+                  <div className="ctx-backdrop" onClick={() => setCtxOpen(false)} />
+                  <div className="ctx-pop" data-keep-menu
+                    style={ctxPopPos ? { left: ctxPopPos.left, bottom: ctxPopPos.bottom, width: ctxPopPos.width } : { visibility: "hidden" }}>
+                    <div className="ctx-foot">{ctxErr !== ""
+                      ? <>没读到，<button type="button" className="ctx-link" onClick={loadCtx}>重试</button></>
+                      : "读取中…"}</div>
+                  </div>
+                </>,
+                document.body
               )}
             </div>
             {(typing || busy) && pendingTurnRef.current !== null ? (
@@ -2828,6 +2986,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             </button>
           </div>
         )}
+        </>
+        )}
       </div>
 
       {menu && <MessageMenu menu={menu} setMenu={setMenu} addNotice={addNotice}
@@ -2838,7 +2998,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         onRemember={rememberMessage} />}
 
       {pendingConfirm && (
-        <Modal label="操作确认" onClose={() => setPendingConfirm(null)}>
+        <Modal label="操作确认" placement="center" onClose={() => setPendingConfirm(null)}>
           <div className="del-title">
             {pendingConfirm.kind === "edit-switch" ? "切换编辑到这条消息？"
               : pendingConfirm.kind === "regenerate" ? "重新生成这条回复？"
@@ -2863,7 +3023,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       )}
 
       {delTarget && (
-        <Modal label="删除确认" onClose={() => setDelTarget(null)}>
+        <Modal label="删除确认" placement="center" onClose={() => setDelTarget(null)}>
           <div className="del-title">{delTarget.superseded_kind === "retract" ? "同时删除撤回记录？" : "删除这段对话？"}</div>
           <div className="del-note">
             {delTarget.superseded_kind === "retract"

@@ -19,9 +19,11 @@ type ItemMenu = { contact: ContactItem; x: number; y: number };
  *  和聊天页「⋯→归档」同一套；从前两个入口一个问一句不问，还能反悔的只有其中一个。 */
 type ConfirmState = { contact: ContactItem };
 
-export default function Sidebar({ current, onPick, onLeaveCurrent, onContactsChanged, onOpenProfile, onOpenHit }: {
+export default function Sidebar({ current, currentConversation, onPick, onLeaveCurrent, onContactsChanged, onOpenProfile, onOpenHit }: {
   current: string;
-  onPick: (id: string) => void;
+  /** 当前打开的会话；点击已经选中的联系人时沿用它，不把用户踢回另一段来源。 */
+  currentConversation?: string | null;
+  onPick: (id: string, conversationId?: string | null, title?: string, readOnly?: boolean) => void;
   /** 归档/删掉的正好是当前打开的那位：会话区退回空态，别顺手打开小茉的对话。 */
   onLeaveCurrent: () => void;
   onContactsChanged: () => void;
@@ -195,54 +197,77 @@ export default function Sidebar({ current, onPick, onLeaveCurrent, onContactsCha
       .catch((err: Error) => setError("读取失败：" + err.message));
   };
 
-  const renderRow = (c: ContactItem, isArchived: boolean): JSX.Element => (
-    <div
-      key={c.id}
-      className={"s-item" + (c.id === current && !isArchived ? " active" : "") + (isArchived ? " s-archived" : "")}
-      role="button"
-      tabIndex={0}
-      aria-current={c.id === current && !isArchived ? "true" : undefined}
-      onClick={() => { if (!isArchived) onPick(c.id); }}
-      onKeyDown={(e) => { if (!isArchived && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); onPick(c.id); } }}
-      onContextMenu={isArchived ? undefined : (e) => { e.preventDefault(); setMenu({ contact: c, x: e.clientX, y: e.clientY }); }}
-    >
+  const renderRow = (c: ContactItem, isArchived: boolean): JSX.Element => {
+    // 联系人列表只保留一个“人”的入口。应用、微信与 QQ 私聊共用主会话；
+    // 各 QQ 群收进聊天页的会话切换器，来源标签只负责说明最近一句从哪来。
+    const latestConv = c.conversationId
+      ? (c.conversations ?? []).find((conv) => conv.id === c.conversationId)
+      : undefined;
+    const latestSource = c.previewChannel || latestConv?.channel || "";
+    const sourceTag = latestConv?.kind === "group"
+      ? "群"
+      : latestSource === "qq" ? "QQ" : latestSource === "wechat" ? "微信" : "";
+    const unread = c.unread || 0;
+    const activeGroup = c.id === current && currentConversation
+      ? (c.conversations ?? []).find((conv) => conv.id === currentConversation && conv.channel !== "web")
+      : undefined;
+    const target = c.id === current
+      ? activeGroup
+      : (latestConv?.channel === "web" ? undefined : latestConv);
+    const open = (): void => {
+      // 主私聊在状态里用 null 表示；只有 QQ 群才携带独立 conversationId。
+      onPick(c.id, target?.id ?? null, target?.title, target?.readOnly ?? false);
+    };
+    return (
       <div
-        className={"s-ava" + (c.avatar ? " has-img" : "")}
-        style={avatarToneStyle(c.name)}
-        title={isArchived ? "已归档" : c.name}
+        key={c.id}
+        className={"s-item" + (c.id === current && !isArchived ? " active" : "") + (isArchived ? " s-archived" : "")}
+        role="button"
+        tabIndex={0}
+        aria-current={c.id === current && !isArchived ? "true" : undefined}
+        onClick={() => { if (!isArchived) open(); }}
+        onKeyDown={(e) => { if (!isArchived && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } }}
+        onContextMenu={isArchived ? undefined : (e) => { e.preventDefault(); setMenu({ contact: c, x: e.clientX, y: e.clientY }); }}
       >
-        {c.avatar ? <img src={c.avatar} alt={c.name + "的头像"} /> : (c.name || "?").slice(0, 1)}
-      </div>
-      <div className="s-meta">
-        <div className="s-r1">
-          <span className="s-name">{c.name}</span>
-          {!isArchived && <span className="s-time">{shortTimeLabel(c.lastAt)}</span>}
+        <div className={"s-ava" + (c.avatar ? " has-img" : "")} style={avatarToneStyle(c.name)} title={isArchived ? "已归档" : c.name}>
+          {c.avatar ? <img src={c.avatar} alt={c.name + "的头像"} /> : (c.name || "?").slice(0, 1)}
         </div>
-        <div className="s-r2">
-          {isArchived
-            ? "已归档 · 对话与记忆保留"
-            : c.preview || "还没说过话"}
+        <div className="s-meta">
+          <div className="s-r1">
+            <span className="s-name">{c.name}</span>
+            {!isArchived && <span className="s-time">{shortTimeLabel(c.lastAt)}</span>}
+          </div>
+          <div className="s-r2" title={isArchived ? undefined : c.preview}>
+            {isArchived ? "已归档 · 对话与记忆保留" : (
+              <>
+                {sourceTag && <span className={"s-source s-source-" + latestSource}>{sourceTag}</span>}
+                {c.preview || "还没说过话"}
+              </>
+            )}
+          </div>
         </div>
+        {!isArchived && unread > 0 && (
+          <span className="s-badge"
+            title={`该联系人共有 ${unread} 条未读`}
+            aria-label={`该联系人共有 ${unread} 条未读`}>
+            {unread > 99 ? "99+" : unread}
+          </span>
+        )}
+        {isArchived && (
+          <button type="button" className="s-restore" title="恢复到列表"
+            onClick={(e) => { e.stopPropagation(); unarchive(c); }}>
+            <ArchiveRestore size={14} strokeWidth={1.8} />恢复
+          </button>
+        )}
+        {isArchived && (
+          <button type="button" className="s-del" title="彻底删除（不可恢复）"
+            onClick={(e) => { e.stopPropagation(); setConfirm({ contact: c }); }}>
+            <Trash2 size={14} strokeWidth={1.8} />删除
+          </button>
+        )}
       </div>
-      {c.unread > 0 && (
-        <span className="s-badge" title={`${c.unread} 条未读`} aria-label={`${c.unread} 条未读`}>
-          {c.unread > 99 ? "99+" : c.unread}
-        </span>
-      )}
-      {isArchived && (
-        <button type="button" className="s-restore" title="恢复到列表"
-          onClick={(e) => { e.stopPropagation(); unarchive(c); }}>
-          <ArchiveRestore size={14} strokeWidth={1.8} />恢复
-        </button>
-      )}
-      {isArchived && (
-        <button type="button" className="s-del" title="彻底删除（不可恢复）"
-          onClick={(e) => { e.stopPropagation(); setConfirm({ contact: c }); }}>
-          <Trash2 size={14} strokeWidth={1.8} />删除
-        </button>
-      )}
-    </div>
-  );
+    );
+  };
 
   return (
     <aside id="side">

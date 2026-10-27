@@ -17,7 +17,7 @@ export * from "./assistant";
 export * as wechatApi from "./wechat";
 export * as avatarApi from "./avatar";
 export * as qqApi from "./qq";
-export type { QQBindingView, QQStatus } from "../types";
+export type { QQBindingView, QQConversationView, QQStatus } from "../types";
 export * as searchApi from "./search";
 export * as linkPreviewApi from "./linkPreview";
 export type { LinkPreview } from "./linkPreview";

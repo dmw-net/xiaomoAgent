@@ -5,6 +5,9 @@ export type { MessageRow, TurnSummary as TurnRow } from "../../../shared/api";
 
 import type { ThinkingLevelId, ThinkingModeId, ThinkingParamId } from "./settings";
 
+/** 聊天输入区可提交的思考选择：模型默认 / 开关 / 强度。 */
+export type ThinkingQuickChoice = ThinkingLevelId | "auto" | "on" | "off";
+
 /** 当前联系人的思考控制面（/api/model/thinking）：聊天输入区只读这一份快照。 */
 export type ThinkingControl = {
   model: string;

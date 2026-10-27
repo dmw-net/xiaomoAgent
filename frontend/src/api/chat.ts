@@ -1,9 +1,15 @@
 import { cq, deleteJson, getJson, postJson, putJson } from "./client";
-import type { ContextUsage, MessageRow, ThinkingControl, ThinkingLevelId, TurnRow } from "../types";
+import type { ContextUsage, MessageRow, ThinkingControl, ThinkingQuickChoice, TurnRow } from "../types";
 
-/** 上下文占用（当前联系人）：打开浮层时拉一次。 */
-export function fetchContextUsage(cid?: string): Promise<ContextUsage> {
-  return getJson(cq("/api/context/usage", cid));
+/** 联系人作用域 + 可选会话作用域；会话 id 为空时走服务端本地默认会话。 */
+function cqc(base: string, cid?: string, conversationId?: string): string {
+  const withContact = cq(base, cid);
+  return conversationId ? withContact + "&conversationId=" + encodeURIComponent(conversationId) : withContact;
+}
+
+/** 上下文占用（当前会话）：打开浮层时拉一次。 */
+export function fetchContextUsage(cid?: string, conversationId?: string): Promise<ContextUsage> {
+  return getJson(cqc("/api/context/usage", cid, conversationId));
 }
 
 /** 当前联系人的模型思考控制面：输入区的强度快捷开关用。 */
@@ -11,58 +17,58 @@ export function fetchThinkingControl(cid?: string): Promise<ThinkingControl> {
   return getJson(cq("/api/model/thinking", cid));
 }
 
-/** 切换当前模型的思考强度；"off" 关思考（选档位会自动把模式拨回开）。 */
-export function setThinkingLevel(level: ThinkingLevelId | "off", cid?: string): Promise<ThinkingControl> {
+/** 切换当前模型的思考设置；auto=跟随模型，on/off=显式开关，其余=具体强度。 */
+export function setThinkingLevel(level: ThinkingQuickChoice, cid?: string): Promise<ThinkingControl> {
   return postJson(cq("/api/model/thinking", cid), { level });
 }
 
 /** 增量拉取：只要 since 之后的新消息。 */
-export function fetchMessages(since: number, cid?: string): Promise<{
+export function fetchMessages(since: number, cid?: string, conversationId?: string): Promise<{
   modelReady: boolean; onboardingDone: boolean; personaIsDefault?: boolean; messages: MessageRow[];
 }> {
-  return getJson(cq("/api/messages?since=" + since, cid));
+  return getJson(cqc("/api/messages?since=" + since, cid, conversationId));
 }
 
 /** 全量拉取（含已失效消息）——初次加载与"整段后续都变了"的操作之后的整体重绘用。
  *  total/olderRemaining 由服务端报：界面自己数行数会与服务端页大小脱钩。 */
-export function fetchAllMessages(cid?: string): Promise<{
+export function fetchAllMessages(cid?: string, conversationId?: string): Promise<{
   modelReady: boolean; onboardingDone: boolean; personaIsDefault?: boolean;
   messages: MessageRow[]; total: number; olderRemaining: number;
 }> {
-  return getJson(cq("/api/messages?all=1", cid));
+  return getJson(cqc("/api/messages?all=1", cid, conversationId));
 }
 
 /** 会话内搜索：只在当前联系人里找，返回命中消息供前后跳转。 */
-export function searchMessages(q: string, cid?: string): Promise<{ q: string; messages: MessageRow[] }> {
-  return getJson(cq("/api/messages/search?q=" + encodeURIComponent(q.trim()), cid));
+export function searchMessages(q: string, cid?: string, conversationId?: string): Promise<{ q: string; messages: MessageRow[] }> {
+  return getJson(cqc("/api/messages/search?q=" + encodeURIComponent(q.trim()), cid, conversationId));
 }
 
 /** 搜索命中不在当前窗口时，按命中消息取前后一页，直接把它带进视口。 */
-export function fetchMessagesAround(id: number, cid?: string): Promise<{
+export function fetchMessagesAround(id: number, cid?: string, conversationId?: string): Promise<{
   messages: MessageRow[]; total: number; olderRemaining: number;
 }> {
-  return getJson(cq("/api/messages/around?id=" + id, cid));
+  return getJson(cqc("/api/messages/around?id=" + id, cid, conversationId));
 }
 
 /** 「载入更早」：从 beforeId 往回再取一页（长对话不再被首屏那 500 条封顶闷住）。 */
-export function fetchEarlierMessages(beforeId: number, cid?: string): Promise<{
+export function fetchEarlierMessages(beforeId: number, cid?: string, conversationId?: string): Promise<{
   messages: MessageRow[]; total: number; olderRemaining: number;
 }> {
-  return getJson(cq("/api/messages?all=1&before=" + beforeId, cid));
+  return getJson(cqc("/api/messages?all=1&before=" + beforeId, cid, conversationId));
 }
 
 /**
  * 只重取一条处理单产生的行。
  * 撤回 / 删除 / 停止 / 改一句文字都只动那一轮，为一行变化重敲整页（实测 500 行 / 250 KB）不值。
  */
-export function fetchTurnMessages(turnId: string, cid?: string): Promise<{ messages: MessageRow[] }> {
-  return getJson(cq("/api/messages?turn=" + encodeURIComponent(turnId), cid));
+export function fetchTurnMessages(turnId: string, cid?: string, conversationId?: string): Promise<{ messages: MessageRow[] }> {
+  return getJson(cqc("/api/messages?turn=" + encodeURIComponent(turnId), cid, conversationId));
 }
 
 /** 后端返回扁平结构（无 turn 包装字段）——Phase 2 曾凭空假设 { turn } 导致轮询永远失败。
  *  reply 有两个身份：running 时是「她正在写的这一句」（流式草稿，后端按 200ms 节流写），
  *  done 后是整轮定稿。所以界面只在 running 时拿它当草稿显示，别在其它状态读它。 */
-export function fetchTurn(id: string, cid?: string): Promise<{ id: string; status: string; reply: string | null; error: string | null }> {
+export function fetchTurn(id: string, cid?: string): Promise<{ id: string; status: string; reply: string | null; reasoning: string | null; error: string | null }> {
   return getJson(cq("/api/turn/" + encodeURIComponent(id), cid));
 }
 
@@ -81,8 +87,8 @@ export function regenerateTurn(id: string, cid?: string): Promise<unknown> {
 }
 
 /** 说一句话：立刻返回 202 + turnId，回复走轮询。attachments 为 /api/media 返回的 URL 列表。 */
-export function say(text: string, attachments?: string[], cid?: string, clientId?: string): Promise<{ turnId: string }> {
-  return postJson(cq("/api/say", cid), {
+export function say(text: string, attachments?: string[], cid?: string, clientId?: string, conversationId?: string): Promise<{ turnId: string }> {
+  return postJson(cqc("/api/say", cid, conversationId), {
     text,
     ...(attachments && attachments.length ? { attachments } : {}),
     ...(clientId ? { clientId } : {}),
@@ -133,6 +139,6 @@ export function deleteMessage(id: number, cid?: string): Promise<unknown> {
   return deleteJson(cq("/api/message/" + id, cid));
 }
 
-export function fetchRecentTurns(limit: number, cid?: string): Promise<{ turns: TurnRow[] }> {
-  return getJson(cq("/api/turns/recent?limit=" + limit, cid));
+export function fetchRecentTurns(limit: number, cid?: string, conversationId?: string): Promise<{ turns: TurnRow[] }> {
+  return getJson(cqc("/api/turns/recent?limit=" + limit, cid, conversationId));
 }

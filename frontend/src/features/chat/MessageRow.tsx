@@ -1,14 +1,15 @@
 import { memo, useMemo, type CSSProperties } from "react";
-import { Brain, Volume2, Loader2 } from "lucide-react";
+import { Volume2, Loader2 } from "lucide-react";
 import Avatar from "../../components/Avatar";
 import { useLongPress } from "../../hooks/useLongPress";
 import { findFirstExternalUrl, renderMd } from "../../lib/md";
 import LinkPreviewCard from "./LinkPreviewCard";
+import ThinkingBlock from "./ThinkingBlock";
 import { avatarToneStyle } from "../../lib/avatar-tone";
 import type { MessageRow } from "../../types";
 
 /** 一条普通消息气泡（含撤回态）。编辑态不走这里——它需要编辑器状态，留在 ChatView。 */
-function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, enter = false, enterDelay = 0 }: {
+function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, thinkingOpen, onThinkingOpenChange, enter = false, enterDelay = 0 }: {
   m: MessageRow;
   gap: boolean;
   /** 本条是「刚追加进来」的新消息，挂一次入场动效（判定见 ChatView 的 enterIds）。 */
@@ -33,6 +34,9 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   ttsOn?: boolean;
   /** 该联系人是否在聊天框显示思考过程（资料页「对话设置」里的开关）。 */
   showThinking?: boolean;
+  /** 思考面板是否展开：由聊天页按 turnId 持久化，保证流式草稿与定稿交接不闪回。 */
+  thinkingOpen?: boolean;
+  onThinkingOpenChange?: (turnId: string, open: boolean) => void;
   ttsPlaying?: boolean;
   ttsBusy?: boolean;
   onPlayTts?: (m: MessageRow) => void;
@@ -52,6 +56,11 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
     ...touch,
   };
 
+  const imgs = m.attachments ?? [];
+  // 一次渲染只在 text 变化时重扫；长回复里正则扫描不该跟着 TTS/主题等无关 props 重跑。
+  const previewUrl = useMemo(() => (m.text ? findFirstExternalUrl(m.text) : ""), [m.text]);
+  // 这一条必须放在所有 Hook 之后：撤回会让同一行从普通气泡切成“已撤回”，
+  // 若提前 return 跳过 useMemo，React 会看到 Hook 数量变化并整页白屏（error #300）。
   if (m.superseded_kind === "retract") {
     return (
       <div className={cls + " retracted"} data-id={m.id} {...handlers}>
@@ -59,24 +68,11 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
       </div>
     );
   }
-
-  const imgs = m.attachments ?? [];
-  // 一次渲染只在 text 变化时重扫；长回复里正则扫描不该跟着 TTS/主题等无关 props 重跑。
-  const previewUrl = useMemo(() => (m.text ? findFirstExternalUrl(m.text) : ""), [m.text]);
-  /**
-   * 思考过程：折叠在气泡顶部，默认收起（历史里 reasoning 是独立块 + 前 80 字预览）。
-   * 用原生 details：键盘可达、移动端零 JS，展开才占地方。
-   * 标题给字数不给 token——库里滚窗口按条数算，字数才是用户能核对的量。
-   */
-  const thinking = showThinking && m.role === "assistant" && typeof m.reasoning === "string" && m.reasoning !== "" ? (
-    <details className="think">
-      <summary>
-        <Brain size={11} strokeWidth={1.9} />
-        思考过程 · {m.reasoning.length} 字
-      </summary>
-      <div className="think-body">{m.reasoning}</div>
-    </details>
-  ) : null;
+  // 思考只属于她的回答；默认收起，展开后由面板自己承接长文本滚动，不把正文顶出屏幕。
+  const thinking = showThinking && m.role === "assistant" && typeof m.reasoning === "string" && m.reasoning !== ""
+    ? <ThinkingBlock reasoning={m.reasoning} open={thinkingOpen} persistKey={m.turn_id ?? undefined}
+        onOpenChange={(open) => { if (m.turn_id) onThinkingOpenChange?.(m.turn_id, open); }} />
+    : null;
   const failMark = failed ? (
     <button
       type="button"
@@ -88,6 +84,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   ) : null;
   const bubble = (
     <div className={"bubble" + (imgs.length > 0 && m.text === "" ? " img-only" : "")}>
+      {m.role === "user" && m.sender_name && <div className="msg-sender">{m.sender_name}</div>}
+      {thinking}
       {imgs.length > 0 && (
         <div className={"msg-imgs" + (imgs.length === 1 ? " single" : "")}>
           {imgs.map((url) => (
@@ -97,7 +95,6 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
           ))}
         </div>
       )}
-      {thinking}
       {m.text && <div className="msg-text">{renderMd(m.text)}</div>}
       {/* key 用地址本身：编辑消息换了链接时强制重挂载，避免新链接下还显示旧卡的标题/域名。 */}
       {previewUrl !== "" && <LinkPreviewCard key={previewUrl} url={previewUrl} />}

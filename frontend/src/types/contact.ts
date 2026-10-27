@@ -1,3 +1,18 @@
+/** 联系人下的一个独立会话入口。 */
+export type ContactConversationItem = {
+  id: string;
+  channel: string;
+  kind: "private" | "group" | string;
+  title: string;
+  enabled: boolean;
+  /** QQ 群：机器人已离群/群已解散的时间；历史仍可查看。 */
+  leftAt: number | null;
+  readOnly: boolean;
+  preview: string;
+  lastAt: number;
+  unread: number;
+};
+
 /** 侧栏联系人列表项（/api/contacts 下发，含预览与未读打算）。 */
 export type ContactItem = {
   id: string;
@@ -10,10 +25,18 @@ export type ContactItem = {
   avatar: string;
   createdAt: number;
   preview: string;
+  /** 最近一条消息从哪个入口来（web / wechat / qq）；私聊已合流，标签只表示来源。 */
+  previewChannel?: string;
+  /** 这条预览来自哪个 Conversation；点击联系人时直接打开它。 */
+  conversationId?: string | null;
+  conversationTitle?: string;
+  conversationReadOnly?: boolean;
+  /** 该联系人下可独立进入的会话（现在只剩需要隔离上下文的 QQ 群）。 */
+  conversations?: ContactConversationItem[];
   lastAt: number;
   pending: number;
   pendingFocus: string;
-  /** 未读助手消息数（红点）。 */
+  /** 该联系人名下所有会话的未读助手消息合计（侧栏只显示这一枚红点）。 */
   unread: number;
   /** 角色性别：female/male/other，驱动界面代词（她/他/TA）。 */
   gender?: string;

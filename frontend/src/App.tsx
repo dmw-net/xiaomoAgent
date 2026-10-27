@@ -24,13 +24,15 @@ import { settingsApi, contactId, setContactId } from "./api";
 import { getCachedContacts, refreshContacts, subscribeContacts } from "./lib/contactsStore";
 import { showMessageNotification, syncAppBadge } from "./lib/notify";
 import { startOutbox } from "./lib/outbox";
-import type { ContactItem } from "./types";
+import type { ContactItem, ContactConversationItem } from "./types";
 
 type ProfileTarget = { mode: "create" | "edit"; id: string; page?: ProfilePage; draft?: PersonaDraft } | null;
 
 /** 应用外壳：三栏布局 + 视图路由。各视图自己拉数据，切走即销毁。 */
 export default function App(): JSX.Element {
   const [current, setCurrent] = useState<string>(contactId());
+  /** 空 = 联系人主私聊；非空 = 当前打开的 QQ 群会话。 */
+  const [conversation, setConversation] = useState<{ id: string; title: string; readOnly: boolean } | null>(null);
   const [view, navigate] = useHashRoute();
   const [ownerName, setOwnerName] = useState("");
   const [ownerAvatar, setOwnerAvatar] = useState("");
@@ -38,6 +40,8 @@ export default function App(): JSX.Element {
   const [contactAvatar, setContactAvatar] = useState("");
   /** 聊天框按联系人的开关：思考过程折叠条 / 工具卡片（纯显示）+ 图像生成（决定露不露「画一张」）。缺省按各自默认处理。 */
   const [chatDisplay, setChatDisplay] = useState<{ showThinking: boolean; showTools: boolean; imageGen: boolean; streamReveal: boolean }>({ showThinking: true, showTools: true, imageGen: false, streamReveal: false });
+  /** 当前联系人名下的独立上下文（主私聊 / 各 QQ 群），供聊天页切换器使用。 */
+  const [contactConversations, setContactConversations] = useState<ContactConversationItem[]>([]);
   /** 全应用未读消息数（Rail「对话」图标红点）。 */
   const [unreadTotal, setUnreadTotal] = useState(0);
   /** 上一轮各联系人的未读数：只对“这次涨了”的部分发通知，首帧不补历史红点。 */
@@ -69,6 +73,7 @@ export default function App(): JSX.Element {
       setCharacterName(c.name || "小茉");
       setContactAvatar(c.avatar || "");
     }
+    setContactConversations(c?.conversations ?? []);
     setChatDisplay((prev) => {
       const next = { showThinking: c?.showThinking !== false, showTools: c?.showTools !== false, imageGen: c?.imageGen === true, streamReveal: c?.streamReveal === true };
       return prev.showThinking === next.showThinking && prev.showTools === next.showTools && prev.imageGen === next.imageGen && prev.streamReveal === next.streamReveal ? prev : next;
@@ -82,6 +87,9 @@ export default function App(): JSX.Element {
             title: x.name,
             body: x.preview || `来了 ${x.unread} 条新消息`,
             contactId: x.id,
+            conversationId: x.conversationId ?? undefined,
+            conversationTitle: x.conversationTitle,
+            readOnly: x.conversationReadOnly === true,
           });
         }
       }
@@ -159,9 +167,14 @@ export default function App(): JSX.Element {
   // 下面这些回调都要进 ChatView / Sidebar 的 props。它们必须是稳定引用：
   // 会话页有些一次性初始化（首屏拉取、轮询链）挂在「每实例一次」的 effect 上，
   // 而调用方回调的引用会顺着依赖链把整条路拽重跑——实测代价是草稿被吞、视口被砸回底部。
-  const pick = useCallback((id: string): void => {
+  const pick = useCallback((id: string, conversationId?: string | null, title?: string, readOnly?: boolean): void => {
     setContactId(id);
     setCurrent(id);
+    // 主私聊可能带着数据库里的 local-* id，但它不是一个可切换来源；
+    // 统一收成 null，群会话才保留独立 id。
+    setConversation(conversationId && readOnly === true
+      ? { id: conversationId, title: title || "QQ 群", readOnly: true }
+      : null);
     setChatOpen(true);
     // 资料页是叠在会话页上的浮层：从联系人列表点另一位，等于「离开这一位、去和那一位说话」。
     // 不收掉的话点谁都没反应（列表页还露在左边，右边那屏却仍是刚进来的人）。
@@ -180,6 +193,11 @@ export default function App(): JSX.Element {
     applyContactMeta(getCachedContacts());
   }, [applyContactMeta]);
 
+  /** 在联系人内部切换会话来源；联系人列表始终只保留一个统一入口。 */
+  const openChatConversation = useCallback((conversationId: string | null, title?: string, readOnly?: boolean): void => {
+    pick(current, conversationId, title, readOnly);
+  }, [current, pick]);
+
   const navigateTo = useCallback((key: ViewKey): void => {
     setProfile(null);
     if (key === "chat") setChatPage("list"); // 微信式：切到「对话」先回列表页
@@ -194,15 +212,40 @@ export default function App(): JSX.Element {
   /** 点系统通知：切到对应联系人并打开具体会话。 */
   useEffect(() => {
     const open = (event: Event): void => {
-      const id = (event as CustomEvent<{ contactId?: string }>).detail?.contactId;
+      const d = (event as CustomEvent<{ contactId?: string; conversationId?: string; conversationTitle?: string; readOnly?: boolean }>).detail;
+      const id = d?.contactId;
       if (!id) return;
       setProfile(null);
-      pick(id);
+      pick(id, d.conversationId, d.conversationTitle, d.readOnly);
       navigate("chat");
     };
+    const openConversation = (event: Event): void => {
+      const d = (event as CustomEvent<{ contactId?: string; conversationId?: string; title?: string; readOnly?: boolean }>).detail;
+      if (!d?.contactId || !d.conversationId) return;
+      setContactId(d.contactId);
+      setCurrent(d.contactId);
+      applyContactMeta(getCachedContacts());
+      setConversation({ id: d.conversationId, title: d.title || "会话", readOnly: d.readOnly === true });
+      setChatOpen(true);
+      setProfile(null);
+      setChatPage("chat");
+      navigate("chat");
+    };
+    const conversationRemoved = (event: Event): void => {
+      const d = (event as CustomEvent<{ contactId?: string; conversationId?: string }>).detail;
+      if (!d?.contactId || !d.conversationId) return;
+      setConversation((prev) => prev?.id === d.conversationId ? null : prev);
+      if (d.contactId === contactId()) refreshContacts();
+    };
     window.addEventListener("xiaomo:open-contact", open);
-    return () => window.removeEventListener("xiaomo:open-contact", open);
-  }, [navigate, pick]);
+    window.addEventListener("xiaomo:open-conversation", openConversation);
+    window.addEventListener("xiaomo:conversation-removed", conversationRemoved);
+    return () => {
+      window.removeEventListener("xiaomo:open-contact", open);
+      window.removeEventListener("xiaomo:open-conversation", openConversation);
+      window.removeEventListener("xiaomo:conversation-removed", conversationRemoved);
+    };
+  }, [navigate, pick, applyContactMeta]);
 
   // 全局快捷键（桌面端键盘通道）：Ctrl/Cmd+1..3 切视图，Ctrl/Cmd+K 召唤助手，Ctrl/Cmd+F 搜联系人。
   // 处理器要读最新的 view / narrow / profile，所以用「最新 ref」持有它；
@@ -365,6 +408,7 @@ export default function App(): JSX.Element {
       {showSidebar && (
         <Sidebar
           current={chatOpen ? current : ""}
+          currentConversation={conversation?.id ?? null}
           onPick={pick}
           onLeaveCurrent={leaveChat}
           onContactsChanged={refreshContactMeta}
@@ -399,7 +443,9 @@ export default function App(): JSX.Element {
         {(visitedViews.has("chat") || view === "chat") && (
           <div className={"view" + (view === "chat" && !profile ? " active" : "")} id="view-chat">
             {chatOpen ? (
-            <ChatView key={current} msgScope={current} focusMessageId={focusMsg} onFocusHandled={() => setFocusMsg(null)}
+            <ChatView key={current + ":" + (conversation?.id ?? "local")} msgScope={current} conversationId={conversation?.id} conversationTitle={conversation?.title} readOnly={conversation?.readOnly === true} onOpenLocal={() => setConversation(null)}
+              conversations={contactConversations} onOpenConversation={openChatConversation}
+              focusMessageId={focusMsg} onFocusHandled={() => setFocusMsg(null)}
               characterName={characterName} ownerName={ownerName}
               ownerAvatar={ownerAvatar} contactAvatar={contactAvatar}
               showThinking={chatDisplay.showThinking} showTools={chatDisplay.showTools}

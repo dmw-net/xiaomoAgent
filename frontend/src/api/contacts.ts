@@ -92,8 +92,8 @@ export function createContact(payload: Record<string, unknown>): Promise<{ conta
 }
 
 /** 上报某联系人已读到哪条消息（清红点）。cid 省略时用当前联系人。 */
-export function markRead(cid: string | undefined, messageId: number): Promise<unknown> {
-  return postJson("/api/contacts/read", { contactId: cid || activeContactId(), messageId });
+export function markRead(cid: string | undefined, messageId: number, conversationId?: string): Promise<unknown> {
+  return postJson("/api/contacts/read", { contactId: cid || activeContactId(), messageId, ...(conversationId ? { conversationId } : {}) });
 }
 
 export function updateContact(id: string, payload: Record<string, unknown>): Promise<{ contact: { id: string } }> {

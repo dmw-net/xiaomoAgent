@@ -27,6 +27,7 @@ import { sweepOrphanMedia } from "./media.ts";
 import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./contacts.ts";
 import { wechat } from "./wechat.ts";
 import { qq } from "./qq.ts";
+import { ensureDefaultConversations } from "./conversations.ts";
 
 // 兜底日志：单机应用「带病存活 + 看得见错误」好过静默崩溃。
 // 崩在这里意味着代码里有违背假设的路径——把它打进日志（状态页可查最近错误），不退出。
@@ -46,6 +47,7 @@ const once = process.argv.includes("--proactive-once");
 if (once) {
   // 手动触发一次：这是最方便观察"主动性"的方式，不必等 30 分钟。
   ensureDefaultContact();
+  ensureDefaultConversations();
   // 只有当家的进程能跑：主动性会把话真的送出去（并镜像到微信/QQ、吃每日配额）。
   // 桌面端已经在跑定时器时，这一条再打一次就是同一句话投两遍、配额翻倍。
   if (!leaseIsFreeOrOurs()) {

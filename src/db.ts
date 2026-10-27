@@ -72,6 +72,7 @@ CREATE TABLE IF NOT EXISTS turns (
   text          TEXT    NOT NULL,
   status        TEXT    NOT NULL,             -- queued | running | done | failed | cancelled（被新消息打断）
   reply         TEXT,
+  reasoning_draft TEXT,
   error         TEXT,
   created_at    INTEGER NOT NULL,
   finished_at   INTEGER,
@@ -120,6 +121,32 @@ CREATE TABLE IF NOT EXISTS contacts (
   created_at  INTEGER NOT NULL,
   archived_at INTEGER                          -- 归档而非删除（人格数据不可再生）
 );
+
+-- 会话：一个联系人有一段时间应用/微信/QQ 私聊共用的主会话，以及各自隔离的 QQ 群。
+-- openid / group_openid 只放在 external_id，内部一律用稳定 id 关联。
+CREATE TABLE IF NOT EXISTS conversations (
+  id                 TEXT PRIMARY KEY,
+  contact_id         TEXT NOT NULL,
+  channel            TEXT NOT NULL,             -- web | wechat | qq
+  kind               TEXT NOT NULL,             -- private | group
+  external_id        TEXT NOT NULL DEFAULT '',
+  account_id         TEXT NOT NULL DEFAULT '',  -- QQ BotAccount id；本地/微信为空
+  title              TEXT NOT NULL DEFAULT '',  -- 界面显示名：自动读取值或用户自定义值
+  title_source       TEXT NOT NULL DEFAULT 'auto', -- auto | custom；custom 永不被平台事件覆盖
+  auto_title         TEXT NOT NULL DEFAULT '',  -- 最近一次平台群名；用于恢复自动名称
+  left_at            INTEGER,                    -- QQ 群：机器人被移出/群解散的时间；null=仍在群内
+  enabled            INTEGER NOT NULL DEFAULT 1,
+  summary            TEXT NOT NULL DEFAULT '',
+  summary_updated_at INTEGER,
+  summary_upto       INTEGER,
+  last_message_at    INTEGER,
+  created_at         INTEGER NOT NULL
+);
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_conversations_identity
+  ON conversations (contact_id, channel, kind, external_id, account_id);
+CREATE INDEX IF NOT EXISTS idx_conversations_contact
+  ON conversations (contact_id, created_at);
 
 -- 键值表：模型/角色卡设置与各能力配置档、助手工作区注册表、微信绑定与游标、
 -- 多进程当家心跳，以及运行状态（例如记忆抽取连续失败次数）。
@@ -192,6 +219,9 @@ ensureColumn("turns", "superseded_at", "superseded_at INTEGER");
 // 客户端幂等键：离线发件箱断网重发时，同一句话绝不能建出两个处理单。
 ensureColumn("turns", "client_id", "client_id TEXT");
 
+// 流式思考草稿：running 期间给 /api/turn 下发累计推理，收尾后仍保留到前端完成草稿交接。
+ensureColumn("turns", "reasoning_draft", "reasoning_draft TEXT");
+
 // 联系人头像（dataURL，png/jpg/webp、≤150KB，客户端压到最长边 1280）。存库而非文件：
 // 「备份一个文件 = 全部数据」的纪律不因头像破例。
 ensureColumn("contacts", "avatar", "avatar TEXT");
@@ -256,3 +286,38 @@ ensureColumn("proactive_tasks", "kind", "kind TEXT NOT NULL DEFAULT 'care'");
 ensureColumn("memory_events", "embedding", "embedding BLOB");
 ensureColumn("memory_events", "emb_model", "emb_model TEXT");
 ensureColumn("memory_events", "emb_dim", "emb_dim INTEGER");
+
+// ── 会话隔离（2026-10-26）────────────────────────────────────
+// 群聊上线后，contact_id 已经不够区分上下文：同一联系人的本地聊天、QQ 私聊、
+// QQ 群 A/B 必须彼此隔离。存量数据统一迁到 local-<contact_id> 会话。
+ensureColumn("messages", "conversation_id", "conversation_id TEXT");
+ensureColumn("messages", "sender_id", "sender_id TEXT");
+ensureColumn("messages", "sender_name", "sender_name TEXT");
+ensureColumn("messages", "source_message_id", "source_message_id TEXT");
+ensureColumn("messages", "reply_to_message_id", "reply_to_message_id TEXT");
+ensureColumn("messages", "at_bot", "at_bot INTEGER NOT NULL DEFAULT 0");
+ensureColumn("messages", "source_meta", "source_meta TEXT");
+
+ensureColumn("turns", "conversation_id", "conversation_id TEXT");
+ensureColumn("turns", "trigger_message_id", "trigger_message_id TEXT");
+ensureColumn("turns", "trigger_ids", "trigger_ids TEXT");
+ensureColumn("turns", "context_start_id", "context_start_id INTEGER");
+
+ensureColumn("memory_events", "scope_kind", "scope_kind TEXT NOT NULL DEFAULT 'global'");
+ensureColumn("memory_events", "scope_conversation_id", "scope_conversation_id TEXT");
+ensureColumn("memory_events", "subject_id", "subject_id TEXT");
+ensureColumn("memory_events", "subject_name", "subject_name TEXT");
+ensureColumn("memory_events", "source_message_id", "source_message_id TEXT");
+ensureColumn("memory_events", "source_conversation_id", "source_conversation_id TEXT");
+ensureColumn("conversations", "summary_upto", "summary_upto INTEGER");
+ensureColumn("conversations", "title_source", "title_source TEXT NOT NULL DEFAULT 'auto'");
+ensureColumn("conversations", "auto_title", "auto_title TEXT NOT NULL DEFAULT ''");
+ensureColumn("conversations", "left_at", "left_at INTEGER");
+
+db.exec(
+  `CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);
+   CREATE INDEX IF NOT EXISTS idx_turns_conversation ON turns (conversation_id, created_at);
+   CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_events (contact_id, scope_kind, scope_conversation_id, created_at);
+   CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source ON messages (conversation_id, source_message_id)
+     WHERE source_message_id IS NOT NULL AND source_message_id <> '';`,
+);

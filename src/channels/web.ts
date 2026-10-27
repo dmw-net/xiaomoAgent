@@ -6,12 +6,12 @@
 
 import { randomUUID } from "node:crypto";
 import { getTurn, getTurnByClientId, createTurn, insertMessage, respondToTurn, retryTurn } from "../agent.ts";
-import type { Channel } from "./types.ts";
+import type { Channel, ReceiveOptions } from "./types.ts";
 
 export const webChannel: Channel = {
   id: "web",
 
-  receive(text: string, contactId: string, attachments?: string[], source?: string, clientId?: string): { turnId: string } {
+  receive(text: string, contactId: string, attachments?: string[], source?: string, clientId?: string, options?: ReceiveOptions): { turnId: string } {
     // 离线发件箱会带着同一个 clientId 重试：已经建过就返回原处理单，不重复落用户消息。
     if (clientId) {
       const existing = getTurnByClientId(contactId, clientId);
@@ -27,7 +27,35 @@ export const webChannel: Channel = {
     }
     const turnId = randomUUID();
     try {
-      createTurn({ id: turnId, channel: source ?? "web", text, contactId, attachments, clientId });
+      createTurn({
+        id: turnId,
+        channel: source ?? "web",
+        text,
+        contactId,
+        conversationId: options?.conversationId,
+        attachments,
+        triggerMessageId: options?.sourceMessageId,
+        clientId,
+      });
+      // 平台入站必须带着发送者/平台消息 id 落库；turnHasUserMessage 会据此避免
+      // respondToTurn 再插一条没有发送者信息的重复用户消息。
+      if (options?.conversationId) {
+        insertMessage({
+          channel: source ?? "web",
+          role: "user",
+          text,
+          turnId,
+          contactId,
+          conversationId: options.conversationId,
+          senderId: options.senderId ?? null,
+          senderName: options.senderName ?? null,
+          sourceMessageId: options.sourceMessageId ?? null,
+          replyToMessageId: options.replyToMessageId ?? null,
+          atBot: options.atBot === true,
+          sourceMeta: options.sourceMeta ?? null,
+          ...(attachments && attachments.length > 0 ? { attachments } : {}),
+        });
+      }
     } catch (error) {
       // 两个离线重发同一刻撞上唯一索引：输的一方认领赢家那张单，别把 500 透给用户。
       const existing = clientId ? getTurnByClientId(contactId, clientId) : null;

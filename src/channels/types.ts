@@ -10,6 +10,17 @@
 
 export type ChannelId = string;
 
+export type ReceiveOptions = {
+  /** 平台会话；缺省走联系人本地会话。 */
+  conversationId?: string;
+  senderId?: string;
+  senderName?: string;
+  sourceMessageId?: string;
+  replyToMessageId?: string;
+  atBot?: boolean;
+  sourceMeta?: string;
+};
+
 export type OutgoingMessage = {
   text: string;
   kind: "chat" | "proactive";
@@ -30,7 +41,7 @@ export interface Channel {
    *  ② 记忆抽取能按来源给不同的外壳（见 memory.ts 的 extractMemories）——
    *     第三方平台发来的文字是不可信输入，和本机界面里打的那句不是一回事。
    */
-  receive(text: string, contactId: string, attachments?: string[], source?: string, clientId?: string): { turnId: string };
+  receive(text: string, contactId: string, attachments?: string[], source?: string, clientId?: string, options?: ReceiveOptions): { turnId: string };
   /** 把助手要说的话送出去。Web = 写库等前端轮询；IM = 调平台发消息接口。 */
   deliver(message: OutgoingMessage): Promise<void>;
 }

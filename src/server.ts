@@ -103,6 +103,7 @@ import {
 import {
   deleteMemoryEvent,
   restoreMemoryEvent,
+  promoteMemoryEvent,
   extractFailures,
   extractFailuresWorst,
   isMemoryKind,
@@ -134,7 +135,7 @@ const reactEntry = existsSync(joinPath(reactDist, "index.html"));
 /** dist 根下逐条白名单发出的固定静态图（文件名不带 hash，故沿用 no-store）：应用图标 + 两张内置头像。 */
 const ROOT_IMAGE_ASSETS = new Set(["/icon.png", "/xiaomo.png", "/assistant.png"]);
 
-import { ALL_TURNS, archiveContact, ASSISTANT_CONTACT_ID, companionPromptExtras, contactCard, contactExists, contactModelProfile, countContactsBoundToProfile, createContact, DEFAULT_CONTACT_ID, defaultPersonaIsDefault, deleteContact, ensureDefaultContact, factoryReset, getContact, lastMessagePreview, listContacts, markContactRead, MAX_TURNS, restoreDefaultCard, sanitizeAvatar, sanitizeFaceRef, unreadCount, unarchiveContact, updateContact, type BondState, type CompanionFeatures, type ContactGender } from "./contacts.ts";
+import { ALL_TURNS, archiveContact, ASSISTANT_CONTACT_ID, companionPromptExtras, contactCard, contactExists, contactModelProfile, countContactsBoundToProfile, createContact, DEFAULT_CONTACT_ID, defaultPersonaIsDefault, deleteContact, ensureDefaultContact, factoryReset, getContact, lastConversationMessagePreview, lastMessagePreview, listContacts, markContactRead, markConversationRead, MAX_TURNS, restoreDefaultCard, sanitizeAvatar, sanitizeFaceRef, unreadCount, unreadCountForConversation, unarchiveContact, updateContact, type BondState, type CompanionFeatures, type ContactGender } from "./contacts.ts";
 import { consolidateContact } from "./consolidate.ts";
 import { autoTitleThread, clearAssistantThread, createAssistantThread, deleteAssistantThread, ensureAssistantContact, isAssistantThreadContactId, listAssistantThreads, renameAssistantThread, assistantPermission, setAssistantPermission, pendingActionsFor, resolvePendingAction } from "./assistant.ts";
 import { deleteSkill, listSkills, MAX_SKILL_FILE_BYTES, readSkill, saveSkill, setSkillEnabled, skillsDir } from "./skills.ts";
@@ -144,6 +145,7 @@ import { importDataArchive, writeDataExport } from "./data-transfer.ts";
 import { setDesktopPrefs } from "./desktop-prefs.ts";
 import { wechat } from "./wechat.ts";
 import { qq } from "./qq.ts";
+import { clearQQGroupHistory, ensureDefaultConversations, ensureLocalConversation, getConversation, listConversations, localConversationId, MAX_CONVERSATION_TITLE_LENGTH, normalizeConversationTitle, removeQQGroupConversation, renameQQGroupConversation, setConversationEnabled } from "./conversations.ts";
 import { previewSystemPrompt } from "./persona.ts";
 import { leaseIsFreeOrOurs } from "./instance.ts";
 
@@ -166,6 +168,7 @@ export function createHttpServer(options: { rebind?: () => Promise<{ ok: boolean
   const rebind = options.rebind;
   // 存量迁移：首次遇到多联系人结构时，把旧的全局角色卡与数据归入默认联系人。
   ensureDefaultContact();
+  ensureDefaultConversations();
   // 内置设置助手：保留联系人，一句话配模型/建联系人（工具白名单见 assistant.ts）。
   ensureAssistantContact();
   return createServer((request, response) => {
@@ -1304,7 +1307,9 @@ async function handle(
   if (method === "GET" && path === "/api/context/usage") {
     const contactId = strictContactId(url, response);
     if (contactId === null) return;
-    sendJson(response, 200, { ok: true, ...contextUsage(contactId) });
+    const conversationId = strictConversationId(url, response, contactId);
+    if (conversationId === null) return;
+    sendJson(response, 200, { ok: true, ...contextUsage(contactId, conversationId) });
     return;
   }
 
@@ -1322,24 +1327,29 @@ async function handle(
     if (contactId === null) return;
     const body = await readJson<{ level?: unknown }>(request);
     const level = typeof body.level === "string" ? body.level : "";
-    // "off" 不是档位而是意图：关思考。档位形式发 level，开关形式同步 thinkingMode，
-    // 这样「选了强度」永远意味着开，「关闭」永远意味着关，两种协议形态不会互相打架。
+    const auto = level === "auto";
     const off = level === "off";
-    if (!off && !THINKING_LEVELS.some((item) => item.id === level)) {
-      sendJson(response, 400, { ok: false, error: "未知的思考强度" });
+    const on = level === "on";
+    const named = THINKING_LEVELS.some((item) => item.id === level);
+    // auto / on / off 是意图，不是档位；其余值必须是服务商支持的具体强度。
+    if (!auto && !off && !on && !named) {
+      sendJson(response, 400, { ok: false, error: "未知的思考设置" });
       return;
     }
     const current = contactModelSettings(contactId) ?? modelConfig();
-    // 「关闭」对三种形态都成立（开关形态关得更彻底），强度档则仍只限 effort 形态。
-    if (!off && (current.thinkingParam !== "effort" || !current.caps.thinking)) {
-      sendJson(response, 400, { ok: false, error: "这个模型使用开关式思考，不能调强度" });
+    // 跟随模型永远可恢复；开/关/强度要求模型档明确声明了思考能力。
+    if (!auto && !current.caps.thinking) {
+      sendJson(response, 400, { ok: false, error: "这个模型没有启用思考能力" });
+      return;
+    }
+    if (named && current.thinkingParam !== "effort") {
+      sendJson(response, 400, { ok: false, error: "这个模型使用开关式思考，请选择开、关或跟随模型" });
       return;
     }
     const supported = current.thinkingLevels.length > 0
       ? current.thinkingLevels
       : THINKING_LEVELS.map((item) => item.id);
-    // 关闭不是档位，只改 thinkingMode，不受模型支持的档位清单约束。
-    if (!off && !supported.some((item) => item === level)) {
+    if (named && !supported.some((item) => item === level)) {
       sendJson(response, 400, { ok: false, error: "这个模型不支持所选强度" });
       return;
     }
@@ -1351,9 +1361,13 @@ async function handle(
       sendJson(response, 409, { ok: false, error: "这位联系人绑定的模型档已失效，请先在设置里重新绑定" });
       return;
     }
-    const patch = off
-      ? { thinkingLevel: "" as ModelSettings["thinkingLevel"], thinkingMode: "off" as ModelSettings["thinkingMode"] }
-      : { thinkingLevel: level as ModelSettings["thinkingLevel"], thinkingMode: "on" as ModelSettings["thinkingMode"] };
+    const patch = auto
+      ? { thinkingLevel: "" as ModelSettings["thinkingLevel"], thinkingMode: "auto" as ModelSettings["thinkingMode"] }
+      : off
+        ? { thinkingLevel: "" as ModelSettings["thinkingLevel"], thinkingMode: "off" as ModelSettings["thinkingMode"] }
+        : on
+          ? { thinkingLevel: "" as ModelSettings["thinkingLevel"], thinkingMode: "on" as ModelSettings["thinkingMode"] }
+          : { thinkingLevel: level as ModelSettings["thinkingLevel"], thinkingMode: "on" as ModelSettings["thinkingMode"] };
     let appliedTo: Record<string, unknown>;
     if (profile) {
       // saveProfile 会保留没传的字段；若这份档正在生效，它也会同步当前生效配置。
@@ -1557,9 +1571,131 @@ async function handle(
     return;
   }
 
+  // ── 会话列表 ──────────────────────────────────────────────
+  if (method === "GET" && path === "/api/conversations") {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    const conversations = listConversations(contactId).map((conv) => ({
+      id: conv.id,
+      contactId: conv.contact_id,
+      channel: conv.channel,
+      kind: conv.kind,
+      title: conv.title,
+      enabled: conv.enabled,
+      leftAt: conv.left_at,
+      summary: conv.summary,
+      lastMessageAt: conv.last_message_at,
+      count: countMessagesFor(contactId, conv.id),
+      readOnly: conv.channel !== "web",
+    }));
+    sendJson(response, 200, { ok: true, conversations });
+    return;
+  }
+
+  const convFlagMatch = method === "POST" ? path.match(/^\/api\/conversations\/([^/]+)\/flags$/) : null;
+  if (convFlagMatch) {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    const id = decodeURIComponent(convFlagMatch[1] ?? "");
+    const conv = getConversation(id);
+    if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") {
+      sendJson(response, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
+      return;
+    }
+    const body = await readJson<{ enabled?: unknown }>(request);
+    if (typeof body.enabled !== "boolean") {
+      sendJson(response, 400, { ok: false, error: "enabled 必须是布尔值" });
+      return;
+    }
+    if (body.enabled && conv.left_at !== null) {
+      sendJson(response, 409, { ok: false, error: "机器人已不在该群，历史仍保留，但不能重新开启收件" });
+      return;
+    }
+    setConversationEnabled(id, body.enabled);
+    sendJson(response, 200, { ok: true, conversation: { ...getConversation(id) } });
+    return;
+  }
+
+  // QQ 群改名：null = 恢复最近一次平台群名，字符串 = 用户自定义名称。
+  const convTitleMatch = method === "POST" ? path.match(/^\/api\/conversations\/([^/]+)\/title$/) : null;
+  if (convTitleMatch) {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    const id = decodeURIComponent(convTitleMatch[1] ?? "");
+    const body = await readJson<{ title?: unknown }>(request);
+    if (body.title !== null && typeof body.title !== "string") {
+      sendJson(response, 400, { ok: false, error: "title 必须是字符串或 null" });
+      return;
+    }
+    if (typeof body.title === "string") {
+      const normalized = normalizeConversationTitle(body.title);
+      if (normalized === "" || normalized.length > MAX_CONVERSATION_TITLE_LENGTH) {
+        sendJson(response, 400, { ok: false, error: `群名要在 1~${MAX_CONVERSATION_TITLE_LENGTH} 个字之间` });
+        return;
+      }
+    }
+    const renamed = renameQQGroupConversation(id, contactId, body.title);
+    if (renamed === null) {
+      sendJson(response, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
+      return;
+    }
+    sendJson(response, 200, { ok: true, conversation: {
+      id: renamed.id, title: renamed.title, titleSource: renamed.title_source,
+    } });
+    return;
+  }
+
+  // 已离群 QQ 群：手动清除历史。会话外壳保留，只有明确进入离群状态的群允许操作。
+  const convHistoryMatch = method === "DELETE" ? path.match(/^\/api\/conversations\/([^/]+)\/history$/) : null;
+  if (convHistoryMatch) {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    const id = decodeURIComponent(convHistoryMatch[1] ?? "");
+    const conv = getConversation(id);
+    if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") {
+      sendJson(response, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
+      return;
+    }
+    if (conv.left_at === null) {
+      sendJson(response, 409, { ok: false, error: "群仍在收件中，不能清除历史；请先在群列表里停用后再操作" });
+      return;
+    }
+    const cleared = clearQQGroupHistory(id, contactId);
+    if (cleared === null) {
+      sendJson(response, 404, { ok: false, error: "QQ 群会话不存在" });
+      return;
+    }
+    sendJson(response, 200, { ok: true, ...cleared });
+    return;
+  }
+
+  // 已离群 QQ 群：从列表彻底移除。移除即清掉剩余历史，之后重新入群是新会话。
+  const convRemoveMatch = method === "DELETE" ? path.match(/^\/api\/conversations\/([^/]+)$/) : null;
+  if (convRemoveMatch) {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    const id = decodeURIComponent(convRemoveMatch[1] ?? "");
+    const conv = getConversation(id);
+    if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") {
+      sendJson(response, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
+      return;
+    }
+    if (conv.left_at === null) {
+      sendJson(response, 409, { ok: false, error: "群仍在收件中，不能从列表移除；请先在群列表里停用后再操作" });
+      return;
+    }
+    const cleared = removeQQGroupConversation(id, contactId);
+    if (cleared === null) {
+      sendJson(response, 404, { ok: false, error: "QQ 群会话不存在" });
+      return;
+    }
+    sendJson(response, 200, { ok: true, removed: true, ...cleared });
+    return;
+  }
+
   // ── 对话 ────────────────────────────────────────────────
   if (method === "POST" && path === "/api/say") {
-    const body = await readJson<{ text?: unknown; contactId?: unknown; attachments?: unknown; clientId?: unknown }>(request);
+    const body = await readJson<{ text?: unknown; contactId?: unknown; conversationId?: unknown; attachments?: unknown; clientId?: unknown }>(request);
     const text = typeof body.text === "string" ? body.text.trim() : "";
     // 图片先传 /api/media 落盘，这里只带 URL 引用；逐个校验文件真实存在
     const rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];
@@ -1581,6 +1717,17 @@ async function handle(
       return;
     }
     const contactId = requested ? requested : DEFAULT_CONTACT_ID;
+    const requestedConversation = typeof body.conversationId === "string" ? body.conversationId : url.searchParams.get("conversationId") ?? "";
+    const conversationId = requestedConversation || ensureLocalConversation(contactId).id;
+    const conversation = getConversation(conversationId);
+    if (conversation === null || conversation.contact_id !== contactId) {
+      sendJson(response, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "会话不存在或不属于当前联系人" });
+      return;
+    }
+    if (conversation.channel !== "web" || conversation.kind !== "private") {
+      sendJson(response, 400, { ok: false, code: "READ_ONLY_CONVERSATION", error: "平台会话只能查看；请在 QQ 里直接对机器人说话" });
+      return;
+    }
     // 助手工作区：新工作区的第一条消息用它的内容自动命名
     autoTitleThread(contactId, text);
     const channel = getChannel("web");
@@ -1590,7 +1737,7 @@ async function handle(
     }
     // 关键：这里立刻返回，不等模型。处理可能要十几秒，平台回调不能等这么久。
     const clientId = typeof body.clientId === "string" ? body.clientId.trim().slice(0, 80) : "";
-    const { turnId } = channel.receive(text.slice(0, 4000), contactId, attachments, undefined, clientId || undefined);
+    const { turnId } = channel.receive(text.slice(0, 4000), contactId, attachments, undefined, clientId || undefined, { conversationId });
     sendJson(response, 202, { ok: true, turnId, ...(clientId ? { clientId } : {}) });
     return;
   }
@@ -1614,6 +1761,7 @@ async function handle(
       id: turn.id,
       status: turn.status,
       reply: turn.reply,
+      reasoning: turn.reasoning_draft ?? null,
       error: turn.error,
       createdAt: turn.created_at,
       finishedAt: turn.finished_at,
@@ -1664,12 +1812,16 @@ async function handle(
     // 不带 contactId = 全局总览（状态页要的就是这个口径）；带了就只看那一个联系人的轮次。
     // 聊天页的失败横幅走后者：不过滤会把别人的失败轮当成本会话的，重试还会重跑别人的轮。
     let contactId: string | undefined;
+    let conversationId: string | undefined;
     if (url.searchParams.get("contactId")) {
       const strict = strictContactId(url, response);
       if (strict === null) return;
       contactId = strict;
+      const conv = strictConversationId(url, response, strict);
+      if (conv === null) return;
+      conversationId = conv;
     }
-    sendJson(response, 200, { ok: true, turns: recentTurns(limit, offset, contactId), stats: turnStats() });
+    sendJson(response, 200, { ok: true, turns: recentTurns(limit, offset, contactId, conversationId), stats: turnStats() });
     return;
   }
 
@@ -1682,16 +1834,20 @@ async function handle(
       sendJson(response, 400, { ok: false, error: "搜索词要在 1~50 个字之间" });
       return;
     }
+    const conversationId = strictConversationId(url, response, contactId);
+    if (conversationId === null) return;
     const limit = clampInt(url.searchParams.get("limit"), 200, 1, 500);
-    sendJson(response, 200, { ok: true, q, messages: searchMessagesForContact(contactId, q, limit) });
+    sendJson(response, 200, { ok: true, q, messages: searchMessagesForContact(contactId, q, limit, conversationId) });
     return;
   }
 
   if (method === "GET" && path === "/api/messages/around") {
     const contactId = strictContactId(url, response);
     if (contactId === null) return;
+    const conversationId = strictConversationId(url, response, contactId);
+    if (conversationId === null) return;
     const id = clampInt(url.searchParams.get("id"), 0, 1, Number.MAX_SAFE_INTEGER);
-    const messages = messagesAround(contactId, id);
+    const messages = messagesAround(contactId, id, 160, conversationId);
     if (!messages) {
       sendJson(response, 404, { ok: false, error: "这条消息不存在或不属于当前联系人" });
       return;
@@ -1701,8 +1857,9 @@ async function handle(
       ok: true,
       contactId,
       messages,
-      total: countMessagesFor(contactId),
-      olderRemaining: countMessagesBefore(contactId, oldest),
+      conversationId,
+      total: countMessagesFor(contactId, conversationId),
+      olderRemaining: countMessagesBefore(contactId, oldest, conversationId),
     });
     return;
   }
@@ -1719,11 +1876,13 @@ async function handle(
     const turn = url.searchParams.get("turn");
     const contactId = strictContactId(url, response);
     if (contactId === null) return;
+    const conversationId = strictConversationId(url, response, contactId);
+    if (conversationId === null) return;
     const messages = turn
       ? messagesForTurn(turn, contactId)
       : all
-        ? before > 0 ? messagesBefore(contactId, before, CHAT_EARLIER_PAGE) : allMessages(contactId, CHAT_FIRST_PAGE)
-        : messagesSince(contactId, since);
+        ? before > 0 ? messagesBefore(contactId, before, CHAT_EARLIER_PAGE, conversationId) : allMessages(contactId, CHAT_FIRST_PAGE, conversationId)
+        : messagesSince(contactId, since, 100, conversationId);
     // 就绪位按**这位联系人真正会走的那份配置**判：从前报的是全局位，联系人绑档
     // 没配好时顶栏照样显示在线，实际调用静默 echo 回退，界面上看不出任何区别。
     const ready = modelReadyNow(contactModelSettings(contactId) ?? modelConfig());
@@ -1737,8 +1896,9 @@ async function handle(
       onboardingDone: onboardingDone(),
       personaIsDefault: defaultPersonaIsDefault(),
       contactId,
+      conversationId,
       ...(all && !turn
-        ? { total: countMessagesFor(contactId), olderRemaining: countMessagesBefore(contactId, oldest) }
+        ? { total: countMessagesFor(contactId, conversationId), olderRemaining: countMessagesBefore(contactId, oldest, conversationId) }
         : {}),
       messages,
     });
@@ -1976,6 +2136,18 @@ async function handle(
     sendJson(response, 200, { ok: true, note: `已删除，该联系人不会再想起这件事` });
     return;
   }
+  const memoryPromoteMatch = method === "POST" ? path.match(/^\/api\/memory\/events\/(\d+)\/promote$/) : null;
+  if (memoryPromoteMatch) {
+    const contactId = strictContactId(url, response);
+    if (contactId === null) return;
+    if (!promoteMemoryEvent(Number(memoryPromoteMatch[1]), contactId)) {
+      sendJson(response, 404, { ok: false, code: "MEMORY_NOT_FOUND", error: "这条记忆不存在或不属于当前联系人" });
+      return;
+    }
+    sendJson(response, 200, { ok: true, note: "已提升为联系人全局记忆，其他会话也能召回" });
+    return;
+  }
+
   // 撤销删除：删记忆只是打墓碑（deleted_at），擦掉就回来了——界面上那句「可撤销」得是真的。
   const memoryRestoreMatch = method === "POST" ? path.match(/^\/api\/memory\/events\/(\d+)\/restore$/) : null;
   if (memoryRestoreMatch) {
@@ -2037,6 +2209,21 @@ async function handle(
       .filter((ct) => ct.id !== ASSISTANT_CONTACT_ID)
       .map((contact) => {
         const last = lastMessagePreview(contact.id);
+        const conversationItems = listConversations(contact.id).map((conv) => {
+          const convLast = lastConversationMessagePreview(conv.id);
+          return {
+            id: conv.id,
+            channel: conv.channel,
+            kind: conv.kind,
+            title: conv.title,
+            enabled: conv.enabled,
+            leftAt: conv.left_at,
+            readOnly: conv.channel !== "web",
+            preview: convLast ? (convLast.role === "user" ? "我：" : "") + convLast.text.replace(/\s+/g, " ").slice(0, 40) : "还没有消息",
+            lastAt: convLast?.at ?? conv.created_at,
+            unread: unreadCountForConversation(conv.id),
+          };
+        });
         const pending = pendingProactiveTask(contact.id);
         const item = {
           id: contact.id,
@@ -2054,6 +2241,11 @@ async function handle(
           imageGen: contact.features.imageGen,
           createdAt: contact.created_at,
           preview: last ? (last.role === "user" ? "我：" : "") + last.text.replace(/\s+/g, " ").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]*)`/g, "$1").replace(/^\s*[-*#]\s+/g, "").slice(0, 40) : "打过招呼就能开始聊",
+          previewChannel: last?.messageChannel ?? "",
+          conversationId: last?.conversationId ?? null,
+          conversationTitle: last?.title ?? "",
+          conversationReadOnly: last?.channel !== null && last?.channel !== undefined && last.channel !== "web",
+          conversations: conversationItems,
           lastAt: last?.at ?? contact.created_at,
           pending: pending ? 1 : 0,
           pendingFocus: pending?.focus ?? "",
@@ -2080,6 +2272,7 @@ async function handle(
     const body = await readJson<Record<string, unknown>>(request);
     const cid = typeof body.contactId === "string" ? body.contactId : "";
     const target = cid || currentContactId(url);
+    const conversationId = typeof body.conversationId === "string" ? body.conversationId : "";
     const messageId = Number(body.messageId);
     // 不校验就会把任意字符串写进 kv 的已读表（那一行是 JSON，能被外部无限撑大），
     // 非数字的 messageId 也会顺着写进去，之后 unreadCount 直接算错。
@@ -2090,22 +2283,32 @@ async function handle(
       return;
     }
     markContactRead(target, messageId);
+    // 新客户端都会带 conversationId；旧客户端/不带会话的调用至少要把本地会话
+    // 记到已读，否则会话级未读会一直按“最后一条用户消息”回推而不熄灭。
+    const conv = conversationId !== "" ? getConversation(conversationId) : ensureLocalConversation(target);
+    if (conv !== null && conv.contact_id === target) markConversationRead(conv.id, messageId);
     sendJson(response, 200, { ok: true });
     return;
   }
 
-  // ── QQ 连接（全局一份机器人凭据 + 每联系人一条 openid 绑定）────
-  // 与微信不同：官方是"一个机器人服务很多用户"，所以 AppID/AppSecret 是全局资产，
-  // 放在 /api/qq/credentials；资料页那张卡只管这一位联系人的绑定。
+  // ── QQ 连接（每联系人一个独立 BotAccount）────────────────────
+  // GET 不带 contactId = 状态页总览；带 contactId = 这一位的账号快照。
+  // POST 必须带 contactId：凭据按联系人隔离，绝不再写全局一份。
   if (path === "/api/qq/credentials") {
     if (method === "GET") {
-      sendJson(response, 200, { ok: true, ...qq.summary() });
+      const cid = url.searchParams.get("contactId");
+      sendJson(response, 200, { ok: true, ...(cid ? qq.snapshotFor(cid) : qq.summary()) });
       return;
     }
     if (method === "POST") {
       const body = await readJson<Record<string, unknown>>(request);
+      const cid = typeof body.contactId === "string" ? body.contactId : url.searchParams.get("contactId") ?? "";
+      if (cid === "" || !getContact(cid)) {
+        sendJson(response, 404, { ok: false, error: "联系人不存在" });
+        return;
+      }
       try {
-        sendJson(response, 200, { ok: true, ...qq.setCredentials(body), ...qq.summary() });
+        sendJson(response, 200, { ok: true, ...qq.setCredentials(cid, body), ...qq.snapshotFor(cid) });
       } catch (error) {
         sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
       }
@@ -2117,7 +2320,13 @@ async function handle(
   // 完成时后端直接把凭据存下来并连上网关，AppSecret 与那把 AES 钥匙都不出服务端。
   if (path === "/api/qq/qr" && method === "POST") {
     try {
-      sendJson(response, 200, { ok: true, ...(await qq.beginCredentialQr()) });
+      const body = await readJson<{ contactId?: unknown }>(request);
+      const cid = typeof body.contactId === "string" ? body.contactId : url.searchParams.get("contactId") ?? "";
+      if (cid === "" || !getContact(cid)) {
+        sendJson(response, 404, { ok: false, error: "联系人不存在" });
+        return;
+      }
+      sendJson(response, 200, { ok: true, ...(await qq.beginCredentialQr(cid)) });
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
     }
@@ -2126,7 +2335,12 @@ async function handle(
   const qqQrMatch = method === "GET" ? path.match(/^\/api\/qq\/qr\/([^/]+)$/) : null;
   if (qqQrMatch) {
     try {
-      sendJson(response, 200, { ok: true, ...(await qq.pollCredentialQr(decodeURIComponent(qqQrMatch[1] ?? ""))) });
+      const cid = url.searchParams.get("contactId") ?? "";
+      if (cid === "" || !getContact(cid)) {
+        sendJson(response, 404, { ok: false, error: "联系人不存在" });
+        return;
+      }
+      sendJson(response, 200, { ok: true, ...(await qq.pollCredentialQr(cid, decodeURIComponent(qqQrMatch[1] ?? ""))) });
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
     }
@@ -2151,7 +2365,7 @@ async function handle(
       return;
     }
     if (method === "GET" && action === "/bind" && arg !== "") {
-      sendJson(response, 200, { ok: true, ...qq.pollBind(arg) });
+      sendJson(response, 200, { ok: true, ...qq.pollBind(contactId, arg) });
       return;
     }
     if (method === "POST" && (action === "/flags" || action === "/disconnect")) {
@@ -2169,7 +2383,7 @@ async function handle(
       const patch: { enabled?: boolean; proactive?: boolean } = {};
       if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
       if (typeof body.proactive === "boolean") patch.proactive = body.proactive;
-      if (!qq.setFlags(existing.id, patch)) {
+      if (!qq.setFlagsByContact(contactId, patch)) {
         sendJson(response, 404, { ok: false, error: "该联系人还没有 QQ 绑定" });
         return;
       }
@@ -2433,6 +2647,7 @@ async function handle(
     qq.clearAll();   // 凭据与绑定一起抹：网关还连着的话，旧 openid 会把消息写进新种子的会话里
     const cleared = factoryReset();
     ensureDefaultContact();
+  ensureDefaultConversations();
     ensureAssistantContact();
     resetToolsUnsupported();  // 模型档全没了：工具支持探测重新来一遍，别拿旧结论说话
     console.log(`[factory-reset] 清掉 ${cleared.contacts} 位联系人与 ${cleared.mediaRemoved} 个图片文件，已重新种子`);
@@ -2871,13 +3086,15 @@ function modelThinkingControl(contactId: string): Record<string, unknown> {
     ...(settings.thinkingLevel === "" ? [] : [settings.thinkingLevel]),
   ])] as ModelSettings["thinkingLevels"];
   const effort = settings.thinkingParam === "effort" && settings.caps.thinking;
+  const switchable = settings.caps.thinking && (!effort || levels.length > 0);
   return {
     model: settings.name,
     provider: providerLabel(settings.baseUrl),
     // 生效档的工具硬闸状态：资料页「工具」卡用它提示「总开关开了也没用」的情形。
     tools: settings.caps.tools === true,
     thinking: {
-      switchable: effort && levels.length > 0,
+      // 强度形态和纯开关形态都值得在聊天里暴露；开关型不再被 UI 整体隐藏。
+      switchable,
       param: settings.thinkingParam,
       mode: settings.thinkingMode,
       off: settings.thinkingMode === "off",
@@ -2885,6 +3102,17 @@ function modelThinkingControl(contactId: string): Record<string, unknown> {
       levels: effort ? levels : [],
     },
   };
+}
+
+function strictConversationId(url: URL, response: ServerResponse, contactId: string): string | null {
+  const raw = (url.searchParams.get("conversationId") ?? "").trim();
+  if (raw === "") return ensureLocalConversation(contactId).id;
+  const conv = getConversation(raw);
+  if (conv === null || conv.contact_id !== contactId) {
+    sendJson(response, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "会话不存在或不属于当前联系人" });
+    return null;
+  }
+  return conv.id;
 }
 
 function strictContactId(url: URL, response: ServerResponse): string | null {

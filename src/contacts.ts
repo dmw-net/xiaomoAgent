@@ -595,6 +595,7 @@ export function deleteContact(id: string): { removedMedia: number } {
     db.prepare(`DELETE FROM turns WHERE contact_id = ?`).run(id);
     db.prepare(`DELETE FROM memory_events WHERE contact_id = ?`).run(id);
     db.prepare(`DELETE FROM proactive_tasks WHERE contact_id = ?`).run(id);
+    db.prepare(`DELETE FROM conversations WHERE contact_id = ?`).run(id);
     db.prepare(`DELETE FROM model_calls WHERE contact_id = ?`).run(id);
     // 画作台账跟着人走：不删的话，人没了「她的画」那一页还在，格子里的图也再没人引用，
     // 下一轮孤儿清扫会把文件收掉——留着一排点开就 404 的缩略图。
@@ -648,7 +649,7 @@ export function factoryReset(): { contacts: number; mediaRemoved: number } {
   for (const u of listMediaUrls()) urls.add(u);
 
   withTx(() => {
-    for (const table of ["messages", "turns", "memory_events", "proactive_tasks", "model_calls", "artifacts", "contacts"]) {
+    for (const table of ["messages", "turns", "memory_events", "proactive_tasks", "conversations", "model_calls", "artifacts", "contacts"]) {
       db.prepare(`DELETE FROM ${table}`).run();
     }
     db.prepare(`DELETE FROM kv WHERE k <> 'schema_version'`).run();
@@ -677,15 +678,41 @@ export function countContactsBoundToProfile(profileId: string): number {
   return row?.n ?? 0;
 }
 
-/** 每个联系人的最后一条消息（中栏会话列表的预览行）。 */
-export function lastMessagePreview(contactId: string): { text: string; at: number; role: string } | null {
+/**
+ * 每个联系人的最后一条消息（中栏会话列表的预览行）。
+ * 预览可能来自主私聊（应用/微信/QQ 私聊共用）或某个 QQ 群；点击这一行必须能回到
+ * 同一个 Conversation，否则会出现「列表提示有新消息，打开却停在另一段上下文」的假死感。
+ */
+export function lastMessagePreview(contactId: string): {
+  text: string; at: number; role: string; messageChannel: string; conversationId: string | null;
+  channel: string | null; kind: string | null; title: string | null;
+} | null {
   const row = db
     .prepare(
-      `SELECT text, created_at, role FROM messages
-       WHERE contact_id = ? AND superseded_at IS NULL
-       ORDER BY created_at DESC LIMIT 1`,
+      `SELECT m.text, m.created_at, m.role, m.channel AS message_channel, m.conversation_id,
+              c.channel, c.kind, c.title
+       FROM messages m
+       LEFT JOIN conversations c ON c.id = m.conversation_id
+       WHERE m.contact_id = ? AND m.superseded_at IS NULL
+       ORDER BY m.created_at DESC LIMIT 1`,
     )
-    .get(contactId) as { text: string; created_at: number; role: string } | undefined;
+    .get(contactId) as {
+      text: string; created_at: number; role: string; message_channel: string; conversation_id: string | null;
+      channel: string | null; kind: string | null; title: string | null;
+    } | undefined;
+  return row ? {
+    text: row.text, at: row.created_at, role: row.role, messageChannel: row.message_channel,
+    conversationId: row.conversation_id, channel: row.channel, kind: row.kind, title: row.title,
+  } : null;
+}
+
+/** 某个 Conversation 的最后一条消息，供会话列表的独立入口显示。 */
+export function lastConversationMessagePreview(conversationId: string): { text: string; at: number; role: string } | null {
+  const row = db.prepare(
+    `SELECT text, created_at, role FROM messages
+     WHERE conversation_id = ? AND superseded_at IS NULL
+     ORDER BY created_at DESC LIMIT 1`,
+  ).get(conversationId) as { text: string; created_at: number; role: string } | undefined;
   return row ? { text: row.text, at: row.created_at, role: row.role } : null;
 }
 
@@ -718,24 +745,129 @@ export function markContactRead(contactId: string, messageId: number): void {
   kvSet(KV_READS, JSON.stringify(map));
 }
 
-/** 未读数 = 该联系人还没被读过的助手消息条数。 */
-export function unreadCount(contactId: string): number {
-  let last = readMap()[contactId];
+const KV_CONVERSATION_READS = "chat.conversation_reads";
+/** 会话级已读表的一次性迁移标记：升级时别把整段历史重新算成红点。 */
+const KV_CONVERSATION_READS_SEEDED = "chat.conversation_reads.seeded";
+
+function conversationReadMap(): Record<string, number> {
+  try {
+    const raw = JSON.parse(String(kvGet(KV_CONVERSATION_READS) ?? "{}")) as Record<string, unknown>;
+    const out: Record<string, number> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      const n = Number(value);
+      // 0 是“新会话，尚无已读水位”的合法游标；不能和缺失值混为一谈。
+      if (Number.isFinite(n) && n >= 0) out[key] = n;
+    }
+    return out;
+  } catch {
+    return {};
+  }
+}
+
+export function markConversationRead(conversationId: string, messageId: number): void {
+  const id = Number(messageId);
+  if (!Number.isFinite(id) || id <= 0) return;
+  const map = conversationReadMap();
+  if ((map[conversationId] ?? 0) >= id) return;
+  map[conversationId] = id;
+  kvSet(KV_CONVERSATION_READS, JSON.stringify(map));
+}
+
+/**
+ * 新建 Conversation 时落下 0 号游标。
+ *
+ * 有了它，未读数不再依赖“最后一条用户消息”去猜历史边界：同一段会话里连来
+ * 两组「用户问 → 机器人分条答」也能逐条累计。只有从旧版本升上来、完全没有
+ * 会话级游标的存量会话才会走一次性的历史水位迁移。
+ */
+export function ensureConversationReadCursor(conversationId: string): void {
+  const map = conversationReadMap();
+  if (Object.prototype.hasOwnProperty.call(map, conversationId)) return;
+  map[conversationId] = 0;
+  kvSet(KV_CONVERSATION_READS, JSON.stringify(map));
+}
+
+/** 合并会话历史时同步已读水位：两段私聊合成一段后，不能凭空多出或清掉红点。 */
+export function removeConversationReadCursor(conversationId: string): void {
+  const map = conversationReadMap();
+  if (!Object.prototype.hasOwnProperty.call(map, conversationId)) return;
+  delete map[conversationId];
+  kvSet(KV_CONVERSATION_READS, JSON.stringify(map));
+}
+
+export function resetConversationReadCursor(conversationId: string): void {
+  const map = conversationReadMap();
+  map[conversationId] = 0;
+  kvSet(KV_CONVERSATION_READS, JSON.stringify(map));
+}
+
+export function mergeConversationReadCursors(sourceId: string, targetId: string): void {
+  const map = conversationReadMap();
+  const hasSource = Object.prototype.hasOwnProperty.call(map, sourceId);
+  const hasTarget = Object.prototype.hasOwnProperty.call(map, targetId);
+  if (!hasSource && !hasTarget) return;
+  map[targetId] = Math.max(map[sourceId] ?? 0, map[targetId] ?? 0);
+  delete map[sourceId];
+  kvSet(KV_CONVERSATION_READS, JSON.stringify(map));
+}
+
+/**
+ * 会话级已读水位的一次性迁移。
+ *
+ * 早期版本只有联系人级已读表；加入 QQ 私聊/群会话后，会话级表是空的。
+ * 如果这时直接按“最后一条用户消息”回推，机器人此前分条发出的回复会被
+ * 整段重新算成未读，侧栏就会突然冒出一片红点。这里只在第一次升级时把
+ * 已有会话的历史水位落在当前最后一条消息上；之后新会话仍按真实收发计算。
+ */
+export function seedConversationReadBaselines(): void {
+  if (kvGet(KV_CONVERSATION_READS_SEEDED) === "1") return;
+  const map = conversationReadMap();
+  const rows = db.prepare(
+    `SELECT c.id AS conversation_id, MAX(m.id) AS last_id
+       FROM conversations c
+       LEFT JOIN messages m ON m.conversation_id = c.id AND m.superseded_at IS NULL
+      GROUP BY c.id`,
+  ).all() as Array<{ conversation_id: string; last_id: number | null }>;
+  let changed = false;
+  for (const row of rows) {
+    const last = Number(row.last_id ?? 0);
+    // 0 号游标也可能是本次迁移刚补出来的本地会话（消息在它之后才回填），
+    // 因此在“首次迁移”这一趟里与缺失值同等处理，统一落到历史末尾。
+    if ((map[row.conversation_id] === undefined || map[row.conversation_id] === 0) && last > 0) {
+      map[row.conversation_id] = last;
+      changed = true;
+    }
+  }
+  withTx(() => {
+    if (changed) kvSet(KV_CONVERSATION_READS, JSON.stringify(map));
+    kvSet(KV_CONVERSATION_READS_SEEDED, "1");
+  });
+}
+
+/** 单个 Conversation 的未读助手消息数。 */
+export function unreadCountForConversation(conversationId: string): number {
+  let last = conversationReadMap()[conversationId];
   if (last === undefined) {
-    // 没有已读记录时从「自己最后一句话」起算：刚说完话得到的回应算没看过；
-    // 老用户升级后不必为陈年记录满屏红点（旧历史里最后一条用户消息之前的全算读过）。
-    const row = db
-      .prepare(`SELECT MAX(id) AS m FROM messages WHERE contact_id = ? AND role = 'user'`)
-      .get(contactId) as { m: number | null } | undefined;
+    const row = db.prepare(`SELECT MAX(id) AS m FROM messages WHERE conversation_id = ? AND role = 'user'`)
+      .get(conversationId) as { m: number | null } | undefined;
     last = row?.m ?? 0;
   }
-  const n = db
-    .prepare(
-      `SELECT COUNT(*) AS n FROM messages
-       WHERE contact_id = ? AND role = 'assistant' AND superseded_at IS NULL AND id > ?`,
-    )
-    .get(contactId, last) as { n: number };
-  return n.n;
+  const row = db.prepare(
+    `SELECT COUNT(*) AS n FROM messages
+     WHERE conversation_id = ? AND role = 'assistant' AND superseded_at IS NULL AND id > ?`,
+  ).get(conversationId, last) as { n: number };
+  return row.n;
+}
+
+/**
+ * 未读数 = 该联系人在各 Conversation 里还没被读过的助手消息总和。
+ *
+ * 必须按会话相加，不能再用联系人级单水位：同一个联系人的本地聊天、QQ 私聊
+ * 和多个群各有自己的已读进度，拿一个全局 id 去截断会把别的会话误清红点。
+ */
+export function unreadCount(contactId: string): number {
+  const rows = db.prepare(`SELECT id FROM conversations WHERE contact_id = ?`).all(contactId) as Array<{ id: string }>;
+  return rows.reduce((total, row) => total + unreadCountForConversation(row.id), 0);
 }
 
 /** 联系人的人格卡（找不到该联系人时回落默认角色卡，保证对话不中断）。 */

@@ -11,6 +11,12 @@ export type MessageRow = {
   text: string;
   kind: string;
   contact_id: string | null;
+  conversation_id?: string | null;
+  sender_id?: string | null;
+  sender_name?: string | null;
+  source_message_id?: string | null;
+  reply_to_message_id?: string | null;
+  at_bot?: number | null;
   created_at: number;
   superseded_at: number | null;
   /** 'edit' 被编辑取代 | 'retract' 被撤回 | null 仍在对话里 */

@@ -1204,7 +1204,7 @@ try {
   const orphanId = Number(
     db
       .prepare(
-        `INSERT INTO messages (channel, role, text, kind, contact_id, created_at) VALUES ('web', 'user', '历史遗留的一句话', 'chat', 'default', ?)`,
+        `INSERT INTO messages (channel, role, text, kind, contact_id, conversation_id, created_at) VALUES ('web', 'user', '历史遗留的一句话', 'chat', 'default', 'local-default', ?)`,
       )
       .run(Date.now() - 1000).lastInsertRowid,
   );
@@ -1962,7 +1962,9 @@ try {
     check("effort 形态不看开关，也不会冒出 thinking 字段",
       !("thinking" in send({ thinkingParam: "effort", thinkingMode: "off" })));
     check("effort 形态勾了思考就一定带 reasoning_effort（留空按 medium）",
-      send({ thinkingParam: "effort", thinkingLevel: "", caps: { ...base.caps, thinking: true } }).reasoning_effort === "medium");
+      send({ thinkingParam: "effort", thinkingMode: "on", thinkingLevel: "", caps: { ...base.caps, thinking: true } }).reasoning_effort === "medium");
+    check("effort 形态「跟随模型」不发送 reasoning_effort",
+      !("reasoning_effort" in send({ thinkingParam: "effort", thinkingMode: "auto", thinkingLevel: "high", caps: { ...base.caps, thinking: true } })));
     check("形态/开关的脏值回落默认（effort / 不发字段）",
       sanitizeThinkingParam("nonsense") === "effort" && sanitizeThinkingMode("yes") === "");
   }
@@ -3164,10 +3166,26 @@ try {
             endStream();
             return;
           }
+          if (model === "mock-slow") {
+            // 整段回答超过配置超时，但每 300ms 都有新数据：流式必需继续，不能按总时长截断。
+            for (const piece of ["慢慢", "写也", "没有", "停。"]) {
+              res.write(frameOf({ choices: [{ delta: { content: piece } }] }));
+              await nap(300);
+            }
+            endStream();
+            return;
+          }
+          if (model === "mock-timeout") {
+            // 流到半句后彻底静默：客户端必须在「多久没收到新数据」的超时点主动收尾。
+            res.write(frameOf({ choices: [{ delta: { content: "写到一半" } }] }));
+            return;
+          }
           // 默认 mock-stream：思考片段 + 注释心跳行 + 畸形帧 + 六片正文 + usage 末帧。
           // 正文要够长——草稿有 300ms 观察窗，流太短的话「第一条草稿」就等于定稿，测不出半截。
           const pieces = ["在的，", "刚跑完实验。", "你要不要", "先吃点东西？", "我把灯", "给你留着。"];
           await put(frameOf({ choices: [{ delta: { reasoning_content: "先想一下" } }] }));
+          // 留出可观测窗口：思考必须先于正文出现在处理单草稿里。
+          await nap(260);
           res.write(": 心跳注释行，应当被忽略\n\n");
           for (let i = 0; i < pieces.length; i += 1) {
             await put(frameOf({
@@ -3183,12 +3201,16 @@ try {
     await new Promise<void>((resolve) => mock.listen(MOCK_PORT, "127.0.0.1", resolve));
 
     /** 发一句，边等结果边采样 (status, reply)。草稿是"过程中"的状态，只看终态等于没测。 */
-    const sayAndSample = async (text: string): Promise<{ turnId: string; samples: Array<{ status: string; reply: string | null }> }> => {
+    const sayAndSample = async (text: string): Promise<{ turnId: string; samples: Array<{ status: string; reply: string | null; reasoning: string | null }> }> => {
       const started = await (await jsonPost("/api/say", { text })).json();
-      const samples: Array<{ status: string; reply: string | null }> = [];
+      const samples: Array<{ status: string; reply: string | null; reasoning: string | null }> = [];
       for (let i = 0; i < 150; i += 1) {
         const t = await (await fetch(`${BASE}/api/turn/${started.turnId}`)).json();
-        samples.push({ status: String(t.status), reply: t.reply === undefined ? null : (t.reply ?? null) });
+        samples.push({
+          status: String(t.status),
+          reply: t.reply === undefined ? null : (t.reply ?? null),
+          reasoning: t.reasoning === undefined ? null : (t.reasoning ?? null),
+        });
         if (t.status !== "queued" && t.status !== "running") break;
         await nap(70);
       }
@@ -3205,6 +3227,9 @@ try {
       const drafts = a.samples.filter((s) => s.status === "running" && typeof s.reply === "string" && s.reply !== "");
       const doneA = last(a.samples);
       check("流式下 running 期就拿到草稿（不是等整段回完）", drafts.length > 0, JSON.stringify(a.samples.slice(0, 3)));
+      const reasoningDrafts = a.samples.filter((s) => s.status === "running" && typeof s.reasoning === "string" && s.reasoning !== "");
+      check("思考在正文之前先进入实时草稿", reasoningDrafts.length > 0 && reasoningDrafts[0]!.reasoning === "先想一下", JSON.stringify(a.samples.slice(0, 4)));
+      check("正文开始后思考草稿仍在，不会消失", a.samples.some((s) => s.status === "running" && s.reply !== null && s.reply !== "" && s.reasoning === "先想一下"), JSON.stringify(a.samples.slice(0, 8)));
       check("草稿是「还没写完」的半截，短于定稿",
         drafts.some((s) => String(s.reply).length < String(doneA.reply ?? "").length),
         `草稿=${JSON.stringify(drafts.map((s) => s.reply))} 定稿=${doneA.reply}`);
@@ -3260,7 +3285,30 @@ try {
       check("取消的轮不插任何气泡（非流式时代就守着这条，流式后仍然成立）",
         one(`SELECT COUNT(*) AS c FROM messages WHERE turn_id = ? AND role='assistant' AND kind='chat'`, String(startedD.turnId)).c === 0);
 
-      // E. 记忆向量化（语义召回）：假 /embeddings 端点 + 词面零重合的改写查询。
+      // E. 流式超时的正确口径：限制的是「块间静默」，不是整条回答的总时长。
+      updateModel({ name: "mock-slow", timeoutMs: 1000 });
+      const slowStartedAt = Date.now();
+      const slowRun = await sayAndSample("慢慢答完这一轮");
+      const slowElapsedMs = Date.now() - slowStartedAt;
+      check("流式回答总时长超过超时值也照常完成",
+        last(slowRun.samples).status === "done" && last(slowRun.samples).reply === "慢慢写也没有停。",
+        `${JSON.stringify(last(slowRun.samples))}/${slowElapsedMs}ms`);
+      check("长流确实跑过了配置的 1 秒，不是碰巧提前结束", slowElapsedMs > 1000, String(slowElapsedMs));
+
+      updateModel({ name: "mock-timeout", timeoutMs: 1000 });
+      const timeoutStartedAt = Date.now();
+      const timeoutRun = await sayAndSample("这条会静默超时");
+      const timeoutElapsedMs = Date.now() - timeoutStartedAt;
+      const timeoutTurn = await (await fetch(`${BASE}/api/turn/${timeoutRun.turnId}`)).json();
+      check("流式静默超时直接判 failed（不是 cancelled/running）",
+        timeoutTurn.status === "failed", `${timeoutTurn.status}/${timeoutTurn.error}`);
+      check("超时错误可读且说明是请求超时", String(timeoutTurn.error ?? "").includes("请求超时"), String(timeoutTurn.error));
+      check("静默超时后不留下半截草稿", timeoutTurn.reply === null || timeoutTurn.reply === undefined, String(timeoutTurn.reply));
+      check("静默超时在配置时限附近收尾，不会挂到前端轮询上限", timeoutElapsedMs >= 900 && timeoutElapsedMs < 5000, String(timeoutElapsedMs));
+      check("静默超时轮不插半截 assistant 气泡",
+        one(`SELECT COUNT(*) AS c FROM messages WHERE turn_id = ? AND role='assistant' AND kind='chat'`, timeoutRun.turnId).c === 0);
+
+      // F. 记忆向量化（语义召回）：假 /embeddings 端点 + 词面零重合的改写查询。
       //    放在最后做、跑完立刻解绑：embedding 生效会影响其它段落的召回排序。
       console.log("\n[流式同块] 记忆向量化（语义召回）");
       {
@@ -3323,7 +3371,7 @@ try {
       const enc = Buffer.concat([c.update(plain, "utf8"), c.final()]);
       return Buffer.concat([nonce, enc, c.getAuthTag()]).toString("base64");
     };
-    const qrStart = await (await fetch(`${BASE}/api/qq/qr`, { method: "POST" })).json();
+    const qrStart = await (await fetch(`${BASE}/api/qq/qr?contactId=${encodeURIComponent(qqCid)}`, { method: "POST" })).json();
     check("扫码任务建起来后，二维码内容是 q.qq.com 那条带 task_id 的链接",
       qrStart.ok === true && String(qrStart.qrContent) === "https://q.qq.com/qqbot/openclaw/connect.html?task_id=task-1&_wv=2",
       String(qrStart.qrContent));
@@ -3331,22 +3379,22 @@ try {
       !("bind_key" in qrStart) && !("bindKey" in qrStart) && qqBind.lastKey.length === 44,
       JSON.stringify(Object.keys(qrStart)));
     qqBind.status = 1;
-    const waitOne = await (await fetch(`${BASE}/api/qq/qr/task-1`)).json();
+    const waitOne = await (await fetch(`${BASE}/api/qq/qr/task-1?contactId=${encodeURIComponent(qqCid)}`)).json();
     check("还没扫完时轮询报 waiting", waitOne.status === "waiting" && waitOne.error === "", JSON.stringify(waitOne));
     // 控制组：拿另一把钥匙加密 → 必须报"解不开、重扫"，而不是把乱码当凭据存下来
     qqBind.status = 2;
     qqBind.appId = "1020000000001";
     qqBind.secret = encryptWith("不该被接受的密钥", Buffer.alloc(32, 7).toString("base64"));
-    const badKey = await (await fetch(`${BASE}/api/qq/qr/task-1`)).json();
+    const badKey = await (await fetch(`${BASE}/api/qq/qr/task-1?contactId=${encodeURIComponent(qqCid)}`)).json();
     check("钥匙不配对时报「解不开、请重新扫码」",
       badKey.status === "gone" && String(badKey.error).includes("解不开"), JSON.stringify(badKey));
     check("那种情况下没有把垃圾存成凭据", qq.summary().configured === false);
     // 真钥匙那份：成功后凭据应直接可用，且 AppSecret 不回前端
-    const qrAgain = await (await fetch(`${BASE}/api/qq/qr`, { method: "POST" })).json();
+    const qrAgain = await (await fetch(`${BASE}/api/qq/qr?contactId=${encodeURIComponent(qqCid)}`, { method: "POST" })).json();
     qqBind.status = 2;
     qqBind.appId = "1020000000001";
     qqBind.secret = encryptWith("sec-from-qr-8899", qqBind.lastKey);
-    const okPoll = await (await fetch(`${BASE}/api/qq/qr/${qrAgain.taskId}`)).json();
+    const okPoll = await (await fetch(`${BASE}/api/qq/qr/${qrAgain.taskId}?contactId=${encodeURIComponent(qqCid)}`)).json();
     check("扫码成功后报 created，AppID 只回脱敏形式",
       okPoll.status === "created" && String(okPoll.appId).startsWith("••••"), JSON.stringify(okPoll));
     check("AppSecret 没有回给界面", !JSON.stringify(okPoll).includes("sec-from-qr-8899"));
@@ -3355,7 +3403,7 @@ try {
       qq.summary().configured === true
         && qqMock.tokenBodies.some((b) => b.clientSecret === "sec-from-qr-8899" && b.appId === "1020000000001"),
       JSON.stringify(qqMock.tokenBodies[qqMock.tokenBodies.length - 1] ?? null));
-    const usedPoll = await (await fetch(`${BASE}/api/qq/qr/task-2`)).json();
+    const usedPoll = await (await fetch(`${BASE}/api/qq/qr/task-2?contactId=${encodeURIComponent(qqCid)}`)).json();
     check("一个任务只认一次（成功后再轮询说作废）", usedPoll.status === "gone", JSON.stringify(usedPoll));
     qq.clearAll();
     check("clearAll 把扫到的凭据也抹掉", qq.summary().configured === false);
@@ -3363,11 +3411,11 @@ try {
     const tokensBefore = qqMock.tokenCalls;
     const r = await fetch(`${BASE}/api/qq/credentials`, {
       method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ appId: "1021123456789", clientSecret: "sec-abc", enabled: true }),
+      body: JSON.stringify({ contactId: qqCid, appId: "1021123456789", clientSecret: "sec-abc", enabled: true }),
     });
     const rBody = await r.json();
     check("保存凭据被接受且报出配好了", r.status === 200 && rBody.ok === true && rBody.configured === true, String(rBody.error ?? ""));
-    check("AppID 在总览里是脱敏的", String(rBody.appId).startsWith("••••"), String(rBody.appId));
+    check("AppID 在总览里是脱敏的", String(qq.summary().appId).startsWith("••••"), String(qq.summary().appId));
     await qqNap(80);
     check("配好凭据后自己去换凭证并发现网关",
       qqMock.tokenCalls > tokensBefore && qqMock.paths.includes("/gateway"), JSON.stringify(qqMock.paths.slice(0, 3)));
@@ -3391,6 +3439,31 @@ try {
       check("READY 之后总览报「已连接」", qq.summary().status === "connected", qq.summary().status);
       sock.emit({ op: 1, d: 42 });
       check("心跳回包不影响状态、也不报错", qq.summary().status === "connected" && qq.lastGatewayError() === "");
+
+      // 多 BotAccount：第二位联系人独立换 token、独立连网关；停用/断开它不影响第一位。
+      const qqContact2 = await (await fetch(`${BASE}/api/contacts`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "QQ 测试二", identity: "临时" }),
+      })).json();
+      const qqCid2 = (qqContact2.contact?.id ?? qqContact2.id) as string;
+      qq.setCredentials(qqCid2, { appId: "1021123456790", clientSecret: "sec-def", enabled: true });
+      await qqNap(100);
+      const sock2 = qqMock.socket;
+      check("第二个联系人使用自己的 AppID 换 token 并建独立网关",
+        qqMock.tokenBodies.some((b) => b.appId === "1021123456790" && b.clientSecret === "sec-def") && sock2 !== null && sock2 !== sock);
+      if (sock2 !== null) {
+        sock2.emit({ op: 10, d: { heartbeat_interval: 60_000 }, s: 0 });
+        await qqNap(50);
+        sock2.emit({ op: 0, t: "READY", d: { session_id: "sess-2" }, s: 1 });
+        await qqNap(50);
+      }
+      const status1 = qq.snapshotFor(qqCid).status;
+      const status2 = qq.snapshotFor(qqCid2).status;
+      check("两个 BotAccount 可以同时在线", status1 === "connected" && status2 === "connected", `${status1}/${status2}`);
+      qq.setFlagsByContact(qqCid2, { enabled: false });
+      await qqNap(50);
+      check("停用第二个 Bot 不影响第一个", qq.snapshotFor(qqCid).status === "connected" && qq.snapshotFor(qqCid2).status === "disabled",
+        `${qq.snapshotFor(qqCid).status}/${qq.snapshotFor(qqCid2).status}`);
+      check("断开第二个 Bot 只移除自己的账号", qq.disconnectByContact(qqCid2) === true && qq.snapshotFor(qqCid).binding !== null && qq.snapshotFor(qqCid2).binding === null);
 
       // 认领：界面开窗口 → 用户在 QQ 里发「绑定」两个字 → 网关把这条推回来，我们认出来自哪个 openid。
       const bindRes = await (await fetch(`${BASE}/api/contacts/${encodeURIComponent(qqCid)}/qq/bind`, { method: "POST" })).json();
@@ -3438,11 +3511,184 @@ try {
       const dup = qqCount(qqCid);
       check("同一条消息重投递被幂等键丢掉（官方会重投）", dup === after, `${after} → ${dup}`);
 
+      // QQ 私聊并入联系人主会话；入群后才新增一个隔离的群会话。
+      const privateRows = db.prepare(
+        "SELECT COUNT(*) AS c FROM conversations WHERE contact_id = ? AND channel = 'qq' AND kind = 'private'",
+      ).get(qqCid) as { c: number };
+      const privateMsg = db.prepare(
+        "SELECT conversation_id FROM messages WHERE contact_id = ? AND channel = 'qq' AND source_message_id = 'm2' LIMIT 1",
+      ).get(qqCid) as { conversation_id: string } | undefined;
+      check("QQ 私聊并入联系人主会话",
+        privateRows.c === 0 && privateMsg?.conversation_id === `local-${qqCid}`,
+        JSON.stringify({ privateRows: privateRows.c, privateMsg: privateMsg?.conversation_id }));
+
+      sock.emit({ op: 0, t: "GROUP_ADD_ROBOT", s: 6, d: { group_openid: "GROUP-A", group_name: "测试群 A" } });
+      await qqNap(100);
+      let qqConversations = qq.snapshotFor(qqCid).conversations;
+      const groupA = qqConversations.find((c) => c.kind === "group" && c.title === "测试群 A");
+      check("机器人入群后自动出现群会话", groupA !== undefined && groupA.enabled, JSON.stringify(qqConversations));
+      check("只把需要隔离的群暴露为独立会话",
+        qqConversations.every((c) => c.kind === "group") && groupA !== undefined && qqConversations.filter((c) => c.kind === "group").length === 1,
+        JSON.stringify(qqConversations.map((c) => [c.kind, c.title])));
+      sock.emit({ op: 0, t: "GROUP_AT_MESSAGE_CREATE", s: 7,
+        d: { id: "gm1", group_openid: "GROUP-A", group_name: "测试群 A", author: { member_openid: "M-1", member_name: "张三" }, content: "@机器人 你好" } });
+      await qqNap(500);
+      const groupMsg = db.prepare(`SELECT conversation_id, sender_name, at_bot FROM messages WHERE source_message_id = 'gm1' LIMIT 1`).get() as
+        { conversation_id: string; sender_name: string; at_bot: number } | undefined;
+      check("群 @ 消息落进群会话并带发送者昵称", groupMsg?.conversation_id === groupA?.id && groupMsg?.sender_name === "张三" && groupMsg?.at_bot === 1,
+        JSON.stringify(groupMsg ?? null));
+      const contactRows = await (await fetch(`${BASE}/api/contacts`)).json();
+      const qqRow = (contactRows.contacts as Array<{
+        id: string; conversationId?: string | null; conversationReadOnly?: boolean; preview?: string;
+        conversations?: Array<{ id: string; kind: string; title: string }>;
+      }> | undefined)?.find((row) => row.id === qqCid);
+      check("联系人列表的群消息预览携带所属会话（点开不会落到本地聊天）",
+        qqRow?.conversationId === groupA?.id && qqRow?.conversationReadOnly === true
+          && qqRow?.conversations?.some((conv) => conv.id === groupA?.id && conv.kind === "group"),
+        JSON.stringify(qqRow ?? null));
+      const sidebarSource = readFileSync("./frontend/src/components/Sidebar.tsx", "utf8");
+      const notifySource = readFileSync("./frontend/src/lib/notify.ts", "utf8");
+      check("侧栏联系人入口与系统通知继续传递群 conversationId",
+        sidebarSource.includes("onPick(c.id, target?.id ?? null") && notifySource.includes("conversationId: input.conversationId"),
+        `sidebar=${sidebarSource.includes("onPick(c.id, target?.id ?? null")} notify=${notifySource.includes("conversationId: input.conversationId")}`);
+      const groupSendsBefore = qqMock.sends.length;
+      if (groupA !== undefined) await qq.deliverToConversation(groupA.id, "群回复", { triggerMessageId: "gm1" });
+      const groupSends = qqMock.sends.slice(groupSendsBefore);
+      check("群回复走群接口并携带触发消息 msg_id",
+        qqMock.paths.includes("/v2/groups/GROUP-A/messages") && groupSends.some((x) => x.msg_id === "gm1"),
+        JSON.stringify(groupSends.slice(-1)[0] ?? null));
+
+      // 第二个群 + 记忆作用域：同一联系人下 A 群的会话/成员记忆不能进 B 群。
+      sock.emit({ op: 0, t: "GROUP_ADD_ROBOT", s: 8, d: { group_openid: "GROUP-B", group_name: "测试群 B" } });
+      await qqNap(80);
+      const groupB = qq.snapshotFor(qqCid).conversations.find((c) => c.kind === "group" && c.title === "测试群 B");
+      check("同一机器人可以在多个群拥有不同 Conversation",
+        groupA !== undefined && groupB !== undefined && groupA.id !== groupB.id,
+        `${groupA?.id ?? "nil"} / ${groupB?.id ?? "nil"}`);
+      if (groupA !== undefined && groupB !== undefined) {
+        // 群名：平台自动名可被用户覆盖；恢复自动后重新采用平台最新改名。
+        const customTitle = "我给它起的名字";
+        const renameRes = await jsonPost(
+          `/api/conversations/${encodeURIComponent(groupA.id)}/title?contactId=${encodeURIComponent(qqCid)}`,
+          { title: customTitle },
+        );
+        const renameBody = await renameRes.json();
+        check("QQ 群可自定义名称",
+          renameRes.status === 200 && renameBody.conversation?.title === customTitle
+            && renameBody.conversation?.titleSource === "custom",
+          JSON.stringify(renameBody));
+        sock.emit({ op: 0, t: "GROUP_ADD_ROBOT", s: 8, d: { group_openid: "GROUP-A", group_name: "平台后改的群名" } });
+        await qqNap(100);
+        const customSnapshot = qq.snapshotFor(qqCid).conversations.find((c) => c.id === groupA.id);
+        check("自定义群名不被后续平台事件覆盖",
+          customSnapshot?.title === customTitle && customSnapshot?.titleSource === "custom",
+          JSON.stringify(qq.snapshotFor(qqCid).conversations));
+        const resetRes = await jsonPost(
+          `/api/conversations/${encodeURIComponent(groupA.id)}/title?contactId=${encodeURIComponent(qqCid)}`,
+          { title: null },
+        );
+        const resetBody = await resetRes.json();
+        const resetSnapshot = qq.snapshotFor(qqCid).conversations.find((c) => c.id === groupA.id);
+        check("恢复自动名称时采用平台最近一次群名",
+          resetRes.status === 200 && resetBody.conversation?.title === "平台后改的群名"
+            && resetBody.conversation?.titleSource === "auto"
+            && resetSnapshot?.title === "平台后改的群名" && resetSnapshot?.titleSource === "auto",
+          JSON.stringify({ body: resetBody, snapshot: resetSnapshot }));
+        const privateTitleRes = await jsonPost(
+          `/api/conversations/${encodeURIComponent(`local-${qqCid}`)}/title?contactId=${encodeURIComponent(qqCid)}`,
+          { title: "不能改私聊" },
+        );
+        check("群名接口拒绝把主私聊当群改", privateTitleRes.status === 404, `status=${privateTitleRes.status}`);
+
+        const { addMemoryEvent, recallExplained, promoteMemoryEvent } = await import("../src/memory.ts");
+        const aSecretId = addMemoryEvent({ kind: "fact", content: "A群暗号是山楂", contactId: qqCid, scopeKind: "conversation", scopeConversationId: groupA.id, sourceConversationId: groupA.id });
+        addMemoryEvent({ kind: "fact", content: "B群暗号是橘子", contactId: qqCid, scopeKind: "conversation", scopeConversationId: groupB.id, sourceConversationId: groupB.id });
+        addMemoryEvent({ kind: "preference", content: "张三只喝无糖茶", subject: "张三", contactId: qqCid, scopeKind: "member", scopeConversationId: groupA.id, subjectId: "M-1", subjectName: "张三", sourceConversationId: groupA.id });
+        addMemoryEvent({ kind: "preference", content: "李四只喝甜茶", subject: "李四", contactId: qqCid, scopeKind: "member", scopeConversationId: groupA.id, subjectId: "M-2", subjectName: "李四", sourceConversationId: groupA.id });
+        const inA = recallExplained(qqCid, "暗号 山楂 橘子", 20, { scope: { conversationId: groupA.id } }).events.map((e) => e.content);
+        const inB = recallExplained(qqCid, "暗号 山楂 橘子", 20, { scope: { conversationId: groupB.id } }).events.map((e) => e.content);
+        const memberA = recallExplained(qqCid, "茶", 20, { scope: { conversationId: groupA.id, memberId: "M-1" } }).events.map((e) => e.content);
+        check("会话级记忆只在所属群召回", inA.includes("A群暗号是山楂") && !inA.includes("B群暗号是橘子")
+          && inB.includes("B群暗号是橘子") && !inB.includes("A群暗号是山楂"), JSON.stringify({ inA, inB }));
+        check("成员级记忆只给当前群成员", memberA.includes("张三只喝无糖茶") && !memberA.includes("李四只喝甜茶"), JSON.stringify(memberA));
+        promoteMemoryEvent(aSecretId, qqCid);
+        const inBAfterPromote = recallExplained(qqCid, "山楂", 20, { scope: { conversationId: groupB.id } }).events.map((e) => e.content);
+        check("手动提升后会话记忆变为联系人全局记忆", inBAfterPromote.includes("A群暗号是山楂"), JSON.stringify(inBAfterPromote));
+      }
+
+      const historyBeforeLeave = groupA === undefined ? -1 : Number((db.prepare(
+        "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
+      ).get(groupA.id) as { c: number }).c);
+      sock.emit({ op: 0, t: "GROUP_DEL_ROBOT", s: 9, d: { group_openid: "GROUP-A", group_name: "测试群 A" } });
+      await qqNap(80);
+      qqConversations = qq.snapshotFor(qqCid).conversations;
+      const leftA = qqConversations.find((c) => c.id === groupA?.id);
+      check("机器人被移出或群解散后标记离群并停止收件",
+        leftA?.enabled === false && typeof leftA?.leftAt === "number",
+        JSON.stringify(leftA));
+      const historyAfterLeave = groupA === undefined ? -2 : Number((db.prepare(
+        "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
+      ).get(groupA.id) as { c: number }).c);
+      check("离群不删除群历史", historyAfterLeave === historyBeforeLeave,
+        `${historyBeforeLeave} → ${historyAfterLeave}`);
+      const forceEnable = await jsonPost(
+        `/api/conversations/${encodeURIComponent(groupA?.id ?? "")}/flags?contactId=${encodeURIComponent(qqCid)}`,
+        { enabled: true },
+      );
+      check("离群后不能从界面重新开启收件", forceEnable.status === 409, `status=${forceEnable.status}`);
+      sock.emit({ op: 0, t: "GROUP_ADD_ROBOT", s: 10, d: { group_openid: "GROUP-A", group_name: "测试群 A" } });
+      await qqNap(80);
+      const rejoinedA = qq.snapshotFor(qqCid).conversations.find((c) => c.id === groupA?.id);
+      check("重新入群后恢复收件且沿用原历史",
+        rejoinedA?.enabled === true && rejoinedA?.leftAt === null && Number((db.prepare(
+          "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
+        ).get(groupA?.id ?? "") as { c: number }).c) === historyBeforeLeave,
+        JSON.stringify(rejoinedA));
+
+      const activeClear = await fetch(
+        `${BASE}/api/conversations/${encodeURIComponent(groupA?.id ?? "")}/history?contactId=${encodeURIComponent(qqCid)}`,
+        { method: "DELETE" },
+      );
+      check("仍在群内时不能清除历史", activeClear.status === 409, `status=${activeClear.status}`);
+      sock.emit({ op: 0, t: "GROUP_DEL_ROBOT", s: 11, d: { group_openid: "GROUP-A", group_name: "测试群 A" } });
+      await qqNap(80);
+      const clearRes = await fetch(
+        `${BASE}/api/conversations/${encodeURIComponent(groupA?.id ?? "")}/history?contactId=${encodeURIComponent(qqCid)}`,
+        { method: "DELETE" },
+      );
+      const clearBody = await clearRes.json();
+      const afterClearCount = Number((db.prepare(
+        "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
+      ).get(groupA?.id ?? "") as { c: number }).c);
+      check("已离群群可以手动清除历史",
+        clearRes.status === 200 && clearBody.messages === historyBeforeLeave && afterClearCount === 0,
+        JSON.stringify(clearBody));
+      const clearedSnapshot = qq.snapshotFor(qqCid).conversations.find((c) => c.id === groupA?.id);
+      check("清除历史保留群会话外壳并显示 0 条",
+        clearedSnapshot?.id === groupA?.id && clearedSnapshot?.messageCount === 0 && typeof clearedSnapshot?.leftAt === "number",
+        JSON.stringify(clearedSnapshot));
+
+      const activeRemove = await fetch(
+        `${BASE}/api/conversations/${encodeURIComponent(groupB?.id ?? "")}?contactId=${encodeURIComponent(qqCid)}`,
+        { method: "DELETE" },
+      );
+      check("仍在群内时不能从列表移除群聊", activeRemove.status === 409, `status=${activeRemove.status}`);
+      const removeRes = await fetch(
+        `${BASE}/api/conversations/${encodeURIComponent(groupA?.id ?? "")}?contactId=${encodeURIComponent(qqCid)}`,
+        { method: "DELETE" },
+      );
+      const removeBody = await removeRes.json();
+      const removedFromSnapshot = qq.snapshotFor(qqCid).conversations.some((c) => c.id === groupA?.id);
+      check("已离群群可从列表彻底移除",
+        removeRes.status === 200 && removeBody.removed === true && !removedFromSnapshot,
+        JSON.stringify(removeBody));
+
       // 陌生 openid 不接、也不替它建会话。
+      const beforeStranger = qqCount(qqCid);
       sock.emit({ op: 0, t: "C2C_MESSAGE_CREATE", s: 5, d: { id: "m9", author: { user_openid: "OPEN-STRANGER" }, content: "你谁" } });
       await qqNap(200);
       check("没绑定的 openid 不接、也不凭空建联系人",
-        qqCount(qqCid) === after
+        qqCount(qqCid) === beforeStranger
           && qq.snapshotFor("OPEN-STRANGER").binding === null);
 
       // 被动窗口内的回复：带 msg_id，且同一 msg_id 下 seq 逐条递增。
@@ -3499,7 +3745,7 @@ try {
 
     // 换凭据 = 换身份：token 必须作废重来。
     const tokensBeforeSwap = qqMock.tokenCalls;
-    qq.setCredentials({ appId: "9999", clientSecret: "another", enabled: true });
+    qq.setCredentials(qqCid, { appId: "9999", clientSecret: "another", enabled: true });
     await qqNap(80);
     check("改凭据后重新换 token（旧凭证不作数）", qqMock.tokenCalls > tokensBeforeSwap,
       `+${qqMock.tokenCalls - tokensBeforeSwap}`);
@@ -4516,10 +4762,12 @@ try {
       !Object.keys(first).includes("identity"), Object.keys(first).slice(0, 8).join(","));
     check("列表仍带着列表真正要用的那几项",
       Object.keys(first).every((k) => ["id", "name", "type", "avatar", "gender", "recentTurns",
-        "showThinking", "showTools", "streamReveal", "imageGen", "createdAt", "preview", "lastAt",
+        "showThinking", "showTools", "streamReveal", "imageGen", "createdAt", "preview", "previewChannel",
+        "conversationId", "conversationTitle", "conversationReadOnly", "conversations", "lastAt",
         "pending", "pendingFocus", "archivedAt", "unread"].includes(k)),
       Object.keys(first).filter((k) => !["id", "name", "type", "avatar", "gender", "recentTurns",
-        "showThinking", "showTools", "streamReveal", "imageGen", "createdAt", "preview", "lastAt",
+        "showThinking", "showTools", "streamReveal", "imageGen", "createdAt", "preview", "previewChannel",
+        "conversationId", "conversationTitle", "conversationReadOnly", "conversations", "lastAt",
         "pending", "pendingFocus", "archivedAt", "unread"].includes(k)).join(",") || "干净");
 
     // 人设搜索改到后端：正向对照——造一位人设里埋了暗号、但名字与预览都不含它的联系人。

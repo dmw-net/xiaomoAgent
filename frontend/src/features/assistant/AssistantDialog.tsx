@@ -8,6 +8,7 @@ import { Plus, Settings2, X } from "lucide-react";
 import ChatView from "../chat/ChatView";
 import ThreadChip from "./ThreadChip";
 import PendingCard from "./PendingCard";
+import AssistantPermissionChip from "./AssistantPermissionChip";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useNarrow } from "../../hooks/useNarrow";
 import { contactsApi, threadContactId, assistantApi, type AssistantThread } from "../../api";
@@ -263,7 +264,8 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
             characterName={asstName} ownerName={ownerName}
             ownerAvatar={ownerAvatar} contactAvatar={avatar}
             onStatus={reportStatus}
-            introChip="帮我接入一个模型" />
+            introChip="帮我接入一个模型"
+            composerAccessory={<AssistantPermissionChip active={open} />} />
           {showSettings && (
             <Suspense fallback={null}>
               <div className="asst-settings">

@@ -45,7 +45,7 @@ const NO_CAPS: ModelCaps = {
 
 const emptyDraft = (): Draft => ({
   id: null, label: "", baseUrl: "", key: "", name: "", timeout: "90000", extra: "",
-  caps: { ...NO_CAPS }, thinkingLevel: "", thinkingLevels: [], thinkingParam: "effort", thinkingMode: "",
+  caps: { ...NO_CAPS }, thinkingLevel: "", thinkingLevels: [], thinkingParam: "effort", thinkingMode: "auto",
   maxInput: "", maxOutput: "", underProvider: false,
 });
 
@@ -59,7 +59,7 @@ const CAP_DEFS: Array<{ key: keyof ModelCaps; label: string }> = [
 
 /** 开关系形态（模板系 / 火山系）的三个取值；"" 表示一个字段都不发。 */
 const THINKING_MODE_CHIPS: Array<{ id: ThinkingModeId; label: string }> = [
-  { id: "", label: "跟随模型" },
+  { id: "auto", label: "跟随模型" },
   { id: "on", label: "开" },
   { id: "off", label: "关" },
 ];
@@ -204,7 +204,7 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
       thinkingLevel: p.thinkingLevel ?? "",
       thinkingLevels: p.thinkingLevels ?? [],
       thinkingParam: p.thinkingParam ?? "effort",
-      thinkingMode: p.thinkingMode ?? "",
+      thinkingMode: p.thinkingMode === "" ? "auto" : (p.thinkingMode ?? "auto"),
       maxInput: p.maxInputTokens ? String(p.maxInputTokens) : "",
       maxOutput: p.maxOutputTokens ? String(p.maxOutputTokens) : "",
       underProvider: false,
@@ -576,15 +576,15 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
                     <div className="field">
                       <label>默认强度</label>
                       <div className="adv-chips">
-                        <button type="button" className={"adv-chip" + (draft.thinkingLevel === "" ? " on" : "")}
-                          onClick={() => set({ thinkingLevel: "" })}>自动</button>
+                        <button type="button" className={"adv-chip" + (draft.thinkingMode === "auto" ? " on" : "")}
+                          onClick={() => set({ thinkingMode: "auto", thinkingLevel: "" })}>跟随模型</button>
                         {THINKING_DEFS.map((l) => (
                           <button key={l.id} type="button"
                             className={"adv-chip" + (draft.thinkingLevel === l.id ? " on" : "")}
-                            onClick={() => set({ thinkingLevel: l.id })}>{l.label}</button>
+                            onClick={() => set({ thinkingMode: "on", thinkingLevel: l.id })}>{l.label}</button>
                         ))}
                       </div>
-                      <div className="hint">聊天输入区可以随时切换；「自动」按中等强度发送。</div>
+                      <div className="hint">「跟随模型」不发送强度字段，由服务商决定；选具体档位才会显式覆盖。聊天输入区可以随时切换。</div>
                     </div>
                     <div className="field">
                       <label>聊天里可选</label>

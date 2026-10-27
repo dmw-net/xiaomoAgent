@@ -8,7 +8,6 @@ import ModelSection from "./ModelSection";
 import CapabilitySection from "./CapabilitySection";
 import SkillSection from "./SkillSection";
 import ExtensionSection from "./ExtensionSection";
-import AssistantPermissionSection from "./AssistantPermissionSection";
 import OwnerSection from "./OwnerSection";
 import AppearanceSection from "./AppearanceSection";
 import { useSettingsForm } from "./useSettingsForm";
@@ -65,7 +64,6 @@ const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "owner", title: "我的资料", meta: "头像、称呼、性别、印象与备注", anchor: "settings-owner", keywords: "名字 昵称 头像 QQ 个人 人设 我" },
   { group: "model", modelTab: "model", title: "主对话模型", meta: "供应商、接口地址、API Key、模型列表", anchor: "settings-models", keywords: "模型 大模型 接口 密钥 供应商 deepseek 火山 ollama 思考 参数" },
   { group: "model", modelTab: "capability", title: "能力模型", meta: "看图、听音、说话、画图、记忆检索", anchor: "settings-capabilities", keywords: "视觉 语音 识别 合成 图像 生成 向量 能力" },
-  { group: "model", modelTab: "skill", title: "设置助手权限", meta: "只读、变更前确认、完全自主", anchor: "settings-assistant", keywords: "助手 权限 自动 确认 工具" },
   { group: "model", modelTab: "skill", title: "技能", meta: "SKILL.md、技能目录、重新扫描", anchor: "settings-skills", keywords: "技能 skill 提示词 工具 目录" },
   { group: "model", modelTab: "skill", title: "扩展与 MCP", meta: "MCP、Webhook、JS 工具、脚本许可", anchor: "settings-extensions", keywords: "扩展 mcp webhook 脚本 js 插件 工具" },
   { group: "experience", title: "外观与壁纸", meta: "浅色、深色、强调色、壁纸", anchor: "settings-appearance", keywords: "主题 颜色 强调色 壁纸 玻璃 背景" },
@@ -280,7 +278,6 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
       ) : null}
       {visitedModelTabs.has("skill") || modelTab === "skill" ? (
         <TabPanel active={modelTab === "skill"} aria={panelAria("set-model", "skill")}>
-          <AssistantPermissionSection />
           <SkillSection ask={form.askDangerous} />
           <ExtensionSection ask={form.askDangerous} />
         </TabPanel>

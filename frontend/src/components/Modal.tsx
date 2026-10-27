@@ -10,7 +10,7 @@ let openModalCount = 0;
  * 此前 WeChatSection / ModelSection / MemoryPanel 各写一套，
  * 无障碍语义全缺——收成一个口。
  */
-export default function Modal({ onClose, label, className = "", head, children }: {
+export default function Modal({ onClose, label, className = "", head, children, placement = "sheet" }: {
   onClose: () => void;
   /** 读屏用的弹窗名（一般与标题一致）。 */
   label: string;
@@ -19,6 +19,8 @@ export default function Modal({ onClose, label, className = "", head, children }
   /** 自带头部（标题行/关闭钮）；不传则不渲染，正文从卡片顶部开始。 */
   head?: ReactNode;
   children: ReactNode;
+  /** 桌面端都是居中；sheet 只在手机端贴底，center 给确认类短弹窗保持居中。 */
+  placement?: "sheet" | "center";
 }): JSX.Element {
   const cardRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -68,7 +70,7 @@ export default function Modal({ onClose, label, className = "", head, children }
   return createPortal(
     // 遮罩不再自己挂 onClick 关闭：按下遮罩就是 useDismiss 眼里的"点在卡片外部"，
     // 一处判定就够（两处都写会各自演化出宽限期）。
-    <div className="modal-overlay">
+    <div className={"modal-overlay" + (placement === "center" ? " is-center" : "")}>
       <div className={"modal-card" + (className ? " " + className : "")} data-keep-menu ref={cardRef}
         role="dialog" aria-modal="true" aria-label={label}>
         {head}

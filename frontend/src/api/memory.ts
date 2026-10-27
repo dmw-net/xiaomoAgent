@@ -34,6 +34,11 @@ export function rememberMessage(messageId: number, cid?: string): Promise<{ id: 
   return postJson(cq("/api/memory/from-message", cid), { messageId });
 }
 
+/** 手动把群/成员记忆提升为联系人全局记忆。 */
+export function promoteMemoryEvent(id: number, cid?: string): Promise<{ note: string }> {
+  return postJson(cq("/api/memory/events/" + id + "/promote", cid));
+}
+
 /** 撤销删除：墓碑擦掉就回来（删记忆本来就是软删）。 */
 export function restoreMemoryEvent(id: number, cid?: string): Promise<{ note: string }> {
   return postJson(cq("/api/memory/events/" + id + "/restore", cid));

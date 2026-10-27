@@ -1,16 +1,17 @@
-import { Pencil, Trash2 } from "lucide-react";
+import { Globe2, Pencil, Trash2 } from "lucide-react";
 import { relTime } from "../../lib/datetime";
 import { kindLabel } from "./constants";
 import type { MemoryEvent } from "../../types";
 
 /** 一条记忆卡片：清单页传入 onEdit/onDelete 出现操作按钮；score/matched 只在召回试验台用（普通清单不传）。 */
-export default function MemoryCard({ event, score, matched, who = "联系人", onEdit, onDelete }: {
+export default function MemoryCard({ event, score, matched, who = "联系人", onEdit, onDelete, onPromote }: {
   event: MemoryEvent;
   score?: number;
   matched?: string[];
   who?: string;
   onEdit?: () => void;
   onDelete?: () => void;
+  onPromote?: () => void;
 }): JSX.Element {
   return (
     <div className="mem" data-kind={event.kind || "fact"}>
@@ -21,14 +22,18 @@ export default function MemoryCard({ event, score, matched, who = "联系人", o
           <span className="tag">{kindLabel(event.kind)}</span>
           {event.subject && <span>关于{event.subject}</span>}
           <span>{relTime(event.created_at)}</span>
+          {event.scope_kind === "conversation" && <span>当前会话</span>}
+          {event.scope_kind === "member" && <span>成员{event.subject_name ? ` · ${event.subject_name}` : ""}</span>}
+          {event.scope_kind === "global" && <span>全局</span>}
           {typeof score === "number" && (
             <><span className="sep">·</span><span className="score">相关度 {score.toFixed(2)}</span></>
           )}
           {event.last_used_at && (
             <><span className="sep">·</span><span>最近用到 {relTime(event.last_used_at)}</span></>
           )}
-          {(onEdit || onDelete) && (
+          {(onEdit || onDelete || onPromote) && (
             <span className="mem-acts">
+              {onPromote && <button type="button" className="mem-act" aria-label="提升为全局记忆" title="让这位联系人的所有会话都能想起它" onClick={onPromote}><Globe2 size={13} /></button>}
               {onEdit && <button type="button" className="mem-act" aria-label="纠正这条记忆" title="改错了就纠正它" onClick={onEdit}><Pencil size={13} /></button>}
               {onDelete && <button type="button" className="mem-act" aria-label="删除这条记忆" title={`不想让${who}记住就删掉`} onClick={onDelete}><Trash2 size={13} /></button>}
             </span>

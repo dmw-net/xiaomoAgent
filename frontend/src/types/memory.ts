@@ -7,6 +7,13 @@ export type MemoryEvent = {
   content: string;
   created_at: number;
   last_used_at: number | null;
+  /** global=联系人全局；conversation=当前会话；member=当前群成员。 */
+  scope_kind?: "global" | "conversation" | "member";
+  scope_conversation_id?: string | null;
+  subject_id?: string | null;
+  subject_name?: string | null;
+  source_message_id?: string | null;
+  source_conversation_id?: string | null;
 };
 
 export type MemoryStats = {

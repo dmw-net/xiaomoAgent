@@ -87,6 +87,12 @@ export default function MemoryPanel({ active = true, contactId, who = "联系人
       .catch((err: Error) => setRowErr("删除失败：" + err.message));
   };
 
+  const doPromote = (e: MemoryEvent): void => {
+    void memoryApi.promoteMemoryEvent(e.id, contactId)
+      .then(() => { list.patch(e.id, { scope_kind: "global", scope_conversation_id: null, subject_id: null, subject_name: null }); setRowErr(""); })
+      .catch((err: Error) => setRowErr("提升失败：" + err.message));
+  };
+
   const byKind = stats?.byKind ?? {};
 
   return (
@@ -147,6 +153,7 @@ export default function MemoryPanel({ active = true, contactId, who = "联系人
         ) : (
           events.map((e) => (
             <MemoryCard key={e.id} event={e} who={who}
+              onPromote={e.scope_kind && e.scope_kind !== "global" ? () => doPromote(e) : undefined}
               onEdit={() => { setEditing(e); setDraft(e.content); setActErr(""); }}
               onDelete={() => doDelete(e)} />
           ))

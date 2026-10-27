@@ -19,8 +19,8 @@ export const THINKING_LEVEL_LABELS: Record<ThinkingLevelId, string> = {
 /** 思考参数形态，与后端 ThinkingParam 对齐（三处声明收在这一处）。 */
 export type ThinkingParamId = "effort" | "templateKw" | "thinkingType";
 
-/** 开关系形态的显式意图："" 不发字段 / "on" 开 / "off" 关。 */
-export type ThinkingModeId = "" | "on" | "off";
+/** 思考开关意图：auto 跟随模型不发送字段 / on 开 / off 关；"" 仅为兼容老配置。 */
+export type ThinkingModeId = "" | "auto" | "on" | "off";
 
 /** 模型档/当前生效配置上的能力元数据字段（两处共用）。 */
 export type ModelMeta = {

@@ -34,6 +34,7 @@ export const webChannel: Channel = {
         contactId,
         conversationId: options?.conversationId,
         attachments,
+        attachmentMeta: options?.attachmentMeta,
         triggerMessageId: options?.sourceMessageId,
         clientId,
       });
@@ -54,6 +55,7 @@ export const webChannel: Channel = {
           atBot: options.atBot === true,
           sourceMeta: options.sourceMeta ?? null,
           ...(attachments && attachments.length > 0 ? { attachments } : {}),
+          ...(options?.attachmentMeta && options.attachmentMeta.length > 0 ? { attachmentMeta: options.attachmentMeta } : {}),
         });
       }
     } catch (error) {
@@ -89,6 +91,7 @@ export const webChannel: Channel = {
       contactId: message.contactId,
       // 主动性也能带图（她画的那张）。空数组不落列，保持"绝大多数消息没有附件"的 NULL。
       ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
+      ...(message.attachmentMeta && message.attachmentMeta.length > 0 ? { attachmentMeta: message.attachmentMeta } : {}),
     });
   },
 };

@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, s
 import { dirname, join, resolve } from "node:path";
 import { config } from "./config.ts";
 import { db } from "./db.ts";
+import type { MessageAttachmentMeta } from "../shared/api.ts";
 
 const MEDIA_DIR = config.mediaDir === ""
   ? resolve(dirname(resolve(config.dbPath)), "media")
@@ -24,6 +25,9 @@ export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 /** 视频壁纸上限：几秒到一两分钟的循环短片 100MB 很宽裕；再大就该用户自己先剪。 */
 export const MAX_VIDEO_BYTES = 100 * 1024 * 1024;
 
+/** 语音消息上限：60 秒录音在常见编码下远小于此，留足 Safari/移动端容器开销。 */
+export const MAX_AUDIO_BYTES = 20 * 1024 * 1024;
+
 const IMAGE_EXT: Record<string, string> = {
   "image/png": "png",
   "image/jpeg": "jpg",
@@ -34,6 +38,15 @@ const IMAGE_EXT: Record<string, string> = {
 const VIDEO_EXT: Record<string, string> = {
   "video/mp4": "mp4",
   "video/webm": "webm",
+};
+
+const AUDIO_EXT: Record<string, string> = {
+  "audio/mpeg": "mp3",
+  "audio/wav": "wav",
+  "audio/mp4": "m4a",
+  "audio/ogg": "ogg",
+  "audio/opus": "opus",
+  "audio/webm": "weba",
 };
 
 /**
@@ -59,10 +72,16 @@ const EXT_MIME: Record<string, string> = {
   gif: "image/gif",
   mp4: "video/mp4",
   webm: "video/webm",
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  m4a: "audio/mp4",
+  ogg: "audio/ogg",
+  opus: "audio/opus",
+  weba: "audio/webm",
 };
 
 /** /media/<id>.<ext> 的合法形状；路径穿越在解析文件名这一步就被挡掉。 */
-const MEDIA_URL_RE = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif))$/;
+const MEDIA_URL_RE = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))$/;
 
 /**
  * 壁纸文件的形状：wp 前缀 + 16 位随机 id。前缀就是它的「引用在 localStorage、不在库里」
@@ -72,8 +91,8 @@ const MEDIA_URL_RE = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif))$/;
 const WALLPAPER_URL_RE = /^\/media\/(wp[a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm))$/;
 
 /** 落盘文件名的合法形状；回收/清理时只认这个，目录里别的东西一律不碰。 */
-const MEDIA_FILE_RE = /^[a-z0-9]{16}\.(png|jpg|webp|gif)$/;
-const MEDIA_REF_RE = /\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif))/g;
+const MEDIA_FILE_RE = /^[a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba)$/;
+const MEDIA_REF_RE = /\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))/g;
 
 /** 刚上传但还没发出去的文件先留 24 小时，避免把用户正拿在手里的图清掉。 */
 const MEDIA_ORPHAN_GRACE_MS = 24 * 3_600_000;
@@ -114,6 +133,39 @@ export function sniffVideoMime(body: Buffer): string {
   return "";
 }
 
+/** 按魔数判断语音容器；扩展名只由识别结果决定，绝不信任浏览器声明的 Content-Type。 */
+export function sniffAudioMime(body: Buffer): string {
+  if (body.length > 12 && body.subarray(4, 8).toString("latin1") === "ftyp") return "audio/mp4";
+  if (body.length > 4 && body[0] === 0x1a && body[1] === 0x45 && body[2] === 0xdf && body[3] === 0xa3) return "audio/webm";
+  if (body.length > 4 && body.subarray(0, 4).toString() === "OggS") return "audio/ogg";
+  if (body.length > 12 && body.subarray(0, 4).toString() === "RIFF" && body.subarray(8, 12).toString() === "WAVE") return "audio/wav";
+  if (body.length > 3 && body.subarray(0, 3).toString() === "ID3") return "audio/mpeg";
+  if (body.length > 2 && body[0] === 0xff && (body[1]! & 0xe0) === 0xe0) return "audio/mpeg";
+  return "";
+}
+
+/** 存一条语音消息的原始音频；保留浏览器录音容器，不做有损转码。 */
+export function saveAudio(buffer: Buffer): { url: string; id: string; mime: string } {
+  if (buffer.length === 0 || buffer.length > MAX_AUDIO_BYTES) {
+    throw new Error(`语音大小需在 ${MAX_AUDIO_BYTES / (1024 * 1024)}MB 以内`);
+  }
+  const mime = sniffAudioMime(buffer);
+  const ext = AUDIO_EXT[mime];
+  if (!ext) throw new Error("语音格式不支持（仅 mp3 / wav / m4a / ogg / opus / webm）");
+  const id = randomBytes(8).toString("hex");
+  writeFileSync(join(mediaDir(), `${id}.${ext}`), buffer);
+  return { url: `/media/${id}.${ext}`, id, mime };
+}
+
+/** 文件类型由扩展名决定；壁纸的文件仍是 image/video，来源另由 MediaSource 表示。 */
+export function mediaTypeOfUrl(url: string): "image" | "video" | "audio" | "file" {
+  const ext = (url.split(".").pop() ?? "").toLowerCase();
+  if (IMAGE_EXT[EXT_MIME[ext] ?? ""]) return "image";
+  if (ext === "mp4" || ext === "webm") return "video";
+  if (AUDIO_EXT[EXT_MIME[ext] ?? ""]) return "audio";
+  return "file";
+}
+
 /**
  * 存一张壁纸：文件名带 wp 前缀（见 WALLPAPER_URL_RE），内容可以是图片或视频。
  * 与 saveImage 不同，这里按魔数复检——浏览器报的 content-type 不可信，落盘以字节为准。
@@ -151,10 +203,9 @@ export function deleteWallpaper(url: string): void {
   } catch { /* 删不掉就算了，留给出厂重置 */ }
 }
 
-/** 壁纸文件元信息：/media/ 路由给视频做 Range 流式播放用，不把整个文件读进内存。 */
+/** 媒体文件元信息：/media/ 路由给视频与语音做 Range 流式播放，不把整个文件读进内存。 */
 export function mediaFileInfo(url: string): { file: string; mime: string; size: number } | null {
-  const match = WALLPAPER_URL_RE.exec(url);
-  const name = match?.[1];
+  const name = anyMediaFileName(url);
   if (!name) return null;
   const file = resolve(MEDIA_DIR, name);
   if (!file.startsWith(MEDIA_DIR) || !existsSync(file)) return null;
@@ -250,12 +301,16 @@ export function dataUrlBytes(url: string): number | null {
   return Math.ceil(statSync(file).size / 3) * 4 + 40;
 }
 
-export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "turn" | "artifact" | "tool" | "setting" | "wallpaper" | "none" | "trash";
+export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "voice" | "turn" | "artifact" | "tool" | "setting" | "wallpaper" | "none" | "trash";
 
 export type MediaSource = {
   kind: MediaSourceKind;
   label: string;
   detail?: string;
+  /** 只有聊天消息来源带；媒体页可直接发起“删除这条语音消息”。 */
+  messageId?: number;
+  durationMs?: number;
+  transcript?: string;
 };
 
 export type MediaMaintenanceItem = {
@@ -263,7 +318,12 @@ export type MediaMaintenanceItem = {
   url: string;
   size: number;
   modifiedAt: number;
-  mediaKind: "image" | "wallpaper";
+  /** 文件本质：图片/视频/语音；wallpaper 用于兼容旧界面，实际类型看 mediaType。 */
+  mediaKind: "image" | "video" | "audio" | "wallpaper";
+  mediaType: "image" | "video" | "audio" | "file";
+  mime: string;
+  durationMs?: number;
+  transcript?: string;
   referenced: boolean;
   cleanable: boolean;
   sources: MediaSource[];
@@ -285,6 +345,7 @@ export type MediaMaintenanceSnapshot = {
   totalBytes: number;
   allBytes: number;
   trashBytes: number;
+  byType: Record<MediaTypeKey, { files: number; bytes: number }>;
   orphanGraceHours: number;
   trashRetentionDays: number;
   checkedAt: number;
@@ -296,7 +357,9 @@ export type MediaMutationResult = {
   bytes: number;
 };
 
-const SOURCE_ORDER: MediaSourceKind[] = ["avatar", "face_ref", "chat", "turn", "artifact", "tool", "setting", "wallpaper", "none", "trash"];
+export type MediaTypeKey = "image" | "video" | "audio" | "file";
+
+const SOURCE_ORDER: MediaSourceKind[] = ["avatar", "face_ref", "chat", "voice", "turn", "artifact", "tool", "setting", "wallpaper", "none", "trash"];
 
 /**
  * 媒体文件的引用来源必须在这里统一认全。少认一处，界面上的“未引用”就可能是误报，
@@ -309,21 +372,55 @@ function collectMediaSources(): Map<string, MediaSource[]> {
     (db.prepare("SELECT id, name FROM contacts").all() as Array<{ id: string; name: string }>)
       .map((row) => [row.id, row.name] as const),
   );
+  const addName = (name: string, source: MediaSource): void => {
+    const list = sources.get(name) ?? [];
+    if (!list.some((item) => item.kind === source.kind && item.detail === source.detail && item.messageId === source.messageId)) list.push(source);
+    sources.set(name, list);
+  };
   const add = (raw: unknown, source: MediaSource): void => {
     for (const match of String(raw).matchAll(MEDIA_REF_RE)) {
       const name = match[1];
-      if (!name) continue;
-      const list = sources.get(name) ?? [];
-      if (!list.some((item) => item.kind === source.kind && item.detail === source.detail)) list.push(source);
-      sources.set(name, list);
+      if (name) addName(name, source);
     }
   };
   const contactDetail = (contactId: unknown): string => contactNames.get(String(contactId ?? "")) ?? "";
+  const voiceUrls = (rawMeta: unknown): Map<string, MessageAttachmentMeta> => {
+    const out = new Map<string, MessageAttachmentMeta>();
+    if (typeof rawMeta !== "string" || rawMeta === "") return out;
+    try {
+      const parsed: unknown = JSON.parse(rawMeta);
+      if (!Array.isArray(parsed)) return out;
+      for (const item of parsed) {
+        if (item === null || typeof item !== "object") continue;
+        const v = item as Partial<MessageAttachmentMeta>;
+        if (typeof v.url === "string" && v.kind === "audio") out.set(v.url, v as MessageAttachmentMeta);
+      }
+    } catch { /* 坏元信息按普通附件处理 */ }
+    return out;
+  };
 
   for (const row of db.prepare(
-    "SELECT contact_id, attachments FROM messages WHERE attachments LIKE '%/media/%'",
-  ).all() as Array<{ contact_id: string | null; attachments: string }>) {
-    add(row.attachments, { kind: "chat", label: "聊天", detail: contactDetail(row.contact_id) || undefined });
+    "SELECT id, contact_id, attachments, attachment_meta FROM messages WHERE attachments LIKE '%/media/%'",
+  ).all() as Array<{ id: number; contact_id: string | null; attachments: string; attachment_meta: string | null }>) {
+    const meta = voiceUrls(row.attachment_meta);
+    for (const match of row.attachments.matchAll(MEDIA_REF_RE)) {
+      const name = match[1];
+      if (!name) continue;
+      const url = "/media/" + name;
+      const voice = meta.get(url);
+      if (voice) {
+        const seconds = typeof voice.durationMs === "number" ? Math.max(0, Math.round(voice.durationMs / 1000)) : 0;
+        addName(name, {
+          kind: "voice", label: "语音消息",
+          detail: [contactDetail(row.contact_id), seconds > 0 ? seconds + " 秒" : ""].filter(Boolean).join(" · "),
+          messageId: row.id,
+          durationMs: typeof voice.durationMs === "number" ? voice.durationMs : undefined,
+          transcript: typeof voice.transcript === "string" ? voice.transcript : undefined,
+        });
+      } else {
+        addName(name, { kind: "chat", label: "聊天", detail: contactDetail(row.contact_id) || undefined, messageId: row.id });
+      }
+    }
   }
   for (const row of db.prepare(
     "SELECT contact_id, tool_detail FROM messages WHERE tool_detail LIKE '%/media/%'",
@@ -331,9 +428,17 @@ function collectMediaSources(): Map<string, MediaSource[]> {
     add(row.tool_detail, { kind: "tool", label: "工具记录", detail: contactDetail(row.contact_id) || undefined });
   }
   for (const row of db.prepare(
-    "SELECT contact_id, attachments FROM turns WHERE attachments LIKE '%/media/%'",
-  ).all() as Array<{ contact_id: string | null; attachments: string }>) {
-    add(row.attachments, { kind: "turn", label: "回复任务", detail: contactDetail(row.contact_id) || undefined });
+    "SELECT contact_id, attachments, attachment_meta FROM turns WHERE attachments LIKE '%/media/%'",
+  ).all() as Array<{ contact_id: string | null; attachments: string; attachment_meta: string | null }>) {
+    const meta = voiceUrls(row.attachment_meta);
+    for (const match of row.attachments.matchAll(MEDIA_REF_RE)) {
+      const name = match[1];
+      if (!name) continue;
+      const voice = meta.get("/media/" + name);
+      addName(name, voice
+        ? { kind: "voice", label: "语音消息", detail: contactDetail(row.contact_id) || undefined }
+        : { kind: "turn", label: "回复任务", detail: contactDetail(row.contact_id) || undefined });
+    }
   }
   for (const row of db.prepare(
     "SELECT id, name, avatar, face_ref FROM contacts WHERE avatar LIKE '%/media/%' OR face_ref LIKE '%/media/%'",
@@ -353,7 +458,13 @@ function collectMediaSources(): Map<string, MediaSource[]> {
     // 正常聊天图片会同时出现在 messages.attachments 与 turns.attachments。
     // 对用户来说它们不是两个来源；有聊天来源时不再重复显示“回复任务”。
     const chatDetails = new Set(list.filter((item) => item.kind === "chat").map((item) => item.detail ?? ""));
-    const pruned = list.filter((item) => item.kind !== "turn" || !chatDetails.has(item.detail ?? ""));
+    const hasVoiceMessage = list.some((item) => item.kind === "voice" && typeof item.messageId === "number");
+    const pruned = list.filter((item) => {
+      if (item.kind === "turn") return !chatDetails.has(item.detail ?? "");
+      // 语音同时落在 messages 与 turns：有消息来源时，处理单那条只是内部副本。
+      if (item.kind === "voice" && item.messageId === undefined && hasVoiceMessage) return false;
+      return true;
+    });
     pruned.sort((a, b) => SOURCE_ORDER.indexOf(a.kind) - SOURCE_ORDER.indexOf(b.kind));
     sources.set(name, pruned);
   }
@@ -387,11 +498,19 @@ export function scanOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): MediaScan {
     try {
       const stat = statSync(file);
       files += 1;
+      const mediaType = mediaTypeOfUrl(url);
+      const ext = entry.name.slice(entry.name.lastIndexOf(".") + 1);
       const base = {
         name: entry.name,
         url,
         size: stat.size,
         modifiedAt: Math.round(stat.mtimeMs),
+        mediaType,
+        mime: EXT_MIME[ext] ?? "application/octet-stream",
+        ...(mediaType === "audio" ? (() => {
+          const voice = sourceMap.get(entry.name)?.find((source) => source.kind === "voice");
+          return voice ? { durationMs: voice.durationMs, transcript: voice.transcript } : {};
+        })() : {}),
       };
       if (wallpaper) {
         all.push({
@@ -403,10 +522,11 @@ export function scanOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): MediaScan {
         });
         continue;
       }
+      const mediaKind = mediaType === "file" ? "image" : mediaType;
       const knownSources = sourceMap.get(entry.name) ?? [];
       if (knownSources.length > 0) {
         referenced += 1;
-        all.push({ ...base, mediaKind: "image", referenced: true, cleanable: false, sources: knownSources });
+        all.push({ ...base, mediaKind, referenced: true, cleanable: false, sources: knownSources });
         continue;
       }
       // 未来时间按“刚写入”处理：部分机器上 mtime 会比 Date.now() 早/晚几毫秒。
@@ -414,7 +534,7 @@ export function scanOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): MediaScan {
         pending += 1;
         all.push({
           ...base,
-          mediaKind: "image",
+          mediaKind,
           referenced: false,
           cleanable: false,
           sources: [{ kind: "none", label: "未引用", detail: `保护期内，满 ${Math.round(minAgeMs / 3_600_000)} 小时后可清理` }],
@@ -423,7 +543,7 @@ export function scanOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): MediaScan {
       }
       const item: MediaMaintenanceItem = {
         ...base,
-        mediaKind: "image",
+        mediaKind,
         referenced: false,
         cleanable: true,
         sources: [{ kind: "none", label: "未引用" }],
@@ -475,12 +595,17 @@ function listMediaTrash(): MediaTrashItem[] {
       db.prepare("DELETE FROM media_trash WHERE name = ?").run(row.name);
       continue;
     }
+    const url = `/media/${row.name}`;
+    const mediaType = mediaTypeOfUrl(url);
+    const ext = row.name.slice(row.name.lastIndexOf(".") + 1);
     items.push({
       name: row.name,
-      url: `/media/${row.name}`,
+      url,
       size: row.size,
       modifiedAt: row.original_mtime,
-      mediaKind: "image",
+      mediaKind: mediaType === "file" ? "image" : mediaType,
+      mediaType,
+      mime: EXT_MIME[ext] ?? "application/octet-stream",
       referenced: false,
       cleanable: false,
       sources: [{ kind: "trash", label: "回收站" }],
@@ -495,6 +620,16 @@ function listMediaTrash(): MediaTrashItem[] {
 export function mediaMaintenanceSnapshot(): MediaMaintenanceSnapshot {
   const scan = scanOrphanMedia();
   const trash = listMediaTrash();
+  const byType: MediaMaintenanceSnapshot["byType"] = {
+    image: { files: 0, bytes: 0 },
+    video: { files: 0, bytes: 0 },
+    audio: { files: 0, bytes: 0 },
+    file: { files: 0, bytes: 0 },
+  };
+  for (const item of scan.all) {
+    byType[item.mediaType].files += 1;
+    byType[item.mediaType].bytes += item.size;
+  }
   return {
     ...scan,
     cleanable: scan.items.length,
@@ -502,6 +637,7 @@ export function mediaMaintenanceSnapshot(): MediaMaintenanceSnapshot {
     totalBytes: scan.items.reduce((sum, item) => sum + item.size, 0),
     allBytes: scan.all.reduce((sum, item) => sum + item.size, 0),
     trashBytes: trash.reduce((sum, item) => sum + item.size, 0),
+    byType,
     orphanGraceHours: MEDIA_ORPHAN_GRACE_HOURS,
     trashRetentionDays: MEDIA_TRASH_RETENTION_DAYS,
     checkedAt: Date.now(),
@@ -512,6 +648,35 @@ export function mediaMaintenanceSnapshot(): MediaMaintenanceSnapshot {
  * 把确认可清理的文件移到回收站。前端传来的名字不可信：这里重新扫描一次引用和
  * 保护期，只处理这一秒仍然满足条件的文件。移入后保留 7 天，可恢复。
  */
+/** 语音文件对应的消息 id。媒体页删除语音时必须回到聊天语义，而不是绕过消息删文件。 */
+export function voiceMessageIdsForFile(name: string): number[] {
+  if (!/^[a-z0-9]{16}\.(mp3|wav|m4a|ogg|opus|weba)$/.test(name)) return [];
+  if (mediaTypeOfUrl("/media/" + name) !== "audio") return [];
+  const rows = db.prepare(
+    "SELECT id, attachments, attachment_meta FROM messages WHERE attachments LIKE ?",
+  ).all(`%${name}%`) as Array<{ id: number; attachments: string; attachment_meta: string | null }>;
+  const ids: number[] = [];
+  for (const row of rows) {
+    let urls: string[] = [];
+    try {
+      const parsed: unknown = JSON.parse(row.attachments);
+      if (Array.isArray(parsed)) urls = parsed.filter((u): u is string => typeof u === "string");
+    } catch { continue; }
+    if (!urls.includes("/media/" + name)) continue;
+    let voice = false;
+    try {
+      const parsed: unknown = row.attachment_meta ? JSON.parse(row.attachment_meta) : [];
+      if (Array.isArray(parsed)) {
+        voice = parsed.some((item) => item !== null && typeof item === "object"
+          && (item as { url?: unknown; kind?: unknown }).url === "/media/" + name
+          && (item as { kind?: unknown }).kind === "audio");
+      }
+    } catch { voice = true; }
+    if (voice || row.attachment_meta === null) ids.push(row.id);
+  }
+  return [...new Set(ids)];
+}
+
 export function trashMediaFiles(names: string[]): MediaMutationResult {
   const wanted = new Set(names.filter((name) => MEDIA_FILE_RE.test(name)));
   if (wanted.size === 0 || !existsSync(MEDIA_DIR)) return { changed: 0, skipped: names.length, bytes: 0 };

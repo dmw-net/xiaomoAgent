@@ -14,7 +14,7 @@ export * as mediaApi from "./media";
 export * as assistantApi from "./assistant";
 export * as artifactApi from "./artifacts";
 export * as contentApi from "./content";
-export type { ContentAsset, ContentFilter } from "./content";
+export type { ContentAsset, ContentFilter, ContentMediaFilter } from "./content";
 export * from "./assistant";
 export * as wechatApi from "./wechat";
 export * as avatarApi from "./avatar";

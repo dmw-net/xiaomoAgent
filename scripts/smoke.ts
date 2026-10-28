@@ -1787,6 +1787,54 @@ try {
   const imgMsg = (msgsAfter.messages as Array<{ role: string; attachments: unknown }>).filter((x) => x.attachments).pop();
   check("只保留真实存在的附件（伪造 URL 被丢弃）", Array.isArray(imgMsg?.attachments) && (imgMsg!.attachments as string[]).length === 1 && (imgMsg!.attachments as string[])[0] === up.url);
 
+  // 语音消息：原始音频落盘、元信息随消息保存，并能在媒体页按聊天语义删除。
+  const wav = Buffer.alloc(44 + 8000);
+  wav.write("RIFF", 0, "ascii");
+  wav.writeUInt32LE(36 + 8000, 4);
+  wav.write("WAVEfmt ", 8, "ascii");
+  wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20);
+  wav.writeUInt16LE(1, 22);
+  wav.writeUInt32LE(8000, 24);
+  wav.writeUInt32LE(16000, 28);
+  wav.writeUInt16LE(2, 32);
+  wav.writeUInt16LE(16, 34);
+  wav.write("data", 36, "ascii");
+  wav.writeUInt32LE(8000, 40);
+  const { existsSync: existsForVoice } = await import("node:fs");
+  const voiceUpRes = await fetch(`${BASE}/api/media/voice`, { method: "POST", headers: { "content-type": "audio/wav" }, body: wav });
+  const voiceUp = await voiceUpRes.json() as { url?: string; mime?: string };
+  check("语音上传按魔数落盘并返回可播放 URL", voiceUpRes.status === 200 && /^\/media\/[a-f0-9]{16}\.wav$/.test(String(voiceUp.url)) && voiceUp.mime === "audio/wav", JSON.stringify(voiceUp));
+  const voiceUrl = String(voiceUp.url);
+  const voiceSay = await jsonPost("/api/say", {
+    text: "今天有点累", contactId: "default", attachments: [voiceUrl],
+    attachmentMeta: [{ url: voiceUrl, kind: "audio", mime: "audio/wav", durationMs: 1200, transcript: "今天有点累", waveform: [0.2, 0.5, 0.9, 0.4], source: "recorded" }],
+  });
+  check("语音消息可随聊天发送", voiceSay.status === 202, String(voiceSay.status));
+  await new Promise((r) => setTimeout(r, 1200));
+  const voiceMsgs = await (await fetch(`${BASE}/api/messages?contactId=default&all=1`)).json() as { messages: Array<{ id: number; text: string; attachments: unknown; attachment_meta: unknown }> };
+  const voiceMsg = voiceMsgs.messages.filter((m) => Array.isArray(m.attachments) && (m.attachments as string[]).includes(voiceUrl)).pop();
+  const voiceMeta = (voiceMsg?.attachment_meta as Array<Record<string, unknown>> | null | undefined)?.find((m) => m.url === voiceUrl);
+  const voiceReply = voiceMsgs.messages.filter((m) => m.id > (voiceMsg?.id ?? 0) && (m as { role?: string }).role === "assistant").map((m) => m.text).join("\n");
+  check("语音附件不会被误当成图片送进视觉通道", !voiceReply.includes("[图片"), voiceReply.slice(0, 160));
+  check("语音消息保留时长、转写和波形", voiceMsg?.text === "今天有点累" && voiceMeta?.kind === "audio" && voiceMeta?.durationMs === 1200 && voiceMeta?.transcript === "今天有点累" && Array.isArray(voiceMeta?.waveform), JSON.stringify(voiceMsg?.attachment_meta));
+  const voiceMaintenance = await (await fetch(`${BASE}/api/media/maintenance`)).json() as { all?: Array<{ url: string; mediaType?: string; sources?: Array<{ kind: string; messageId?: number }> }> };
+  const voiceRow = voiceMaintenance.all?.find((m) => m.url === voiceUrl);
+  check("媒体页把语音识别为语音消息并保留来源", voiceRow?.mediaType === "audio" && (voiceRow.sources ?? []).some((s) => s.kind === "voice" && s.messageId === voiceMsg?.id), JSON.stringify(voiceRow));
+  const contentAudioRes = await fetch(`${BASE}/api/content?contactId=default&filter=chat&media=audio&limit=100`);
+  const contentAudio = await contentAudioRes.json() as {
+    assets?: Array<{ url: string; kind: string; durationMs?: number; transcript?: string; waveform?: number[] }>;
+    kindCounts?: Record<string, number>;
+  };
+  const contentVoice = contentAudio.assets?.find((a) => a.url === voiceUrl);
+  check("联系人内容库把语音作为可播放媒体返回", contentAudioRes.status === 200 && contentVoice?.kind === "audio"
+    && contentVoice.durationMs === 1200 && contentVoice.transcript === "今天有点累" && Array.isArray(contentVoice.waveform)
+    && (contentAudio.kindCounts?.audio ?? 0) >= 1, JSON.stringify(contentVoice));
+  const voiceName = voiceUrl.slice("/media/".length);
+  const voiceDelete = await (await jsonPost("/api/media/maintenance", { op: "delete-message", names: [voiceName] })).json() as { ok?: boolean; changed?: number };
+  check("媒体页删除语音会回到聊天语义，而不是留下坏消息", voiceDelete.ok === true && voiceDelete.changed === 1);
+  check("删除语音消息后文件同步释放", !existsForVoice(`${MEDIA}/${voiceName}`), voiceName);
+
   // ── 重放窗口：轮数决定哪些消息进上下文，字节天花板决定其中的图有几张还真给她看 ──
   // 为什么按字节：一张长边 1280 的图 base64 后 130-530KB，每轮整份重传；token 侧实测才 974。
   const { selectReplayImages, countReplayedImages, imageProxiedHistory } = await import("../src/agent.ts");

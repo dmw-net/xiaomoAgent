@@ -587,7 +587,7 @@ export function deleteContact(id: string): { removedMedia: number } {
   for (const table of ["messages", "turns"] as const) {
     const rows = db.prepare(`SELECT attachments FROM ${table} WHERE contact_id = ? AND attachments IS NOT NULL`).all(id) as Array<{ attachments: string }>;
     for (const r of rows) {
-      for (const m of r.attachments.matchAll(/\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif))/g)) urls.push("/media/" + m[1]);
+      for (const m of r.attachments.matchAll(/\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))/g)) urls.push("/media/" + m[1]);
     }
   }
   withTx(() => {
@@ -638,7 +638,7 @@ export function factoryReset(): { contacts: number; mediaRemoved: number } {
     const rows = db.prepare(`SELECT attachments FROM ${table} WHERE attachments IS NOT NULL`)
       .all() as Array<{ attachments: string }>;
     for (const r of rows) {
-      for (const m of r.attachments.matchAll(/\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif))/g)) urls.add("/media/" + m[1]);
+      for (const m of r.attachments.matchAll(/\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))/g)) urls.add("/media/" + m[1]);
     }
   }
   for (const r of db.prepare(`SELECT url FROM artifacts`).all() as Array<{ url: string }>) {

@@ -28,6 +28,12 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
 }): JSX.Element {
   const ref = useRef<HTMLDivElement>(null);
   const m = menu.m;
+  const hasVoice = (m.attachment_meta ?? []).some((item) => item.kind === "audio")
+    || (m.attachments ?? []).some((url) => /\.(mp3|wav|m4a|ogg|opus|weba)$/i.test(url));
+  const voiceTranscript = hasVoice
+    ? ((m.attachment_meta ?? []).find((item) => item.kind === "audio")?.transcript ?? "").trim()
+    : "";
+  const copyableText = hasVoice ? voiceTranscript : m.text;
   const close = (): void => setMenu(null);
 
   /**
@@ -97,7 +103,7 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
     // 「编辑」在这里不给：它的语义是从那条重建对话，而这条已经不在对话里了。
     body = (
       <>
-        {m.role === "user" && m.text !== "" &&
+        {!hasVoice && m.role === "user" && m.text !== "" &&
           item("重新编辑", "放回输入框，作为新消息再发一次", null, () => { close(); onReedit(m); })}
         {item("彻底删除", "清除撤回记录，不可恢复", "danger", () => onRequestDelete(m))}
       </>
@@ -105,16 +111,16 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
   } else {
     body = (
       <>
-        {item("复制", "复制这条消息", null, () => {
+        {copyableText !== "" && item(hasVoice ? "复制文字" : "复制", hasVoice ? "复制语音转写文字" : "复制这条消息", null, () => {
           close();
-          void copyText(m.text).then((r) => {
+          void copyText(copyableText).then((r) => {
             if (r === "ok") addNotice("已复制", { info: true });
             else addNotice("没复制成，长按气泡手动选吧", { info: true });
           });
         })}
-        {m.text !== "" && m.kind !== "tool" && item("记成记忆", "写进长期记忆", null, () => { close(); onRemember(m); })}
-        {m.role === "user" && m.superseded_at === null && item("编辑", "只改这句文字，后面的对话原样保留", null, () => onEdit(m, true))}
-        {m.role === "user" && m.superseded_at === null && item("改后重聊", "改这句，后面从这句重来", null, () => onEdit(m, false))}
+        {copyableText !== "" && m.kind !== "tool" && item("记成记忆", "写进长期记忆", null, () => { close(); onRemember(m); })}
+        {!hasVoice && m.role === "user" && m.superseded_at === null && item("编辑", "只改这句文字，后面的对话原样保留", null, () => onEdit(m, true))}
+        {!hasVoice && m.role === "user" && m.superseded_at === null && item("改后重聊", "改这句，后面从这句重来", null, () => onEdit(m, false))}
         {m.role === "assistant" && m.superseded_at === null && m.kind === "chat" && m.text !== "" &&
           item("编辑回复", "只改这一句，不重新生成", null, () => onEdit(m))}
         {/* 重新生成：任何一轮都能重答（后端就是这样放的）。较早的轮次会把新回复写回它

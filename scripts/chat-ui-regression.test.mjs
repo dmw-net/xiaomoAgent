@@ -62,6 +62,25 @@ assert(/\.think\.is-live[\s\S]*?var\(--accent-soft\)/.test(experienceCss), "流�
 assert(/\.think-state\.is-live::before[\s\S]*?animation:\s*thinkPulse/.test(experienceCss), "思考进行中状态应有轻量脉冲");
 assert(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.think-live-dots i\s*\{\s*animation:\s*none/.test(experienceCss), "减少动效模式应关闭思考过程动画");
 
+const voiceSource = readFileSync("frontend/src/components/VoiceMessageBubble.tsx", "utf8");
+const mediaSource = readFileSync("src/media.ts", "utf8");
+const mediaDialogSource = readFileSync("frontend/src/components/MediaMaintenanceDialog.tsx", "utf8");
+const contentLibrarySource = readFileSync("frontend/src/features/profile/ContentLibraryPanel.tsx", "utf8");
+const outboxSource = readFileSync("frontend/src/lib/outbox.ts", "utf8");
+assert(/VoiceMessageBubble/.test(rowSource) && /kind === "audio"/.test(rowSource), "语音消息必须走专用气泡，而不是当图片或普通文字渲染");
+assert(/voice-wave/.test(voiceSource) && /voice-duration/.test(voiceSource) && /aria-label=\{playing \? "暂停语音消息"/.test(voiceSource), "语音气泡应包含波形、时长和可访问的播放/暂停状态");
+assert(/voice-transcript/.test(voiceSource) && /Captions/.test(voiceSource), "语音转写必须可展开查看且不挤占默认气泡");
+assert(/发送语音/.test(chatSource) && /finishRecording\("transcribe"\)/.test(chatSource), "录音完成后应同时保留发送语音与原转文字入口");
+assert(/uploadVoice/.test(chatSource) && /attachmentMeta: \[meta\]/.test(chatSource), "语音消息应上传原始音频并随消息提交元信息");
+assert(/attachment_meta/.test(mediaSource) && /saveAudio/.test(mediaSource) && /voiceMessageIdsForFile/.test(mediaSource), "媒体层必须持久化语音、建立消息来源并支持聊天级删除");
+assert(/media-type-filter/.test(mediaDialogSource) && /语音/.test(mediaDialogSource), "媒体管理必须提供图片/视频/语音分类");
+assert(/delete-message/.test(mediaDialogSource) && /删除语音消息/.test(mediaDialogSource), "媒体页删除语音必须使用明确确认，而不是绕过消息删文件");
+assert(/attachmentMeta/.test(outboxSource), "离线发件箱必须保留语音元信息，重发后仍能渲染成语音气泡");
+assert(/content-kind-filters/.test(contentLibrarySource) && /kindCounts/.test(contentLibrarySource), "联系人内容库必须同时支持来源与媒体类型筛选");
+assert(/<video className="content-video"/.test(contentLibrarySource), "联系人内容库里的视频应可直接预览");
+assert(/<VoiceMessageBubble compact/.test(contentLibrarySource), "联系人内容库里的语音应可直接播放，而不是显示成普通文件");
+assert(/transcript=\{a\.transcript\}/.test(contentLibrarySource), "联系人内容库里的语音应保留可展开的转写");
+
 assert(
   /<Modal\s+label="操作确认"[\s\S]*?placement="center"/.test(chatSource),
   "消息操作确认框应显式使用居中 placement",

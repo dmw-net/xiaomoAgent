@@ -266,7 +266,7 @@ export type ClearedConversationHistory = {
   media: number;
 };
 
-const MEDIA_REF_RE = /\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif))/g;
+const MEDIA_REF_RE = /\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))/g;
 
 function mediaUrlsFromAttachmentRows(rows: Array<{ attachments: string | null }>): string[] {
   const urls = new Set<string>();

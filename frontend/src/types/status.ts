@@ -84,13 +84,19 @@ export type UserDiagnostics = {
   checks: UserDiagnosticCheck[];
 };
 
-export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "turn" | "artifact" | "tool" | "setting" | "wallpaper" | "none" | "trash";
+export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "voice" | "turn" | "artifact" | "tool" | "setting" | "wallpaper" | "none" | "trash";
 
 export type MediaSource = {
   kind: MediaSourceKind;
   label: string;
   detail?: string;
+  /** 聊天消息来源可直接从媒体页删除对应的语音消息。 */
+  messageId?: number;
+  durationMs?: number;
+  transcript?: string;
 };
+
+export type MediaTypeKey = "image" | "video" | "audio" | "file";
 
 /** 媒体管理弹层的一项：全部文件都带来源，只有 cleanable 的才能清理。 */
 export type MediaMaintenanceItem = {
@@ -98,7 +104,11 @@ export type MediaMaintenanceItem = {
   url: string;
   size: number;
   modifiedAt: number;
-  mediaKind: "image" | "wallpaper";
+  mediaKind: "image" | "video" | "audio" | "wallpaper";
+  mediaType: MediaTypeKey;
+  mime: string;
+  durationMs?: number;
+  transcript?: string;
   referenced: boolean;
   cleanable: boolean;
   sources: MediaSource[];
@@ -120,6 +130,7 @@ export type MediaMaintenanceSnapshot = {
   totalBytes: number;
   allBytes: number;
   trashBytes: number;
+  byType: Record<MediaTypeKey, { files: number; bytes: number }>;
   orphanGraceHours: number;
   trashRetentionDays: number;
   checkedAt: number;

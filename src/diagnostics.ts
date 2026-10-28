@@ -101,7 +101,7 @@ export function runUserDiagnostics(): UserDiagnostics {
         : undefined;
     checks.push({
       id: "media",
-      label: "图片与媒体",
+      label: "图片、视频与语音",
       level: orphanCount === 0 ? "ok" : "warn",
       summary,
       detail,
@@ -110,7 +110,7 @@ export function runUserDiagnostics(): UserDiagnostics {
   } catch (error) {
     checks.push({
       id: "media",
-      label: "图片与媒体",
+      label: "图片、视频与语音",
       level: "warn",
       summary: "媒体目录暂时无法读取",
       detail: error instanceof Error ? error.message : String(error),

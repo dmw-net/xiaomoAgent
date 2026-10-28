@@ -19,19 +19,21 @@ import { useAnchoredPop } from "../../hooks/useAnchoredPop";
 import { useLiveReveal } from "../../hooks/useLiveReveal";
 import { useNotices } from "../../hooks/useNotices";
 import { CHAT_RESIZE_EVENT } from "../../hooks/useResizeSignal";
+import { stopExclusiveAudio, playExclusiveAudio } from "../../lib/audioBus";
 import Avatar from "../../components/Avatar";
 import { avatarToneStyle } from "../../lib/avatar-tone";
 import MessageMenu, { type MenuState } from "./MessageMenu";
 import Modal from "../../components/Modal";
 import MessageRowItem from "./MessageRow";
+import VoiceMessageBubble from "../../components/VoiceMessageBubble";
 import ToolCard from "./ToolCard";
 import ThinkingBlock, { ThinkingLive } from "./ThinkingBlock";
 import ChatMap, { type ChatMapNode } from "./ChatMap";
 import ConversationSwitcher from "./ConversationSwitcher";
 import { PENDING_TTL_MS, PROACTIVE_GAP_MS, PULL_IDLE_STEPS, PULL_INTERVAL_MS, TURN_WATCH_MAX_TRIES, WATCH_PULL_EVERY } from "./constants";
-import { THINKING_LEVEL_LABELS, type ContactConversationItem, type ContextUsage, type MessageRow, type ThinkingControl, type ThinkingQuickChoice } from "../../types";
+import { THINKING_LEVEL_LABELS, type ContactConversationItem, type ContextUsage, type MessageAttachmentMeta, type MessageRow, type ThinkingControl, type ThinkingQuickChoice } from "../../types";
 
-type Pending = { text: string; at: number; imgs: string[]; localId: string; turnId?: string; failed?: boolean; queued?: boolean; outbox?: boolean };
+type Pending = { text: string; at: number; imgs: string[]; localId: string; turnId?: string; failed?: boolean; queued?: boolean; outbox?: boolean; voice?: MessageAttachmentMeta };
 type ModelOption = { value: string; label: string; detail: string; provider: string };
 
 /** 会丢掉或重写已有内容的聊天动作，一律先经过同一个确认框。 */
@@ -45,7 +47,7 @@ type ListNode =
   | { t: "daysep"; label: string }
   | { t: "msg"; m: MessageRow; gap: boolean; clock?: string }
   | { t: "tool"; m: MessageRow }
-  | { t: "pending"; id: string; text: string; imgs: string[]; gap: boolean; failed?: boolean; queued?: boolean }
+  | { t: "pending"; id: string; text: string; imgs: string[]; voice?: MessageAttachmentMeta; gap: boolean; failed?: boolean; queued?: boolean }
   | { t: "stale"; items: MessageRow[] }
   | { t: "draft" }
   | { t: "intro" };
@@ -523,6 +525,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [caps, setCaps] = useState<Caps>(() => cachedCaps() ?? CAPS_OFF);
   const [recSec, setRecSec] = useState<number | null>(null);
   const [transcribing, setTranscribing] = useState(false);
+  const [voiceBusy, setVoiceBusy] = useState(false);
   const [playingId, setPlayingId] = useState<number | null>(null);
   const [ttsBusyId, setTtsBusyId] = useState<number | null>(null);
   const [zoom, setZoom] = useState<string | null>(null);
@@ -531,13 +534,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   // 微信式的会话状态：她在忙什么就说什么，连接信息退到异常时才出现。
   const chatStatus = useMemo<{ text: string; tone: string }>(() => {
     if (recSec !== null) return { text: "正在录音…", tone: "typing" };
+    if (voiceBusy) return { text: "正在准备语音消息…", tone: "typing" };
     if (transcribing) return { text: "识别语音中…", tone: "typing" };
     if (typing || busy) return { text: "正在回复…", tone: "typing" };
     if (failure) return { text: "上一条没回上来", tone: "bad" };
     if (modelReady === null) return { text: "准备中…", tone: "" };
     if (!modelReady) return { text: "还没接入模型", tone: "echo" };
     return { text: "在线", tone: "live" };
-  }, [recSec, transcribing, typing, busy, failure, modelReady]);
+  }, [recSec, voiceBusy, transcribing, typing, busy, failure, modelReady]);
 
   useEffect(() => { onStatus?.(chatStatus.text, chatStatus.tone); }, [chatStatus, onStatus]);
 
@@ -548,9 +552,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recChunksRef = useRef<Blob[]>([]);
-  const recCancelRef = useRef(false);
+  const recActionRef = useRef<"cancel" | "voice" | "transcribe">("voice");
+  const recStartedRef = useRef(0);
+  const recWaveRef = useRef<number[]>([]);
   const recTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const waveTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
 
   const lastIdRef = useRef(0);
   if (lastIdRef.current === 0 && msgs.length > 0) {
@@ -1025,9 +1033,17 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   }, [addNotice, characterName, cid, msgScope, onBack, onContactArchived, refreshContacts]);
 
   // ── 发送 / 编辑 / 撤回 / 删除 ─────────────────────────────
-  const send = useCallback((raw: string): void => {
+  const send = useCallback((raw: string, extras?: {
+    attachments?: string[];
+    attachmentMeta?: MessageAttachmentMeta[];
+    voice?: MessageAttachmentMeta;
+  }): void => {
     const text = raw.trim();
-    const attachments = [...imgsRef.current];
+    const extraAttachments = extras?.attachments ?? [];
+    const voice = extras?.voice;
+    // 语音是独立的发送动作：不把输入区里还没发的图片一起塞进这条语音消息。
+    const attachments = voice ? [...extraAttachments] : [...imgsRef.current, ...extraAttachments];
+    const attachmentMeta = extras?.attachmentMeta ?? [];
     const outboxContactId = cid ?? msgScope ?? "";
     if (!text && attachments.length === 0) return;
     /** 被这句打断的旧轮（barge-in）；202 回来后再做清理。 */
@@ -1047,15 +1063,18 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     idleTicksRef.current = 0;
 
     const localId = globalThis.crypto?.randomUUID?.() ?? (Math.random().toString(36).slice(2) + Date.now().toString(36));
-    pendingsRef.current = [...pendingsRef.current, { text, at: Date.now(), imgs: attachments, localId }];
+    pendingsRef.current = [...pendingsRef.current, { text, at: Date.now(), imgs: attachments, localId, ...(voice ? { voice } : {}) }];
     setPendings([...pendingsRef.current]);
-    setDraft("");
-    imgsRef.current = [];
-    setImgs([]);
-    if (iptRef.current) iptRef.current.style.height = "auto";
+    // 语音消息不吞正在写的草稿，也不消费待发图片；它是与文字并列的另一种发送方式。
+    if (!voice) {
+      setDraft("");
+      imgsRef.current = [];
+      setImgs([]);
+      if (iptRef.current) iptRef.current.style.height = "auto";
+    }
     setTyping(true);
 
-    chatApi.say(text, attachments, cid, localId, conversationId)
+    chatApi.say(text, attachments, cid, localId, conversationId, attachmentMeta)
       .then((data) => {
         pendingTurnRef.current = data.turnId;
         // 把 turnId 回填到这条占位上：之后按单认领，连发两句相同的话也不会互相错认。
@@ -1078,7 +1097,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           || /超时|fetch|network|网络/i.test(error.message);
         if (retryable) {
           if (outboxContactId) {
-            enqueueOutbox({ clientId: localId, contactId: outboxContactId, text, attachments });
+            enqueueOutbox({ clientId: localId, contactId: outboxContactId, text, attachments, attachmentMeta });
             pendingsRef.current = pendingsRef.current.map((p) => (p.localId === localId ? { ...p, queued: true, failed: false, outbox: true } : p));
             addNotice("网络暂时不可用，已放进待发箱，联网后自动发送", { info: true });
           } else {
@@ -1097,7 +1116,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         setBusy(false);
         retireDraft();
       });
-  }, [addNotice, cid, watch]);
+  }, [addNotice, cid, conversationId, watch]);
 
   /** 重发一条发送失败的占位消息（无网络时 say 没成功，本地还留着这条）。成功就接回正常轮询。 */
   const rememberMessage = useCallback((m: MessageRow): void => {
@@ -1127,7 +1146,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       return;
     }
     setTyping(true);
-    chatApi.say(p.text, p.imgs, cid, localId, conversationId)
+    chatApi.say(p.text, p.imgs, cid, localId, conversationId, p.voice ? [p.voice] : undefined)
       .then((data) => {
         pendingTurnRef.current = data.turnId;
         pendingsRef.current = pendingsRef.current.map((x) => (x.localId === localId ? { ...x, turnId: data.turnId, failed: false } : x));
@@ -1155,6 +1174,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         failed: !!x.lastError,
         queued: !x.lastError,
         outbox: true,
+        ...(x.attachmentMeta?.find((item) => item.kind === "audio") ? { voice: x.attachmentMeta.find((item) => item.kind === "audio") } : {}),
       }));
       pendingsRef.current = [...transient, ...fromOutbox];
       setPendings([...pendingsRef.current]);
@@ -1296,7 +1316,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const reeditRetracted = useCallback((m: MessageRow): void => {
     setMenu(null);
     setDraft(m.text);
-    imgsRef.current = Array.isArray(m.attachments) ? m.attachments : [];
+    imgsRef.current = (Array.isArray(m.attachments) ? m.attachments : []).filter((url) => /\.(png|jpe?g|webp|gif|avif)$/i.test(url));
     setImgs(imgsRef.current);
     if (iptRef.current) {
       iptRef.current.focus();
@@ -1463,7 +1483,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     }
     flushStale();
 
-    for (const p of pendings) out.push({ t: "pending", id: p.localId, text: p.text, imgs: p.imgs, gap: true, failed: p.failed, queued: p.queued });
+    for (const p of pendings) out.push({ t: "pending", id: p.localId, text: p.text, imgs: p.imgs, ...(p.voice ? { voice: p.voice } : {}), gap: true, failed: p.failed, queued: p.queued });
 
     if (out.length === 0) out.push({ t: "intro" });
 
@@ -2086,10 +2106,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   };
 
   const stopAudio = useCallback((): void => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current = null;
-    }
+    stopExclusiveAudio();
     setPlayingId(null);
   }, []);
 
@@ -2107,12 +2124,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         if (seq !== ttsSeqRef.current) return;
         setTtsBusyId(null);
         stopAudio();
-        const audio = new Audio(d.dataUrl);
-        audioRef.current = audio;
-        audio.onended = (): void => setPlayingId(null);
-        audio.onerror = (): void => { setPlayingId(null); addNotice("音频播放失败", { info: true }); };
         setPlayingId(m.id);
-        void audio.play().catch(() => { setPlayingId(null); addNotice("再点一次就能播", { info: true }); });
+        const audio = playExclusiveAudio(d.dataUrl, {
+          onEnded: () => setPlayingId(null),
+          onError: () => { setPlayingId(null); addNotice("音频播放失败", { info: true }); },
+        });
+        audio.onpause = () => setPlayingId(null);
       })
       .catch(() => {
         if (seq !== ttsSeqRef.current) return;
@@ -2121,15 +2138,24 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       });
   }, [addNotice, playingId, stopAudio]);
 
-  const clearRecTimer = (): void => {
+  const clearRecTimers = (): void => {
     if (recTimerRef.current) { clearInterval(recTimerRef.current); recTimerRef.current = null; }
+    if (waveTimerRef.current) { clearInterval(waveTimerRef.current); waveTimerRef.current = null; }
   };
 
-  const finishRecording = (cancelled: boolean): void => {
+  const stopWaveMeter = (): void => {
+    if (waveTimerRef.current) { clearInterval(waveTimerRef.current); waveTimerRef.current = null; }
+    analyserRef.current = null;
+    const ctx = audioCtxRef.current;
+    audioCtxRef.current = null;
+    if (ctx && ctx.state !== "closed") void ctx.close().catch(() => { /* 浏览器回收时忽略 */ });
+  };
+
+  const finishRecording = (action: "cancel" | "voice" | "transcribe"): void => {
     const rec = recorderRef.current;
     if (!rec || rec.state === "inactive") return;
-    recCancelRef.current = cancelled;
-    rec.stop(); // 真正的送识别动作在 onstop 里
+    recActionRef.current = action;
+    rec.stop();
   };
 
   const startRecording = useCallback(async () => {
@@ -2146,47 +2172,103 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     }
     const rec = new MediaRecorder(stream);
     recChunksRef.current = [];
+    recWaveRef.current = [];
+    recStartedRef.current = Date.now();
     rec.ondataavailable = (e): void => { if (e.data.size > 0) recChunksRef.current.push(e.data); };
     rec.onstop = (): void => {
+      clearRecTimers();
+      stopWaveMeter();
       stream.getTracks().forEach((t) => t.stop());
       recorderRef.current = null;
-      clearRecTimer();
       setRecSec(null);
-      const cancelled = recCancelRef.current;
-      recCancelRef.current = false;
-      if (cancelled) return;
+      const action = recActionRef.current;
+      recActionRef.current = "voice";
+      if (action === "cancel") return;
       const blob = new Blob(recChunksRef.current, { type: rec.mimeType || "audio/webm" });
       if (blob.size === 0) { addNotice("录音是空的", { info: true }); return; }
-      setTranscribing(true);
       const owner = cidRef.current;
-      blobToDataUrl(blob)
-        .then((dataUrl) => chatApi.transcribe(dataUrl))
-        .then((d) => {
-          // 转写是异步的：回来时人可能已经换了，落进新联系人的草稿等于把话送错人。
+      if (action === "transcribe") {
+        setTranscribing(true);
+        blobToDataUrl(blob)
+          .then((dataUrl) => chatApi.transcribe(dataUrl))
+          .then((d) => {
+            if (cidRef.current !== owner) return;
+            setDraft((prev) => (prev && d.text ? prev + " " + d.text : d.text || prev));
+            if (d.text) addNotice("转文字完成，可编辑后发送", { info: true });
+            else addNotice("没听清内容", { info: true });
+            autoGrow(iptRef.current);
+          })
+          .catch((error: Error) => addNotice("识别失败：" + error.message, { info: true }))
+          .finally(() => setTranscribing(false));
+        return;
+      }
+
+      // 发送语音：先上传原始录音，再并行做转写。转写失败不影响“语音已经发出去”这件事。
+      setVoiceBusy(true);
+      const durationMs = Math.max(500, Math.min(60_000, Date.now() - recStartedRef.current));
+      const samples = recWaveRef.current.filter((n) => Number.isFinite(n)).slice(-48);
+      const waveform = samples.length >= 8 ? samples : Array.from({ length: 28 }, (_, i) => 0.2 + Math.abs(Math.sin(i * 1.37)) * 0.55);
+      const transcriptTask = caps.speechToText
+        ? blobToDataUrl(blob).then((dataUrl) => chatApi.transcribe(dataUrl)).catch(() => ({ text: "" }))
+        : Promise.resolve({ text: "" });
+      Promise.all([chatApi.uploadVoice(blob), transcriptTask])
+        .then(([uploaded, recognized]) => {
           if (cidRef.current !== owner) return;
-          setDraft((prev) => (prev && d.text ? prev + " " + d.text : d.text || prev));
-          if (d.text) addNotice("转文字完成，可编辑后发送", { info: true });
-          else addNotice("没听清内容", { info: true });
-          autoGrow(iptRef.current);
+          const transcript = recognized.text.trim();
+          const meta: MessageAttachmentMeta = {
+            url: uploaded.url,
+            kind: "audio",
+            mime: uploaded.mime,
+            durationMs,
+            waveform,
+            ...(transcript ? { transcript } : {}),
+            source: "recorded",
+          };
+          send(transcript || "（用户发来一条语音消息）", {
+            attachments: [uploaded.url],
+            attachmentMeta: [meta],
+            voice: meta,
+          });
+          if (caps.speechToText && !transcript) addNotice("语音已发送，这次没转成文字", { info: true });
         })
-        .catch((error: Error) => addNotice("识别失败：" + error.message, { info: true }))
-        .finally(() => setTranscribing(false));
+        .catch((error: Error) => addNotice("语音没发出去：" + error.message, { info: true }))
+        .finally(() => setVoiceBusy(false));
     };
     recorderRef.current = rec;
     rec.start();
     setRecSec(0);
-    const started = Date.now();
-    clearRecTimer();
+    clearRecTimers();
     recTimerRef.current = setInterval(() => {
-      const sec = Math.round((Date.now() - started) / 1000);
+      const sec = Math.round((Date.now() - recStartedRef.current) / 1000);
       setRecSec(sec);
-      if (sec >= 60) finishRecording(false); // 60 秒硬上限，防呆
+      if (sec >= 60) finishRecording("voice");
     }, 500);
-  }, [addNotice, autoGrow]);
+
+    // 真实波形：从 MediaStream 取时域 RMS，不额外播放声音。失败时退回装饰波形。
+    try {
+      const ctx = new AudioContext();
+      const analyser = ctx.createAnalyser();
+      analyser.fftSize = 512;
+      ctx.createMediaStreamSource(stream).connect(analyser);
+      audioCtxRef.current = ctx;
+      analyserRef.current = analyser;
+      const data = new Uint8Array(analyser.fftSize);
+      waveTimerRef.current = setInterval(() => {
+        const current = analyserRef.current;
+        if (!current) return;
+        current.getByteTimeDomainData(data);
+        let sum = 0;
+        for (const value of data) { const x = (value - 128) / 128; sum += x * x; }
+        const rms = Math.sqrt(sum / data.length);
+        recWaveRef.current.push(Math.min(1, Math.max(0.1, rms * 4.2)));
+      }, 120);
+    } catch { /* 波形只是增强，拿不到不影响录音 */ }
+  }, [addNotice, autoGrow, caps.speechToText, send]);
 
   useEffect(() => () => {
-    finishRecording(true);
-    clearRecTimer();
+    finishRecording("cancel");
+    clearRecTimers();
+    stopWaveMeter();
     // 先作废在飞的合成代次：卸载时 audioRef 还是 null（音频尚未创建），stopAudio 停不到东西，
     // 随后返回的 dataUrl 会照样 new Audio().play() —— 变成没有 UI 能停的孤儿语音。
     ttsSeqRef.current += 1;
@@ -2282,13 +2364,17 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       case "pending": return (
         /* 乐观气泡就是"我刚发出去"那一下的入场，补上 .msg-enter 让点按与上屏连成一拍。 */
         <div key={"p" + n.id} className="msg-row me gap msg-enter">
-          <div className={"bubble" + (n.imgs.length > 0 && !n.text ? " img-only" : "") + (n.failed ? " pend-failed" : "")}>
-            {n.imgs.length > 0 && (
+          <div className={"bubble" + (n.voice ? " voice-only" : n.imgs.length > 0 && !n.text ? " img-only" : "") + (n.failed ? " pend-failed" : "")}>
+            {n.voice && (
+              <VoiceMessageBubble url={n.voice.url} durationMs={n.voice.durationMs}
+                waveform={n.voice.waveform} transcript={n.voice.transcript} />
+            )}
+            {!n.voice && n.imgs.length > 0 && (
               <div className={"msg-imgs" + (n.imgs.length === 1 ? " single" : "")}>
                 {n.imgs.map((url) => <img key={url} src={url} alt="" />)}
               </div>
             )}
-            {n.text && <div className="msg-text">{n.text}</div>}
+            {!n.voice && n.text && <div className="msg-text">{n.text}</div>}
             {n.queued && (
               <div className="pend-queue">
                 <span>待发送 · 联网后自动发出</span>
@@ -2702,6 +2788,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           ref={iptRef}
           rows={1}
           placeholder={recSec !== null ? "正在录音…"
+            : voiceBusy ? "正在准备语音消息…"
             : drawArmed ? `画什么？Enter 就发，留空${characterName}来定` : "输入消息…"}
           autoComplete="off"
           enterKeyHint="send"
@@ -2716,7 +2803,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               // 进行中不该并发再发一条，转写没回来时也不该把草稿清掉。
               // 注意这里**故意不管 typing**：她还在回话时按 Enter = barge-in 打断重来，
               // 那是设计好的行为（见 send() 里 pendingTurnRef 那段），别顺手加进来把它杀掉。
-              if (busy || transcribing) return;
+              if (busy || transcribing || voiceBusy) return;
               submitDraft();
             }
           }}
@@ -2725,9 +2812,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           <div className="composer-bar recording">
             <span className="rec-state"><i className="rec-dot" /> 录音中 {recSec} 秒（最长 1 分钟）</span>
             <div className="rec-actions">
-              <button type="button" className="btn sm" onClick={() => finishRecording(true)}>取消</button>
-              <button type="button" className="primary sm" disabled={transcribing} onClick={() => finishRecording(false)}>
-                {transcribing ? "识别中…" : "完成"}
+              <button type="button" className="btn sm" onClick={() => finishRecording("cancel")}>取消</button>
+              {caps.speechToText && (
+                <button type="button" className="btn sm" onClick={() => finishRecording("transcribe")}>转文字</button>
+              )}
+              <button type="button" className="primary sm" onClick={() => finishRecording("voice")}>
+                发送语音
               </button>
             </div>
           </div>
@@ -2739,10 +2829,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 disabled={uploading || imgs.length >= 3} onClick={() => fileInputRef.current?.click()}>
                 {uploading ? <Loader2 size={17} className="spin" /> : <ImagePlus size={17} />}
               </button>
-              {caps.speechToText && (
-                <button type="button" className="tool-btn" title="语音转文字" aria-label="语音转文字"
-                  disabled={transcribing} onClick={() => void startRecording()}>
-                  {transcribing ? <Loader2 size={17} className="spin" /> : <Mic size={17} />}
+              {typeof MediaRecorder !== "undefined" && (
+                <button type="button" className="tool-btn" title="发送语音" aria-label="发送语音"
+                  disabled={transcribing || voiceBusy} onClick={() => void startRecording()}>
+                  {transcribing || voiceBusy ? <Loader2 size={17} className="spin" /> : <Mic size={17} />}
                 </button>
               )}
               {caps.imageGeneration && imageGenOn && (
@@ -3010,7 +3100,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             {/* 发送键的 disabled 走的是本地操作闸门（撤回/删除/编辑/重试共用 busy），
                 所以这里不能写「发送中…」——那句只该在真的在发消息时说，而 send() 是即时的。 */}
             <button type="button" id="send" title={busy ? "有别的操作还在收尾，稍等一下" : "发送"}
-              disabled={busy || transcribing}
+              disabled={busy || transcribing || voiceBusy}
               className={busy ? "busy" : ""} onClick={submitDraft}>
               {busy ? "请稍候…" : "发送"}
             </button>

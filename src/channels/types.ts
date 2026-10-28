@@ -8,6 +8,8 @@
 // getChannel("web") 把话镜像进内置会话。所以这个接口现在的真实身份是「web 出站的抽象」，
 // 不是"多通道框架"；接第三条通道时再决定要不要把它们也套进来。
 
+import type { MessageAttachmentMeta } from "../../shared/api.ts";
+
 export type ChannelId = string;
 
 export type ReceiveOptions = {
@@ -19,6 +21,8 @@ export type ReceiveOptions = {
   replyToMessageId?: string;
   atBot?: boolean;
   sourceMeta?: string;
+  /** 语音消息的时长、转写与波形；与 attachments 中的 URL 对应。 */
+  attachmentMeta?: MessageAttachmentMeta[];
 };
 
 export type OutgoingMessage = {
@@ -26,8 +30,9 @@ export type OutgoingMessage = {
   kind: "chat" | "proactive";
   /** 送达哪个联系人（会话按 contact_id 隔离，主动发言必须知道自己对谁说）。 */
   contactId: string;
-  /** 随这条话一起出现的 /media 路径（主动性出图用）。IM 通道发不出媒体就只取 text。 */
+  /** 随这条话一起出现的 /media 路径（主动性出图/语音用）。IM 通道发不出媒体就只取 text。 */
   attachments?: string[];
+  attachmentMeta?: MessageAttachmentMeta[];
 };
 
 export interface Channel {

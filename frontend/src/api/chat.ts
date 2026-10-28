@@ -1,5 +1,5 @@
 import { cq, deleteJson, getJson, postJson, putJson } from "./client";
-import type { ContextUsage, MessageRow, ThinkingControl, ThinkingQuickChoice, TurnRow } from "../types";
+import type { ContextUsage, MessageAttachmentMeta, MessageRow, ThinkingControl, ThinkingQuickChoice, TurnRow } from "../types";
 
 /** 联系人作用域 + 可选会话作用域；会话 id 为空时走服务端本地默认会话。 */
 function cqc(base: string, cid?: string, conversationId?: string): string {
@@ -87,10 +87,11 @@ export function regenerateTurn(id: string, cid?: string): Promise<unknown> {
 }
 
 /** 说一句话：立刻返回 202 + turnId，回复走轮询。attachments 为 /api/media 返回的 URL 列表。 */
-export function say(text: string, attachments?: string[], cid?: string, clientId?: string, conversationId?: string): Promise<{ turnId: string }> {
+export function say(text: string, attachments?: string[], cid?: string, clientId?: string, conversationId?: string, attachmentMeta?: MessageAttachmentMeta[]): Promise<{ turnId: string }> {
   return postJson(cqc("/api/say", cid, conversationId), {
     text,
     ...(attachments && attachments.length ? { attachments } : {}),
+    ...(attachmentMeta && attachmentMeta.length ? { attachmentMeta } : {}),
     ...(clientId ? { clientId } : {}),
   });
 }
@@ -105,6 +106,18 @@ export async function uploadImage(blob: Blob): Promise<{ url: string }> {
   const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
   if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
   return data as { url: string };
+}
+
+/** 上传一段原始录音，返回持久化的 /media URL。 */
+export async function uploadVoice(blob: Blob): Promise<{ url: string; mime: string }> {
+  const res = await fetch("/api/media/voice", {
+    method: "POST",
+    headers: { "content-type": blob.type || "application/octet-stream" },
+    body: blob,
+  });
+  const data = await res.json().catch(() => ({ ok: false, error: `HTTP ${res.status}` }));
+  if (!data.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  return data as { url: string; mime: string };
 }
 
 /** 录音 dataURL → 文字。 */

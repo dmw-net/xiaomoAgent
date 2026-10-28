@@ -1,12 +1,14 @@
 /** 离线发件箱：断网/后端暂时不可达时把话落成设备本地队列，恢复后自动重发。 */
 
 import { ApiError, chatApi } from "../api";
+import type { MessageAttachmentMeta } from "../types";
 
 export type OutboxItem = {
   clientId: string;
   contactId: string;
   text: string;
   attachments: string[];
+  attachmentMeta?: MessageAttachmentMeta[];
   createdAt: number;
   attempts: number;
   lastError: string;
@@ -32,6 +34,7 @@ function load(): OutboxItem[] {
       contactId: x.contactId,
       text: x.text,
       attachments: x.attachments.filter((u) => typeof u === "string"),
+      ...(Array.isArray(x.attachmentMeta) ? { attachmentMeta: x.attachmentMeta } : {}),
       createdAt: x.createdAt,
       attempts: Number(x.attempts) || 0,
       lastError: typeof x.lastError === "string" ? x.lastError : "",
@@ -58,7 +61,7 @@ export function outboxForContact(contactId: string): OutboxItem[] {
   return items.filter((x) => x.contactId === contactId).sort((a, b) => a.createdAt - b.createdAt);
 }
 
-export function enqueueOutbox(input: { clientId: string; contactId: string; text: string; attachments?: string[] }): void {
+export function enqueueOutbox(input: { clientId: string; contactId: string; text: string; attachments?: string[]; attachmentMeta?: MessageAttachmentMeta[] }): void {
   const existing = items.find((x) => x.clientId === input.clientId);
   if (existing) return;
   items = [...items, {
@@ -66,6 +69,7 @@ export function enqueueOutbox(input: { clientId: string; contactId: string; text
     contactId: input.contactId,
     text: input.text,
     attachments: input.attachments ? [...input.attachments] : [],
+    ...(input.attachmentMeta && input.attachmentMeta.length > 0 ? { attachmentMeta: [...input.attachmentMeta] } : {}),
     createdAt: Date.now(),
     attempts: 0,
     lastError: "",
@@ -89,7 +93,7 @@ export async function flushOutbox(contactId?: string, force = false): Promise<vo
       if (contactId && item.contactId !== contactId) continue;
       if (!force && item.attempts >= 12 && item.lastError) continue; // 永久失败不再无限打扰；用户重试时仍可再次触发。
       try {
-        const data = await chatApi.say(item.text, item.attachments, item.contactId, item.clientId);
+        const data = await chatApi.say(item.text, item.attachments, item.contactId, item.clientId, undefined, item.attachmentMeta);
         items = items.filter((x) => x.clientId !== item.clientId);
         save();
         emit("xiaomo:outbox-sent", { clientId: item.clientId, contactId: item.contactId, turnId: data.turnId });

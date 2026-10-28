@@ -1,7 +1,7 @@
 /** 与后端 messages / turns 表对应的行类型，以及对话页的界面态。 */
 
 /** 消息行与处理单是 HTTP 契约，类型与后端同源：见仓库根 shared/api.ts。 */
-export type { MessageRow, TurnSummary as TurnRow } from "../../../shared/api";
+export type { MessageAttachmentKind, MessageAttachmentMeta, MessageRow, TurnSummary as TurnRow } from "../../../shared/api";
 
 import type { ThinkingLevelId, ThinkingModeId, ThinkingParamId } from "./settings";
 

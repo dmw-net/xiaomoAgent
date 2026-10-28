@@ -1,12 +1,13 @@
 import { memo, useMemo, type CSSProperties } from "react";
 import { Volume2, Loader2 } from "lucide-react";
 import Avatar from "../../components/Avatar";
+import VoiceMessageBubble from "../../components/VoiceMessageBubble";
 import { useLongPress } from "../../hooks/useLongPress";
 import { findFirstExternalUrl, renderMd } from "../../lib/md";
 import LinkPreviewCard from "./LinkPreviewCard";
 import ThinkingBlock from "./ThinkingBlock";
 import { avatarToneStyle } from "../../lib/avatar-tone";
-import type { MessageRow } from "../../types";
+import type { MessageAttachmentMeta, MessageRow } from "../../types";
 
 /** 一条普通消息气泡（含撤回态）。编辑态不走这里——它需要编辑器状态，留在 ChatView。 */
 function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, thinkingOpen, onThinkingOpenChange, enter = false, enterDelay = 0 }: {
@@ -56,7 +57,11 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
     ...touch,
   };
 
-  const imgs = m.attachments ?? [];
+  const allAttachments = m.attachments ?? [];
+  const audioMeta = m.attachment_meta?.find((item) => item.kind === "audio" && allAttachments.includes(item.url));
+  const fallbackVoiceUrl = allAttachments.find((url) => /\.(mp3|wav|m4a|ogg|opus|weba)$/i.test(url));
+  const voiceMeta: MessageAttachmentMeta | null = audioMeta ?? (fallbackVoiceUrl ? { url: fallbackVoiceUrl, kind: "audio" } : null);
+  const imgs = voiceMeta ? allAttachments.filter((url) => url !== voiceMeta.url) : allAttachments;
   // 一次渲染只在 text 变化时重扫；长回复里正则扫描不该跟着 TTS/主题等无关 props 重跑。
   const previewUrl = useMemo(() => (m.text ? findFirstExternalUrl(m.text) : ""), [m.text]);
   // 这一条必须放在所有 Hook 之后：撤回会让同一行从普通气泡切成“已撤回”，
@@ -83,9 +88,13 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
     >!</button>
   ) : null;
   const bubble = (
-    <div className={"bubble" + (imgs.length > 0 && m.text === "" ? " img-only" : "")}>
+    <div className={"bubble" + (voiceMeta ? " voice-only" : imgs.length > 0 && m.text === "" ? " img-only" : "")}>
       {m.role === "user" && m.sender_name && <div className="msg-sender">{m.sender_name}</div>}
       {thinking}
+      {voiceMeta && (
+        <VoiceMessageBubble url={voiceMeta.url} durationMs={voiceMeta.durationMs}
+          waveform={voiceMeta.waveform} transcript={voiceMeta.transcript} />
+      )}
       {imgs.length > 0 && (
         <div className={"msg-imgs" + (imgs.length === 1 ? " single" : "")}>
           {imgs.map((url) => (
@@ -95,7 +104,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
           ))}
         </div>
       )}
-      {m.text && <div className="msg-text">{renderMd(m.text)}</div>}
+      {!voiceMeta && m.text && <div className="msg-text">{renderMd(m.text)}</div>}
       {/* key 用地址本身：编辑消息换了链接时强制重挂载，避免新链接下还显示旧卡的标题/域名。 */}
       {previewUrl !== "" && <LinkPreviewCard key={previewUrl} url={previewUrl} />}
       {time && <div className="msg-time">{time}</div>}
@@ -113,7 +122,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
           style={avatarToneStyle(characterName)} />
       )}
       {bubble}
-      {ttsOn && m.role === "assistant" && m.kind === "chat" && m.text !== "" && (
+      {!voiceMeta && ttsOn && m.role === "assistant" && m.kind === "chat" && m.text !== "" && (
         <button type="button" className={"tts-btn" + (ttsPlaying ? " playing" : "")} title="播放语音"
           aria-label="播放语音" disabled={ttsBusy}
           onClick={(e) => { e.stopPropagation(); onPlayTts?.(m); }}

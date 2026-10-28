@@ -16,6 +16,7 @@ import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "./reply-segmentation.ts";
 import { dataUrlBytes, mediaDataUrl, releaseMediaFiles } from "./media.ts";
 import type { CapabilityName } from "./settings.ts";
+import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { getConversation, localConversationId, touchConversation, type Conversation } from "./conversations.ts";
 
 export type TurnRow = {
@@ -34,8 +35,10 @@ export type TurnRow = {
   error: string | null;
   created_at: number;
   finished_at: number | null;
-  /** 图片附件的 JSON 数组字符串（"/media/…"），可为 null。 */
+  /** 附件 URL 的 JSON 数组字符串（"/media/…"），可为 null。 */
   attachments?: string | null;
+  /** 附件元信息 JSON；语音消息的时长、转写与波形都在这里。 */
+  attachment_meta?: string | null;
   /** 被编辑作废的时间戳（supersedeAfter 打的）。非空 = 这一轮已不属于当前对话。 */
   superseded_at?: number | null;
 };
@@ -47,6 +50,7 @@ export function createTurn(input: {
   contactId: string;
   conversationId?: string;
   attachments?: string[];
+  attachmentMeta?: MessageAttachmentMeta[];
   /** 平台消息 id：QQ 群/私聊的被动回复窗口与去重都靠它。 */
   triggerMessageId?: string | null;
   triggerIds?: string[];
@@ -58,8 +62,8 @@ export function createTurn(input: {
   db.prepare(
     `INSERT INTO turns
        (id, channel, text, contact_id, conversation_id, trigger_message_id, trigger_ids, context_start_id,
-        attachments, client_id, status, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
+        attachments, attachment_meta, client_id, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?)`,
   ).run(
     input.id,
     input.channel,
@@ -70,6 +74,7 @@ export function createTurn(input: {
     input.triggerIds && input.triggerIds.length > 0 ? JSON.stringify(input.triggerIds) : null,
     input.contextStartId ?? null,
     input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null,
+    input.attachmentMeta && input.attachmentMeta.length > 0 ? JSON.stringify(input.attachmentMeta) : null,
     input.clientId || null,
     Date.now(),
   );
@@ -101,6 +106,7 @@ export function insertMessage(input: {
   atBot?: boolean;
   sourceMeta?: string | null;
   attachments?: string[];
+  attachmentMeta?: MessageAttachmentMeta[];
   /** 模型这一轮的思考原文（仅用于界面折叠回看；不进上下文、不进记忆抽取）。 */
   reasoning?: string | null;
   /** 工具卡的可展开详情（仅 kind=tool 用；不进上下文回放，滚出窗口即 NULL）。 */
@@ -112,8 +118,8 @@ export function insertMessage(input: {
     .prepare(
       `INSERT INTO messages
          (channel, role, text, kind, turn_id, contact_id, conversation_id, sender_id, sender_name,
-          source_message_id, reply_to_message_id, at_bot, source_meta, attachments, reasoning, tool_detail, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          source_message_id, reply_to_message_id, at_bot, source_meta, attachments, attachment_meta, reasoning, tool_detail, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.channel,
@@ -130,6 +136,7 @@ export function insertMessage(input: {
       input.atBot === true ? 1 : 0,
       input.sourceMeta ?? null,
       input.attachments && input.attachments.length > 0 ? JSON.stringify(input.attachments) : null,
+      input.attachmentMeta && input.attachmentMeta.length > 0 ? JSON.stringify(input.attachmentMeta) : null,
       input.reasoning ?? null,
       input.toolDetail ?? null,
       now,
@@ -261,18 +268,48 @@ import type { MessageRow } from "../shared/api.ts";
 
 export type { MessageRow };
 
-const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, conversation_id, sender_id, sender_name, source_message_id, reply_to_message_id, at_bot, attachments, turn_id, reasoning, tool_detail";
+const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, conversation_id, sender_id, sender_name, source_message_id, reply_to_message_id, at_bot, attachments, attachment_meta, turn_id, reasoning, tool_detail";
 
-/** attachments 存的是 JSON 字符串；对界面下发前解析成数组，脏数据按无附件处理。 */
-function withParsedAttachments(row: MessageRow & { attachments: unknown }): MessageRow {
+/** attachments / attachment_meta 存的是 JSON 字符串；下发前解析，脏数据按无附件处理。 */
+function withParsedAttachments(row: MessageRow & { attachments: unknown; attachment_meta?: unknown }): MessageRow {
   let list: string[] | null = null;
+  let meta: MessageAttachmentMeta[] | null = null;
   if (typeof row.attachments === "string" && row.attachments !== "") {
     try {
       const parsed: unknown = JSON.parse(row.attachments);
       if (Array.isArray(parsed)) list = parsed.filter((u): u is string => typeof u === "string" && u.startsWith("/media/"));
     } catch { /* 存坏了就当没附件 */ }
   }
-  return { ...row, attachments: list };
+  if (typeof row.attachment_meta === "string" && row.attachment_meta !== "") {
+    try {
+      const parsed: unknown = JSON.parse(row.attachment_meta);
+      if (Array.isArray(parsed)) {
+        meta = parsed.filter((item): item is MessageAttachmentMeta => {
+          if (item === null || typeof item !== "object") return false;
+          const v = item as Partial<MessageAttachmentMeta>;
+          return typeof v.url === "string" && v.url.startsWith("/media/")
+            && (v.kind === "image" || v.kind === "video" || v.kind === "audio" || v.kind === "file");
+        });
+      }
+    } catch { /* 老数据或损坏数据按无元信息处理 */ }
+  }
+  return { ...row, attachments: list, attachment_meta: meta };
+}
+
+/** turns.attachment_meta 与 messages 同格式；缺少/损坏时返回 undefined。 */
+function parseStoredAttachmentMeta(raw: unknown): MessageAttachmentMeta[] | undefined {
+  if (typeof raw !== "string" || raw === "") return undefined;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return undefined;
+    const list = parsed.filter((item): item is MessageAttachmentMeta => {
+      if (item === null || typeof item !== "object") return false;
+      const v = item as Partial<MessageAttachmentMeta>;
+      return typeof v.url === "string" && v.url.startsWith("/media/")
+        && (v.kind === "image" || v.kind === "video" || v.kind === "audio" || v.kind === "file");
+    });
+    return list.length > 0 ? list : undefined;
+  } catch { return undefined; }
 }
 
 /**
@@ -578,7 +615,7 @@ export function selectReplayImages(
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i];
     if (!row || row.role !== "user") continue;
-    for (const url of parseAttachments(row.attachments).slice(0, MAX_TURN_IMAGES).reverse()) {
+    for (const url of parseImageAttachments(row.attachments).slice(0, MAX_TURN_IMAGES).reverse()) {
       if (picked.has(url)) continue;
       const cost = dataUrlBytes(url);
       if (cost === null) continue; // 文件已不在，交给标记那侧如实说
@@ -599,7 +636,7 @@ export function countReplayedImages(
   let n = 0;
   for (const row of rows) {
     if (row.role !== "user") continue;
-    for (const url of parseAttachments(row.attachments).slice(0, MAX_TURN_IMAGES)) {
+    for (const url of parseImageAttachments(row.attachments).slice(0, MAX_TURN_IMAGES)) {
       if (replay.has(url)) n += 1;
     }
   }
@@ -1252,6 +1289,11 @@ function parseAttachments(raw: string | null | undefined): string[] {
   }
 }
 
+/** 只有图片走视觉重放；语音/视频绝不能被当成图片打上“看不见”的标记。 */
+function parseImageAttachments(raw: string | null | undefined): string[] {
+  return parseAttachments(raw).filter((url) => /\.(png|jpe?g|webp|gif|avif)$/i.test(url));
+}
+
 /** 图片理解能力没配好：她连他这轮刚发的图都看不见。别和"太久了"混为一谈——那是两句不同的实话。 */
 const NO_VISION_REASON = "图片理解能力没配置，你看不到内容——直接告诉他你看不了，别猜也别编";
 /** 配好了，但这张已滑出重放窗口：同样看不到。 */
@@ -1279,7 +1321,7 @@ export function imageProxiedHistory<T extends { text: string; attachments: strin
 ): T[] {
   const reason = visionOn ? OUT_OF_WINDOW_REASON : NO_VISION_REASON;
   return rows.map((row) => {
-    const hidden = parseAttachments(row.attachments).filter((url) => !replay.has(url));
+    const hidden = parseImageAttachments(row.attachments).filter((url) => !replay.has(url));
     if (hidden.length === 0) return row;
     const mark = imageMark(reason, hidden.length);
     return { ...row, text: row.text === "" ? mark : `${row.text}\n${mark}` };
@@ -1337,6 +1379,7 @@ export async function respondToTurn(
   const conversationId = turn.conversation_id || localConversationId(contactId);
   const conversation = getConversation(conversationId);
   const attachments = parseAttachments(turn.attachments);
+  const imageAttachments = parseImageAttachments(turn.attachments);
 
   // 单飞（barge-in）：同一联系人来了新消息 = 还在跑的旧轮被打断。
   // abort 掉在飞的请求，旧轮在自己的 catch 里标 cancelled 收尾：不插任何 assistant 行、
@@ -1431,7 +1474,7 @@ export async function respondToTurn(
       }
     }
     if (!turnHasUserMessage(turn.id)) {
-      insertMessage({ channel: turn.channel, role: "user", text: turn.text, turnId: turn.id, contactId, conversationId, attachments });
+      insertMessage({ channel: turn.channel, role: "user", text: turn.text, turnId: turn.id, contactId, conversationId, attachments, attachmentMeta: parseStoredAttachmentMeta(turn.attachment_meta) });
     }
 
     // 联系人隔离：人格、记忆、上下文全部按这个联系人取——
@@ -1474,7 +1517,7 @@ export async function respondToTurn(
     const visionOn = !assistant && capabilityReady("imageVision");
     // 他这轮刚发的图无条件重放；历史图按字节天花板从新到旧填，装不下的降级成文字摘要。
     // 视觉能力没配好就一张都不重放，全部走摘要——图不丢，但她看不到原图。
-    const replay = visionOn ? selectReplayImages(rawRows, attachments) : new Set<string>();
+    const replay = visionOn ? selectReplayImages(rawRows, imageAttachments) : new Set<string>();
     const historyRows = imageProxiedHistory(rawRows, replay, visionOn);
     const modelSettings = contactModelSettings(contactId) ?? modelConfig();
     const budget = inputBudget(modelSettings);
@@ -1514,7 +1557,7 @@ export async function respondToTurn(
         const row = userRows[nth];
         nth += 1;
         if (!row) continue;
-        const urls = parseAttachments(row.attachments).filter((url) => replay.has(url)).slice(0, MAX_TURN_IMAGES);
+        const urls = parseImageAttachments(row.attachments).filter((url) => replay.has(url)).slice(0, MAX_TURN_IMAGES);
         if (urls.length === 0) continue;
         const parts: MessageContentPart[] = [];
         // row.text 已经含"看不见的图"的摘要行（imageProxiedHistory 写的），一起发正好：

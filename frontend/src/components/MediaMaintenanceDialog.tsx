@@ -1,16 +1,18 @@
-import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, ArrowLeft, FileImage, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { AlertTriangle, ArrowLeft, AudioLines, FileImage, Film, Image as ImageIcon, Loader2, RefreshCw, RotateCcw, Trash2, X } from "lucide-react";
 import Modal from "./Modal";
+import VoiceMessageBubble from "./VoiceMessageBubble";
 import { mediaApi } from "../api";
-import type { MediaMaintenanceItem, MediaMaintenanceSnapshot, MediaTrashItem } from "../types";
+import type { MediaMaintenanceItem, MediaMaintenanceSnapshot, MediaTrashItem, MediaTypeKey } from "../types";
 
 type Tab = "all" | "orphans" | "trash";
-type ConfirmState = { op: "trash" | "purge"; names: string[] } | null;
+type TypeFilter = "all" | MediaTypeKey;
+type ConfirmState = { op: "trash" | "purge" | "delete-message"; names: string[] } | null;
 
 function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  if (bytes < 1024) return bytes + " B";
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + " KB";
+  return (bytes / 1024 / 1024).toFixed(1) + " MB";
 }
 
 function formatTime(at: number): string {
@@ -19,7 +21,25 @@ function formatTime(at: number): string {
   });
 }
 
-/** 媒体总览：全部文件、引用来源、可清理项和回收站都在同一个视图里。 */
+function itemLabel(item: MediaMaintenanceItem): string {
+  if (item.mediaType === "audio") return "语音消息";
+  if (item.mediaType === "video") return item.mediaKind === "wallpaper" ? "视频壁纸" : "聊天视频";
+  if (item.mediaKind === "wallpaper") return "图片壁纸";
+  return "聊天图片";
+}
+
+function voiceMessageIds(item: MediaMaintenanceItem): number[] {
+  return [...new Set(item.sources.map((source) => source.messageId).filter((id): id is number => typeof id === "number" && id > 0))];
+}
+
+function typeIcon(type: MediaTypeKey): JSX.Element {
+  if (type === "audio") return <AudioLines size={15} />;
+  if (type === "video") return <Film size={15} />;
+  if (type === "image") return <ImageIcon size={15} />;
+  return <FileImage size={15} />;
+}
+
+/** 媒体与存储：按图片/视频/语音统一查看，清理与聊天语义始终一致。 */
 export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, initialTab = "all" }: {
   onBack: () => void;
   onClose: () => void;
@@ -28,8 +48,9 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
 }): JSX.Element {
   const [data, setData] = useState<MediaMaintenanceSnapshot | null>(null);
   const [tab, setTab] = useState<Tab>(initialTab);
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [selected, setSelected] = useState<Set<string>>(() => new Set());
-  const [busy, setBusy] = useState<"load" | "trash" | "restore" | "purge" | "">("");
+  const [busy, setBusy] = useState<"load" | "trash" | "restore" | "purge" | "delete-message" | "">("");
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [confirm, setConfirm] = useState<ConfirmState>(null);
@@ -48,22 +69,34 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
 
   useEffect(() => { load(); }, [load]);
 
-  const items: MediaMaintenanceItem[] = tab === "all"
+  const baseItems: MediaMaintenanceItem[] = tab === "all"
     ? data?.all ?? []
     : tab === "orphans"
       ? data?.items ?? []
       : data?.trash ?? [];
+  const items = typeFilter === "all" ? baseItems : baseItems.filter((item) => item.mediaType === typeFilter);
   const selectable = tab !== "all";
   const selectedNames = selectable
     ? items.filter((item) => selected.has(item.name)).map((item) => item.name)
     : [];
   const allSelected = selectable && items.length > 0 && selectedNames.length === items.length;
 
+  const typeStats = useMemo(() => (["image", "video", "audio"] as const).map((type) => ({
+    type,
+    files: baseItems.filter((item) => item.mediaType === type).length,
+    bytes: baseItems.filter((item) => item.mediaType === type).reduce((sum, item) => sum + item.size, 0),
+  })), [baseItems]);
+
   const switchTab = (next: Tab): void => {
     setTab(next);
     setSelected(new Set());
     setError("");
     setNotice("");
+  };
+
+  const switchType = (next: TypeFilter): void => {
+    setTypeFilter(next);
+    setSelected(new Set());
   };
 
   const toggle = (name: string): void => {
@@ -79,7 +112,7 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
     setSelected(allSelected ? new Set() : new Set(items.map((item) => item.name)));
   };
 
-  const operate = (op: "trash" | "restore" | "purge", names: string[]): void => {
+  const operate = (op: "trash" | "restore" | "purge" | "delete-message", names: string[]): void => {
     if (names.length === 0) {
       setError("请先选择文件");
       return;
@@ -92,9 +125,10 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
         setData(result);
         setSelected(new Set());
         setConfirm(null);
-        const tail = result.skipped > 0 ? `，${result.skipped} 个文件因刚被引用、尚未满保护期或已被处理而跳过` : "";
+        const tail = result.skipped > 0 ? `，${result.skipped} 项因状态变化或存在多重引用而跳过` : "";
         if (op === "trash") setNotice(`已将 ${result.changed} 个文件移到回收站${tail}。`);
         else if (op === "restore") setNotice(`已恢复 ${result.changed} 个文件${tail}。`);
+        else if (op === "delete-message") setNotice(`已删除 ${result.changed} 条语音消息及其对应聊天轮次${tail}。`);
         else setNotice(`已永久删除 ${result.changed} 个文件，释放 ${formatBytes(result.bytes)}${tail}。`);
         onChanged();
       })
@@ -104,15 +138,15 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
 
   return (
     <>
-      <Modal label="媒体文件" className="media-cleanup-modal" onClose={onClose}>
+      <Modal label="媒体与存储" className="media-cleanup-modal" onClose={onClose}>
         <div className="media-cleanup-head">
           <div className="media-cleanup-heading">
             <button type="button" className="ml-btn" aria-label="返回" title="返回" onClick={onBack}>
               <ArrowLeft size={17} />
             </button>
             <div>
-              <div className="modal-title">媒体文件</div>
-              <div className="modal-sub">全部文件及引用来源；只有未引用且超过 {data?.orphanGraceHours ?? 24} 小时的图片可以清理。</div>
+              <div className="modal-title">媒体与存储</div>
+              <div className="modal-sub">聊天里的图片、视频和语音都会保留在这里；未引用文件超过 {data?.orphanGraceHours ?? 24} 小时才可清理。</div>
             </div>
           </div>
           <button type="button" className="ml-btn" aria-label="关闭" title="关闭" onClick={onClose}>
@@ -121,7 +155,7 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
         </div>
 
         {busy === "load" && data === null && (
-          <div className="diagnostics-loading"><Loader2 size={18} className="spin" /> 正在扫描媒体文件…</div>
+          <div className="diagnostics-loading"><Loader2 size={18} className="spin" /> 正在整理媒体文件…</div>
         )}
 
         {error !== "" && <div className="banner show bad" role="alert"><div className="body">{error}</div></div>}
@@ -131,9 +165,9 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
           <>
             <div className="media-cleanup-summary">
               <div><b>{data.files}</b><span>全部文件</span><small>{formatBytes(data.allBytes)}</small></div>
-              <div><b>{data.cleanable}</b><span>可清理</span><small>{formatBytes(data.totalBytes)}</small></div>
+              <div><b>{data.cleanable}</b><span>可安全清理</span><small>{formatBytes(data.totalBytes)}</small></div>
               <div><b>{data.trash.length}</b><span>回收站</span><small>{formatBytes(data.trashBytes)}</small></div>
-              <p>有来源引用 {data.referenced} 个 · 未引用且在保护期内 {data.pending} 个</p>
+              <p>有引用 {data.referenced} 个 · 保护期内 {data.pending} 个 · 语音消息随聊天记录一起备份</p>
             </div>
 
             <div className="media-cleanup-tabs" role="tablist" aria-label="媒体范围">
@@ -149,20 +183,29 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
                 className={tab === "trash" ? "active" : ""} onClick={() => switchTab("trash")}>
                 回收站 <span>{data.trash.length}</span>
               </button>
-              <button type="button" className="media-cleanup-refresh" disabled={busy !== ""} onClick={load} title="重新扫描">
-                <RefreshCw size={14} className={busy === "load" ? "spin" : ""} /> 重新扫描
+              <button type="button" className="media-cleanup-refresh" aria-label="重新扫描" title="重新扫描" disabled={busy !== ""} onClick={load}>
+                <RefreshCw size={14} className={busy === "load" ? "spin" : ""} />
               </button>
+            </div>
+
+            <div className="media-type-filter" role="toolbar" aria-label="按类型筛选">
+              <button type="button" className={typeFilter === "all" ? "active" : ""} onClick={() => switchType("all")}>
+                全部类型 <span>{baseItems.length}</span>
+              </button>
+              {typeStats.map((entry) => (
+                <button type="button" key={entry.type} className={typeFilter === entry.type ? "active" : ""}
+                  disabled={entry.files === 0} onClick={() => switchType(entry.type)}>
+                  {typeIcon(entry.type)}
+                  {{ image: "图片", video: "视频", audio: "语音" }[entry.type]} <span>{entry.files}</span>
+                </button>
+              ))}
             </div>
 
             {items.length === 0 ? (
               <div className="media-cleanup-empty">
-                <FileImage size={24} />
-                <b>{tab === "all" ? "媒体目录还是空的" : tab === "orphans" ? "没有可清理的未引用文件" : "回收站是空的"}</b>
-                <span>{tab === "all"
-                  ? "上传聊天图片、设置头像或壁纸后，文件和来源会出现在这里。"
-                  : tab === "orphans"
-                    ? data.pending > 0 ? "最近上传的文件还在保护期，满 24 小时后才会进入这里。" : "之后如果出现，也会先列在这里供你确认。"
-                    : `移入回收站的文件会保留 ${data.trashRetentionDays} 天，期间可以恢复。`}</span>
+                <FileImage size={22} />
+                <b>{tab === "all" ? "这里还没有媒体" : tab === "orphans" ? "没有可清理的文件" : "回收站是空的"}</b>
+                <span>{tab === "all" ? "从聊天里发送图片或语音，它们会出现在这里。" : tab === "orphans" ? "被消息、头像、作品或设置引用的文件不会被误清理。" : `移入回收站的文件会保留 ${data.trashRetentionDays} 天。`}</span>
               </div>
             ) : (
               <>
@@ -173,49 +216,63 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
                       全选
                     </label>
                   ) : (
-                    <span>只读总览 · 切到「可清理」才能移动文件</span>
+                    <span>可直接删除语音消息；其他文件请在「可清理」中处理</span>
                   )}
                   <span>{selectable
                     ? `已选 ${selectedNames.length} / ${items.length} · ${formatBytes(items.filter((item) => selected.has(item.name)).reduce((sum, item) => sum + item.size, 0))}`
-                    : `共 ${items.length} 个 · ${formatBytes(data.allBytes)}`}</span>
+                    : `${items.length} 个 · ${formatBytes(items.reduce((sum, item) => sum + item.size, 0))}`}</span>
                 </div>
                 <div className="media-cleanup-list">
                   {items.map((item) => {
                     const trashItem = tab === "trash" ? item as MediaTrashItem : null;
+                    const deletableVoice = tab !== "trash" && item.mediaType === "audio" && voiceMessageIds(item).length === 1;
                     return (
-                    <div className={`media-file-row${selectable ? "" : " is-all"}`} key={item.name}>
-                      {selectable && (
-                        <input type="checkbox" aria-label={`选择 ${item.name}`} checked={selected.has(item.name)}
-                          onChange={() => toggle(item.name)} disabled={busy !== ""} />
-                      )}
-                      <div className="media-file-thumb">
-                        {item.mediaKind === "image" && tab !== "trash"
-                          ? <img src={item.url} alt="" loading="lazy" />
-                          : <FileImage size={20} />}
-                      </div>
-                      <div className="media-file-copy">
-                        <b>{item.name}</b>
-                        <span>{formatBytes(item.size)} · 修改于 {formatTime(item.modifiedAt)}</span>
-                        <div className="media-source-list">
-                          {item.sources.map((source) => (
-                            <span className={`media-source ${source.kind}`} key={`${source.kind}-${source.detail ?? ""}`}
-                              title={source.detail || source.label}>
-                              {source.label}{source.detail ? ` · ${source.detail}` : ""}
-                            </span>
-                          ))}
-                          {item.cleanable && <span className="media-source cleanable">可清理</span>}
+                      <div className={`media-file-row${selectable ? "" : " is-all"}`} key={item.name}>
+                        {selectable && (
+                          <input type="checkbox" aria-label={`选择 ${itemLabel(item)}`} checked={selected.has(item.name)}
+                            onChange={() => toggle(item.name)} disabled={busy !== ""} />
+                        )}
+                        <div className={`media-file-thumb type-${item.mediaType}`}>
+                          {item.mediaType === "image" && tab !== "trash"
+                            ? <img src={item.url} alt="" loading="lazy" />
+                            : item.mediaType === "video" && tab !== "trash"
+                              ? <video src={item.url} muted playsInline preload="metadata" aria-hidden="true" />
+                              : item.mediaType === "audio"
+                                ? <AudioLines size={20} />
+                                : <FileImage size={20} />}
                         </div>
-                        {trashItem && (
-                          <span className="media-trash-expiry">移入于 {formatTime(trashItem.trashedAt)} · {formatTime(trashItem.expiresAt)} 后自动删除</span>
+                        <div className="media-file-copy">
+                          <b>{itemLabel(item)}</b>
+                          <span>{formatBytes(item.size)} · 修改于 {formatTime(item.modifiedAt)}</span>
+                          {item.mediaType === "audio" && (
+                            <VoiceMessageBubble compact url={item.url} durationMs={item.durationMs} transcript={item.transcript} />
+                          )}
+                          <div className="media-source-list">
+                            {item.sources.map((source) => (
+                              <span className={`media-source ${source.kind}`} key={`${source.kind}-${source.messageId ?? ""}-${source.detail ?? ""}`}
+                                title={source.detail || source.label}>
+                                {source.label}{source.detail ? ` · ${source.detail}` : ""}
+                              </span>
+                            ))}
+                            {item.cleanable && <span className="media-source cleanable">可清理</span>}
+                          </div>
+                          {trashItem && (
+                            <span className="media-trash-expiry">移入于 {formatTime(trashItem.trashedAt)} · {formatTime(trashItem.expiresAt)} 后自动删除</span>
+                          )}
+                        </div>
+                        {tab === "trash" && (
+                          <button type="button" className="btn sm ghost" disabled={busy !== ""}
+                            onClick={() => operate("restore", [item.name])}>
+                            <RotateCcw size={13} /> 恢复
+                          </button>
+                        )}
+                        {deletableVoice && (
+                          <button type="button" className="btn sm ghost danger-text" disabled={busy !== ""}
+                            onClick={() => setConfirm({ op: "delete-message", names: [item.name] })}>
+                            <Trash2 size={13} /> 删除消息
+                          </button>
                         )}
                       </div>
-                      {tab === "trash" && (
-                        <button type="button" className="btn sm ghost" disabled={busy !== ""}
-                          onClick={() => operate("restore", [item.name])}>
-                          <RotateCcw size={13} /> 恢复
-                        </button>
-                      )}
-                    </div>
                     );
                   })}
                 </div>
@@ -253,20 +310,22 @@ export default function MediaMaintenanceDialog({ onBack, onClose, onChanged, ini
       </Modal>
 
       {confirm !== null && (
-        <Modal label={confirm.op === "trash" ? "移到回收站" : "永久删除媒体"} className="media-confirm-modal" placement="center"
-          onClose={() => { if (busy === "") setConfirm(null); }}>
+        <Modal label={confirm.op === "trash" ? "移到回收站" : confirm.op === "delete-message" ? "删除语音消息" : "永久删除媒体"}
+          className="media-confirm-modal" placement="center" onClose={() => { if (busy === "") setConfirm(null); }}>
           <div className="media-confirm-icon"><AlertTriangle size={20} /></div>
-          <div className="modal-title">{confirm.op === "trash" ? "移到回收站？" : "永久删除这些文件？"}</div>
+          <div className="modal-title">{confirm.op === "trash" ? "移到回收站？" : confirm.op === "delete-message" ? "删除语音消息？" : "永久删除这些文件？"}</div>
           <p className="modal-sub">
             {confirm.op === "trash"
               ? `将移动 ${confirm.names.length} 个文件。它们会保留 ${data?.trashRetentionDays ?? 7} 天，期间可以从回收站恢复。`
-              : `将永久删除 ${confirm.names.length} 个文件，无法恢复。`}
+              : confirm.op === "delete-message"
+                ? "这会从聊天中删除这条语音消息及对应的一轮对话，无法恢复。"
+                : `将永久删除 ${confirm.names.length} 个文件，无法恢复。`}
           </p>
           <div className="actions">
             <button type="button" className="btn" disabled={busy !== ""} onClick={() => setConfirm(null)}>取消</button>
             <button type="button" className={confirm.op === "trash" ? "primary" : "primary danger"} disabled={busy !== ""}
               onClick={() => operate(confirm.op, confirm.names)}>
-              {busy === confirm.op ? "处理中…" : confirm.op === "trash" ? "确认移到回收站" : "永久删除"}
+              {busy === confirm.op ? "处理中…" : confirm.op === "trash" ? "确认移到回收站" : confirm.op === "delete-message" ? "删除语音消息" : "永久删除"}
             </button>
           </div>
         </Modal>

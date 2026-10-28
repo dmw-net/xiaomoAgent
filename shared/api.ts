@@ -4,6 +4,24 @@
 // 为什么要有这个文件：Phase 2 时前端手工猜过 `/api/say` 的返回结构（{turn} vs
 // {turnId}），轮询整条链路静默挂掉。契约对齐不该靠两边注释互相指认。
 
+/** 一条附件在消息里的语义。图片/视频/语音共用 attachments，但气泡与清理规则不同。 */
+export type MessageAttachmentKind = "image" | "video" | "audio" | "file";
+
+/**
+ * 附件元信息与 attachments 里的 URL 一一对应。
+ * `durationMs`、`transcript`、`waveform` 目前只对语音消息有意义；图片仍可只带 URL。
+ */
+export type MessageAttachmentMeta = {
+  url: string;
+  kind: MessageAttachmentKind;
+  mime?: string;
+  durationMs?: number;
+  transcript?: string;
+  /** 0..1 的归一化包络；只用于界面绘制，不参与任何模型请求。 */
+  waveform?: number[];
+  source?: "recorded" | "synthesized";
+};
+
 /** messages 表对 HTTP 暴露的行形状（/api/messages 系列原样下发）。 */
 export type MessageRow = {
   id: number;
@@ -21,8 +39,10 @@ export type MessageRow = {
   superseded_at: number | null;
   /** 'edit' 被编辑取代 | 'retract' 被撤回 | null 仍在对话里 */
   superseded_kind: string | null;
-  /** 图片附件（"/media/…" 数组），无附件时为 null */
+  /** 附件 URL（"/media/…" 数组），无附件时为 null。 */
   attachments?: string[] | null;
+  /** 与 attachments 对应的展示/语音元信息；老消息没有这一列时为 null。 */
+  attachment_meta?: MessageAttachmentMeta[] | null;
   /** 归属处理单：占位认领与失败标记都靠它 */
   turn_id?: string | null;
   /**

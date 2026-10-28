@@ -122,11 +122,12 @@ import {
 } from "./memory.ts";
 import { lastModelCall, listInflightCalls, logModelCall, modelCallWindow, modelFailureCount, countModelCalls, modelCallById, recentModelCallSummaries, usageStats, failureWatermark, resetFailureCounters, type CallFilter } from "./logs.ts";
 import { contactModelSettings, embedTexts, friendlyModelError, isChatModelId, listModels, pingChat, resetToolsUnsupported, synthesizeSpeech, transcribeAudio } from "./model.ts";
-import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, deleteWallpaper, mediaFileInfo, mediaMaintenanceSnapshot, mediaUrlExists, purgeMediaFiles, readMedia, releaseMediaFiles, restoreMediaFiles, saveImage, saveWallpaper, trashMediaFiles } from "./media.ts";
+import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, deleteWallpaper, mediaFileInfo, mediaMaintenanceSnapshot, mediaTypeOfUrl, mediaUrlExists, purgeMediaFiles, readMedia, releaseMediaFiles, restoreMediaFiles, saveAudio, saveImage, saveWallpaper, trashMediaFiles, voiceMessageIdsForFile } from "./media.ts";
+import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { describeWebFailure, downloadImageToMedia } from "./search.ts";
 import { linkPreviewFor } from "./link-preview.ts";
 import { deleteArtifact, getArtifact, listArtifacts, setArtifactStarred } from "./artifacts.ts";
-import { listContent, type ContentFilter } from "./content.ts";
+import { listContent, type ContentFilter, type ContentMediaFilter } from "./content.ts";
 import { getChannel, listChannels } from "./channels/types.ts";
 import { cancelProactiveTask, countProactiveTasks, createProactiveTask, inspectGates, listProactiveTasks, pendingProactiveTask, restoreProactiveTask, runProactiveCheck } from "./proactive.ts";
 /** React 前端构建产物目录（frontend/dist），页面与静态资源都从这里发。 */
@@ -153,6 +154,41 @@ import { runUserDiagnostics } from "./diagnostics.ts";
 const MAX_BODY_BYTES = 32 * 1024;
 /** 录音 dataURL（base64 会膨胀 1/3）与语音合成响应都要比 32KB 宽得多，单独放宽给音频接口。 */
 const MAX_AUDIO_BODY_BYTES = 8 * 1024 * 1024;
+
+/**
+ * 只接受与 attachments 中真实存在的 URL 对应的元信息。
+ * 语音时长/波形/转写都来自浏览器，属于展示数据；这里做边界收敛，避免把任意 JSON 落库。
+ */
+function normalizeAttachmentMeta(raw: unknown, attachments: string[]): MessageAttachmentMeta[] {
+  if (!Array.isArray(raw) || attachments.length === 0) return [];
+  const allowed = new Set(attachments);
+  const out: MessageAttachmentMeta[] = [];
+  for (const item of raw.slice(0, 3)) {
+    if (item === null || typeof item !== "object") continue;
+    const v = item as Record<string, unknown>;
+    const url = typeof v.url === "string" ? v.url : "";
+    if (!allowed.has(url)) continue;
+    const actualKind = mediaTypeOfUrl(url);
+    const requested = v.kind === "image" || v.kind === "video" || v.kind === "audio" || v.kind === "file" ? v.kind : actualKind;
+    const kind = actualKind === "file" ? requested : actualKind;
+    const durationMs = typeof v.durationMs === "number" && Number.isFinite(v.durationMs)
+      ? Math.min(120_000, Math.max(0, Math.round(v.durationMs))) : undefined;
+    const transcript = typeof v.transcript === "string" ? v.transcript.trim().slice(0, 4000) : undefined;
+    const waveform = Array.isArray(v.waveform)
+      ? v.waveform.filter((n): n is number => typeof n === "number" && Number.isFinite(n))
+          .slice(0, 64).map((n) => Math.min(1, Math.max(0, n)))
+      : undefined;
+    out.push({
+      url, kind,
+      ...(typeof v.mime === "string" ? { mime: v.mime.slice(0, 100) } : {}),
+      ...(durationMs !== undefined ? { durationMs } : {}),
+      ...(transcript ? { transcript } : {}),
+      ...(waveform && waveform.length > 0 ? { waveform } : {}),
+      ...(v.source === "recorded" || v.source === "synthesized" ? { source: v.source } : {}),
+    });
+  }
+  return out;
+}
 /**
  * 带头像/人设正文的写接口单独放宽。
  *
@@ -630,8 +666,8 @@ async function handle(
     const names = Array.isArray(body.names)
       ? body.names.filter((name): name is string => typeof name === "string")
       : [];
-    if (op !== "trash" && op !== "restore" && op !== "purge") {
-      sendJson(response, 400, { ok: false, error: "op 只支持 trash / restore / purge" });
+    if (op !== "trash" && op !== "restore" && op !== "purge" && op !== "delete-message") {
+      sendJson(response, 400, { ok: false, error: "op 只支持 trash / restore / purge / delete-message" });
       return;
     }
     if (names.length === 0 || names.length > 500) {
@@ -639,6 +675,20 @@ async function handle(
       return;
     }
     try {
+      if (op === "delete-message") {
+        let changed = 0;
+        let skipped = 0;
+        for (const name of names) {
+          const ids = voiceMessageIdsForFile(name);
+          if (ids.length !== 1) { skipped += 1; continue; }
+          try {
+            deleteMessage(ids[0]!);
+            changed += 1;
+          } catch { skipped += 1; }
+        }
+        sendJson(response, 200, { ok: true, changed, skipped, bytes: 0, ...mediaMaintenanceSnapshot() });
+        return;
+      }
       const result = op === "trash"
         ? trashMediaFiles(names)
         : op === "restore"
@@ -1307,10 +1357,13 @@ async function handle(
     const rawFilter = url.searchParams.get("filter") || "all";
     const allowed: ContentFilter[] = ["all", "artifacts", "chat", "starred", "reference"];
     const filter = (allowed as string[]).includes(rawFilter) ? rawFilter as ContentFilter : "all";
+    const rawMedia = url.searchParams.get("media") || "all";
+    const allowedMedia: ContentMediaFilter[] = ["all", "image", "video", "audio", "file"];
+    const media = (allowedMedia as string[]).includes(rawMedia) ? rawMedia as ContentMediaFilter : "all";
     const limit = clampInt(url.searchParams.get("limit"), LIST_LIMIT_DEFAULT, 1, LIST_LIMIT_MAX);
     const offset = clampInt(url.searchParams.get("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
-    const data = listContent(contactId, filter, limit, offset);
-    sendJson(response, 200, { ok: true, filter, limit, offset, ...data });
+    const data = listContent(contactId, filter, media, limit, offset);
+    sendJson(response, 200, { ok: true, filter, media, limit, offset, ...data });
     return;
   }
 
@@ -1513,6 +1566,18 @@ async function handle(
     const buffer = await readBinary(request, MAX_IMAGE_BYTES + 1024);
     try {
       const saved = saveImage(buffer, mime);
+      sendJson(response, 200, { ok: true, ...saved });
+    } catch (error) {
+      sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
+  // 语音消息上传：原始录音直接落盘，消息里只带 /media URL 与元信息。
+  if (method === "POST" && path === "/api/media/voice") {
+    const buffer = await readBinary(request, MAX_AUDIO_BYTES + 1024);
+    try {
+      const saved = saveAudio(buffer);
       sendJson(response, 200, { ok: true, ...saved });
     } catch (error) {
       sendJson(response, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -1760,7 +1825,7 @@ async function handle(
 
   // ── 对话 ────────────────────────────────────────────────
   if (method === "POST" && path === "/api/say") {
-    const body = await readJson<{ text?: unknown; contactId?: unknown; conversationId?: unknown; attachments?: unknown; clientId?: unknown }>(request);
+    const body = await readJson<{ text?: unknown; contactId?: unknown; conversationId?: unknown; attachments?: unknown; attachmentMeta?: unknown; clientId?: unknown }>(request);
     const text = typeof body.text === "string" ? body.text.trim() : "";
     // 图片先传 /api/media 落盘，这里只带 URL 引用；逐个校验文件真实存在
     const rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];
@@ -1768,10 +1833,13 @@ async function handle(
     for (const item of rawAttachments.slice(0, 3)) {
       if (typeof item === "string" && item.startsWith("/media/") && mediaUrlExists(item)) attachments.push(item);
     }
+    const attachmentMeta = normalizeAttachmentMeta(body.attachmentMeta, attachments);
+    const hasVoice = attachmentMeta.some((item) => item.kind === "audio");
     if (text === "" && attachments.length === 0) {
       sendJson(response, 400, { ok: false, error: "text 与 attachments 至少给一个" });
       return;
     }
+    const modelText = text === "" && hasVoice ? "（用户发来一条语音消息）" : text;
     // 前端统一用 ?contactId= 携带（cq 助手），body 里的写法保留兼容其它客户端
     const requested = typeof body.contactId === "string" ? body.contactId : url.searchParams.get("contactId");
     // 不带 contactId = 默认会话；带了就必须真实存在。从前查不到会静默回落 DEFAULT_CONTACT_ID，
@@ -1802,7 +1870,7 @@ async function handle(
     }
     // 关键：这里立刻返回，不等模型。处理可能要十几秒，平台回调不能等这么久。
     const clientId = typeof body.clientId === "string" ? body.clientId.trim().slice(0, 80) : "";
-    const { turnId } = channel.receive(text.slice(0, 4000), contactId, attachments, undefined, clientId || undefined, { conversationId });
+    const { turnId } = channel.receive(modelText.slice(0, 4000), contactId, attachments, undefined, clientId || undefined, { conversationId, attachmentMeta });
     sendJson(response, 202, { ok: true, turnId, ...(clientId ? { clientId } : {}) });
     return;
   }

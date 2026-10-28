@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, BrainCircuit, Camera, FileDown, HeartHandshake, Images, Link2, MessageSquareText, RotateCcw, Save, SlidersHorizontal, Wand2, BookOpen, X } from "lucide-react";
+import { ArrowLeft, BrainCircuit, Camera, FileDown, HeartHandshake, LibraryBig, Link2, MessageSquareText, RotateCcw, Save, SlidersHorizontal, Wand2, BookOpen, X } from "lucide-react";
 import { contactsApi, settingsApi } from "../../api";
 import { chatApi } from "../../api";
 import { fmtTokens } from "../../lib/format";
@@ -691,7 +691,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 <button type="button" role="tab" id="pf-page-tab-gallery" aria-selected={page === "gallery"}
                   tabIndex={page === "gallery" ? 0 : -1}
                   className={page === "gallery" ? "on" : ""} onClick={() => setPage("gallery")}>
-                  <Images size={12} strokeWidth={1.9} />内容库
+                  <LibraryBig size={12} strokeWidth={1.9} />内容库
                 </button>
               </>
             )}

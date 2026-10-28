@@ -257,6 +257,11 @@ ensureColumn("proactive_tasks", "contact_id", "contact_id TEXT");
 ensureColumn("messages", "attachments", "attachments TEXT");
 ensureColumn("turns", "attachments", "attachments TEXT");
 
+// 附件语义：kind/mime/duration/transcript/waveform 与 attachments 按 URL 对应。
+// attachments 仍保持字符串数组，老客户端与平台通道无需同步改协议；语音气泡靠这里区分。
+ensureColumn("messages", "attachment_meta", "attachment_meta TEXT");
+ensureColumn("turns", "attachment_meta", "attachment_meta TEXT");
+
 // 联系人绑定的模型配置档 id（NULL/空 = 跟随全局模型）。
 // 只存档 id 不拷配置：档改了所有绑定它的联系人立刻跟着变。
 ensureColumn("contacts", "model_profile", "model_profile TEXT");

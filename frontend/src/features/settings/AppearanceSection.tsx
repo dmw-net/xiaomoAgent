@@ -572,7 +572,7 @@ export default function AppearanceSection({
       <section className="settings-panel" id="settings-storage">
         <div className="settings-panel-head">
           <h3>数据存储</h3>
-          <p>对话、记忆、图片、技能和设置都保存在本机。迁移目录时会把现有数据一起搬过去。</p>
+          <p>对话、记忆、图片、视频、语音、技能和设置都保存在本机。迁移目录时会把现有数据一起搬过去。</p>
         </div>
         <div className="settings-row compact">
           <div className="settings-row-label">
@@ -583,10 +583,10 @@ export default function AppearanceSection({
         </div>
         <div className="settings-row compact">
           <div className="settings-row-label">
-            <b>图片与媒体</b>
-            <span>查看未引用图片和回收站；移入回收站前会再次校验引用。</span>
+            <b>图片、视频与语音</b>
+            <span>统一查看聊天媒体、可清理文件与回收站；语音消息跟随聊天记录保存。</span>
           </div>
-          <button type="button" className="btn sm" onClick={() => setMediaOpen(true)}>管理媒体</button>
+          <button type="button" className="btn sm" onClick={() => setMediaOpen(true)}>媒体与存储</button>
         </div>
         {storeNote && <div className="inline-note">{storeNote}</div>}
       </section>
@@ -594,7 +594,7 @@ export default function AppearanceSection({
       <section className="settings-panel" id="settings-backup">
         <div className="settings-panel-head">
           <h3>备份与恢复</h3>
-          <p>导出包包含对话、记忆、联系人、模型设置、图片与技能，也包含已保存的 API Key，只通过可信方式传输。</p>
+          <p>导出包包含对话、记忆、联系人、模型设置、图片、视频、语音与技能，也包含已保存的 API Key，只通过可信方式传输。</p>
         </div>
         <div className="settings-foot">
           <button type="button" className="btn sm" disabled={exportBusy} onClick={doExport}>

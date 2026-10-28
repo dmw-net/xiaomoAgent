@@ -33,6 +33,8 @@ use std::path::PathBuf;
 use std::time::Instant;
 
 use tauri::{Manager, RunEvent, WindowEvent, WebviewUrl, WebviewWindowBuilder};
+#[cfg(desktop)]
+use tauri::Emitter;
 
 /// 保存 sidecar 句柄，退出时用它杀子进程。
 /// 只有桌面端有 sidecar，移动端这个字段永远是 None。
@@ -139,6 +141,58 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 builder_window = builder_window.decorations(false);
+
+                // WebView2 默认不会把导出的响应交给 XHR：响应带 attachment 时会被当作
+                // 下载导航，XHR 只收到一次 error。挂上下载处理器后，桌面端改走原生下载，
+                // 并明确指定保存目录；前端通过事件拿到真实完成结果。
+                builder_window = builder_window.on_download(|webview, event| {
+                    use tauri::webview::DownloadEvent;
+
+                    match event {
+                        DownloadEvent::Requested { url, destination }
+                            if url.path() == "/api/settings/data-export" =>
+                        {
+                            let suggested = destination
+                                .file_name()
+                                .map(|s| s.to_string_lossy().to_string())
+                                .filter(|s| s.to_ascii_lowercase().ends_with(".tar.gz"));
+                            if !destination.is_absolute() || suggested.is_none() {
+                                let name = suggested.unwrap_or_else(|| {
+                                    let stamp = std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .map(|d| d.as_secs())
+                                        .unwrap_or(0);
+                                    format!("xiaomo-backup-{stamp}.tar.gz")
+                                });
+                                if let Ok(dir) = webview.app_handle().path().download_dir() {
+                                    let _ = std::fs::create_dir_all(&dir);
+                                    *destination = dir.join(name);
+                                }
+                            }
+                            let _ = webview.app_handle().emit(
+                                "xiaomo-backup-download",
+                                serde_json::json!({
+                                    "phase": "started",
+                                    "path": destination.to_string_lossy(),
+                                }),
+                            );
+                        }
+                        DownloadEvent::Finished { url, path, success }
+                            if url.path() == "/api/settings/data-export" =>
+                        {
+                            let _ = webview.app_handle().emit(
+                                "xiaomo-backup-download",
+                                serde_json::json!({
+                                    "phase": if success { "finished" } else { "failed" },
+                                    "path": path.as_ref().map(|p| p.to_string_lossy().to_string()),
+                                    "message": if success { serde_json::Value::Null } else { serde_json::Value::String("桌面下载没有完成，请重试。".into()) },
+                                }),
+                            );
+                        }
+                        _ => {}
+                    }
+                    true
+                });
             }
 
             // 上次的位置/尺寸（自己存的，见 save_window_state 的说明）：

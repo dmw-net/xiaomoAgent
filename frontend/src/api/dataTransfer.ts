@@ -19,6 +19,31 @@ export class DirectDownloadStarted extends Error {
   }
 }
 
+/** 桌面 WebView 不能可靠地把 attachment 响应交给 XHR，必须走原生下载通道。 */
+export function isDesktopRuntime(): boolean {
+  return typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
+}
+
+export type BackupDownloadEvent = {
+  phase: "started" | "finished" | "failed";
+  path?: string | null;
+  message?: string | null;
+};
+
+/** 触发桌面原生下载。结果由 Tauri 的 xiaomo-backup-download 事件回报。 */
+export function startNativeBackupDownload(): void {
+  startDirectDownload();
+}
+
+/** 监听桌面原生下载状态；浏览器开发模式下返回一个空的取消订阅函数。 */
+export async function listenBackupDownload(
+  listener: (event: BackupDownloadEvent) => void,
+): Promise<() => void> {
+  if (!isDesktopRuntime()) return () => {};
+  const { listen } = await import("@tauri-apps/api/event");
+  return listen<BackupDownloadEvent>("xiaomo-backup-download", (event) => listener(event.payload));
+}
+
 /** 原生下载不经过 XHR，兼容会拦截大响应的扩展/代理。 */
 function startDirectDownload(): void {
   const link = document.createElement("a");

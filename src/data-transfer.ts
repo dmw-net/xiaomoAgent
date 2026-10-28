@@ -404,20 +404,22 @@ function replaceWithStaged(stage: string): void {
       throw e;
     }
 
+    // 导入是“用备份覆盖本机”，不是“按备份补齐本机”：即使归档里没有
+    // media/ 或 skills/（用户从未上传过图片、也没装过技能，导出端不会造空目录），
+    // 也必须把本机旧目录移走；否则恢复后旧图片/旧技能会残留。
     const trees: Array<[string, string]> = [
       [join(stage, "media"), mediaDir()],
       [join(stage, "skills"), skillsDir()],
     ];
     const moved: Array<[string, string]> = [];
     for (const [from, toRaw] of trees) {
-      if (!existsSync(from)) continue;
       const to = resolve(toRaw);
       mkdirSync(dirname(to), { recursive: true });
       const old = `${to}${oldSuffix}`;
       renameIfExists(to, old);
       moved.push([old, to]);
       try {
-        cpSync(from, to, { recursive: true });
+        if (existsSync(from)) cpSync(from, to, { recursive: true });
       } catch (e) {
         for (const [oldPath, livePath] of moved.reverse()) rollbackRename(oldPath, livePath);
         rollbackRename(dbBackup, activeDb);

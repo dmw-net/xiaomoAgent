@@ -241,8 +241,15 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
             {isArchived ? "已归档 · 对话与记忆保留" : (
               <>
                 {sourceTag && <span className={"s-source s-source-" + latestSource}>{sourceTag}</span>}
-                {c.pending > 0 && (
-                  <span className="s-intent" title={c.pendingFocus ? `主动计划：${c.pendingFocus}` : "有一个主动计划"}>有话想聊</span>
+                {c.pendingSoon > 0 && (
+                  <span
+                    className="s-intent"
+                    title={c.pendingKind === "reminder"
+                      ? (c.pendingFocus ? `到点提醒：${c.pendingFocus}` : "有一个到点提醒")
+                      : (c.pendingFocus ? `主动计划：${c.pendingFocus}` : "有一个主动计划")}
+                  >
+                    {c.pendingKind === "reminder" ? "有提醒" : "有话想聊"}
+                  </span>
                 )}
                 {c.preview || "还没说过话"}
               </>

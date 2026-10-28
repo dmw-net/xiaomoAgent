@@ -4819,11 +4819,11 @@ try {
       Object.keys(first).every((k) => ["id", "name", "type", "avatar", "gender", "recentTurns",
         "showThinking", "showTools", "streamReveal", "imageGen", "createdAt", "preview", "previewChannel",
         "conversationId", "conversationTitle", "conversationReadOnly", "conversations", "lastAt",
-        "pending", "pendingFocus", "archivedAt", "unread"].includes(k)),
+        "pendingSoon", "pendingFocus", "pendingKind", "archivedAt", "unread"].includes(k)),
       Object.keys(first).filter((k) => !["id", "name", "type", "avatar", "gender", "recentTurns",
         "showThinking", "showTools", "streamReveal", "imageGen", "createdAt", "preview", "previewChannel",
         "conversationId", "conversationTitle", "conversationReadOnly", "conversations", "lastAt",
-        "pending", "pendingFocus", "archivedAt", "unread"].includes(k)).join(",") || "干净");
+        "pendingSoon", "pendingFocus", "pendingKind", "archivedAt", "unread"].includes(k)).join(",") || "干净");
 
     // 人设搜索改到后端：正向对照——造一位人设里埋了暗号、但名字与预览都不含它的联系人。
     const codename = await (await jsonPost("/api/contacts", { name: "暗号测试客" })).json();
@@ -4880,6 +4880,24 @@ try {
     check("不带 q 时照常返回全量（搜索态不影响默认列表）",
       (noQ.contacts ?? []).length >= (hit.contacts ?? []).length && (noQ.contacts ?? []).length > 0,
       `全量=${(noQ.contacts ?? []).length}`);
+    // 列表状态只看临近窗口：远期 pending 不该提前挂“有话想聊”。
+    db.prepare(`DELETE FROM proactive_tasks WHERE contact_id = ?`).run(cid);
+    const now = Date.now();
+    db.prepare(`INSERT INTO proactive_tasks (contact_id, focus, due_at, kind, created_at) VALUES (?, ?, ?, 'care', ?)` )
+      .run(cid, "远期打算", now + 2 * 60 * 60_000, now);
+    const farList = await (await fetch(`${BASE}/api/contacts?q=${encodeURIComponent("暗号测试客")}`)).json();
+    const farItem = (farList.contacts ?? []).find((c: { id: string }) => c.id === cid);
+    check("远期的 pending 任务不在联系人列表提前显示状态",
+      farItem?.pendingSoon === 0 && farItem?.pendingFocus === "" && farItem?.pendingKind === "",
+      JSON.stringify({ pendingSoon: farItem?.pendingSoon, pendingFocus: farItem?.pendingFocus, pendingKind: farItem?.pendingKind }));
+    db.prepare(`UPDATE proactive_tasks SET focus = ?, due_at = ?, kind = 'reminder' WHERE contact_id = ?`)
+      .run("临近提醒", now + 5 * 60_000, cid);
+    const nearList = await (await fetch(`${BASE}/api/contacts?q=${encodeURIComponent("暗号测试客")}`)).json();
+    const nearItem = (nearList.contacts ?? []).find((c: { id: string }) => c.id === cid);
+    check("进入临近窗口的 pending 任务才显示，并带上 kind/focus",
+      nearItem?.pendingSoon === 1 && nearItem?.pendingFocus === "临近提醒" && nearItem?.pendingKind === "reminder",
+      JSON.stringify({ pendingSoon: nearItem?.pendingSoon, pendingFocus: nearItem?.pendingFocus, pendingKind: nearItem?.pendingKind }));
+
     db.prepare(`DELETE FROM contacts WHERE id = ?`).run(cid);
   }
 

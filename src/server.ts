@@ -129,7 +129,7 @@ import { linkPreviewFor } from "./link-preview.ts";
 import { deleteArtifact, getArtifact, listArtifacts, setArtifactStarred } from "./artifacts.ts";
 import { listContent, type ContentFilter, type ContentMediaFilter } from "./content.ts";
 import { getChannel, listChannels } from "./channels/types.ts";
-import { cancelProactiveTask, countProactiveTasks, createProactiveTask, inspectGates, listProactiveTasks, pendingProactiveTask, restoreProactiveTask, runProactiveCheck } from "./proactive.ts";
+import { cancelProactiveTask, countProactiveTasks, createProactiveTask, inspectGates, listProactiveTasks, pendingSoonByContact, restoreProactiveTask, runProactiveCheck } from "./proactive.ts";
 /** React 前端构建产物目录（frontend/dist），页面与静态资源都从这里发。 */
 const reactDist = resolve(import.meta.dirname ?? ".", "../frontend/dist");
 const reactEntry = existsSync(joinPath(reactDist, "index.html"));
@@ -2336,6 +2336,8 @@ async function handle(
     // 实测那一项占掉列表响应体的 48%，而这个列表前台每 10 秒整份重拉一次且 no-store。
     // 过滤挪到这边之后人设一个字都不出后端，而且顺带搜得到预览（本地那份搜不到）。
     const needle = (url.searchParams.get("q") ?? "").trim().slice(0, 40).toLowerCase();
+    // 列表每 10 秒整份重拉；临近任务一次批量查好，避免每个联系人各查一次 proactive_tasks。
+    const pendingSoon = pendingSoonByContact();
     const projected = listContacts({ includeArchived: archivedOnly })
       .filter((ct) => (archivedOnly ? ct.archived_at !== null : ct.archived_at === null))
       // 保留联系人「设置助手」不属于会话列表——它只活在助手视图里（资料仍走 /api/contacts/:id）
@@ -2357,7 +2359,7 @@ async function handle(
             unread: unreadCountForConversation(conv.id),
           };
         });
-        const pending = pendingProactiveTask(contact.id);
+        const pending = pendingSoon.get(contact.id);
         const item = {
           id: contact.id,
           name: contact.name,
@@ -2380,8 +2382,9 @@ async function handle(
           conversationReadOnly: last?.channel !== null && last?.channel !== undefined && last.channel !== "web",
           conversations: conversationItems,
           lastAt: last?.at ?? contact.created_at,
-          pending: pending ? 1 : 0,
+          pendingSoon: pending ? 1 : 0,
           pendingFocus: pending?.focus ?? "",
+          pendingKind: pending?.kind ?? "",
           archivedAt: contact.archived_at,
           unread: unreadCount(contact.id),
         };

@@ -34,8 +34,11 @@ export type ContactItem = {
   /** 该联系人下可独立进入的会话（现在只剩需要隔离上下文的 QQ 群）。 */
   conversations?: ContactConversationItem[];
   lastAt: number;
-  pending: number;
+  /** 临近窗口内或已到期的主动性任务（0/1）；远期计划不在列表上标“有话想聊”。 */
+  pendingSoon: number;
   pendingFocus: string;
+  /** care = 陪伴主动开口；reminder = 用户立下的到点提醒。 */
+  pendingKind: "care" | "reminder" | "";
   /** 该联系人名下所有会话的未读助手消息合计（侧栏只显示这一枚红点）。 */
   unread: number;
   /** 角色性别：female/male/other，驱动界面代词（她/他/TA）。 */

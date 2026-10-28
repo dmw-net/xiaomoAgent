@@ -141,6 +141,45 @@ export function pendingProactiveTask(contactId: string): ProactiveTask | null {
     .get(contactId) as ProactiveTask | undefined;
   return row ?? null;
 }
+/** 联系人列表只需要“临近到期”的任务；一次批量查，避免 N 个联系人查 N 次库。 */
+export type PendingSoonTask = Pick<ProactiveTask, "contact_id" | "focus" | "kind" | "due_at">;
+
+/** 临近窗口至少覆盖一个检查周期，避免用户看不到即将由定时器处理的任务。 */
+const PENDING_SOON_MIN_LEAD_MS = 30 * 60_000;
+
+/**
+ * 每个联系人只留最早到期的临近任务。
+ * 已到期但仍 pending 的也算；远期计划不进列表状态。
+ */
+export function pendingSoonByContact(now = Date.now()): Map<string, PendingSoonTask> {
+  const intervalMinutes = Number.isFinite(config.proactive.intervalMinutes)
+    ? config.proactive.intervalMinutes
+    : 30;
+  const leadMs = Math.max(PENDING_SOON_MIN_LEAD_MS, intervalMinutes * 60_000);
+  const rows = db
+    .prepare(
+      `SELECT contact_id, focus, kind, due_at FROM proactive_tasks
+       WHERE status = 'pending' AND contact_id IS NOT NULL AND due_at <= ?
+       ORDER BY due_at ASC`,
+    )
+    .all(now + leadMs) as Array<{
+      contact_id: string;
+      focus: string;
+      kind: string;
+      due_at: number;
+    }>;
+  const out = new Map<string, PendingSoonTask>();
+  for (const row of rows) {
+    if (out.has(row.contact_id)) continue;
+    out.set(row.contact_id, {
+      contact_id: row.contact_id,
+      focus: row.focus,
+      kind: row.kind === "reminder" ? "reminder" : "care",
+      due_at: Number(row.due_at),
+    });
+  }
+  return out;
+}
 
 function insertTask(contactId: string, focus: string, dueAt: number, kind: ProactiveTask["kind"] = "care"): ProactiveTask {
   const createdAt = Date.now();

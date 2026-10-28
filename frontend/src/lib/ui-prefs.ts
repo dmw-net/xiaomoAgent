@@ -29,6 +29,20 @@ export function setClockPref(v: ClockPref): void {
   window.dispatchEvent(new CustomEvent(CLOCK_EVENT));
 }
 
+const LAST_BACKUP_KEY = "xiaomo.lastBackupAt";
+
+/** 最近一次由本机触发备份导出的时间。只是设备级提醒，不参与数据迁移或恢复判断。 */
+export function getLastBackupAt(): number | null {
+  try {
+    const value = Number(localStorage.getItem(LAST_BACKUP_KEY));
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch { return null; }
+}
+
+export function markBackupCompleted(): void {
+  try { localStorage.setItem(LAST_BACKUP_KEY, String(Date.now())); } catch { /* 存不进也不影响导出 */ }
+}
+
 const ACCENT_KEY = "xiaomo.accent";
 
 /** 可选的强调色只为“个性化”，不改变页面材质。空串代表品牌默认赤陶。 */

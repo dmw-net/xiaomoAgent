@@ -132,7 +132,7 @@ export function deleteArtifact(id: string): { ok: boolean; url: string | null } 
 
 /**
  * 这个 /media 路径是不是某张资产的原件。
- * 换长相参考时要用它把一下关：旧参考图如果本身是她画出来的（在画廊里），
+ * 换自拍参考时要用它把一下关：旧参考图如果本身是她画出来的（在画廊里），
  * 顺手释放文件就会让画廊里那一格变成打不开的 404——画的生死只该由"删资产"决定。
  */
 export function isArtifactUrl(url: string): boolean {

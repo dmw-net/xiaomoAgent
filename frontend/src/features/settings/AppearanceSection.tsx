@@ -2,9 +2,11 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { LanSection } from "./LanSection";
 import type { ThemeMode } from "../../types/ui";
-import { ACCENT_PRESETS, getAccent, setAccent, getClockPref, setClockPref, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getWallpaper, setWallpaper, getWallpaperLibrary, addWallpaperLibraryItem, removeWallpaperLibraryItem, WALLPAPER_LIB_EVENT, DEFAULT_WALLPAPER, type ClockPref, type WallpaperPref, type WallpaperItem } from "../../lib/ui-prefs";
+import { ACCENT_PRESETS, getAccent, setAccent, getClockPref, setClockPref, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getWallpaper, setWallpaper, getWallpaperLibrary, addWallpaperLibraryItem, removeWallpaperLibraryItem, WALLPAPER_LIB_EVENT, DEFAULT_WALLPAPER, getLastBackupAt, markBackupCompleted, type ClockPref, type WallpaperPref, type WallpaperItem } from "../../lib/ui-prefs";
 import { WALLPAPER_PRESETS, wallpaperPreset } from "../../lib/wallpaper";
 import Modal from "../../components/Modal";
+import DiagnosticsButton from "../../components/DiagnosticsButton";
+import MediaMaintenanceDialog from "../../components/MediaMaintenanceDialog";
 import { pickDirectory, relaunchApp } from "../../lib/native-dialog";
 import { dataTransferApi, settingsApi, wallpaperApi } from "../../api";
 import { disableNotifications, enableNotifications, getNotifyPref, notificationSupported } from "../../lib/notify";
@@ -76,12 +78,16 @@ export default function AppearanceSection({
   const [storeBusy, setStoreBusy] = useState(false);
   const [storeTarget, setStoreTarget] = useState<string | null>(null);
   const [storeNote, setStoreNote] = useState("");
+  const [mediaOpen, setMediaOpen] = useState(false);
   // 跨设备迁移：导出单文件备份；导入会覆盖当前库、图片与技能，所以必须二次确认并重启。
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
   const [transferBusy, setTransferBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [transferStatus, setTransferStatus] = useState<{ kind: "info" | "ok" | "bad"; text: string; percent?: number; indeterminate?: boolean }>({ kind: "info", text: "" });
+  const [lastBackupAt, setLastBackupAt] = useState<number | null>(getLastBackupAt);
+  const nativeDownloadSeen = useRef(false);
+  const nativeDownloadTimer = useRef<number | null>(null);
   const setTransferInfo = (text: string, percent?: number, indeterminate = false): void => setTransferStatus({ kind: "info", text, percent, indeterminate });
   const setTransferError = (text: string): void => setTransferStatus({ kind: "bad", text });
   const setTransferOk = (text: string, percent?: number): void => setTransferStatus({ kind: "ok", text, percent });
@@ -108,6 +114,42 @@ export default function AppearanceSection({
     const sync = (): void => setWallpaperLib(getWallpaperLibrary());
     window.addEventListener(WALLPAPER_LIB_EVENT, sync);
     return () => window.removeEventListener(WALLPAPER_LIB_EVENT, sync);
+  }, []);
+  // 桌面下载结果由 Tauri 回报：XHR 拿不到 attachment，只有原生下载完成事件才是真完成。
+  useEffect(() => {
+    let disposed = false;
+    let unlisten = (): void => {};
+    void dataTransferApi.listenBackupDownload((event) => {
+      if (disposed) return;
+      nativeDownloadSeen.current = true;
+      if (nativeDownloadTimer.current !== null) {
+        window.clearTimeout(nativeDownloadTimer.current);
+        nativeDownloadTimer.current = null;
+      }
+      if (event.phase === "started") {
+        setExportBusy(true);
+        setTransferInfo(event.path ? `正在保存到：${event.path}` : "正在保存备份…", 5, true);
+        return;
+      }
+      setExportBusy(false);
+      if (event.phase === "finished") {
+        markBackupCompleted();
+        setLastBackupAt(getLastBackupAt());
+        setTransferOk(event.path ? `备份已保存：${event.path}` : "备份已保存到系统下载目录", 100);
+      } else {
+        setTransferError(event.message || "桌面下载没有完成，请重试。");
+      }
+    }).then((stop) => {
+      if (disposed) stop();
+      else unlisten = stop;
+    }).catch(() => {
+      if (!disposed) setTransferError("桌面下载通道没有启动，请重启应用后再试。");
+    });
+    return () => {
+      disposed = true;
+      unlisten();
+      if (nativeDownloadTimer.current !== null) window.clearTimeout(nativeDownloadTimer.current);
+    };
   }, []);
 
   const pick = (m: ThemeMode): void => {
@@ -245,6 +287,19 @@ export default function AppearanceSection({
 
   const doExport = (): void => {
     if (exportBusy) return;
+    if (dataTransferApi.isDesktopRuntime()) {
+      nativeDownloadSeen.current = false;
+      setExportBusy(true);
+      setTransferInfo("正在生成备份，随后会保存到系统下载目录…", 5, true);
+      dataTransferApi.startNativeBackupDownload();
+      if (nativeDownloadTimer.current !== null) window.clearTimeout(nativeDownloadTimer.current);
+      nativeDownloadTimer.current = window.setTimeout(() => {
+        if (nativeDownloadSeen.current) return;
+        setExportBusy(false);
+        setTransferError("桌面下载没有启动，请重试；若仍失败，请重启应用后再试。");
+      }, 20_000);
+      return;
+    }
     setExportBusy(true);
     setTransferInfo("正在生成并下载备份，请先不要关闭应用…", 1);
     dataTransferApi.exportDataArchive((loaded, total) => {
@@ -265,6 +320,8 @@ export default function AppearanceSection({
         link.click();
         link.remove();
         window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+        markBackupCompleted();
+        setLastBackupAt(getLastBackupAt());
         setTransferOk(`备份已导出：${fileName}`, 100);
       })
       .catch((e: Error) => {
@@ -489,6 +546,29 @@ export default function AppearanceSection({
 
       {scope === "system" && (
         <div className="system-settings">
+      <section className="settings-panel privacy-panel" id="settings-privacy">
+        <div className="settings-panel-head">
+          <h3>隐私与数据边界</h3>
+          <p>先确认数据在哪里、什么时候会出网。这里只展示事实，不会修改任何内容。</p>
+        </div>
+        <div className="privacy-boundary">
+          <div><b>保存在本机</b><span>{dataDir || "应用数据目录"}</span></div>
+          <div><b>调用模型时会发送</b><span>当前对话、召回到的长期记忆、人设与本轮必要工具说明</span></div>
+          <div><b>不会自动发送</b><span>其它联系人的聊天与记忆不会串入这次调用；本地数据目录不会整体上传</span></div>
+          <div><b>API Key</b><span>只用于向所配置的服务商鉴权，不作为聊天内容保存或发送给其他服务商</span></div>
+          <div><b>最近备份</b><span>{lastBackupAt ? new Date(lastBackupAt).toLocaleString("zh-CN") : "还没有在本机导出过备份"}</span></div>
+        </div>
+        <div className="settings-foot">
+          <DiagnosticsButton className="btn sm" onAction={(action) => {
+            if (action === "backup") document.getElementById("settings-backup")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            else if (action === "storage") document.getElementById("settings-storage")?.scrollIntoView({ behavior: "smooth", block: "start" });
+            else if (action === "activity") window.location.hash = "#/status";
+            else if (action === "settings") document.getElementById("settings-privacy")?.scrollIntoView({ behavior: "smooth", block: "start" });
+          }} />
+          <span className="hint">只读检查数据库、回复任务与媒体文件。</span>
+        </div>
+      </section>
+
       <section className="settings-panel" id="settings-storage">
         <div className="settings-panel-head">
           <h3>数据存储</h3>
@@ -500,6 +580,13 @@ export default function AppearanceSection({
             <span style={{ wordBreak: "break-all" }}><code>{dataDir || "（开发模式：跟随项目 ./data）"}</code></span>
           </div>
           <button type="button" className="btn sm" disabled={storeBusy} onClick={chooseFolder}>选择文件夹</button>
+        </div>
+        <div className="settings-row compact">
+          <div className="settings-row-label">
+            <b>图片与媒体</b>
+            <span>查看未引用图片和回收站；移入回收站前会再次校验引用。</span>
+          </div>
+          <button type="button" className="btn sm" onClick={() => setMediaOpen(true)}>管理媒体</button>
         </div>
         {storeNote && <div className="inline-note">{storeNote}</div>}
       </section>
@@ -513,7 +600,11 @@ export default function AppearanceSection({
           <button type="button" className="btn sm" disabled={exportBusy} onClick={doExport}>
             {exportBusy ? "正在导出…" : "导出备份"}
           </button>
-          <a className="btn sm" href={dataTransferApi.EXPORT_URL} download>直接下载</a>
+          <a className="btn sm" href={dataTransferApi.EXPORT_URL} download onClick={(event) => {
+            if (!dataTransferApi.isDesktopRuntime()) return;
+            event.preventDefault();
+            doExport();
+          }}>直接下载</a>
           <button type="button" className="btn sm" disabled={transferBusy} onClick={pickImport}>
             选择备份并导入
           </button>
@@ -617,6 +708,14 @@ export default function AppearanceSection({
             </button>
           </div>
         </Modal>
+      )}
+
+      {mediaOpen && (
+        <MediaMaintenanceDialog
+          onBack={() => setMediaOpen(false)}
+          onClose={() => setMediaOpen(false)}
+          onChanged={() => {}}
+        />
       )}
         </div>
       )}

@@ -22,6 +22,10 @@ export type MemoryStats = {
   usedRecently: number;
   extractFailures: number;
   thisWeek: number;
+  /** 近 50 次合法抽取中，本轮无需记录的比例；0~1。null = 样本不足。 */
+  emptyRate: number | null;
+  /** 参与 emptyRate 统计的抽取次数。 */
+  extractSamples: number;
 };
 
 /** 召回试验台的返回（err 非空表示这次查询失败）。 */

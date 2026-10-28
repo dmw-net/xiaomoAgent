@@ -9,7 +9,7 @@
 // 都拖着大体积数据，也会把「一个文件就是全部设置」的 kv 表撑成杂物间。
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { config } from "./config.ts";
 import { db } from "./db.ts";
@@ -70,6 +70,16 @@ const MEDIA_URL_RE = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif))$/;
  * 释放改由「换壁纸时删旧文件」与出厂重置负责。
  */
 const WALLPAPER_URL_RE = /^\/media\/(wp[a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm))$/;
+
+/** 落盘文件名的合法形状；回收/清理时只认这个，目录里别的东西一律不碰。 */
+const MEDIA_FILE_RE = /^[a-z0-9]{16}\.(png|jpg|webp|gif)$/;
+const MEDIA_REF_RE = /\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif))/g;
+
+/** 刚上传但还没发出去的文件先留 24 小时，避免把用户正拿在手里的图清掉。 */
+const MEDIA_ORPHAN_GRACE_MS = 24 * 3_600_000;
+export const MEDIA_ORPHAN_GRACE_HOURS = 24;
+export const MEDIA_TRASH_RETENTION_DAYS = 7;
+const MEDIA_TRASH_RETENTION_MS = MEDIA_TRASH_RETENTION_DAYS * 24 * 3_600_000;
 
 /** 当前媒体目录（默认库同级 media/）。改数据位置时照着它搬（data-dir.ts）。 */
 export function mediaDir(): string {
@@ -185,7 +195,7 @@ function mediaFileName(url: string): string | null {
  * 回收图片文件：确认库里再无引用才落盘删除。引用检查用 LIKE '%<16位随机hex>%'——误命中概率为零。
  *
  * 认哪几处引用由**这一处**说了算，调用方不必各自想起来加判断：
- * messages / turns 的附件、联系人的头像、长相参考图、画作台账。
+ * messages / turns 的附件、联系人的头像、自拍参考图、画作台账、工具详情与 kv 里的持久路径。
  * 之前只查前两处，于是「换参考图」「换头像」「这张图同时是画廊里的一张画」
  * 都得靠调用点自己补一条 `!isArtifactUrl(...)`，漏一个就删掉别人还在引用的文件。
  * 头像改成 /media 形态之后更需要这一收口：同一张图被两位联系人指着是可能的
@@ -193,7 +203,7 @@ function mediaFileName(url: string): string | null {
  */
 export function releaseMediaFiles(urls: string[]): void {
   if (urls.length === 0) return;
-  // 五个 EXISTS 而不是 UNION ALL：SQLite 不接受 `… LIMIT 1 UNION ALL …`
+  // 七个 EXISTS 而不是 UNION ALL：SQLite 不接受 `… LIMIT 1 UNION ALL …`
   // （LIMIT 必须在 UNION ALL 之后），那条写法每次调用都抛 SQL logic error——
   // 而调用点 deleteMessage 没有兜异常，于是「删掉一条带图消息」会在事务提交后
   // 报 500：消息其实删了，图片却永久留在磁盘上。
@@ -202,15 +212,17 @@ export function releaseMediaFiles(urls: string[]): void {
             EXISTS(SELECT 1 FROM turns     WHERE attachments LIKE ?) AS in_turns,
             EXISTS(SELECT 1 FROM contacts  WHERE avatar     LIKE ?)  AS in_avatar,
             EXISTS(SELECT 1 FROM contacts  WHERE face_ref   LIKE ?)  AS in_face_ref,
-            EXISTS(SELECT 1 FROM artifacts  WHERE url        LIKE ?) AS in_artifact`,
+            EXISTS(SELECT 1 FROM artifacts  WHERE url        LIKE ?) AS in_artifact,
+            EXISTS(SELECT 1 FROM messages   WHERE tool_detail LIKE ?) AS in_tool_detail,
+            EXISTS(SELECT 1 FROM kv         WHERE v          LIKE ?) AS in_kv`,
   );
   for (const url of urls) {
     const name = mediaFileName(url);
     if (!name) continue;
     const like = `%${name}%`;
-    const ref = probe.get(like, like, like, like, like) as
-      { in_messages: number; in_turns: number; in_avatar: number; in_face_ref: number; in_artifact: number };
-    if (ref.in_messages || ref.in_turns || ref.in_avatar || ref.in_face_ref || ref.in_artifact) continue;
+    const ref = probe.get(like, like, like, like, like, like, like) as
+      { in_messages: number; in_turns: number; in_avatar: number; in_face_ref: number; in_artifact: number; in_tool_detail: number; in_kv: number };
+    if (ref.in_messages || ref.in_turns || ref.in_avatar || ref.in_face_ref || ref.in_artifact || ref.in_tool_detail || ref.in_kv) continue;
     try {
       rmSync(join(MEDIA_DIR, name), { force: true });
     } catch { /* 删不掉就算了，留给下次 */ }
@@ -238,66 +250,389 @@ export function dataUrlBytes(url: string): number | null {
   return Math.ceil(statSync(file).size / 3) * 4 + 40;
 }
 
-/** 落盘文件名的合法形状：清扫时只认这个，目录里别的东西一律不碰。 */
-const MEDIA_FILE_RE = /^[a-z0-9]{16}\.(png|jpg|webp|gif)$/;
-const MEDIA_REF_RE = /\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif))/g;
+export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "turn" | "artifact" | "tool" | "setting" | "wallpaper" | "none" | "trash";
+
+export type MediaSource = {
+  kind: MediaSourceKind;
+  label: string;
+  detail?: string;
+};
+
+export type MediaMaintenanceItem = {
+  name: string;
+  url: string;
+  size: number;
+  modifiedAt: number;
+  mediaKind: "image" | "wallpaper";
+  referenced: boolean;
+  cleanable: boolean;
+  sources: MediaSource[];
+};
+
+export type MediaTrashItem = MediaMaintenanceItem & {
+  trashedAt: number;
+  expiresAt: number;
+};
+
+export type MediaMaintenanceSnapshot = {
+  files: number;
+  referenced: number;
+  pending: number;
+  cleanable: number;
+  items: MediaMaintenanceItem[];
+  all: MediaMaintenanceItem[];
+  trash: MediaTrashItem[];
+  totalBytes: number;
+  allBytes: number;
+  trashBytes: number;
+  orphanGraceHours: number;
+  trashRetentionDays: number;
+  checkedAt: number;
+};
+
+export type MediaMutationResult = {
+  changed: number;
+  skipped: number;
+  bytes: number;
+};
+
+const SOURCE_ORDER: MediaSourceKind[] = ["avatar", "face_ref", "chat", "turn", "artifact", "tool", "setting", "wallpaper", "none", "trash"];
 
 /**
- * 全量对账：把库里再没人引用的图片文件删掉。
- *
- * 落盘的触发点只有「删消息 / 编辑换图 / 删联系人」三处，所以传了图没发出去的那些、
- * 以及早期坏 SQL 漏掉的那些会永远留在磁盘上（实测正式库 109 个文件里 103 个没人引用）。
- *
- * 只动 mtime 超过 minAgeMs 的文件——刚上传还没发出去的那张正在用户手里，删不得。
+ * 媒体文件的引用来源必须在这里统一认全。少认一处，界面上的“未引用”就可能是误报，
+ * 点一下清理就会把用户还在用的图移走。返回的是来源清单，不只是 yes/no：
+ * 用户需要知道这张图为什么还在、又为什么不能删。
  */
-export function sweepOrphanMedia(minAgeMs = 24 * 3_600_000): { removed: number; bytes: number } {
-  if (!existsSync(MEDIA_DIR)) return { removed: 0, bytes: 0 };
-  const referenced = new Set<string>();
-  for (const table of ["messages", "turns"] as const) {
-    const rows = db.prepare(`SELECT attachments FROM ${table} WHERE attachments IS NOT NULL`).all() as Array<{ attachments: string }>;
-    for (const row of rows) {
-      for (const match of String(row.attachments).matchAll(MEDIA_REF_RE)) {
-        const name = match[1];
-        if (name) referenced.add(name);
-      }
-    }
-  }
-  // 联系人身上有两列存的是 /media 路径、从不进任何消息的 attachments：
-  // 长相参考图（face_ref）与头像（avatar）。漏了它们，用户的参考图会在下一次维护清理
-  // （>24h）被当孤儿删掉，之后每次自拍只得到一句"参考图的文件不在了"；
-  // 头像是同一类事故——它一旦改成路径形态，不认它就等于**每 24 小时把人像删一遍**。
-  for (const row of db
-    .prepare("SELECT avatar, face_ref FROM contacts WHERE avatar <> '' OR face_ref <> ''")
-    .all() as Array<{ avatar: string; face_ref: string }>) {
-    for (const cell of [row.avatar, row.face_ref]) {
-      for (const match of String(cell).matchAll(MEDIA_REF_RE)) {
-        const name = match[1];
-        if (name) referenced.add(name);
-      }
-    }
-  }
-  // 生成产物台账：画成功那一刻就有记录，所以"消息没落地"的图也受保护。
-  // 反过来，只有删掉 artifact 行才真正释放文件（删消息不删画）。
-  // 这里直接查表而不 import artifacts.ts——那个模块反过来依赖本文件的 releaseMediaFiles。
-  for (const row of db.prepare("SELECT url FROM artifacts WHERE url <> ''").all() as Array<{ url: string }>) {
-    for (const match of String(row.url).matchAll(MEDIA_REF_RE)) {
+function collectMediaSources(): Map<string, MediaSource[]> {
+  const sources = new Map<string, MediaSource[]>();
+  const contactNames = new Map(
+    (db.prepare("SELECT id, name FROM contacts").all() as Array<{ id: string; name: string }>)
+      .map((row) => [row.id, row.name] as const),
+  );
+  const add = (raw: unknown, source: MediaSource): void => {
+    for (const match of String(raw).matchAll(MEDIA_REF_RE)) {
       const name = match[1];
-      if (name) referenced.add(name);
+      if (!name) continue;
+      const list = sources.get(name) ?? [];
+      if (!list.some((item) => item.kind === source.kind && item.detail === source.detail)) list.push(source);
+      sources.set(name, list);
     }
+  };
+  const contactDetail = (contactId: unknown): string => contactNames.get(String(contactId ?? "")) ?? "";
+
+  for (const row of db.prepare(
+    "SELECT contact_id, attachments FROM messages WHERE attachments LIKE '%/media/%'",
+  ).all() as Array<{ contact_id: string | null; attachments: string }>) {
+    add(row.attachments, { kind: "chat", label: "聊天", detail: contactDetail(row.contact_id) || undefined });
   }
-  let removed = 0;
-  let bytes = 0;
-  for (const name of readdirSync(MEDIA_DIR)) {
-    if (!MEDIA_FILE_RE.test(name) || referenced.has(name)) continue;
-    const file = join(MEDIA_DIR, name);
+  for (const row of db.prepare(
+    "SELECT contact_id, tool_detail FROM messages WHERE tool_detail LIKE '%/media/%'",
+  ).all() as Array<{ contact_id: string | null; tool_detail: string }>) {
+    add(row.tool_detail, { kind: "tool", label: "工具记录", detail: contactDetail(row.contact_id) || undefined });
+  }
+  for (const row of db.prepare(
+    "SELECT contact_id, attachments FROM turns WHERE attachments LIKE '%/media/%'",
+  ).all() as Array<{ contact_id: string | null; attachments: string }>) {
+    add(row.attachments, { kind: "turn", label: "回复任务", detail: contactDetail(row.contact_id) || undefined });
+  }
+  for (const row of db.prepare(
+    "SELECT id, name, avatar, face_ref FROM contacts WHERE avatar LIKE '%/media/%' OR face_ref LIKE '%/media/%'",
+  ).all() as Array<{ id: string; name: string; avatar: string; face_ref: string }>) {
+    add(row.avatar, { kind: "avatar", label: "头像", detail: row.name });
+    add(row.face_ref, { kind: "face_ref", label: "长相参考", detail: row.name });
+  }
+  for (const row of db.prepare(
+    "SELECT contact_id, url FROM artifacts WHERE url LIKE '%/media/%'",
+  ).all() as Array<{ contact_id: string; url: string }>) {
+    add(row.url, { kind: "artifact", label: "作品", detail: contactDetail(row.contact_id) || undefined });
+  }
+  for (const row of db.prepare("SELECT v FROM kv WHERE v LIKE '%/media/%'").all() as Array<{ v: string }>) {
+    add(row.v, { kind: "setting", label: "本地设置" });
+  }
+  for (const [name, list] of sources) {
+    // 正常聊天图片会同时出现在 messages.attachments 与 turns.attachments。
+    // 对用户来说它们不是两个来源；有聊天来源时不再重复显示“回复任务”。
+    const chatDetails = new Set(list.filter((item) => item.kind === "chat").map((item) => item.detail ?? ""));
+    const pruned = list.filter((item) => item.kind !== "turn" || !chatDetails.has(item.detail ?? ""));
+    pruned.sort((a, b) => SOURCE_ORDER.indexOf(a.kind) - SOURCE_ORDER.indexOf(b.kind));
+    sources.set(name, pruned);
+  }
+  return sources;
+}
+
+type MediaScan = {
+  files: number;
+  referenced: number;
+  pending: number;
+  items: MediaMaintenanceItem[];
+  all: MediaMaintenanceItem[];
+};
+
+/** 扫描媒体目录中的全部文件；items 只包含已经可以安全清理的那部分。 */
+export function scanOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): MediaScan {
+  if (!existsSync(MEDIA_DIR)) return { files: 0, referenced: 0, pending: 0, items: [], all: [] };
+  const sourceMap = collectMediaSources();
+  const now = Date.now();
+  let files = 0;
+  let referenced = 0;
+  let pending = 0;
+  const items: MediaMaintenanceItem[] = [];
+  const all: MediaMaintenanceItem[] = [];
+  for (const entry of readdirSync(MEDIA_DIR, { withFileTypes: true })) {
+    if (!entry.isFile()) continue;
+    const url = `/media/${entry.name}`;
+    const wallpaper = WALLPAPER_URL_RE.test(url);
+    if (!wallpaper && !MEDIA_FILE_RE.test(entry.name)) continue;
+    const file = join(MEDIA_DIR, entry.name);
     try {
       const stat = statSync(file);
-      // 用 max(0,…) 而不是直接比：这台机器实测「刚写完的文件 mtime 比 Date.now() 晚」
-      // 占 186/200 次（最多提前 1.6ms），于是 minAgeMs=0 的全量对账会把它当"未到龄"跳过。
-      if (Math.max(0, Date.now() - stat.mtimeMs) < minAgeMs) continue;
-      rmSync(file, { force: true });
+      files += 1;
+      const base = {
+        name: entry.name,
+        url,
+        size: stat.size,
+        modifiedAt: Math.round(stat.mtimeMs),
+      };
+      if (wallpaper) {
+        all.push({
+          ...base,
+          mediaKind: "wallpaper",
+          referenced: false,
+          cleanable: false,
+          sources: [{ kind: "wallpaper", label: "壁纸", detail: "引用保存在设备本地" }],
+        });
+        continue;
+      }
+      const knownSources = sourceMap.get(entry.name) ?? [];
+      if (knownSources.length > 0) {
+        referenced += 1;
+        all.push({ ...base, mediaKind: "image", referenced: true, cleanable: false, sources: knownSources });
+        continue;
+      }
+      // 未来时间按“刚写入”处理：部分机器上 mtime 会比 Date.now() 早/晚几毫秒。
+      if (Math.max(0, now - stat.mtimeMs) < minAgeMs) {
+        pending += 1;
+        all.push({
+          ...base,
+          mediaKind: "image",
+          referenced: false,
+          cleanable: false,
+          sources: [{ kind: "none", label: "未引用", detail: `保护期内，满 ${Math.round(minAgeMs / 3_600_000)} 小时后可清理` }],
+        });
+        continue;
+      }
+      const item: MediaMaintenanceItem = {
+        ...base,
+        mediaKind: "image",
+        referenced: false,
+        cleanable: true,
+        sources: [{ kind: "none", label: "未引用" }],
+      };
+      items.push(item);
+      all.push(item);
+    } catch { /* 扫描期间被别的进程移走就跳过 */ }
+  }
+  items.sort((a, b) => b.modifiedAt - a.modifiedAt);
+  all.sort((a, b) => b.modifiedAt - a.modifiedAt);
+  return { files, referenced, pending, items, all };
+}
+
+function trashDir(): string {
+  const dir = join(mediaDir(), ".trash");
+  if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function trashPath(name: string): string {
+  return join(trashDir(), name);
+}
+
+/** 清掉回收站中超过 7 天的文件。只删用户已经明确移入回收站的文件。 */
+export function purgeExpiredMediaTrash(now = Date.now()): { removed: number; bytes: number } {
+  const cutoff = now - MEDIA_TRASH_RETENTION_MS;
+  const rows = db.prepare("SELECT name, size FROM media_trash WHERE trashed_at <= ?").all(cutoff) as Array<{ name: string; size: number }>;
+  let removed = 0;
+  let bytes = 0;
+  for (const row of rows) {
+    try {
+      rmSync(trashPath(row.name), { force: true });
+      db.prepare("DELETE FROM media_trash WHERE name = ?").run(row.name);
       removed += 1;
-      bytes += stat.size;
+      bytes += row.size;
+    } catch { /* 权限或占用问题留给下一次维护 */ }
+  }
+  return { removed, bytes };
+}
+
+function listMediaTrash(): MediaTrashItem[] {
+  purgeExpiredMediaTrash();
+  const rows = db.prepare(
+    "SELECT name, size, original_mtime, trashed_at FROM media_trash ORDER BY trashed_at DESC",
+  ).all() as Array<{ name: string; size: number; original_mtime: number; trashed_at: number }>;
+  const items: MediaTrashItem[] = [];
+  for (const row of rows) {
+    if (!existsSync(trashPath(row.name))) {
+      db.prepare("DELETE FROM media_trash WHERE name = ?").run(row.name);
+      continue;
+    }
+    items.push({
+      name: row.name,
+      url: `/media/${row.name}`,
+      size: row.size,
+      modifiedAt: row.original_mtime,
+      mediaKind: "image",
+      referenced: false,
+      cleanable: false,
+      sources: [{ kind: "trash", label: "回收站" }],
+      trashedAt: row.trashed_at,
+      expiresAt: row.trashed_at + MEDIA_TRASH_RETENTION_MS,
+    });
+  }
+  return items;
+}
+
+/** 给运行检查和媒体管理共用的完整快照。 */
+export function mediaMaintenanceSnapshot(): MediaMaintenanceSnapshot {
+  const scan = scanOrphanMedia();
+  const trash = listMediaTrash();
+  return {
+    ...scan,
+    cleanable: scan.items.length,
+    trash,
+    totalBytes: scan.items.reduce((sum, item) => sum + item.size, 0),
+    allBytes: scan.all.reduce((sum, item) => sum + item.size, 0),
+    trashBytes: trash.reduce((sum, item) => sum + item.size, 0),
+    orphanGraceHours: MEDIA_ORPHAN_GRACE_HOURS,
+    trashRetentionDays: MEDIA_TRASH_RETENTION_DAYS,
+    checkedAt: Date.now(),
+  };
+}
+
+/**
+ * 把确认可清理的文件移到回收站。前端传来的名字不可信：这里重新扫描一次引用和
+ * 保护期，只处理这一秒仍然满足条件的文件。移入后保留 7 天，可恢复。
+ */
+export function trashMediaFiles(names: string[]): MediaMutationResult {
+  const wanted = new Set(names.filter((name) => MEDIA_FILE_RE.test(name)));
+  if (wanted.size === 0 || !existsSync(MEDIA_DIR)) return { changed: 0, skipped: names.length, bytes: 0 };
+  const eligible = new Map(scanOrphanMedia().items.map((item) => [item.name, item]));
+  let changed = 0;
+  let skipped = 0;
+  let bytes = 0;
+  const trashedAt = Date.now();
+  for (const name of wanted) {
+    const item = eligible.get(name);
+    if (!item) {
+      skipped += 1;
+      continue;
+    }
+    const from = join(MEDIA_DIR, name);
+    const to = trashPath(name);
+    if (!existsSync(from) || existsSync(to)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      db.prepare(
+        "INSERT INTO media_trash (name, url, size, original_mtime, trashed_at) VALUES (?, ?, ?, ?, ?)",
+      ).run(name, item.url, item.size, item.modifiedAt, trashedAt);
+      try {
+        renameSync(from, to);
+      } catch (error) {
+        db.prepare("DELETE FROM media_trash WHERE name = ?").run(name);
+        throw error;
+      }
+      changed += 1;
+      bytes += item.size;
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { changed, skipped, bytes };
+}
+
+export function restoreMediaFiles(names: string[]): MediaMutationResult {
+  const wanted = new Set(names.filter((name) => MEDIA_FILE_RE.test(name)));
+  let changed = 0;
+  let skipped = 0;
+  let bytes = 0;
+  for (const name of wanted) {
+    const row = db.prepare("SELECT size FROM media_trash WHERE name = ?").get(name) as { size: number } | undefined;
+    if (!row) {
+      skipped += 1;
+      continue;
+    }
+    const from = trashPath(name);
+    const to = join(MEDIA_DIR, name);
+    if (!existsSync(from) || existsSync(to)) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      renameSync(from, to);
+      db.prepare("DELETE FROM media_trash WHERE name = ?").run(name);
+      changed += 1;
+      bytes += row.size;
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { changed, skipped, bytes };
+}
+
+/** 永久删除回收站条目；这是唯一会绕过恢复期的用户动作。 */
+export function purgeMediaFiles(names: string[]): MediaMutationResult {
+  const wanted = new Set(names.filter((name) => MEDIA_FILE_RE.test(name)));
+  let changed = 0;
+  let skipped = 0;
+  let bytes = 0;
+  for (const name of wanted) {
+    const row = db.prepare("SELECT size FROM media_trash WHERE name = ?").get(name) as { size: number } | undefined;
+    if (!row) {
+      skipped += 1;
+      continue;
+    }
+    try {
+      rmSync(trashPath(name), { force: true });
+      db.prepare("DELETE FROM media_trash WHERE name = ?").run(name);
+      changed += 1;
+      bytes += row.size;
+    } catch {
+      skipped += 1;
+    }
+  }
+  return { changed, skipped, bytes };
+}
+
+/** 恢复出厂设置时连回收站一起清空。 */
+export function emptyMediaTrash(): { removed: number; bytes: number } {
+  const rows = db.prepare("SELECT name, size FROM media_trash").all() as Array<{ name: string; size: number }>;
+  let removed = 0;
+  let bytes = 0;
+  for (const row of rows) {
+    try {
+      rmSync(trashPath(row.name), { force: true });
+      removed += 1;
+      bytes += row.size;
+    } catch { /* 删不掉也把台账清掉，避免下次又冒出来 */ }
+  }
+  db.prepare("DELETE FROM media_trash").run();
+  return { removed, bytes };
+}
+
+/**
+ * 全量对账：把库里再没人引用的图片文件永久删掉。
+ * 用户界面走 trashMediaFiles；这个函数只保留给显式维护/测试，不能在后台静默调用。
+ */
+export function sweepOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): { removed: number; bytes: number } {
+  const scan = scanOrphanMedia(minAgeMs);
+  let removed = 0;
+  let bytes = 0;
+  for (const item of scan.items) {
+    try {
+      rmSync(join(MEDIA_DIR, item.name), { force: true });
+      removed += 1;
+      bytes += item.size;
     } catch { /* 读不到/删不掉就跳过，下次再试 */ }
   }
   return { removed, bytes };

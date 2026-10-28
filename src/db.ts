@@ -164,6 +164,17 @@ CREATE TABLE IF NOT EXISTS instance_lease (
   pid INTEGER NOT NULL,
   at  INTEGER NOT NULL
 );
+
+-- 媒体回收站：用户主动清理的未引用文件先移到这里，7 天内可恢复。
+-- 文件本体在 media/.trash/，这里只记恢复与过期清理需要的元数据。
+CREATE TABLE IF NOT EXISTS media_trash (
+  name          TEXT    PRIMARY KEY,
+  url           TEXT    NOT NULL,
+  size          INTEGER NOT NULL,
+  original_mtime INTEGER NOT NULL,
+  trashed_at    INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_media_trash_time ON media_trash (trashed_at);
 `);
 
 export function kvGet(key: string): string | null {
@@ -272,7 +283,7 @@ ensureColumn("contacts", "recap_upto", "recap_upto INTEGER NOT NULL DEFAULT 0");
 ensureColumn("contacts", "lifeline_at", "lifeline_at INTEGER");
 // 关系温度计 JSON（stage/warmth/mood）：抽取顺手更新 + 用户可编辑。
 ensureColumn("contacts", "bond", "bond TEXT NOT NULL DEFAULT ''");
-// 长相参考图：存 /media 路径而不是 dataURL。头像那份是客户端压过的 ≤150KB 内联 dataURL，
+// 自拍参考图：存 /media 路径而不是 dataURL。头像那份是客户端压过的 ≤150KB 内联 dataURL，
 // 而参考图要拿得出细节（实测一张 1024×1024 PNG 0.5~1.2MB），内联进 contacts 会把
 // 联系人列表接口的载荷重新撑回去（分页那轮刚把它从 357KB 压到 4KB）。
 ensureColumn("contacts", "face_ref", "face_ref TEXT NOT NULL DEFAULT ''");

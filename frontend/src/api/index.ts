@@ -9,6 +9,8 @@ export * as skillsApi from "./skills";
 export * as extensionsApi from "./extensions";
 export * as proactiveApi from "./proactive";
 export * as usageApi from "./usage";
+export * as diagnosticsApi from "./diagnostics";
+export * as mediaApi from "./media";
 export * as assistantApi from "./assistant";
 export * as artifactApi from "./artifacts";
 export * as contentApi from "./content";

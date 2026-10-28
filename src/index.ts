@@ -23,7 +23,7 @@ import { isChatModelId, listModels, pingChat } from "./model.ts";
 import { writeRuntimeHandshake, clearRuntimeHandshake } from "./runtime.ts";
 import { claimPrimary, isPrimary, leaseIsFreeOrOurs, primaryPid, releasePrimary, startLeaseLoop } from "./instance.ts";
 import { pruneModelCalls } from "./logs.ts";
-import { sweepOrphanMedia } from "./media.ts";
+import { purgeExpiredMediaTrash } from "./media.ts";
 import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./contacts.ts";
 import { wechat } from "./wechat.ts";
 import { qq } from "./qq.ts";
@@ -258,16 +258,16 @@ async function selfCheck(): Promise<void> {
 
 /**
  * 定期维护：保留策略不能只在启动时跑一次。这是个常驻进程，跑几周不重启很正常，
- * 而 model_calls（每行带响应全文）、已结束的任务行、没人引用的图片文件都在一直长。
+ * 而 model_calls（每行带响应全文）、已结束的任务行、回收站里的过期媒体都在一直长。
  */
 function maintenance(): void {
   if (!isPrimary()) return;
   try {
     pruneModelCalls();
     const tasks = pruneFinishedTasks();
-    const media = sweepOrphanMedia();
+    const media = purgeExpiredMediaTrash();
     if (tasks > 0 || media.removed > 0) {
-      console.log(`[maintenance] 清理：主动性历史 ${tasks} 条、孤儿图片 ${media.removed} 个（${(media.bytes / 1024 / 1024).toFixed(1)}MB）`);
+      console.log(`[maintenance] 清理：主动性历史 ${tasks} 条、回收站过期媒体 ${media.removed} 个（${(media.bytes / 1024 / 1024).toFixed(1)}MB）`);
     }
     // 向量化回填是后台批量：启动那一遍没跑完的（端点刚才不可用、导入的老数据）这里继续补。
     void backfillMemoryEmbeddings().then((n) => {

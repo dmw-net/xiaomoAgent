@@ -46,6 +46,9 @@ export type StatusData = {
   lastModelError: { code?: string; message?: string; at?: string; purpose?: string } | null;
   memoryEvents: number;
   memoryExtractFailures: number;
+  /** 近 50 次合法抽取的样本数与"本轮无需记录"占比；空结果是正常状态。 */
+  memoryExtractSamples?: number;
+  memoryExtractEmptyRate?: number | null;
   lastRecallAt?: number | null;
   modelFailures: number;
   /** 近 24 小时的调用数与失败数——健康信号只看这个，不看累计。 */
@@ -58,8 +61,75 @@ export type StatusData = {
   turns?: { total: number; done: number; failed: number; inFlight: number; avgLatencyMs: number; lastFailedAt: number | null };
   uptimeSec?: number;
   time?: string;
-  /** 后端是否开发模式（DEV_MODE=1，npm run dev）：前端据此自动显隐 调用记录/最近处理/记忆测试。 */
+  /** 后端是否开发模式（DEV_MODE=1）。只控制原始请求的落盘与开发者细节，不再决定用户诊断是否可见。 */
   devMode?: boolean;
+  /** 显式表示是否保存完整请求体；普通用户的诊断界面不应依赖它。 */
+  rawCapture?: boolean;
+};
+
+export type DiagnosticLevel = "ok" | "warn" | "bad";
+
+export type UserDiagnosticCheck = {
+  id: string;
+  label: string;
+  level: DiagnosticLevel;
+  summary: string;
+  detail?: string;
+  action?: "backup" | "storage" | "activity" | "settings" | "media";
+};
+
+export type UserDiagnostics = {
+  checkedAt: number;
+  level: DiagnosticLevel;
+  checks: UserDiagnosticCheck[];
+};
+
+export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "turn" | "artifact" | "tool" | "setting" | "wallpaper" | "none" | "trash";
+
+export type MediaSource = {
+  kind: MediaSourceKind;
+  label: string;
+  detail?: string;
+};
+
+/** 媒体管理弹层的一项：全部文件都带来源，只有 cleanable 的才能清理。 */
+export type MediaMaintenanceItem = {
+  name: string;
+  url: string;
+  size: number;
+  modifiedAt: number;
+  mediaKind: "image" | "wallpaper";
+  referenced: boolean;
+  cleanable: boolean;
+  sources: MediaSource[];
+};
+
+export type MediaTrashItem = MediaMaintenanceItem & {
+  trashedAt: number;
+  expiresAt: number;
+};
+
+export type MediaMaintenanceSnapshot = {
+  files: number;
+  referenced: number;
+  pending: number;
+  cleanable: number;
+  items: MediaMaintenanceItem[];
+  all: MediaMaintenanceItem[];
+  trash: MediaTrashItem[];
+  totalBytes: number;
+  allBytes: number;
+  trashBytes: number;
+  orphanGraceHours: number;
+  trashRetentionDays: number;
+  checkedAt: number;
+};
+
+export type MediaMutationResponse = MediaMaintenanceSnapshot & {
+  ok: true;
+  changed: number;
+  skipped: number;
+  bytes: number;
 };
 
 export type ModelCallRow = {
@@ -68,6 +138,9 @@ export type ModelCallRow = {
   purpose: string;
   ok: number;
   code: string | null;
+  status?: number | null;
+  model?: string | null;
+  url?: string | null;
   elapsed_ms: number;
   message: string | null;
   /** 失败时服务商返回的原始报文（截存），状态页可展开查看。 */

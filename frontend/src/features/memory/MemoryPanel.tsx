@@ -94,6 +94,7 @@ export default function MemoryPanel({ active = true, contactId, who = "联系人
   };
 
   const byKind = stats?.byKind ?? {};
+  const emptyPct = stats && stats.emptyRate !== null ? Math.round(stats.emptyRate * 100) : null;
 
   return (
     <div className="pnl" {...panel}>
@@ -112,9 +113,17 @@ export default function MemoryPanel({ active = true, contactId, who = "联系人
               </div>
             )}
             <div className="stat"><div className="n">{stats.thisWeek}</div><div className="t">本周新增</div></div>
+            {emptyPct !== null && stats.extractSamples > 0 && (
+              <div className="stat"><div className="n">{emptyPct}%</div><div className="t">无需记录</div></div>
+            )}
             {KIND_ORDER.filter((k) => byKind[k]).length > 0 && (
               <div className="hint" style={{ gridColumn: "1 / -1" }}>
                 构成：{KIND_ORDER.filter((k) => byKind[k]).map((k) => kindLabel(k) + " " + byKind[k]).join(" · ")}
+              </div>
+            )}
+            {emptyPct !== null && stats.extractSamples > 0 && (
+              <div className="hint" style={{ gridColumn: "1 / -1" }}>
+                最近 {stats.extractSamples} 次抽取里，{emptyPct}% 没有需要长期记住的内容。空结果是正常状态，只有调用或返回格式出错才算失败。
               </div>
             )}
           </>

@@ -657,8 +657,8 @@ export type MemoryStats = {
   blockedResurrects: number;
   /** 近 30 天平均每轮记下几条（roadmap P0-1 要的 avgPerTurn）。 */
   avgPerTurn: number;
-  /** 近 50 次抽取调用里"这轮没什么可记"的比例（roadmap P0-1 要的 emptyRate）。
-   *  口径来自 model_calls.detail 里模型自己的响应体；实测现在就能算，不需要新表。 */
+  /** 近 50 次「合法抽取响应」里"这轮没什么可记"的比例（roadmap P0-1 要的 emptyRate）。
+   *  口径来自 model_calls.detail 里模型自己的响应体；空数组是正常业务结果，不是失败。 */
   emptyRate: number | null;
   /** 参与 emptyRate 统计的抽取调用数（0 = 样本不足，界面上该说"还不知道"）。 */
   extractSamples: number;
@@ -703,7 +703,7 @@ export function memoryStats(contactId: string): MemoryStats {
     .prepare(`SELECT COUNT(*) AS c FROM turns WHERE contact_id = ? AND status = 'done' AND created_at > ?`)
     .get(contactId, monthAgo) as { c: number };
 
-  // 空返回率：读最近 50 次抽取调用自己给出的响应体。
+  // 合法空结果率：只统计有 events 数组的响应；空数组 = 本轮无需记录，不是异常。
   const responses = db
     .prepare(`SELECT detail FROM model_calls WHERE purpose = 'extract' AND ok = 1 AND contact_id = ? AND detail IS NOT NULL AND detail <> '' ORDER BY id DESC LIMIT 50`)
     .all(contactId) as unknown as Array<{ detail: string }>;
@@ -1030,11 +1030,16 @@ export async function extractMemories(input: {
     contactId: input.contactId,
     capability: "memoryExtract",
   });
-  // 兼容三种形状：老式裸数组（echo 桩/旧模型）、新式 {events,bond}、脏输出。
+  // 兼容两种**合法**形状：老式裸数组（echo 桩/旧模型）与新式 {events,bond}。
+  // 只有 events: [] 才是"本轮无需记录"；{}、events: null、events 缺失是格式错误。
+  // 这条边界必须守住：把脏输出当空结果会清零失败计数，恰好把故障伪装成健康。
   const obj = (raw !== null && typeof raw === "object" && !Array.isArray(raw) ? raw : null) as
     | { events?: unknown; bond?: unknown }
     | null;
-  const list = Array.isArray(raw) ? raw : Array.isArray(obj?.events) ? obj!.events : [];
+  const list = Array.isArray(raw) ? raw : Array.isArray(obj?.events) ? obj!.events : null;
+  if (list === null) {
+    throw new Error("记忆抽取返回格式异常：缺少 events 数组");
+  }
 
   // 失败计数在这里就清零：**这次调用通了**说明通道是健康的。
   // 原来只有 added+updated>0 才清，而实测 78.8% 的抽取是"合法返回但这轮不值得记"——

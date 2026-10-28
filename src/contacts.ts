@@ -9,7 +9,7 @@
 
 import { randomUUID } from "node:crypto";
 import { db, kvGet, kvSet, withTx } from "./db.ts";
-import { listMediaUrls, mediaUrlExists, releaseMediaFiles } from "./media.ts";
+import { emptyMediaTrash, listMediaUrls, mediaUrlExists, releaseMediaFiles } from "./media.ts";
 import { sanitizeCharacter, defaultPersona, type CharacterCard } from "./settings.ts";
 
 export const DEFAULT_CONTACT_ID = "default";
@@ -262,7 +262,7 @@ export type Contact = {
   /** 头像（dataURL）。空串 = 没设，界面用名字首字画一个。 */
   avatar: string;
   /**
-   * 长相参考图（/media 路径，不是 dataURL——见 db.ts 那侧的说明）。
+   * 自拍参考图（/media 路径，不是 dataURL——见 db.ts 那侧的说明）。
    * 她画自拍时把它作为 `image` 字段发给服务商做身份条件化；空串 = 没有，自拍画不了。
    */
   faceRef: string;
@@ -321,7 +321,7 @@ export function sanitizeAvatar(v: unknown): string | undefined {
 }
 
 /**
- * 长相参考图：只收**真实存在**的 /media 路径（形状与防穿越由 media.ts 那侧把关），
+ * 自拍参考图：只收**真实存在**的 /media 路径（形状与防穿越由 media.ts 那侧把关），
  * 空串 = 清除。返回 undefined = 「不改这个字段」，与 sanitizeAvatar 同语义。
  * 不收 dataURL：那等于允许调用方往库里塞任意大的东西（分页那轮刚把列表载荷压到 4KB）。
  */
@@ -420,7 +420,7 @@ export function createContact(input: {
   card?: Partial<CharacterCard>;
   type?: "single" | "group";
   avatar?: string;
-  /** 长相参考图（/media 路径）。 */
+  /** 自拍参考图（/media 路径）。 */
   faceRef?: string;
   gender?: ContactGender;
 }): Contact {
@@ -448,7 +448,7 @@ export function updateContact(
     name?: string;
     card?: Partial<CharacterCard>;
     avatar?: string;
-    /** 长相参考图（/media 路径）；空串 = 清除并释放旧文件。 */
+    /** 自拍参考图（/media 路径）；空串 = 清除并释放旧文件。 */
     faceRef?: string;
     modelProfile?: string;
     /** 回放轮数覆盖；0 = 清除覆盖跟随全局。 */
@@ -577,7 +577,7 @@ export function deleteContact(id: string): { removedMedia: number } {
   if (row.archived_at === null) throw new Error("先归档、再删除：归档是冷却期，防手滑");
 
   const urls: string[] = [];
-  // 这位联系人自己的头像与长相参考图也要进回收清单：它们不在 messages/turns/artifacts 里，
+  // 这位联系人自己的头像与自拍参考图也要进回收清单：它们不在 messages/turns/artifacts 里，
   // 漏掉的话人删了文件还留在 media/ 目录，只有 24 小时后的孤儿清扫兜底（而且 removedMedia 少报两个）。
   // 必须在 DELETE 之前取——行没了就再也查不到这两个字段了。
   const own = db.prepare(`SELECT avatar, face_ref FROM contacts WHERE id = ?`).get(id) as { avatar: string; face_ref: string } | undefined;
@@ -655,8 +655,9 @@ export function factoryReset(): { contacts: number; mediaRemoved: number } {
     db.prepare(`DELETE FROM kv WHERE k <> 'schema_version'`).run();
   });
   // 文件在事务外回收：清库万一回滚，引用还在，文件不该先没。
+  const trashed = emptyMediaTrash();
   releaseMediaFiles([...urls]);
-  return { contacts: people, mediaRemoved: urls.size };
+  return { contacts: people, mediaRemoved: urls.size + trashed.removed };
 }
 
 /** 这个联系人绑定的模型档 id（空串 = 跟随全局）。运行时解析用，不存在的联系人也返回空。 */

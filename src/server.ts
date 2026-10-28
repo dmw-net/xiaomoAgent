@@ -122,7 +122,7 @@ import {
 } from "./memory.ts";
 import { lastModelCall, listInflightCalls, logModelCall, modelCallWindow, modelFailureCount, countModelCalls, modelCallById, recentModelCallSummaries, usageStats, failureWatermark, resetFailureCounters, type CallFilter } from "./logs.ts";
 import { contactModelSettings, embedTexts, friendlyModelError, isChatModelId, listModels, pingChat, resetToolsUnsupported, synthesizeSpeech, transcribeAudio } from "./model.ts";
-import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, deleteWallpaper, mediaFileInfo, mediaUrlExists, readMedia, releaseMediaFiles, saveImage, saveWallpaper } from "./media.ts";
+import { MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, deleteWallpaper, mediaFileInfo, mediaMaintenanceSnapshot, mediaUrlExists, purgeMediaFiles, readMedia, releaseMediaFiles, restoreMediaFiles, saveImage, saveWallpaper, trashMediaFiles } from "./media.ts";
 import { describeWebFailure, downloadImageToMedia } from "./search.ts";
 import { linkPreviewFor } from "./link-preview.ts";
 import { deleteArtifact, getArtifact, listArtifacts, setArtifactStarred } from "./artifacts.ts";
@@ -148,6 +148,7 @@ import { qq } from "./qq.ts";
 import { clearQQGroupHistory, ensureDefaultConversations, ensureLocalConversation, getConversation, listConversations, localConversationId, MAX_CONVERSATION_TITLE_LENGTH, normalizeConversationTitle, removeQQGroupConversation, renameQQGroupConversation, setConversationEnabled } from "./conversations.ts";
 import { previewSystemPrompt } from "./persona.ts";
 import { leaseIsFreeOrOurs } from "./instance.ts";
+import { runUserDiagnostics } from "./diagnostics.ts";
 
 const MAX_BODY_BYTES = 32 * 1024;
 /** 录音 dataURL（base64 会膨胀 1/3）与语音合成响应都要比 32KB 宽得多，单独放宽给音频接口。 */
@@ -163,6 +164,21 @@ const MAX_AUDIO_BODY_BYTES = 8 * 1024 * 1024;
  * （30000 个汉字 UTF-8 约 90KB，加上 150KB 头像仍在 512KB 内）。
  */
 const MAX_CARD_BODY_BYTES = 512 * 1024;
+
+/** 侧栏预览只展示人能读懂的最近内容，内部指令与动作标签不直接裸露。 */
+function humanPreview(text: string): string {
+  const cleaned = String(text ?? "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/`([^`]*)`/g, "$1")
+    .replace(/^\s*[-*#]\s+/gm, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  const withoutMeta = cleaned.replace(/^\[[^\]]{2,100}\]\s*/, "").trim();
+  if (withoutMeta === "" || /^(系统指令|系统提示|工具调用|技能已|已收到系统)/.test(withoutMeta)) {
+    return "有新消息，打开看看";
+  }
+  return withoutMeta;
+}
 
 export function createHttpServer(options: { rebind?: () => Promise<{ ok: boolean; error: string }> } = {}) {
   const rebind = options.rebind;
@@ -551,6 +567,7 @@ async function handle(
     const lastFailure = lastCall && lastCall.ok === 0 && lastCall.created_at >= failureWatermark() ? lastCall : null;
     const model = modelConfig();
     const ready = modelReadyNow(model);
+    const mem = memoryStats(contactId);
     sendJson(response, 200, {
       ok: true,
       character: currentCharacterName(),
@@ -562,9 +579,13 @@ async function handle(
       provider: providerLabel(model.baseUrl),
       /** 后端是否跑在开发模式（DEV_MODE=1，即 npm run dev）：前端据此自动露出排障 tab。 */
       devMode: config.devMode,
+      /** 是否保存完整请求体。与“用户诊断是否可见”分开，普通用户永远看不到原始请求。 */
+      rawCapture: config.devMode,
       dbPath: config.dbPath,
-      memoryEvents: memoryCount(contactId),
+      memoryEvents: mem.total,
       memoryExtractFailures: extractFailures(contactId),
+      memoryExtractSamples: mem.extractSamples,
+      memoryExtractEmptyRate: mem.emptyRate,
       lastRecallAt: lastRecallAt(contactId),
       modelFailures: modelFailureCount(),
       /** 近 24 小时的调用/失败数：健康信号要时间窗，累计值会把多年前的失败一直挂着。 */
@@ -589,6 +610,47 @@ async function handle(
     return;
   }
 
+  // 用户可点的只读运行检查：数据库、卡住的任务、孤立主动计划与媒体文件。
+  // 与 DEV_MODE 解耦，不读取、不返回请求体或系统提示词。
+  if (method === "GET" && path === "/api/diagnostics") {
+    sendJson(response, 200, { ok: true, ...runUserDiagnostics() });
+    return;
+  }
+
+  // 运行检查的闭环：先看哪些普通媒体没人引用，再显式移到回收站。
+  // 前端传来的文件名在这里重新校验；真正移盘前 media.ts 还会重新扫一遍引用与保护期。
+  if (method === "GET" && path === "/api/media/maintenance") {
+    sendJson(response, 200, { ok: true, ...mediaMaintenanceSnapshot() });
+    return;
+  }
+
+  if (method === "POST" && path === "/api/media/maintenance") {
+    const body = await readJson<{ op?: unknown; names?: unknown }>(request);
+    const op = typeof body.op === "string" ? body.op : "";
+    const names = Array.isArray(body.names)
+      ? body.names.filter((name): name is string => typeof name === "string")
+      : [];
+    if (op !== "trash" && op !== "restore" && op !== "purge") {
+      sendJson(response, 400, { ok: false, error: "op 只支持 trash / restore / purge" });
+      return;
+    }
+    if (names.length === 0 || names.length > 500) {
+      sendJson(response, 400, { ok: false, error: "请选择 1 到 500 个媒体文件" });
+      return;
+    }
+    try {
+      const result = op === "trash"
+        ? trashMediaFiles(names)
+        : op === "restore"
+          ? restoreMediaFiles(names)
+          : purgeMediaFiles(names);
+      sendJson(response, 200, { ok: true, ...result, ...mediaMaintenanceSnapshot() });
+    } catch (error) {
+      sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   // 「重新计数」：把失败读数的起点挪到现在，红点清零。model_calls 一条不删，
   // 调用记录页照旧能翻到全部历史；记忆提取那边只清连续失败计数器。
   if (method === "POST" && path === "/api/status/reset-counters") {
@@ -597,7 +659,7 @@ async function handle(
     sendJson(response, 200, {
       ok: true,
       watermarkAt: new Date(at).toISOString(),
-      note: "红点已清零：从现在起重新数（调用记录一条没删，「调用记录」里还能翻到全部历史）",
+      note: "提醒已忽略：从现在起重新数；历史记录一条没删，「活动记录」里仍可查看。",
     });
     return;
   }
@@ -1529,14 +1591,16 @@ async function handle(
       // 全局预览也换成真实记忆，不再塞两条编造的示例：预览=精确重建是这里的标准，
       // 让用户看到"模型会收到这些"而模型其实收不到，等于把预览变成假样本。
       // 没有指定联系人时按默认联系人兜底，并在 memoryNote 里说破是按谁召回的。
+      const memories = recallExplained(DEFAULT_CONTACT_ID, "").events;
       sendJson(response, 200, {
         ok: true,
         prompt: previewSystemPrompt(character, owner, {
-          memories: recallExplained(DEFAULT_CONTACT_ID, "").events,
+          memories,
           lastUserAt: lastUserMessageAt(DEFAULT_CONTACT_ID),
           companion: companionPromptExtras(getContact(DEFAULT_CONTACT_ID)),
           includeNow: getContact(DEFAULT_CONTACT_ID)?.features?.clock !== false,
         }),
+        memoryEvents: memories.map((m) => ({ id: m.id, kind: m.kind, subject: m.subject, content: m.content })),
         memoryNote: "[记忆] 全局预览不带具体召回查询，这里显示默认联系人最近的几条记忆。要看某段关系的召回，请到该联系人的资料页预览。",
       });
       return;
@@ -1563,6 +1627,7 @@ async function handle(
         includeNow: getContact(cid)?.features?.clock !== false,
       }),
       history: rows.map((r) => ({ role: r.role, text: r.text })),
+      memoryEvents: memories.map((m) => ({ id: m.id, kind: m.kind, subject: m.subject, content: m.content })),
       memoryNote: lastUser
         ? `[记忆] 按你最后一句话召回：「${String(lastUser.text).slice(0, 30)}」`
         : "[记忆] 还没有可召回的对话，这里展示的是最近的记忆",
@@ -2219,7 +2284,7 @@ async function handle(
             enabled: conv.enabled,
             leftAt: conv.left_at,
             readOnly: conv.channel !== "web",
-            preview: convLast ? (convLast.role === "user" ? "我：" : "") + convLast.text.replace(/\s+/g, " ").slice(0, 40) : "还没有消息",
+            preview: convLast ? (convLast.role === "user" ? "我：" : "") + humanPreview(convLast.text).slice(0, 40) : "还没有消息",
             lastAt: convLast?.at ?? conv.created_at,
             unread: unreadCountForConversation(conv.id),
           };
@@ -2240,7 +2305,7 @@ async function handle(
           // 图像生成开没开：会话页据此决定露不露「画一张」，能力就绪与否由 /api/status 那份 caps 决定
           imageGen: contact.features.imageGen,
           createdAt: contact.created_at,
-          preview: last ? (last.role === "user" ? "我：" : "") + last.text.replace(/\s+/g, " ").replace(/\*\*([^*]+)\*\*/g, "$1").replace(/`([^`]*)`/g, "$1").replace(/^\s*[-*#]\s+/g, "").slice(0, 40) : "打过招呼就能开始聊",
+          preview: last ? (last.role === "user" ? "我：" : "") + humanPreview(last.text).slice(0, 40) : "打过招呼就能开始聊",
           previewChannel: last?.messageChannel ?? "",
           conversationId: last?.conversationId ?? null,
           conversationTitle: last?.title ?? "",
@@ -2501,12 +2566,12 @@ async function handle(
       }
       avatar = clean;
     }
-    // 长相参考图：先经 /api/media 落盘，这里只收那条 /media 路径（文件必须真在）
+    // 自拍参考图：先经 /api/media 落盘，这里只收那条 /media 路径（文件必须真在）
     let faceRef: string | undefined;
     if (body.faceRef !== undefined) {
       const clean = sanitizeFaceRef(body.faceRef);
       if (body.faceRef !== "" && clean === undefined) {
-        sendJson(response, 400, { ok: false, error: "长相参考图得是已上传到本机的 /media 图片" });
+        sendJson(response, 400, { ok: false, error: "自拍参考图得是已上传到本机的 /media 图片" });
         return;
       }
       faceRef = clean;

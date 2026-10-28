@@ -70,6 +70,7 @@ const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "experience", title: "聊天显示", meta: "气泡时间、列表密度", anchor: "settings-chat-display", keywords: "时间 日期 密度 列表 气泡" },
   { group: "experience", title: "系统通知", meta: "新消息通知与权限", anchor: "settings-notifications", keywords: "通知 提醒 消息 权限" },
   { group: "system", title: "数据存储", meta: "数据目录与迁移", anchor: "settings-storage", keywords: "数据 文件夹 目录 存储 迁移" },
+  { group: "system", title: "隐私与数据边界", meta: "本机数据、模型发送范围与运行检查", anchor: "settings-privacy", keywords: "隐私 安全 密钥 本机 发送 检查 诊断" },
   { group: "system", title: "备份与恢复", meta: "导出、下载与导入备份", anchor: "settings-backup", keywords: "备份 恢复 导出 导入 迁移 恢复" },
   { group: "system", title: "手机与远程访问", meta: "局域网、访问码、隧道域名", anchor: "settings-lan", keywords: "手机 局域网 wifi 远程 隧道 二维码 访问码 端口" },
   { group: "system", title: "启动与关窗", meta: "开机自启、托盘常驻", anchor: "settings-desktop", keywords: "启动 开机 托盘 关窗 后台" },

@@ -188,7 +188,7 @@ const TOOLS: ToolDef[] = [
     description:
       "画一张图发给他（features 里叫「图像生成」，按联系人开）。用户点名要图、或你觉得一张图比一段话更合适时用。" +
       "prompt 用中文写清画面：主体 / 场景 / 风格 / 光线 / 构图，越具体越接近你想要的。" +
-      "他要看**你本人**（自拍、「发张你的照片」「你长什么样」）时把 selfie 设成 true——画面里的脸会按你存好的长相参考来画，" +
+      "他要看**你本人**（自拍、「发张你的照片」「你长什么样」）时把 selfie 设成 true——画面里的脸会按你存好的自拍参考来画，" +
       "这种要竖构图，别自己在 prompt 里描述脸。**只要画面里会出现你自己，不管什么场景都设 true**" +
       "（「你在窗台边看书」「你撑着伞走在雨里」也算）——不设 true 画出来的就是一张陌生的脸，和你存的那张对不上。" +
       "代价：他要干等几十秒（画本身约 8~15 秒，加上你思考与组织语言，实测一整轮约 90 秒），所以别轻易画、也别一次连着画多张。" +
@@ -197,7 +197,7 @@ const TOOLS: ToolDef[] = [
       type: "object",
       properties: {
         prompt: { type: "string", description: "画面描述：主体/场景/风格/光线/构图（自拍时写场景与状态，不用写脸）" },
-        selfie: { type: "boolean", description: "true = 画的是你自己（用她的长相参考图，竖构图自拍）" },
+        selfie: { type: "boolean", description: "true = 画的是你自己（用该联系人的自拍参考图，竖构图自拍）" },
       },
       required: ["prompt"],
       additionalProperties: false,
@@ -213,7 +213,7 @@ const TOOLS: ToolDef[] = [
       const faceRef = wantsSelfie ? getContact(context.contactId)?.faceRef ?? "" : "";
       if (wantsSelfie && faceRef === "") {
         // 没有参考图就不要退化成"画个陌生脸说是她"——那等于让她撒谎。把原因说清楚，让她自己决定怎么回。
-        return { ok: false, error: "还没存她的长相参考图（资料页 → 她的长相），所以现在画不出自拍；可以先画别的画面，或如实说没有" };
+        return { ok: false, error: "还没存该联系人的自拍参考图（资料页 → 人格设定 → 角色形象），所以现在画不出自拍；可以先画别的画面，或如实说没有" };
       }
       const started = Date.now();
       const image = await generateImage(wantsSelfie ? `${SELFIE_FRAMING}\n场景与状态：${scene}` : scene, {

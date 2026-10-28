@@ -59,7 +59,7 @@ export type ContactDetail = {
   id: string;
   name: string;
   avatar: string;
-  /** 长相参考图：/media 路径（不是 dataURL）。她画自拍时按这张脸来画。空 = 没存。 */
+  /** 自拍参考图：/media 路径（不是 dataURL）。她画自拍时按这张脸来画。空 = 没存。 */
   faceRef?: string;
   model_profile?: string;
   /** 回放轮数覆盖；0/缺省 = 跟随全局。 */

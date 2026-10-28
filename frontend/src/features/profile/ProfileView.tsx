@@ -18,13 +18,15 @@ import { QQSection } from "./QQSection";
 import MemoryPanel from "../memory/MemoryPanel";
 import ProactivePanel from "../tasks/ProactivePanel";
 import ContentLibraryPanel from "./ContentLibraryPanel";
+import RecallSection from "../status/RecallSection";
 import { getProfilePage, setProfilePage, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
-import { cachedStatus, loadStatus } from "../../lib/statusStore";
 import { useTabSelect } from "../../hooks/useTabSelect";
 import { useDismiss } from "../../hooks/useDismiss";
 import Tabs, { panelAria, type PanelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import type { PersonaDraft } from "../../lib/persona-doc";
+
+const shortPreview = (text: string, max = 260): string => text.length > max ? text.slice(0, max) + "…" : text;
 
 /** 与后端 FEATURE_DEFAULTS 对齐：除历史行为（memoryExtract 记记忆、splitReply 分条气泡）
  *  与显示开关外默认全关——新增能力由用户主动开，历史行为保持原样、由用户主动关。 */
@@ -70,7 +72,7 @@ const TOOL_ITEMS: ToolRow[] = [
   { kind: "toggle", key: "memorySearch", label: "翻记忆", hint: (who) => `拿不准的事，${who}可以自己翻记忆库核对；这里只关「主动去翻」这条路，每轮自动带上的相关记忆归「记忆召回」管，记不记新的归「记忆提取」管。` },
   { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。" },
   { kind: "toggle", key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
-  { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。` },
+  { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。自拍参考图在「人格设定 → 角色形象」。` },
   { kind: "pointer", label: "技能", hint: "把自定义技能当成一份做法说明书；有可用技能时自动挂载，内容与开关在 设置 → 技能。" },
 ];
 
@@ -267,7 +269,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   // 点头像=看大图（有图时）；换图走旁边那枚「更换头像」按钮
   const [avaZoom, setAvaZoom] = useState<string | null>(null);
   useDismiss(!!avaZoom, () => setAvaZoom(null));
-  // 长相参考图：存的是 /media 路径（原图太大，不能像头像那样内联进行里）
+  // 自拍参考图：存的是 /media 路径（原图太大，不能像头像那样内联进行里）
   const [faceRef, setFaceRef] = useState("");
   const [faceRefDirty, setFaceRefDirty] = useState(false);
   const [faceBusy, setFaceBusy] = useState(false);
@@ -304,16 +306,15 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   const [consBusy, setConsBusy] = useState(false);
   const [consNote, setConsNote] = useState("");
   // 提示词预览（按此联系人）：还原下一轮发消息 she 实际收到的完整内容
-  type PreviewData = { prompt: string; history?: Array<{ role: string; text: string }>; memoryNote?: string };
+  type PreviewData = {
+    prompt: string;
+    history?: Array<{ role: string; text: string }>;
+    memoryEvents?: Array<{ id: number; kind: string; subject: string; content: string }>;
+    memoryNote?: string;
+    historyNote?: string;
+  };
   const [promptPreview, setPromptPreview] = useState<PreviewData | null>(null);
   const [previewing, setPreviewing] = useState(false);
-  // 提示词预览属调试面：只在开发模式露出（和状态页的调用记录/最近处理同一口径）。
-  const [devMode, setDevMode] = useState(() => cachedStatus(contactId)?.devMode === true);
-  useEffect(() => {
-    let alive = true;
-    void loadStatus(contactId).then((s) => { if (alive) setDevMode(s.devMode === true); }).catch(() => { /* 拿不到就按非 dev 处理 */ });
-    return () => { alive = false; };
-  }, [contactId]);
   /** 未保存就点返回 / 模板会覆盖已有三段 → 都先拦一次。拦在动作上，不拦在提示上。 */
   const [confirmLeave, setConfirmLeave] = useState(false);
   const [confirmTemplate, setConfirmTemplate] = useState(false);
@@ -330,7 +331,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       .catch((err: Error) => setError(err.message));
   };
 
-  /** 长相参考：原图直传 /api/media 落盘，这里只留那条路径（不像头像那样压缩内联）。 */
+  /** 自拍参考：原图直传 /api/media 落盘，这里只留那条路径（不像头像那样压缩内联）。 */
   const onFaceFile = (e: React.ChangeEvent<HTMLInputElement>): void => {
     const file = e.target.files?.[0];
     e.target.value = "";
@@ -767,7 +768,31 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       )}
 
       {(visitedPages.has("persona") || page === "persona") && !isAssistant && loaded && (
-        <div className="card card-pad" hidden={page !== "persona"} {...pagePanelFor("persona")}>
+        <div className="pf-persona-stack" hidden={page !== "persona"} {...pagePanelFor("persona")}>
+          <div className="card card-pad pf-set-card pf-role-card">
+            <div className="pf-set-title">角色形象</div>
+            <div className="pf-set-row">
+              <div className="pf-set-label">
+                <span>自拍参考图</span>
+                <small>生成自拍时会按这张照片里的脸来画。建议正脸、光线清楚、无遮挡；只影响生成的自拍，不会改头像。</small>
+              </div>
+              <div className="pf-set-ctl pf-face-ctl">
+                {faceRef !== "" && <img className="pf-face-thumb" src={faceRef} alt="当前自拍参考图" />}
+                <button type="button" className="chip" disabled={faceBusy}
+                  onClick={() => faceInputRef.current?.click()}>
+                  {faceBusy ? "上传中…" : faceRef === "" ? "上传照片" : "更换"}
+                </button>
+                {faceRef !== "" && (
+                  <button type="button" className="chip"
+                    onClick={() => { setFaceRef(""); setFaceRefDirty(true); }}>移除</button>
+                )}
+                {features.imageGen !== true && (
+                  <small className="pf-set-note">图像生成现在关着；到「对话设置 → 工具与联网」打开后，才会用这张参考图生成自拍。</small>
+                )}
+              </div>
+            </div>
+          </div>
+          <div className="card card-pad">
           {/* 三段一次摊开：从前这里是「段落 tab × 一个大 textarea」，一次只看得见三段里的一段，
               切段时整块换掉，上面还摆了一行「当前编辑 / 整份人格文档（.md）」的文件隐喻——
               系统里根本没有文件，只会让人以为自己在写的是一份份文档而不是同一个人。 */}
@@ -849,6 +874,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   : ""}
               {personaOver > 0 ? "" : "。"}
             </span>
+          </div>
           </div>
         </div>
       )}
@@ -1077,24 +1103,6 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 )}
               </div>
 
-              {features.imageGen && (
-                <div className="pf-set-row">
-                  <div className="pf-set-label">
-                    <span title="画自拍时按这张脸来画；建议正脸、光线清楚，别戴帽子口罩。">长相参考</span>
-                  </div>
-                  <div className="pf-set-ctl pf-face-ctl">
-                    {faceRef !== "" && <img className="pf-face-thumb" src={faceRef} alt="当前长相参考图" />}
-                    <button type="button" className="chip" disabled={faceBusy}
-                      onClick={() => faceInputRef.current?.click()}>
-                      {faceBusy ? "上传中…" : faceRef === "" ? "上传一张" : "换一张"}
-                    </button>
-                    {faceRef !== "" && (
-                      <button type="button" className="chip"
-                        onClick={() => { setFaceRef(""); setFaceRefDirty(true); }}>清除</button>
-                    )}
-                  </div>
-                </div>
-              )}
             </div>
           )}
 
@@ -1237,33 +1245,50 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </div>
           )}
 
-          {!isAssistant && devMode && (
-            <div className="card card-pad pf-set-card">
+          {!isAssistant && (
+            <div className="card card-pad pf-set-card pf-see-card">
               <div className="pf-set-title">
-                <span>提示词预览</span>
+                <span>本轮会看到什么</span>
                 <button type="button" className="pf-ghost" disabled={previewing} onClick={runPromptPreview}>
-                  {previewing ? "拼装中…" : "预览发送时的提示词"}
+                  {previewing ? "整理中…" : "预览"}
                 </button>
               </div>
               <div className="pf-set-sub">
-                看看该联系人下一轮实际会收到的内容：人设是还没保存的当前草稿；记忆按你最后一句话真实回想起来的部分。
+                按当前草稿与最近对话重建下一轮会用到的信息。只展示人能读懂的部分，不展开系统内部规则。
               </div>
               {promptPreview && (
-                <>
-                  {promptPreview.memoryNote && <div className="pf-comp-note">{promptPreview.memoryNote}</div>}
-                  <div className="preview show">
-                    <div className="label">① 人设与规则（每轮都带）</div>
-                    <pre>{promptPreview.prompt}</pre>
-                  </div>
-                  {(promptPreview.history?.length ?? 0) > 0 && (
-                    <div className="preview show">
-                      <div className="label">② 最近对话（{promptPreview.history!.length} 条）</div>
-                      <pre>
-                        {promptPreview.history!.map((h) => `${h.role === "user" ? "你" : who}：${h.text}`).join("\n")}
-                      </pre>
-                    </div>
-                  )}
-                </>
+                <div className="pf-see-grid">
+                  <section className="pf-see-section">
+                    <div className="pf-see-head"><b>人设与关系</b><span>每轮都会带上</span></div>
+                    <dl>
+                      <div><dt>背景</dt><dd>{shortPreview(effective.background) || "还没填写"}</dd></div>
+                      <div><dt>人设</dt><dd>{shortPreview(effective.identity) || "还没填写"}</dd></div>
+                      <div><dt>相处方式</dt><dd>{shortPreview(effective.relationship) || "还没填写"}</dd></div>
+                    </dl>
+                  </section>
+                  <section className="pf-see-section">
+                    <div className="pf-see-head"><b>会想起的记忆</b><span>{promptPreview.memoryEvents?.length ?? 0} 条</span></div>
+                    {promptPreview.memoryNote && <p className="pf-see-note">{promptPreview.memoryNote}</p>}
+                    {(promptPreview.memoryEvents?.length ?? 0) > 0 ? (
+                      <ul className="pf-see-list">
+                        {promptPreview.memoryEvents!.map((m) => (
+                          <li key={m.id}><span>{shortPreview(m.content, 180)}</span><small>{m.subject || m.kind}</small></li>
+                        ))}
+                      </ul>
+                    ) : <p className="pf-see-empty">这次没有召回到长期记忆。</p>}
+                  </section>
+                  <section className="pf-see-section">
+                    <div className="pf-see-head"><b>最近对话</b><span>{promptPreview.history?.length ?? 0} 条</span></div>
+                    {(promptPreview.history?.length ?? 0) > 0 ? (
+                      <ol className="pf-see-history">
+                        {promptPreview.history!.slice(-6).map((h, i) => (
+                          <li key={i}><b>{h.role === "user" ? "你" : who}</b><span>{shortPreview(h.text, 220)}</span></li>
+                        ))}
+                      </ol>
+                    ) : <p className="pf-see-empty">还没有可回放的对话。</p>}
+                  </section>
+                  {promptPreview.historyNote && <div className="pf-see-foot">{promptPreview.historyNote}</div>}
+                </div>
               )}
             </div>
           )}
@@ -1271,9 +1296,14 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           </div>
         </div>
       )}
+
       {mode === "edit" && (visitedPages.has("memory") || page === "memory") && (
         <TabPanel active={page === "memory"} aria={pagePanelFor("memory")}>
-          <MemoryPanel panel={{}} active={page === "memory"} contactId={contactId} who={who} />
+          <div className="pf-memory-stack">
+            <RecallSection embedded contactId={contactId} contactName={who} contactAvatar=""
+              onSwitchContact={() => undefined} onOpenContacts={() => undefined} panel={{}} />
+            <MemoryPanel panel={{}} active={page === "memory"} contactId={contactId} who={who} />
+          </div>
         </TabPanel>
       )}
       {mode === "edit" && (visitedPages.has("proactive") || page === "proactive") && (

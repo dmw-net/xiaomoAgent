@@ -71,7 +71,9 @@ export function testCapability(payload: Record<string, unknown>): Promise<Record
 export function previewPrompt(payload: Record<string, unknown>): Promise<{
   prompt: string;
   history?: Array<{ role: string; text: string }>;
+  memoryEvents?: Array<{ id: number; kind: string; subject: string; content: string }>;
   memoryNote?: string;
+  historyNote?: string;
 }> {
   return postJson("/api/settings/preview", payload);
 }

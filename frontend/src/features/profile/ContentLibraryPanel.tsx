@@ -75,7 +75,7 @@ export default function ContentLibraryPanel({ active = true, contactId, who = "�
       } else {
         await contactsApi.updateContact(contactId, { faceRef: a.url });
       }
-      setNotice("已设为长相参考；后续自拍会优先按这张脸生成。");
+      setNotice("已设为自拍参考；后续自拍会优先按这张脸生成。");
       onFaceRefChanged(a.url);
       window.dispatchEvent(new Event("xiaomo:contacts-changed"));
       list.reset();
@@ -152,7 +152,7 @@ export default function ContentLibraryPanel({ active = true, contactId, who = "�
                   : <span className="content-file"><File size={30} strokeWidth={1.5} /><b>{a.fileName}</b></span>}
                 <span className={"content-source " + a.source}>{sourceLabel(a)}</span>
                 {a.withReference && <span className="content-badge ref"><Shapes size={11} />带参考</span>}
-                {faceRef !== "" && faceRef === a.url && <span className="content-badge face">长相参考</span>}
+                {faceRef !== "" && faceRef === a.url && <span className="content-badge face">自拍参考</span>}
               </button>
               <figcaption>
                 <span className="content-title" title={title}>{title}</span>
@@ -166,7 +166,7 @@ export default function ContentLibraryPanel({ active = true, contactId, who = "�
                     </button>
                   )}
                   {isImage && faceRef !== a.url && (
-                    <button type="button" className="art-act" aria-label="设为长相参考" title="设为长相参考" disabled={busyId === a.id}
+                    <button type="button" className="art-act" aria-label="设为自拍参考" title="设为自拍参考" disabled={busyId === a.id}
                       onClick={() => { setNotice(""); void setFaceReference(a); }}>
                       <User size={14} strokeWidth={1.9} />
                     </button>

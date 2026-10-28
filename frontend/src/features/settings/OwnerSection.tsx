@@ -23,6 +23,7 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
   const [avaZoom, setAvaZoom] = useState<string | null>(null);
   useDismiss(!!avaZoom, () => setAvaZoom(null));
   const avatar = form.saved?.persona?.owner?.avatar || "";
+  const ownerName = form.oName.trim() || "你";
 
   const pick = (): void => { if (!avaBusy) fileRef.current?.click(); };
 
@@ -126,6 +127,20 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
           <textarea id="o-notes" rows={2} placeholder="偏好、禁忌、固定习惯"
             value={form.oNotes} onChange={(e) => form.setONotes(e.target.value)} />
           <div className="hint">这段话会作为长期记忆带进每次对话。</div>
+        </div>
+        <div className="owner-see" aria-label="联系人眼中的你">
+          <div className="owner-see-head"><b>联系人眼中的你</b><span>保存后带入每次对话</span></div>
+          <div className="owner-see-person">
+            <span className={"owner-see-ava" + (avatar ? " has-img" : "")}>
+              {avatar ? <img src={avatar} alt="" /> : ownerName.slice(0, 1)}
+            </span>
+            <span><b>{ownerName}</b><small>聊天时会按上面的性别设置指代你</small></span>
+          </div>
+          <div className="owner-see-fields">
+            <div><b>印象</b><p>{form.oImpression.trim() || "还没有写，只能从聊天里慢慢认识你。"}</p></div>
+            <div><b>长期备注</b><p>{form.oNotes.trim() || "还没有写。偏好和禁忌不会自动记住。"}</p></div>
+          </div>
+          <p className="owner-see-note">这是所有联系人共享的背景；每位联系人自己的关系设定仍在各自的资料页里。</p>
         </div>
         {form.personaBanner && (
           <div className={"banner show " + form.personaBanner.kind} id="personaBanner" role={form.personaBanner.kind === "bad" ? "alert" : "status"}>

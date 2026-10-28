@@ -20,7 +20,7 @@ export function listArtifacts(limit: number, offset: number, cid: string): Promi
   return getJson("/api/artifacts?" + q);
 }
 
-/** 收藏 / 删除 / 设为她的长相。三个动作共用一条路由，靠 op 分。 */
+/** 收藏 / 删除 / 设为自拍参考图。三个动作共用一条路由，靠 op 分。 */
 export function manageArtifact(op: "star" | "delete" | "setFaceRef", id: string, contactId?: string): Promise<Record<string, unknown>> {
   return postJson("/api/artifacts", { op, id, ...(contactId ? { contactId } : {}) });
 }

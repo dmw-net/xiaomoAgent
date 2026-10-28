@@ -13,7 +13,15 @@ const worse = (a: Led, b: Led): Led => RANK[Math.max(RANK.indexOf(a), RANK.index
 const DAY = 86_400_000;
 
 /** 一行的完整形态：led=灯，silent=只在卡里出现不进提醒条，note=提醒条里的一句人话。 */
-type Row = { led: Led; k: string; v: ReactNode; fix?: ReactNode; silent?: boolean; note?: string };
+type Row = {
+  led: Led;
+  k: string;
+  v: ReactNode;
+  fix?: ReactNode;
+  silent?: boolean;
+  note?: string;
+  action?: { label: string; on: () => void };
+};
 
 /** 运行时长说人话：4 小时 11 分，而不是 14664 秒。 */
 function uptimeText(sec: number): string {
@@ -35,6 +43,7 @@ function friendlyModelError(code?: string, message?: string): string {
   if (/401|403|unauthorized|forbidden|api.?key|鉴权|密钥/.test(text)) return "模型密钥无效或没有权限";
   if (/429|rate.?limit|quota|额度|限流/.test(text)) return "模型调用被限流或额度不足";
   if (/non.?json|json|parse|格式/.test(text)) return "模型返回格式异常";
+  if (/output_truncated|finish_reason.?length|输出额度用完|思考.*额度/.test(text)) return "思考太久，没写完结果";
   if (/network|fetch|econn|dns|连接/.test(text)) return "连接不上模型服务";
   return "模型调用失败";
 }
@@ -82,10 +91,8 @@ const CHANNEL_LABEL: Record<string, string> = { web: "网页", wechat: "微信" 
  * 记忆条数、微信绑定都在各联系人的资料页里，总览按联系人显示等于随机挑一位。
  * 提醒条同理只收真会坏事的：按设计如此的静默/配额不该天天报警。
  */
-export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, devMode, panel }: {
+export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, onOpenContacts, panel }: {
   panel: PanelAria;
-  /** 开发者模式：只有开着时才给「调用记录 / 最近处理」这类排障 tab 的跳转链接（这些 tab 本身也只在开发模式出现）。 */
-  devMode: boolean;
   d: StatusData;
   /** 能力就绪状态由父级与 /api/status 并行取；null = 一次都还没拉到过。 */
   caps: Caps | null;
@@ -95,7 +102,8 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   notice?: string;
   actions: ReactNode;
   goSettings: (tab: "model" | "capability") => void;
-  goTab: (tab: "calls" | "turns") => void;
+  goTab: (tab: "activity") => void;
+  onOpenContacts: () => void;
 }): JSX.Element {
   const now = Date.now();
   const recent = d.recent ?? { calls: 0, fail: 0 };
@@ -118,7 +126,9 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
       led: (recent.fail > 0 ? "warn" : "ok") as Led, k: "近 24 小时",
       note: recent.fail > 0 ? `近 24 小时调用失败 ${recent.fail} 次` : undefined,
       v: recent.calls === 0 ? "还没有调用记录" : `${recent.calls} 次调用 · ${recent.fail} 次失败`,
-      fix: recent.fail > 0 ? <>累计失败 {d.modelFailures} 次{devMode ? <>，{link("逐条原因看「调用记录」", () => goTab("calls"))}</> : null}</> : undefined,    },
+      fix: recent.fail > 0 ? <>累计失败 {d.modelFailures} 次，{link("逐条原因看「活动记录」", () => goTab("activity"))}</> : undefined,
+      action: recent.fail > 0 ? { label: "查看活动", on: () => goTab("activity") } : undefined,
+    },
     ...(d.lastModelError ? [{
       led: (errRecent ? "warn" : "ok") as Led, k: "最近失败",
       silent: !errRecent,
@@ -172,6 +182,7 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
       fix: wx && wxTrouble > 0
         ? <>{wx.trouble.map((x) => x.name + (x.lastError ? "：" + x.lastError.slice(0, 40) : "")).join("；")}，到各自联系人的「对话设置」里重连</>
         : undefined,
+      action: wx && wxTrouble > 0 ? { label: "去处理", on: onOpenContacts } : undefined,
     },
     // QQ 与微信差在凭据是全局一份：没配凭据时不存在"某条连接断了"，只有"这个通道还没接上"。
     (() => {
@@ -189,12 +200,15 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
           : q && qTrouble > 0
             ? <>{q.trouble.filter((t) => t.lastError !== "").map((x) => x.name + "：" + x.lastError.slice(0, 40)).join("；")}</>
             : undefined,
+        action: q && (q.status === "attention" || qTrouble > 0) ? { label: "去处理", on: onOpenContacts } : undefined,
       };
     })(),
   ];
 
   const t = d.turns;
   const turnFailRecent = !!t?.lastFailedAt && now - t.lastFailedAt < DAY;
+  const extractSamples = d.memoryExtractSamples ?? 0;
+  const extractEmptyPct = d.memoryExtractEmptyRate == null ? null : Math.round(d.memoryExtractEmptyRate * 100);
   const runRows: Row[] = [
     { led: "ok", k: "已运行", silent: true, v: uptimeText(d.uptimeSec ?? 0) },
     {
@@ -209,19 +223,25 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
     {
       led: (d.memoryExtractFailures > 0 ? "bad" : "ok") as Led, k: "记忆提取",
       note: d.memoryExtractFailures > 0 ? `记忆提取连续 ${d.memoryExtractFailures} 次失败` : undefined,
-      v: d.memoryExtractFailures > 0 ? `连续 ${d.memoryExtractFailures} 次失败，对话正记不下来` : "最近一次整理成功",
-      fix: d.memoryExtractFailures > 0 && devMode
-        ? <>{link("失败原因看「调用记录」", () => goTab("calls"))}（用途为「记忆提取」的那些）</>
+      v: d.memoryExtractFailures > 0
+        ? `连续 ${d.memoryExtractFailures} 次失败，对话正记不下来`
+        : extractSamples > 0
+          ? `近 ${extractSamples} 次抽取正常${extractEmptyPct === null ? "" : `，${extractEmptyPct}% 本轮无需记录`}`
+          : "还没有抽取记录",
+      fix: d.memoryExtractFailures > 0
+        ? <>{link("失败原因看「活动记录」", () => goTab("activity"))}（筛选「记忆整理」）</>
         : undefined,
+      action: d.memoryExtractFailures > 0 ? { label: "查看原因", on: () => goTab("activity") } : undefined,
     },
     ...(t ? [{
-      led: (t.failed > 0 && turnFailRecent ? "warn" : "ok") as Led, k: "处理单",
+      led: (t.failed > 0 && turnFailRecent ? "warn" : "ok") as Led, k: "回复任务",
       silent: !(t.failed > 0 && turnFailRecent),
       note: t.failed > 0 && turnFailRecent ? "最近有消息处理失败" : undefined,
       v: <>{t.total} 条消息 · 完成 {t.done} · 失败 {t.failed} · 处理中 {t.inFlight}</>,
       fix: t.failed > 0 && turnFailRecent
-        ? <>最近一次失败 {when(t.lastFailedAt!)}{devMode ? <>，{link("明细看「最近处理」", () => goTab("turns"))}</> : null}</>
+        ? <>最近一次失败 {when(t.lastFailedAt!)}，{link("明细看「活动记录」", () => goTab("activity"))}</>
         : undefined,
+      action: t.failed > 0 && turnFailRecent ? { label: "查看任务", on: () => goTab("activity") } : undefined,
     } as Row] : []),
     { led: "ok", k: "数据", silent: true, v: <>保存在本机 <code>{d.dbPath}</code></> },
   ];
@@ -236,7 +256,8 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
     .map((c) => ({ title: c.title, rows: c.rows.filter((r) => !r.silent && r.led !== "ok" && r.note), goto: c.goto }))
     .filter((c) => c.rows.length > 0);
   const summaryLed = alerts.reduce<Led>((acc, a) => worse(acc, a.rows.reduce<Led>((x, r) => worse(x, r.led), "ok")), "ok");
-  const summaryTitle = alerts.length === 0 ? "一切正常" : `${alerts.length} 项需要处理`;
+  const issueCount = alerts.reduce((n, a) => n + a.rows.length, 0);
+  const summaryTitle = issueCount === 0 ? "一切正常" : `${issueCount} 项需要处理`;
   const summaryText = alerts.length === 0
     ? "模型、能力和消息通道都已就绪，暂时没有需要你处理的事情。"
     : alerts.flatMap((a) => a.rows.map((r) => r.note)).filter(Boolean).join("；");
@@ -255,6 +276,24 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
           <span>{summaryText}</span>
         </div>
       </div>
+      {issueCount > 0 && (
+        <div className="ov-issues" aria-label="需要处理的事项">
+          {alerts.flatMap((a) => a.rows.map((r) => (
+            <div className="ov-issue" key={`${a.title}-${r.k}`}>
+              <span className={`led ${r.led}`} aria-hidden="true" />
+              <div className="ov-issue-copy">
+                <b>{r.note}</b>
+                <small>{a.title} · {r.k}</small>
+              </div>
+              {r.action ? (
+                <button type="button" className="btn sm" onClick={r.action.on}>{r.action.label}</button>
+              ) : a.goto ? (
+                <button type="button" className="btn sm" onClick={a.goto.on}>{a.goto.label}</button>
+              ) : null}
+            </div>
+          )))}
+        </div>
+      )}
       {notice && <div className="ov-note bad" role="status">{notice}</div>}
 
       <div className="ov-grid">

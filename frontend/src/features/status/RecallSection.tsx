@@ -10,8 +10,10 @@ import type { PanelAria } from "../../components/Tabs";
  * （换人清掉输入与结果），而状态页其余部分和所在 tab 都不该被换人打断。
  * 召回请求本身不带联系人参数——服务端认的是全站当前联系人。
  */
-export default function RecallSection({ contactName, contactAvatar, onSwitchContact, onOpenContacts, panel }: {
+export default function RecallSection({ contactId, embedded = false, contactName, contactAvatar, onSwitchContact, onOpenContacts, panel }: {
   panel: PanelAria;
+  contactId?: string;
+  embedded?: boolean;
   contactName: string;
   contactAvatar: string;
   onSwitchContact: (id: string) => void;
@@ -29,13 +31,13 @@ export default function RecallSection({ contactName, contactAvatar, onSwitchCont
     const seq = ++probeSeq.current;
     setProbing(true);
     void memoryApi
-      .recall(q)
+      .recall(q, 6, contactId)
       .then((d) => { if (seq === probeSeq.current) setProbe(d); })
       .catch((e: Error) => {
         if (seq === probeSeq.current) setProbe({ events: [], total: -1, keywords: [], err: e.message });
       })
       .finally(() => { if (seq === probeSeq.current) setProbing(false); });
-  }, []);
+  }, [contactId]);
 
   const onProbeInput = useCallback((v: string): void => {
     setProbeQ(v);
@@ -47,12 +49,19 @@ export default function RecallSection({ contactName, contactAvatar, onSwitchCont
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
 
   return (
-    <div className="section" {...panel}>
-      <div className="form-row" style={{ alignItems: "center", gap: 10, marginBottom: 12 }}>
-        <h2 style={{ margin: 0 }}>看看联系人能想起什么</h2>
-        <span className="hint">当前会话联系人：</span>
-        <ContactChip name={contactName} avatar={contactAvatar} onPick={onSwitchContact} onManageContacts={onOpenContacts} />
-      </div>
+    <div className={embedded ? "card card-pad pf-set-card pf-memory-probe" : "section"} {...panel}>
+      {embedded ? (
+        <>
+          <div className="pf-set-title">记忆检查</div>
+          <div className="pf-set-sub">输入一句话，看看{contactName || "联系人"}现在能从中想起哪些长期记忆。这里只做观察，不会改写记忆。</div>
+        </>
+      ) : (
+        <div className="form-row" style={{ alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <h2 style={{ margin: 0 }}>看看联系人能想起什么</h2>
+          <span className="hint">当前会话联系人：</span>
+          <ContactChip name={contactName} avatar={contactAvatar} onPick={onSwitchContact} onManageContacts={onOpenContacts} />
+        </div>
+      )}
       <div className="probe">
         <div className="field">
           <input

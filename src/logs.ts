@@ -21,9 +21,9 @@ export type ModelCallRow = {
   elapsed_ms: number;
   message: string | null;
   detail: string | null;
-  /** 发给模型的完整请求体 JSON。仅 DEV_MODE 下落盘，且只在最近 FULL_TEXT_WINDOW 条内可见。 */
+  /** 发给模型的完整请求体 JSON。仅 DEV_MODE 下落盘，且只在最近 FULL_TEXT_WINDOW 次调用内保留。 */
   req_full: string | null;
-  /** 模型返回的完整响应正文（失败时为原始错误报文）。只在最近 FULL_TEXT_WINDOW 条内保留。 */
+  /** 模型返回的完整响应正文（失败时为原始错误报文）。同样只在 DEV_MODE 下落盘与保留。 */
   res_full: string | null;
   created_at: number;
   prompt_tokens: number | null;
@@ -129,9 +129,9 @@ export function logModelCall(row: {
   detail?: string | null;
   /** 完整响应正文（模型回复原文），不给则退回 detail 摘要。 */
   resFull?: string | null;
-  /** 服务商返回的原始 JSON 报文：DEV_MODE 下响应原文落这份，否则落 resFull。 */
+  /** 服务商返回的原始 JSON 报文：仅 DEV_MODE 下使用。 */
   resRaw?: string | null;
-  /** 发给模型的请求体。仅 DEV_MODE 下序列化落盘。 */
+  /** 发给模型的请求体：仅 DEV_MODE 下序列化落盘。 */
   requestBody?: unknown;
   promptTokens?: number | null;
   completionTokens?: number | null;
@@ -145,12 +145,16 @@ export function logModelCall(row: {
   // 状态页红点与「累计失败」虚高——"失败必须可见"这条纪律反过来被噪声淹了。
   // 想看"刚才为什么停了"有处理单那边的记录，不缺这一行。
   if (row.cancelled === true) return;
+  // 原文只服务开发排障：普通模式连落库都不做。
+  // 用户能看到的失败原因来自 message / detail 短摘要，不需要把整份请求或响应留在本机。
   const reqFull = config.devMode && row.requestBody !== undefined
     ? capFullText(redactSecrets(stripInlineDataUrls(JSON.stringify(row.requestBody))))
     : null;
-  const resFull = (config.devMode && row.resRaw !== undefined && row.resRaw !== null)
-    ? capFullText(redactSecrets(row.resRaw))
-    : (row.resFull == null ? null : capFullText(redactSecrets(row.resFull)));
+  const resFull = config.devMode
+    ? ((row.resRaw !== undefined && row.resRaw !== null)
+        ? capFullText(redactSecrets(row.resRaw))
+        : (row.resFull == null ? null : capFullText(redactSecrets(row.resFull))))
+    : null;
   db.prepare(
     `INSERT INTO model_calls (turn_id, purpose, ok, code, status, model, url, elapsed_ms, message, detail, created_at, prompt_tokens, completion_tokens, total_tokens, contact_id, profile_id, req_full, res_full)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -174,25 +178,65 @@ export function logModelCall(row: {
     reqFull,
     resFull,
   );
-  if (reqFull !== null || resFull !== null) {
-    // 环形窗口：全文只留最近 FULL_TEXT_WINDOW 条，其余剥成摘要（detail 本来就在）。
-    //
-    // ⚠️ 外层必须用 id 下限把扫描圈住。原语句的外层谓词
-    // （req_full IS NOT NULL OR res_full IS NOT NULL）没有索引可走——
-    // idx_model_calls_created 在 created_at 上、idx_model_calls_failed 是 `WHERE ok=0`
-    // 的部分索引，两者都用不上——于是每次带全文的调用都全表扫一遍 model_calls。
-    // 而成功聊天**每次**都带 res_full，等于每条回复的请求路径上都同步扫全表
-    // （2 万行保留上限时尤其明显）。加上"只看最近窗口附近的行"之后，实际访问的是个位数行。
-    db.prepare(
-      `UPDATE model_calls SET req_full = NULL, res_full = NULL
-       WHERE id >= (SELECT MAX(id) - ? FROM model_calls)
-         AND (req_full IS NOT NULL OR res_full IS NOT NULL)
-         AND id NOT IN (
-           SELECT id FROM model_calls
-           WHERE req_full IS NOT NULL OR res_full IS NOT NULL
-           ORDER BY id DESC LIMIT ?)`,
-    ).run(FULL_TEXT_WINDOW, FULL_TEXT_WINDOW);
-  }
+  if (reqFull !== null || resFull !== null) trimModelCallBodies();
+}
+
+/** 当前还留在库里的请求/响应全文规模。字符数用于告诉用户“清掉的是什么”。 */
+export function modelCallBodyStats(): {
+  calls: number; withBodies: number; reqChars: number; resChars: number; reqBytes: number; resBytes: number;
+} {
+  return db.prepare(`
+    SELECT COUNT(*) AS calls,
+           COALESCE(SUM(CASE WHEN req_full IS NOT NULL OR res_full IS NOT NULL THEN 1 ELSE 0 END), 0) AS withBodies,
+           COALESCE(SUM(LENGTH(req_full)), 0) AS reqChars,
+           COALESCE(SUM(LENGTH(res_full)), 0) AS resChars,
+           COALESCE(SUM(LENGTH(CAST(req_full AS BLOB))), 0) AS reqBytes,
+           COALESCE(SUM(LENGTH(CAST(res_full AS BLOB))), 0) AS resBytes
+    FROM model_calls
+  `).get() as { calls: number; withBodies: number; reqChars: number; resChars: number; reqBytes: number; resBytes: number };
+}
+
+/**
+ * 开发模式只保留最近 FULL_TEXT_WINDOW 次调用的原文。
+ *
+ * 旧实现把“最近 10 个 id”当成“最近 10 条带原文的记录”，结果永远只看了看最新 ID 附近，
+ * 更早的全文一直留到 30 天删除为止——这正是开发库膨胀到上百 MB 的原因。
+ * 这里先取倒数第 N 条带原文的 id，再把比它更早的全文剥掉；普通模式启动时则全清。
+ */
+export function trimModelCallBodies(): number {
+  const keep = db.prepare(`
+    SELECT id FROM model_calls
+    WHERE req_full IS NOT NULL OR res_full IS NOT NULL
+    ORDER BY id DESC LIMIT ?
+  `).all(FULL_TEXT_WINDOW) as Array<{ id: number }>;
+  if (keep.length < FULL_TEXT_WINDOW) return 0;
+  const cutoff = keep[keep.length - 1]!.id;
+  const result = db.prepare(`
+    UPDATE model_calls SET req_full = NULL, res_full = NULL
+    WHERE id < ? AND (req_full IS NOT NULL OR res_full IS NOT NULL)
+  `).run(cutoff);
+  return Number(result.changes);
+}
+
+/** 用户主动清理诊断原文；保留调用次数、耗时、失败原因和 Token 统计。 */
+export function clearModelCallBodies(): { cleared: number; chars: number; bytes: number } {
+  const before = modelCallBodyStats();
+  const result = db.prepare(`
+    UPDATE model_calls SET req_full = NULL, res_full = NULL
+    WHERE req_full IS NOT NULL OR res_full IS NOT NULL
+  `).run();
+  return {
+    cleared: Number(result.changes),
+    chars: before.reqChars + before.resChars,
+    bytes: before.reqBytes + before.resBytes,
+  };
+}
+
+/** 用户主动清空调用记录；聊天、记忆与设置不受影响，但历史用量统计会归零。 */
+export function clearModelCallHistory(): number {
+  const count = modelCallCount();
+  db.prepare("DELETE FROM model_calls").run();
+  return count;
 }
 
 /** 倒序取一段调用记录；offset 供界面「加载更多」翻页用。 */
@@ -392,6 +436,14 @@ ensureColumn("model_calls", "contact_id", "contact_id TEXT");
 ensureColumn("model_calls", "profile_id", "profile_id TEXT");
 ensureColumn("model_calls", "req_full", "req_full TEXT");
 ensureColumn("model_calls", "res_full", "res_full TEXT");
+
+// 写入口已经按 DEV_MODE 关门；这里再迁移旧版本留下的数据：
+//   开发模式只留最近 10 次原文，普通模式一条原文都不留。
+// 真正把 SQLite 文件缩回去由 /api/storage/cleanup 的 VACUUM 完成。
+const bodyMigration = config.devMode ? trimModelCallBodies() : clearModelCallBodies().cleared;
+if (bodyMigration > 0) {
+  console.log(`[logs] 已清理 ${bodyMigration} 条历史调用原文（${config.devMode ? "仅保留最近 10 次" : "普通模式不保存原文"}）`);
+}
 
 export type UsageBucket = {
   calls: number;

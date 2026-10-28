@@ -143,6 +143,7 @@ import { autoTitleThread, clearAssistantThread, createAssistantThread, deleteAss
 import { deleteSkill, listSkills, MAX_SKILL_FILE_BYTES, readSkill, saveSkill, setSkillEnabled, skillsDir } from "./skills.ts";
 import { removeExtension as deleteExtension, deleteTool as deleteExtensionTool, snapshot as extensionSnapshot, importManifest as importExtension, probeExtension, saveTool as saveExtensionTool, setEnabled as setExtensionEnabled, setScriptGate } from "./extensions.ts";
 import { migrateDataDir } from "./data-dir.ts";
+import { cleanupStorage, isStorageCleanupOp, storageOverview, type StorageCleanupOp } from "./storage.ts";
 import { importDataArchive, writeDataExport } from "./data-transfer.ts";
 import { setDesktopPrefs } from "./desktop-prefs.ts";
 import { wechat } from "./wechat.ts";
@@ -702,6 +703,32 @@ async function handle(
     return;
   }
 
+  // 数据占用与“用户可自行清理”的少量非核心项。
+  // 聊天、记忆、联系人、媒体引用不在这个接口里，避免一键误删关系数据。
+  if (method === "GET" && path === "/api/storage/overview") {
+    sendJson(response, 200, { ok: true, ...storageOverview() });
+    return;
+  }
+
+  if (method === "POST" && path === "/api/storage/cleanup") {
+    const body = await readJson<{ ops?: unknown }>(request);
+    const ops = Array.isArray(body.ops)
+      ? [...new Set(body.ops.filter((op): op is string => typeof op === "string"))].filter(isStorageCleanupOp)
+      : [];
+    if (ops.length === 0) {
+      sendJson(response, 400, { ok: false, error: "请选择至少一项要清理的数据" });
+      return;
+    }
+    try {
+      const result = cleanupStorage(ops as StorageCleanupOp[]);
+      const compactNote = result.compacted ? "数据库已压缩" : "数据已清理，但数据库暂时被占用；下次清理或重启后可继续压缩";
+      sendJson(response, 200, { ok: true, ...result, note: compactNote });
+    } catch (error) {
+      sendJson(response, 500, { ok: false, error: error instanceof Error ? error.message : String(error) });
+    }
+    return;
+  }
+
   // 「重新计数」：把失败读数的起点挪到现在，红点清零。model_calls 一条不删，
   // 调用记录页照旧能翻到全部历史；记忆提取那边只清连续失败计数器。
   if (method === "POST" && path === "/api/status/reset-counters") {
@@ -749,11 +776,8 @@ async function handle(
     return;
   }
 
-  // 单行原文：列表页不发全文，点开某一行的「查看原文」才取这一条。
-  // 出口分两档，**与列表的口径不同**（列表两个全文列都不给，这里给一个）：
-  //   res_full（模型/服务商返回的原文）恒发——它是排障的主证据，成功是回复正文、失败是错误 JSON；
-  //   req_full（完整请求体，含系统提示词/记忆/用户资料）仅 DEV_MODE 给，非 DEV_MODE 整个键剥掉。
-  // 别把这行改成"与列表同一口径"：那会让「查看原文」弹窗在生产环境只剩摘要，排障直接断一条腿。
+  // 单行详情：全文只服务开发排障。普通模式连字段都不出口，只保留 message/detail
+  // 这类短摘要给用户看失败原因；不要在出口层假装“发个 null”也算隐藏。
   const logRowMatch = method === "GET" ? path.match(/^\/api\/logs\/(\d+)$/) : null;
   if (logRowMatch) {
     const row = modelCallById(Number(logRowMatch[1]));
@@ -761,8 +785,7 @@ async function handle(
       sendJson(response, 404, { ok: false, error: "找不到这条调用记录，可能已被清理" });
       return;
     }
-    // 非 DEV_MODE：请求原文整个键都不出口，而不是发一个 null（发 null 等于告诉外面"有这个东西"）
-    const call = config.devMode ? row : (({ req_full: _omit, ...rest }) => rest)(row);
+    const call = config.devMode ? row : (({ req_full: _req, res_full: _res, ...rest }) => rest)(row);
     sendJson(response, 200, { ok: true, devMode: config.devMode, call });
     return;
   }

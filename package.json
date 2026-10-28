@@ -16,11 +16,12 @@
     "app": "npm run desktop",
     "pack": "node scripts/pack.mjs",
     "pack:dev": "node scripts/gen-asset-key.mjs && node scripts/stage-sidecar.mjs && node scripts/bundle-backend.mjs && npm --prefix frontend run build -- --mode fast && node scripts/make-manifest.mjs --unsigned && node scripts/tauri.mjs build --debug --no-sign",
-    "check": "npm run typecheck && npm --prefix frontend run typecheck && node scripts/appearance.test.ts && node scripts/chat-ui-regression.test.mjs && node --experimental-sqlite scripts/conversation-regression.test.mjs && node --experimental-sqlite scripts/data-transfer-regression.test.mjs",
+    "check": "npm run typecheck && npm --prefix frontend run typecheck && node scripts/appearance.test.ts && node scripts/chat-ui-regression.test.mjs && node --experimental-sqlite scripts/conversation-regression.test.mjs && node --experimental-sqlite scripts/data-transfer-regression.test.mjs && node --experimental-sqlite scripts/storage-cleanup-regression.test.mjs",
     "test:appearance": "node scripts/appearance.test.ts",
     "test:chat-ui": "node scripts/chat-ui-regression.test.mjs",
     "test:conversation": "node --experimental-sqlite scripts/conversation-regression.test.mjs",
     "test:data-transfer": "node --experimental-sqlite scripts/data-transfer-regression.test.mjs",
+    "test:storage": "node --experimental-sqlite scripts/storage-cleanup-regression.test.mjs",
     "doctor": "node --experimental-sqlite --env-file=.env src/doctor.ts",
 
     "smoke": "node --experimental-sqlite scripts/smoke.ts",

@@ -7,3 +7,4 @@ export * from "./status";
 export * from "./task";
 export * from "./qq";
 export * from "./ui";
+export * from "./storage";

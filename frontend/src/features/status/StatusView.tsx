@@ -419,7 +419,8 @@ export default function StatusView({ active = true, contactId, contactName, cont
                       </td></tr>
                     ) : callsPage.page.rows.map((c, i) => {
                       const failed = c.ok === 0;
-                      const canOpen = devMode || failed;
+                      // 普通用户只看失败摘要；完整请求/响应只留给开发模式。
+                      const canOpen = devMode;
                       return (
                         <tr key={c.id ?? i}
                           className={(failed ? "row-failed" : "") + (canOpen ? " row-clickable" : "")}
@@ -489,7 +490,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
                             <span className="msg">
                               {failed ? (devMode ? String(t.error || "").slice(0, 90) : friendlyFailure(null, t.error)) : String(t.reply || "").slice(0, 90)}
                             </span>
-                            {failed && (
+                            {failed && devMode && (
                               <button type="button" className="raw-hint" aria-label="查看这次回复任务的失败详情"
                                 onClick={(ev) => { ev.stopPropagation(); void openRawForTurn(t.id); }}>
                                 查看详情
@@ -560,7 +561,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
               </div>
             )
           )}
-          <div className="raw-note">只保留最近几次的完整内容；普通模式不会展示请求体与系统提示词。</div>
+          <div className="raw-note">完整请求与响应只作为排障信息保存，最多保留最近 10 次调用；日常结果以短摘要展示。</div>
         </Modal>
       )}
     </div>

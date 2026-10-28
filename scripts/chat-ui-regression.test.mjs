@@ -51,6 +51,11 @@ assert(/aria-controls=\{bodyId\}/.test(thinkingSource) && /role="region"/.test(t
 assert(/renderMd\(reasoning\)/.test(thinkingSource), "思考正文应复用 Markdown 渲染，而不是输出一整块纯文本");
 assert(/\.think-content\s*\{[\s\S]*?max-height:\s*min\(32vh,\s*300px\)[\s\S]*?overflow:\s*auto/.test(experienceCss), "长思考过程应限高并独立滚动");
 assert(/\.think-live-dots i\s*\{[\s\S]*?animation:\s*thinkDot/.test(experienceCss), "正在思考状态应有轻量过程动效");
+assert(
+  /\.chat-failure\s*\{[\s\S]*?display:\s*grid[\s\S]*?grid-template-columns:\s*auto\s+minmax\(0,\s*1fr\)\s+auto[\s\S]*?"icon copy retry"[\s\S]*?"detail detail detail"/.test(experienceCss),
+  "失败卡片应让文案、重试与详情各占独立网格区域，不能被长详情挤成逐字换行",
+);
+assert(/\.chat-failure-copy\s*\{[\s\S]*?min-width:\s*0/.test(experienceCss), "失败卡片文案区必须允许在窄屏正常收缩换行");
 assert(/const thinkingLive = showThinking && thinking\?\.thinking\.mode === "on"/.test(chatSource), "只有明确开启思考时才显示正在思考状态");
 assert(/const \[streamReasoning, setStreamReasoning\]/.test(chatSource), "聊天页必须单独接收流式思考草稿");
 assert(/<ThinkingBlock reasoning=\{streamReasoning\} live=\{draftShown === ""\}/.test(chatSource), "思考到达后应先于正文渲染，首个可见正文出现后再收起，避免空白交接");

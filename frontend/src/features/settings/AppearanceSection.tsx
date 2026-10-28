@@ -7,6 +7,7 @@ import { WALLPAPER_PRESETS, wallpaperPreset } from "../../lib/wallpaper";
 import Modal from "../../components/Modal";
 import DiagnosticsButton from "../../components/DiagnosticsButton";
 import MediaMaintenanceDialog from "../../components/MediaMaintenanceDialog";
+import StorageCleanupDialog from "../../components/StorageCleanupDialog";
 import { pickDirectory, relaunchApp } from "../../lib/native-dialog";
 import { dataTransferApi, settingsApi, wallpaperApi } from "../../api";
 import { disableNotifications, enableNotifications, getNotifyPref, notificationSupported } from "../../lib/notify";
@@ -79,6 +80,7 @@ export default function AppearanceSection({
   const [storeTarget, setStoreTarget] = useState<string | null>(null);
   const [storeNote, setStoreNote] = useState("");
   const [mediaOpen, setMediaOpen] = useState(false);
+  const [storageOpen, setStorageOpen] = useState(false);
   // 跨设备迁移：导出单文件备份；导入会覆盖当前库、图片与技能，所以必须二次确认并重启。
   const importFileRef = useRef<HTMLInputElement | null>(null);
   const [importFile, setImportFile] = useState<File | null>(null);
@@ -577,9 +579,16 @@ export default function AppearanceSection({
         <div className="settings-row compact">
           <div className="settings-row-label">
             <b>当前位置</b>
-            <span style={{ wordBreak: "break-all" }}><code>{dataDir || "（开发模式：跟随项目 ./data）"}</code></span>
+            <span style={{ wordBreak: "break-all" }}><code>{dataDir || "（跟随项目 data 目录）"}</code></span>
           </div>
           <button type="button" className="btn sm" disabled={storeBusy} onClick={chooseFolder}>选择文件夹</button>
+        </div>
+        <div className="settings-row compact">
+          <div className="settings-row-label">
+            <b>占用与清理</b>
+            <span>查看数据库、诊断原文、调用记录和导入前备份；不包含聊天消息与长期记忆。</span>
+          </div>
+          <button type="button" className="btn sm" onClick={() => setStorageOpen(true)}>数据清理</button>
         </div>
         <div className="settings-row compact">
           <div className="settings-row-label">
@@ -717,6 +726,8 @@ export default function AppearanceSection({
           onChanged={() => {}}
         />
       )}
+
+      {storageOpen && <StorageCleanupDialog onClose={() => setStorageOpen(false)} />}
         </div>
       )}
     </>

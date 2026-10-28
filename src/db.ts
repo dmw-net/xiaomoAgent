@@ -33,6 +33,29 @@ export function reopenDb(): void {
   console.log("[db] 已重新打开数据库");
 }
 
+/**
+ * 用户主动清理数据后的物理压缩。
+ *
+ * SQLite 的 DELETE / UPDATE ... = NULL 只会把页标成空闲，文件大小不会自己变小。
+ * 先 checkpoint 把 WAL 落盘并截断，再 VACUUM 重建主库；失败时保留已经完成的清理结果，
+ * 只让调用方提示“下次重启或再次清理时再压缩”。
+ */
+export function compactDb(): boolean {
+  let ok = true;
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+    db.exec("VACUUM");
+    db.exec("PRAGMA optimize");
+  } catch (error) {
+    ok = false;
+    console.warn("[db] 数据清理完成，但数据库压缩失败：", error instanceof Error ? error.message : String(error));
+  }
+  try {
+    db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
+  } catch { /* 压缩失败或别的进程正读时留 WAL 也没关系 */ }
+  return ok;
+}
+
 /** 多语句写必须同生共死：中途抛错回滚，不留半截脏状态。 */
 export function withTx<T>(fn: () => T): T {
   db.exec("BEGIN IMMEDIATE");

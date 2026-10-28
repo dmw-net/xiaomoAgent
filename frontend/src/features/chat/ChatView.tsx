@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, RotateCcw, Search, X } from "lucide-react";
 import { ApiError, chatApi, contactsApi, memoryApi, proactiveApi, settingsApi } from "../../api";
 import { refreshContacts } from "../../lib/contactsStore";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
@@ -2701,12 +2701,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
 
         {failure && (
           <div className="notice chat-failure" role="alert">
+            <span className="chat-failure-icon" aria-hidden="true">
+              <AlertTriangle size={18} strokeWidth={1.9} />
+            </span>
             <div className="chat-failure-copy">
               <b>{failure.empty ? "这次没有生成回复" : "这次回复没有完成"}</b>
               <span>{failure.empty ? "模型返回了空内容，可以重新生成一次。" : "可能是模型超时、网络中断或服务商限流；消息已经保留。"}</span>
             </div>
             <button type="button" className="retry"
               onClick={() => (failure.empty ? regenerateEmpty(failure.id) : retry(failure.id))}>
+              <RotateCcw size={13} strokeWidth={2} aria-hidden="true" />
               {failure.empty ? "重新生成" : "重试"}
             </button>
             {failure.error && (

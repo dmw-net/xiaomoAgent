@@ -470,7 +470,8 @@ try {
   const p2 = await (await fetch(`${BASE}/api/logs?limit=1&offset=1`)).json();
   check("logs 分页 limit/offset/total", typeof p1.total === "number" && p1.calls.length <= 1
     && (p1.total < 2 || (p2.calls.length === 1 && p2.calls[0].id < p1.calls[0].id)), `total=${p1.total}`);
-  // 原文环形窗口：res_full 只保留最近 10 条；DEV_MODE 关闭时请求原文不落盘、也不出口
+  // 普通模式（DEV_MODE 关闭）：请求和响应原文都不落库，也不从单行详情出口。
+  // 开发模式保留最近 10 次的环形窗口由 scripts/storage-cleanup-regression.test.mjs 覆盖。
   const logsRing = await import("../src/logs.ts");
   for (let i = 0; i < 12; i += 1) {
     logsRing.logModelCall({
@@ -480,12 +481,26 @@ try {
     });
   }
   const ringRows = logsRing.recentModelCalls(15);
-  const withFull = ringRows.filter((r) => r.res_full !== null);
-  check("响应全文只保留最近 10 条调用", withFull.length === 10 && withFull[0].id > withFull[9].id, `count=${withFull.length}`);
-  check("DEV_MODE 关闭时 req_full 不落盘", ringRows.every((r) => r.req_full === null));
+  check("普通模式请求原文不落盘", ringRows.every((r) => r.req_full === null));
+  check("普通模式响应原文也不落盘", ringRows.every((r) => r.res_full === null));
   const logsPlain = await (await fetch(`${BASE}/api/logs?limit=3`)).json();
   check("非开发模式 /api/logs 不吐 req_full 字段",
     logsPlain.devMode === false && logsPlain.calls.every((c: Record<string, unknown>) => !("req_full" in c)));
+  const ringId = ringRows[0]?.id;
+  const logsSingle = ringId == null ? null : await (await fetch(`${BASE}/api/logs/${ringId}`)).json();
+  check("非开发模式单行详情也不吐请求/响应全文",
+    logsSingle !== null && !("req_full" in logsSingle.call) && !("res_full" in logsSingle.call));
+  const storage = await (await fetch(`${BASE}/api/storage/overview`)).json();
+  check("数据占用接口只列非核心清理项",
+    storage.ok === true && typeof storage.databaseBytes === "number" && typeof storage.mediaBytes === "number"
+      && storage.diagnostics?.withBodies === 0, JSON.stringify(storage.diagnostics));
+  const storageClean = await (await fetch(`${BASE}/api/storage/cleanup`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ops: ["compact"] }),
+  })).json();
+  check("数据清理接口可执行并返回真实释放量",
+    storageClean.ok === true && typeof storageClean.reclaimedBytes === "number" && storageClean.compacted === true,
+    `reclaimed=${storageClean.reclaimedBytes}`);
   const ping = await (await fetch(`${BASE}/api/model/ping`, { method: "POST" })).json();
   check("/api/model/ping 在 echo 模式下不报错", ping.ok === true, `modelReady=${ping.modelReady}`);
 
@@ -2962,8 +2977,8 @@ try {
       check("普通配图不带参考也不改构图", plainBody.image === undefined && plainBody.size === "1024x1024",
         `${typeof plainBody.image} / ${String(plainBody.size)}`);
 
-      // 调用记录必须能自证"带没带参考图"：请求原文只有 DEV_MODE 才落，所以摘要里就得看得见，
-      // 而响应原文里的裸 base64 必须被换成字节数占位（十条窗口 × 1.6MB 会把库撑爆）。
+      // 调用记录必须能自证"带没带参考图"：请求原文只有 DEV_MODE 才落，所以摘要里就得看得见。
+      // 普通模式连响应原文都不落库，避免图片生成返回的大段内容撑大数据库。
       // 上面 cidFace 恰好成功跑了两次（先自拍、后方图），DESC 所以 [1] 是自拍、[0] 是普通配图。
       const faceCalls = dbImg.prepare("SELECT message, res_full FROM model_calls WHERE purpose='imageGen' AND ok=1 AND contact_id=? ORDER BY id DESC LIMIT 2")
         .all(cidFace) as Array<{ message: string; res_full: string | null }>;
@@ -2971,10 +2986,9 @@ try {
         /参考图 \d+KB · 1024x1536/.test(faceCalls[1]?.message ?? ""), faceCalls[1]?.message ?? "-");
       check("普通配图那次的摘要写明无参考图与方构图",
         /无参考图 · 1024x1024/.test(faceCalls[0]?.message ?? ""), faceCalls[0]?.message ?? "-");
-      check("响应原文落了库且 b64_json 被换成字节占位",
-        typeof faceCalls[0]?.res_full === "string" && (faceCalls[0]?.res_full ?? "").includes("b64_json\":\"<"),
+      check("普通模式图片调用的响应原文不落库", faceCalls.every((call) => call.res_full === null),
         String(faceCalls[0]?.res_full).slice(0, 90));
-      check("调用记录里没有大段裸 base64（三列合计 < 2KB）",
+      check("调用记录里没有大段裸 base64（摘要合计 < 2KB）",
         (dbImg.prepare("SELECT COALESCE(SUM(LENGTH(res_full)),0)+COALESCE(SUM(LENGTH(detail)),0) n FROM model_calls WHERE purpose='imageGen'")
           .get() as { n: number }).n < 2048,
         String((dbImg.prepare("SELECT COALESCE(SUM(LENGTH(res_full)),0)+COALESCE(SUM(LENGTH(detail)),0) n FROM model_calls WHERE purpose='imageGen'").get() as { n: number }).n));
@@ -3294,11 +3308,11 @@ try {
       check("畸形帧与心跳行不打死这一轮", doneA.status === "done");
       check("思考原文从 reasoning_content 的增量拼回来",
         one(`SELECT reasoning FROM messages WHERE turn_id = ? AND role='assistant' AND kind='chat' ORDER BY id LIMIT 1`, a.turnId).reasoning === "先想一下");
-      const callA = one(`SELECT prompt_tokens, completion_tokens, total_tokens, res_full FROM model_calls WHERE turn_id = ? AND purpose='chat' ORDER BY id DESC LIMIT 1`, a.turnId);
+      const callA = one(`SELECT prompt_tokens, completion_tokens, total_tokens, detail FROM model_calls WHERE turn_id = ? AND purpose='chat' ORDER BY id DESC LIMIT 1`, a.turnId);
       check("usage 在末帧：token 三列都取得到",
         callA.prompt_tokens === 42 && callA.completion_tokens === 12 && callA.total_tokens === 54,
         JSON.stringify([callA.prompt_tokens, callA.completion_tokens, callA.total_tokens]));
-      check("调用记录里存的仍是正文（不是 SSE 帧的拼接碎块）", String(callA.res_full ?? "").includes("刚跑完实验"), String(callA.res_full).slice(0, 60));
+      check("普通模式的短摘要里仍是正文（不是 SSE 帧的拼接碎块）", String(callA.detail ?? "").includes("刚跑完实验"), String(callA.detail).slice(0, 60));
 
       // B. 工具轮：她的「我先看看」不能当草稿演一遍再改口
       updateModel({ name: "mock-tool" });

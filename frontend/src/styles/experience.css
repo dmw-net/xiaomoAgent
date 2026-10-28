@@ -4030,6 +4030,64 @@ a.btn:hover {
 .media-cleanup-actions .primary,
 .media-cleanup-actions .danger { display: inline-flex; align-items: center; gap: 5px; }
 
+.storage-cleanup-modal.modal-card {
+  width: min(680px, calc(100vw - 28px));
+  max-height: min(90dvh, 760px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.storage-cleanup-summary p code { color: var(--text-muted); font-size: var(--text-cap); word-break: break-all; }
+.storage-cleanup-list {
+  display: flex;
+  max-height: 43dvh;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  padding-right: 2px;
+}
+.storage-cleanup-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+  padding: 11px 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--bg-sunken);
+  cursor: pointer;
+}
+.storage-cleanup-option:hover { background: var(--bg-hover); }
+.storage-cleanup-option.selected { border-color: color-mix(in srgb, var(--accent) 34%, var(--border)); background: var(--accent-soft); }
+.storage-cleanup-option.selected.danger { border-color: color-mix(in srgb, var(--danger) 34%, var(--border)); background: var(--danger-soft); }
+.storage-cleanup-option:has(input:disabled) { cursor: default; opacity: .64; }
+.storage-cleanup-option input { margin-top: 3px; accent-color: var(--accent); }
+.storage-cleanup-option > div { min-width: 0; }
+.storage-cleanup-option b { display: flex; align-items: center; gap: 5px; color: var(--text); font-size: var(--text-base); font-weight: 600; }
+.storage-cleanup-option p { margin: 4px 0 0; color: var(--text-muted); font-size: var(--text-cap); line-height: 1.55; }
+.storage-size { color: var(--text-subtle); font-size: var(--text-cap); white-space: nowrap; }
+.storage-recommended {
+  padding: 1px 6px;
+  border-radius: var(--radius-full);
+  background: var(--success-soft);
+  color: var(--success);
+  font-size: var(--text-cap);
+  font-weight: 500;
+}
+.storage-cleanup-safety {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  margin-top: var(--space-3);
+  color: var(--text-subtle);
+  font-size: var(--text-cap);
+  line-height: 1.55;
+}
+.storage-cleanup-safety svg { flex: none; margin-top: 1px; color: var(--success); }
+.storage-confirm-modal.modal-card { width: min(430px, calc(100vw - 28px)); }
+.storage-confirm-modal .modal-title { text-align: left; }
+.storage-confirm-modal .modal-sub { margin: 5px 0 var(--space-5); text-align: left; line-height: 1.6; }
+
 .media-confirm-modal.modal-card { width: min(420px, calc(100vw - 28px)); }
 .media-confirm-icon {
   display: inline-flex;
@@ -4175,22 +4233,98 @@ a.btn:hover {
   font-weight: 500;
 }
 
+/* 模型失败卡：文案、重试、技术详情各自占位。详情单独换行，
+   避免它 100% 的 flex-basis 把文案列挤成逐字竖排。 */
 .chat-failure {
-  display: flex;
-  align-items: center;
-  gap: var(--space-3);
+  width: min(680px, 92%);
+  max-width: 92%;
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  grid-template-areas:
+    "icon copy retry"
+    "detail detail detail";
+  align-items: start;
+  gap: var(--space-3) var(--space-4);
+  padding: 14px 16px;
   text-align: left;
+  background:
+    linear-gradient(135deg,
+      color-mix(in srgb, var(--danger-soft) 82%, var(--bg-elevated)),
+      var(--bg-elevated));
+  box-shadow: var(--shadow-xs);
 }
 
-.chat-failure-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
+.chat-failure-icon {
+  grid-area: icon;
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  margin-top: -3px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--danger) 11%, transparent);
+  color: var(--danger);
+}
+
+.chat-failure-copy {
+  grid-area: copy;
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
 .chat-failure-copy b { color: var(--text); font-size: var(--text-note); font-weight: 600; }
 .chat-failure-copy span { color: var(--text-muted); font-size: var(--text-aux); line-height: 1.5; }
-.chat-failure .retry { flex: none; margin-left: 0; }
-.chat-failure .notice-detail { flex-basis: 100%; }
+
+.chat-failure .retry {
+  grid-area: retry;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 30px;
+  padding: 0 11px;
+  margin-left: 0;
+  border: 1px solid color-mix(in srgb, var(--danger) 24%, transparent);
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--danger) 7%, var(--bg-elevated));
+  color: var(--danger);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.chat-failure .retry:hover {
+  background: color-mix(in srgb, var(--danger) 12%, var(--bg-elevated));
+  border-color: color-mix(in srgb, var(--danger) 38%, transparent);
+}
+
+.chat-failure .notice-detail {
+  grid-area: detail;
+  margin-top: 0;
+  padding-top: var(--space-2);
+  border-top: 1px solid color-mix(in srgb, var(--danger) 14%, transparent);
+}
+
+.chat-failure .notice-detail > summary {
+  width: fit-content;
+  color: var(--danger);
+  opacity: .82;
+}
 
 @media (max-width: 520px) {
-  .chat-failure { align-items: flex-start; flex-wrap: wrap; }
-  .chat-failure .retry { margin-left: auto; }
+  .chat-failure {
+    width: 100%;
+    max-width: 100%;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-areas:
+      "icon copy"
+      "retry retry"
+      "detail detail";
+    padding: 13px 14px;
+  }
+  .chat-failure .retry { justify-self: start; }
 }
 
 .onb-provider-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--space-2); margin: var(--space-4) 0 var(--space-3); }
@@ -4199,6 +4333,10 @@ a.btn:hover {
 @media (max-width: 760px), (max-height: 520px) {
   .diagnostics-modal.modal-card { width: 100% !important; max-height: 92dvh; }
   .media-cleanup-modal.modal-card { width: 100% !important; max-height: 92dvh; }
+  .storage-cleanup-modal.modal-card { width: 100% !important; max-height: 92dvh; }
+  .storage-cleanup-list { max-height: 42dvh; }
+  .storage-cleanup-option { grid-template-columns: 18px minmax(0, 1fr); }
+  .storage-size { grid-column: 2; }
   .diagnostics-row { grid-template-columns: 22px minmax(0, 1fr); }
   .diagnostics-row > .btn { grid-column: 2; justify-self: start; }
   .media-cleanup-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }

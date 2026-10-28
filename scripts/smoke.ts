@@ -213,6 +213,13 @@ try {
   check("服务可用", health.ok === true);
   check("处于 echo 模式", health.modelMode === "echo", `model=${health.modelReady}`);
   check("初始记忆为空", health.memoryEvents === 0, `memoryEvents=${health.memoryEvents}`);
+  const smokeStatus = await (await fetch(`${BASE}/api/status`)).json();
+  check("普通模式明确标记不捕获原始请求", smokeStatus.rawCapture === false, `rawCapture=${String(smokeStatus.rawCapture)}`);
+  const diagnostics = await (await fetch(`${BASE}/api/diagnostics`)).json();
+  const diagnosticsText = JSON.stringify(diagnostics);
+  check("运行检查可用且返回用户检查项", diagnostics.ok === true && Array.isArray(diagnostics.checks) && diagnostics.checks.length >= 3,
+    `checks=${Array.isArray(diagnostics.checks) ? diagnostics.checks.length : "invalid"}`);
+  check("运行检查不泄露请求体或系统提示词", !diagnosticsText.includes("req_full") && !diagnosticsText.includes("requestBody") && !diagnosticsText.includes("systemPrompt"));
 
   // HTML 响应的安全头。桌面壳 navigate 到 http://127.0.0.1:端口 之后，界面就是**远程
   // origin**，tauri.conf 里那条 CSP 贴不到它身上——必须由后端自己发，这条断言就是那道门。
@@ -2874,14 +2881,14 @@ try {
       check("内网地址一次都没去拉", img.localHits === 0, String(img.localHits));
       img.mode = "b64";
 
-      // ── 自拍：长相参考图那条路 ──────────────────────────────
+      // ── 自拍：自拍参考图那条路 ──────────────────────────────
       const cidFace = await contact("有长相的");
       const ctxFace = { lastUserAt: null, contactId: cidFace, turnId: null };
       const hitsBeforeNoFace = img.hits;
       const noFace = await executeTool("generate_image", JSON.stringify({ prompt: "书房里的自拍", selfie: true }), ctxFace);
       const noFaceMsg = JSON.stringify(noFace);
-      check("没存长相参考时点名要自拍被拒（不退化成画个陌生人冒充她）",
-        noFaceMsg.includes("长相参考"), noFaceMsg.slice(0, 120));
+      check("没存自拍参考时点名要自拍被拒（不退化成画个陌生人冒充她）",
+        noFaceMsg.includes("自拍参考图"), noFaceMsg.slice(0, 120));
       check("被拒那一次根本没出门", img.hits === hitsBeforeNoFace, `${hitsBeforeNoFace} → ${img.hits}`);
 
       const upFace = await (await fetch(`${BASE}/api/media`, {
@@ -2890,7 +2897,7 @@ try {
       const putFace = await (await fetch(`${BASE}/api/contacts/${cidFace}`, {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ faceRef: upFace.url }),
       })).json();
-      check("长相参考图存得下也读得回", putFace.contact?.faceRef === upFace.url, `${upFace.url} → ${putFace.contact?.faceRef}`);
+      check("自拍参考图存得下也读得回", putFace.contact?.faceRef === upFace.url, `${upFace.url} → ${putFace.contact?.faceRef}`);
       const badFace = await fetch(`${BASE}/api/contacts/${cidFace}`, {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ faceRef: "/media/0000000000000000.png" }),
       });
@@ -4826,6 +4833,95 @@ try {
       (noQ.contacts ?? []).length >= (hit.contacts ?? []).length && (noQ.contacts ?? []).length > 0,
       `全量=${(noQ.contacts ?? []).length}`);
     db.prepare(`DELETE FROM contacts WHERE id = ?`).run(cid);
+  }
+
+  console.log("\n[46] 媒体清理闭环（运行检查 → 查看 → 回收站 → 恢复/永久删除）");
+  {
+    const { saveImage, saveWallpaper, mediaUrlExists } = await import("../src/media.ts");
+    const { utimesSync } = await import("node:fs");
+    const oldTime = new Date(Date.now() - 2 * 24 * 3_600_000);
+    const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
+    const fileName = (url: string): string => url.split("/").pop() as string;
+    const filePath = (url: string): string => `${MEDIA}/${fileName(url)}`;
+
+    const orphan = saveImage(png, "image/png");
+    utimesSync(filePath(orphan.url), oldTime, oldTime);
+    const recent = saveImage(png, "image/png");
+    const kept = saveImage(png, "image/png");
+    utimesSync(filePath(kept.url), oldTime, oldTime);
+    const chatFile = saveImage(png, "image/png");
+    const chatMessageId = db.prepare(
+      "INSERT INTO messages (channel, role, text, kind, created_at, contact_id, attachments) VALUES ('web', 'user', '媒体来源测试', 'chat', ?, 'default', ?)",
+    ).run(Date.now(), JSON.stringify([chatFile.url])).lastInsertRowid;
+    const wallpaper = saveWallpaper(png, "image/png");
+    const artifactId = "media-maintenance-smoke";
+    db.prepare(`INSERT INTO artifacts (id, url, created_at) VALUES (?, ?, ?)`)
+      .run(artifactId, kept.url, Date.now());
+
+    const inspectBefore = await (await fetch(`${BASE}/api/media/maintenance`)).json() as {
+      ok?: boolean; items?: Array<{ name: string; cleanable?: boolean; sources?: Array<{ kind: string }> }>;
+      all?: Array<{ name: string; mediaKind?: string; cleanable?: boolean; sources?: Array<{ kind: string }> }>;
+      pending?: number;
+    };
+    check("媒体管理能列出超过 24 小时且无引用的文件",
+      inspectBefore.ok === true && (inspectBefore.items ?? []).some((item) => item.name === fileName(orphan.url)),
+      `items=${(inspectBefore.items ?? []).length} pending=${inspectBefore.pending ?? "?"}`);
+    check("最近上传的文件不会出现在可清理列表", !(inspectBefore.items ?? []).some((item) => item.name === fileName(recent.url)));
+    check("被作品台账引用的旧文件不会出现在可清理列表", !(inspectBefore.items ?? []).some((item) => item.name === fileName(kept.url)));
+    check("全部列表包含可清理、保护中、已引用和壁纸文件",
+      [orphan.url, recent.url, kept.url, chatFile.url, wallpaper.url]
+        .every((url) => (inspectBefore.all ?? []).some((item) => item.name === fileName(url))),
+      `all=${(inspectBefore.all ?? []).length}`);
+    const keptRow = (inspectBefore.all ?? []).find((item) => item.name === fileName(kept.url));
+    check("作品文件标出来源且不可清理",
+      keptRow?.cleanable === false && (keptRow.sources ?? []).some((source) => source.kind === "artifact"));
+    const chatRow = (inspectBefore.all ?? []).find((item) => item.name === fileName(chatFile.url));
+    check("聊天附件标出聊天来源", (chatRow?.sources ?? []).some((source) => source.kind === "chat"));
+    const wallpaperRow = (inspectBefore.all ?? []).find((item) => item.name === fileName(wallpaper.url));
+    check("壁纸也在全部列表中并标出来源", wallpaperRow?.mediaKind === "wallpaper" && (wallpaperRow.sources ?? []).some((source) => source.kind === "wallpaper"));
+
+    const diagnosticsWithOrphan = await (await fetch(`${BASE}/api/diagnostics`)).json() as {
+      checks?: Array<{ id?: string; action?: string }>;
+    };
+    check("运行检查的媒体项带「查看并清理」动作",
+      (diagnosticsWithOrphan.checks ?? []).some((item) => item.id === "media" && item.action === "media"));
+
+    const name = fileName(orphan.url);
+    const skipped = await (await jsonPost("/api/media/maintenance", { op: "trash", names: [fileName(kept.url), fileName(recent.url)] })).json() as {
+      ok?: boolean; changed?: number; skipped?: number;
+    };
+    check("后端操作前会重新校验引用与 24 小时保护期",
+      skipped.ok === true && skipped.changed === 0 && skipped.skipped === 2,
+      `changed=${skipped.changed} skipped=${skipped.skipped}`);
+
+    const trashed = await (await jsonPost("/api/media/maintenance", { op: "trash", names: [name] })).json() as {
+      ok?: boolean; changed?: number; trash?: Array<{ name: string }>;
+    };
+    check("选中文件会移到回收站而不是直接删除",
+      trashed.ok === true && trashed.changed === 1 && mediaUrlExists(orphan.url) === false
+        && (trashed.trash ?? []).some((item) => item.name === name));
+
+    const restored = await (await jsonPost("/api/media/maintenance", { op: "restore", names: [name] })).json() as {
+      ok?: boolean; changed?: number; trash?: Array<{ name: string }>;
+    };
+    check("回收站文件可以恢复",
+      restored.ok === true && restored.changed === 1 && mediaUrlExists(orphan.url) === true
+        && !(restored.trash ?? []).some((item) => item.name === name));
+
+    await jsonPost("/api/media/maintenance", { op: "trash", names: [name] });
+    const purged = await (await jsonPost("/api/media/maintenance", { op: "purge", names: [name] })).json() as {
+      ok?: boolean; changed?: number; trash?: Array<{ name: string }>;
+    };
+    check("永久删除只作用于回收站条目",
+      purged.ok === true && purged.changed === 1 && mediaUrlExists(orphan.url) === false
+        && !(purged.trash ?? []).some((item) => item.name === name));
+
+    db.prepare("DELETE FROM artifacts WHERE id = ?").run(artifactId);
+    db.prepare("DELETE FROM messages WHERE id = ?").run(chatMessageId);
+    rmSync(filePath(recent.url), { force: true });
+    rmSync(filePath(kept.url), { force: true });
+    rmSync(filePath(chatFile.url), { force: true });
+    rmSync(filePath(wallpaper.url), { force: true });
   }
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));

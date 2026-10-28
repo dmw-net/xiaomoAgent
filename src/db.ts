@@ -269,6 +269,7 @@ ensureColumn("contacts", "recent_turns", "recent_turns INTEGER NOT NULL DEFAULT 
 ensureColumn("contacts", "gender", "gender TEXT NOT NULL DEFAULT 'female'");
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages (contact_id, created_at);
+   CREATE INDEX IF NOT EXISTS idx_messages_contact_recent ON messages (contact_id, created_at DESC, id DESC);
    CREATE INDEX IF NOT EXISTS idx_memory_contact   ON memory_events (contact_id, created_at);
    -- turns 此前一个索引都没有，而它是只增不减的：状态页与聊天页失败横幅每拍都查
    -- 「最近的处理单」（ORDER BY created_at DESC），常驻进程跑几个月就是每次全表扫 + 排序。
@@ -332,6 +333,7 @@ ensureColumn("conversations", "left_at", "left_at INTEGER");
 
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);
+   CREATE INDEX IF NOT EXISTS idx_messages_conversation_recent ON messages (conversation_id, created_at DESC, id DESC);
    CREATE INDEX IF NOT EXISTS idx_turns_conversation ON turns (conversation_id, created_at);
    CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_events (contact_id, scope_kind, scope_conversation_id, created_at);
    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source ON messages (conversation_id, source_message_id)

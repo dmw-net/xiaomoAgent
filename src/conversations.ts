@@ -224,6 +224,53 @@ export function listConversations(contactId: string): Conversation[] {
   ).all(contactId) as Array<Record<string, unknown>>;
   return rows.map(rowToConversation);
 }
+/**
+ * 联系人列表的一次性批量会话查询。
+ * 联系人列表每 10 秒重拉一次，逐个联系人调用 listConversations() 会退化成 N+1；
+ * 这里先批量补齐本地主会话，再用一条查询取回全部会话。
+ */
+export function listConversationsForContacts(contactIds: string[]): Map<string, Conversation[]> {
+  const ids = [...new Set(contactIds.filter((id) => id !== ""))];
+  const out = new Map<string, Conversation[]>();
+  for (const id of ids) out.set(id, []);
+  if (ids.length === 0) return out;
+
+  const marks = ids.map(() => "?").join(",");
+  // 本地主会话缺失通常是新建联系人还没被列表打开过：批量补，不逐个 INSERT。
+  const missing = db.prepare(
+    `SELECT c.id FROM contacts c
+     WHERE c.id IN (${marks})
+       AND NOT EXISTS (SELECT 1 FROM conversations v WHERE v.id = 'local-' || c.id)`,
+  ).all(...ids) as Array<{ id: string }>;
+  if (missing.length > 0) {
+    db.prepare(
+      `INSERT OR IGNORE INTO conversations
+         (id, contact_id, channel, kind, external_id, account_id, title, enabled, created_at)
+       SELECT 'local-' || c.id, c.id, 'web', 'private', 'local', '', c.name, 1, ?
+       FROM contacts c WHERE c.id IN (${marks})`,
+    ).run(Date.now(), ...ids);
+    for (const row of missing) ensureConversationReadCursor(localConversationId(row.id));
+  }
+  // 与 ensureLocalConversation 同一套补标题：只改空标题，不覆盖用户自定义名。
+  db.prepare(
+    `UPDATE conversations
+     SET title = COALESCE((SELECT name FROM contacts WHERE contacts.id = conversations.contact_id), '本机对话')
+     WHERE id IN (SELECT 'local-' || c.id FROM contacts c WHERE c.id IN (${marks}))
+       AND title = ''`,
+  ).run(...ids);
+
+  const rows = db.prepare(
+    `SELECT * FROM conversations WHERE contact_id IN (${marks})
+     ORDER BY contact_id,
+              CASE WHEN channel = 'web' AND kind = 'private' THEN 0 ELSE 1 END,
+              COALESCE(last_message_at, created_at) DESC`,
+  ).all(...ids) as Array<Record<string, unknown>>;
+  for (const row of rows) {
+    const conv = rowToConversation(row);
+    out.get(conv.contact_id)?.push(conv);
+  }
+  return out;
+}
 
 export function findConversation(input: {
   contactId: string;

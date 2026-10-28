@@ -4824,6 +4824,26 @@ try {
         "showThinking", "showTools", "streamReveal", "imageGen", "createdAt", "preview", "previewChannel",
         "conversationId", "conversationTitle", "conversationReadOnly", "conversations", "lastAt",
         "pendingSoon", "pendingFocus", "pendingKind", "archivedAt", "unread"].includes(k)).join(",") || "干净");
+    // 批量快照必须与旧的逐联系人/逐会话口径一致；这里用旧函数当 oracle。
+    const { lastMessagePreview, unreadCount, unreadCountForConversation } = await import("../src/contacts.ts");
+    const { listConversations } = await import("../src/conversations.ts");
+    const listItem = (slim.contacts ?? []).find((c: { conversations?: unknown[] }) => (c.conversations ?? []).length > 0) as {
+      id: string; conversationId: string | null; conversations: Array<{ id: string; unread: number }>; unread: number;
+    } | undefined;
+    check("联系人列表至少返回一个会话快照", Boolean(listItem), `联系人=${(slim.contacts ?? []).length}`);
+    if (listItem) {
+      const oldLast = lastMessagePreview(listItem.id);
+      const oldConvs = listConversations(listItem.id);
+      check("批量预览仍与逐联系人查询一致",
+        (oldLast?.conversationId ?? null) === (listItem.conversationId ?? null),
+        `批=${listItem.conversationId ?? "null"} 旧=${oldLast?.conversationId ?? "null"}`);
+      check("批量未读逐会话一致、联系人总未读等于各会话之和",
+        listItem.conversations.every((conv) => conv.unread === unreadCountForConversation(conv.id))
+          && listItem.unread === oldConvs.reduce((sum, conv) => sum + unreadCountForConversation(conv.id), 0)
+          && listItem.unread === listItem.conversations.reduce((sum, conv) => sum + conv.unread, 0)
+          && listItem.unread === unreadCount(listItem.id),
+        `批总=${listItem.unread} 旧总=${unreadCount(listItem.id)}`);
+    }
 
     // 人设搜索改到后端：正向对照——造一位人设里埋了暗号、但名字与预览都不含它的联系人。
     const codename = await (await jsonPost("/api/contacts", { name: "暗号测试客" })).json();

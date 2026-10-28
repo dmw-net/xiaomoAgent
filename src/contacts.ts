@@ -750,7 +750,7 @@ const KV_CONVERSATION_READS = "chat.conversation_reads";
 /** 会话级已读表的一次性迁移标记：升级时别把整段历史重新算成红点。 */
 const KV_CONVERSATION_READS_SEEDED = "chat.conversation_reads.seeded";
 
-function conversationReadMap(): Record<string, number> {
+export function conversationReadMap(): Record<string, number> {
   try {
     const raw = JSON.parse(String(kvGet(KV_CONVERSATION_READS) ?? "{}")) as Record<string, unknown>;
     const out: Record<string, number> = {};

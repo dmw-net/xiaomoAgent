@@ -129,6 +129,7 @@ import { linkPreviewFor } from "./link-preview.ts";
 import { deleteArtifact, getArtifact, listArtifacts, setArtifactStarred } from "./artifacts.ts";
 import { listContent, type ContentFilter, type ContentMediaFilter } from "./content.ts";
 import { getChannel, listChannels } from "./channels/types.ts";
+import { buildContactListSnapshots } from "./contact-list.ts";
 import { cancelProactiveTask, countProactiveTasks, createProactiveTask, inspectGates, listProactiveTasks, pendingSoonByContact, restoreProactiveTask, runProactiveCheck } from "./proactive.ts";
 /** React 前端构建产物目录（frontend/dist），页面与静态资源都从这里发。 */
 const reactDist = resolve(import.meta.dirname ?? ".", "../frontend/dist");
@@ -136,7 +137,7 @@ const reactEntry = existsSync(joinPath(reactDist, "index.html"));
 /** dist 根下逐条白名单发出的固定静态图（文件名不带 hash，故沿用 no-store）：应用图标 + 两张内置头像。 */
 const ROOT_IMAGE_ASSETS = new Set(["/icon.png", "/xiaomo.png", "/assistant.png"]);
 
-import { ALL_TURNS, archiveContact, ASSISTANT_CONTACT_ID, companionPromptExtras, contactCard, contactExists, contactModelProfile, countContactsBoundToProfile, createContact, DEFAULT_CONTACT_ID, defaultPersonaIsDefault, deleteContact, ensureDefaultContact, factoryReset, getContact, lastConversationMessagePreview, lastMessagePreview, listContacts, markContactRead, markConversationRead, MAX_TURNS, restoreDefaultCard, sanitizeAvatar, sanitizeFaceRef, unreadCount, unreadCountForConversation, unarchiveContact, updateContact, type BondState, type CompanionFeatures, type ContactGender } from "./contacts.ts";
+import { ALL_TURNS, archiveContact, ASSISTANT_CONTACT_ID, companionPromptExtras, contactCard, contactExists, contactModelProfile, countContactsBoundToProfile, createContact, DEFAULT_CONTACT_ID, defaultPersonaIsDefault, deleteContact, ensureDefaultContact, factoryReset, getContact, listContacts, markContactRead, markConversationRead, MAX_TURNS, restoreDefaultCard, sanitizeAvatar, sanitizeFaceRef, unarchiveContact, updateContact, type BondState, type CompanionFeatures, type ContactGender } from "./contacts.ts";
 import { consolidateContact } from "./consolidate.ts";
 import { autoTitleThread, clearAssistantThread, createAssistantThread, deleteAssistantThread, ensureAssistantContact, isAssistantThreadContactId, listAssistantThreads, renameAssistantThread, assistantPermission, setAssistantPermission, pendingActionsFor, resolvePendingAction } from "./assistant.ts";
 import { deleteSkill, listSkills, MAX_SKILL_FILE_BYTES, readSkill, saveSkill, setSkillEnabled, skillsDir } from "./skills.ts";
@@ -2336,29 +2337,28 @@ async function handle(
     // 实测那一项占掉列表响应体的 48%，而这个列表前台每 10 秒整份重拉一次且 no-store。
     // 过滤挪到这边之后人设一个字都不出后端，而且顺带搜得到预览（本地那份搜不到）。
     const needle = (url.searchParams.get("q") ?? "").trim().slice(0, 40).toLowerCase();
-    // 列表每 10 秒整份重拉；临近任务一次批量查好，避免每个联系人各查一次 proactive_tasks。
-    const pendingSoon = pendingSoonByContact();
-    const projected = listContacts({ includeArchived: archivedOnly })
+    // 列表每 10 秒整份重拉：会话、预览、未读和临近任务都按整批联系人一次查。
+    const rows = listContacts({ includeArchived: archivedOnly })
       .filter((ct) => (archivedOnly ? ct.archived_at !== null : ct.archived_at === null))
       // 保留联系人「设置助手」不属于会话列表——它只活在助手视图里（资料仍走 /api/contacts/:id）
-      .filter((ct) => ct.id !== ASSISTANT_CONTACT_ID)
-      .map((contact) => {
-        const last = lastMessagePreview(contact.id);
-        const conversationItems = listConversations(contact.id).map((conv) => {
-          const convLast = lastConversationMessagePreview(conv.id);
-          return {
-            id: conv.id,
-            channel: conv.channel,
-            kind: conv.kind,
-            title: conv.title,
-            enabled: conv.enabled,
-            leftAt: conv.left_at,
-            readOnly: conv.channel !== "web",
-            preview: convLast ? (convLast.role === "user" ? "我：" : "") + humanPreview(convLast.text).slice(0, 40) : "还没有消息",
-            lastAt: convLast?.at ?? conv.created_at,
-            unread: unreadCountForConversation(conv.id),
-          };
-        });
+      .filter((ct) => ct.id !== ASSISTANT_CONTACT_ID);
+    const snapshots = buildContactListSnapshots(rows.map((contact) => contact.id));
+    const pendingSoon = pendingSoonByContact();
+    const projected = rows.map((contact) => {
+        const snapshot = snapshots.get(contact.id);
+        const last = snapshot?.latest ?? null;
+        const conversationItems = (snapshot?.conversations ?? []).map((conv) => ({
+          id: conv.id,
+          channel: conv.channel,
+          kind: conv.kind,
+          title: conv.title,
+          enabled: conv.enabled,
+          leftAt: conv.leftAt,
+          readOnly: conv.channel !== "web",
+          preview: conv.latest ? (conv.latest.role === "user" ? "我：" : "") + humanPreview(conv.latest.text).slice(0, 40) : "还没有消息",
+          lastAt: conv.latest?.at ?? conv.createdAt,
+          unread: conv.unread,
+        }));
         const pending = pendingSoon.get(contact.id);
         const item = {
           id: contact.id,
@@ -2386,7 +2386,7 @@ async function handle(
           pendingFocus: pending?.focus ?? "",
           pendingKind: pending?.kind ?? "",
           archivedAt: contact.archived_at,
-          unread: unreadCount(contact.id),
+          unread: snapshot?.unread ?? 0,
         };
         // 可搜文本只用来筛，绝不进响应：里面装的是人设正文。
         const haystack = needle === "" ? ""

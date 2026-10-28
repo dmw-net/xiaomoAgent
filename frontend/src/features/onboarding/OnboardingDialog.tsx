@@ -13,6 +13,12 @@ type Msg = { kind: "ok" | "bad"; text: string };
 
 const errText = (error: unknown): string => error instanceof Error ? error.message : String(error);
 
+const providerHost = (url: string): string => {
+  try { return new URL(url).host || url; } catch { return url.replace(/^https?:\/\//, "").split("/")[0] || "自定义地址"; }
+};
+
+const localProvider = (url: string): boolean => /^https?:\/\/(localhost|127\.0\.0\.1|0\.0\.0\.0)(?::|\/|$)/i.test(url.trim());
+
 /** 第 0 步：先说清楚叫你什么。联系方式与印象都会进提示词，空着对方只能泛称。 */
 function OwnerStep({ initial, onSaved }: { initial: { name: string; impression: string }; onSaved: (next: SettingsSnapshot) => void }): JSX.Element {
   const [form, setForm] = useState(initial);
@@ -114,12 +120,18 @@ function ModelStep({ onSaved }: { onSaved: (next: SettingsSnapshot) => void }): 
     event.preventDefault();
     setBusy("save");
     setMsg(null);
-    const provider = form.provider.trim();
-    if (provider === "") { setMsg({ kind: "bad", text: "给这一家起个名字（如 DeepSeek、火山方舟），以后加同家的模型就用它分组" }); setBusy(""); return; }
+    const baseUrl = form.baseUrl.trim();
+    const provider = (form.provider.trim() || providerHost(baseUrl)).slice(0, 24);
+    if (baseUrl === "") { setMsg({ kind: "bad", text: "先填接口地址" }); setBusy(""); return; }
+    if (!localProvider(baseUrl) && form.apiKey.trim() === "") {
+      setMsg({ kind: "bad", text: "远程服务需要 API Key；本地 Ollama 可以留空" });
+      setBusy("");
+      return;
+    }
     try {
       // 三步走的都是设置页已有的端点，不为此新开一个接口：
       // 存成档 → 给这一家起名 → 启用这份档。少任何一步都会在设置页留下对不上的地方。
-      const norm = form.baseUrl.trim().replace(/\/+$/, "");
+      const norm = baseUrl.replace(/\/+$/, "");
       const d1 = await saveProfile({
         // mode 一并写 openai：不切模式的话密钥填了也只会回演示回复——那是最让人困惑的「配了没用」。
         label: provider, mode: "openai", baseUrl: norm, apiKey: form.apiKey, name: form.name.trim(),
@@ -142,18 +154,22 @@ function ModelStep({ onSaved }: { onSaved: (next: SettingsSnapshot) => void }): 
     <form className="onb-body" onSubmit={save}>
       <h3>接入一个模型</h3>
       <p>选一家服务、填上密钥，联系人就能回话了；之后随时能在「设置 → 主对话模型」改，也能在同一家里再加模型。</p>
-      <div className="onb-chips">
-        {CHAT_PRESETS.map((p) => (
-          <button key={p.label} type="button" className="preset"
-            aria-pressed={form.baseUrl === p.baseUrl ? "true" : "false"}
-            onClick={() => setForm((f) => ({ ...f, provider: p.label, baseUrl: p.baseUrl, name: p.model ?? "" }))}>
-            {p.label}
-          </button>
-        ))}
+      <div className="onb-provider-grid" role="group" aria-label="常用供应商">
+        {CHAT_PRESETS.map((p) => {
+          const selected = form.baseUrl === p.baseUrl;
+          return (
+            <button key={p.label} type="button" aria-pressed={selected}
+              className={"ml-provider-card" + (selected ? " on" : "")}
+              onClick={() => setForm((f) => ({ ...f, provider: p.label, baseUrl: p.baseUrl, name: p.model ?? "" }))}>
+              <span className="ml-provider-mark" aria-hidden="true">{p.label.slice(0, 1)}</span>
+              <span className="ml-provider-copy"><b>{p.label}</b><small>{providerHost(p.baseUrl)}</small></span>
+            </button>
+          );
+        })}
       </div>
-      <p className="onb-proto">按服务商文档填接口地址（一般到 <code>/v1</code> 为止）；用的是通用的 OpenAI 接口协议，多数服务商都认。</p>
+      <p className="onb-proto">按服务商文档填接口地址（一般到 <code>/v1</code> 为止）；本地 Ollama 的 API Key 可以留空。</p>
       <label>供应商名
-        <input value={form.provider} onChange={set("provider")} placeholder="如 DeepSeek、火山方舟、本地 Ollama" maxLength={24} />
+        <input value={form.provider} onChange={set("provider")} placeholder="留空会自动使用服务商名" maxLength={24} />
       </label>
       <label>接口地址
         <input value={form.baseUrl} onChange={set("baseUrl")} placeholder="https://api.deepseek.com/v1"
@@ -161,7 +177,7 @@ function ModelStep({ onSaved }: { onSaved: (next: SettingsSnapshot) => void }): 
       </label>
       <label>API Key
         <input value={form.apiKey} onChange={set("apiKey")} placeholder="填所选服务的密钥"
-          autoComplete="new-password" type="password" maxLength={1000} required />
+          autoComplete="new-password" type="password" maxLength={1000} required={!localProvider(form.baseUrl)} />
       </label>
       <label>模型名
         <span className="onb-inline">
@@ -397,7 +413,7 @@ export default function OnboardingDialog({ onClose, onFinished, onGotoCapabiliti
   return (
     <Modal onClose={onClose} label="首次设置" className="onb-card">
       <div className="onb-head">
-        <h2>开始使用</h2>
+        <h2>开始使用 <span className="onb-time">约 3 分钟</span></h2>
         <ol className="onb-steps">
           {STEPS.map((s, i) => (
             <li key={s.id} className={i === active ? "on" : i < active ? "done" : ""}>

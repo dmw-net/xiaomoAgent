@@ -1,5 +1,8 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Eye, EyeOff, FileDown, FileUp, Loader2, Pencil, Play, Plus, Zap, Trash2, X } from "lucide-react";
+import {
+  ArrowLeft, ArrowRight, Check, Eye, EyeOff, FileDown, FileUp, Loader2,
+  Pencil, Play, Plus, Server, ShieldCheck, Sparkles, Trash2, X, Zap,
+} from "lucide-react";
 import Modal from "../../components/Modal";
 import { settingsApi } from "../../api";
 import { useDismiss } from "../../hooks/useDismiss";
@@ -85,6 +88,28 @@ const THINKING_DEFS: Array<{ id: string; label: string }> = [
 const INPUT_LIMIT_CHIPS = [{ label: "64K", tokens: 65_536 }, { label: "128K", tokens: 131_072 }, { label: "256K", tokens: 262_144 }, { label: "512K", tokens: 524_288 }, { label: "1M", tokens: 1_048_576 }];
 const OUTPUT_LIMIT_CHIPS = [{ label: "8K", tokens: 8_192 }, { label: "16K", tokens: 16_384 }, { label: "32K", tokens: 32_768 }, { label: "64K", tokens: 65_536 }];
 
+/** 新供应商接入只走两步：先确认连接，再挑第一个模型。 */
+type AddStep = "connection" | "model";
+
+const hostOf = (baseUrl: string): string => {
+  try {
+    return new URL(baseUrl.trim()).host || baseUrl.trim();
+  } catch {
+    return baseUrl.trim().replace(/^https?:\/\//, "").split("/")[0] || "";
+  }
+};
+
+const isLocalBase = (baseUrl: string): boolean => {
+  const host = hostOf(baseUrl).split(":")[0]?.toLowerCase() ?? "";
+  return host === "localhost" || host === "127.0.0.1" || host === "0.0.0.0" || host === "::1";
+};
+
+/** 供应商名允许留空：界面最后用预设名或域名兜底，不再用一条校验拦住用户。 */
+const fallbackProviderName = (baseUrl: string): string => {
+  const base = normBase(baseUrl);
+  return (CHAT_PRESETS.find((p) => normBase(p.baseUrl) === base)?.label || hostOf(base) || "新供应商").slice(0, 24);
+};
+
 /** 列表行的小徽标：只展示勾了的能力，一眼看出这套配置会什么。 */
 function CapsTags({ caps }: { caps: ModelCaps | undefined }): JSX.Element | null {
   if (!caps) return null;
@@ -109,6 +134,10 @@ type IoState =
 export default function ModelSection({ form, revealAdvanced }: { form: SettingsForm; revealAdvanced?: boolean }): JSX.Element {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [showKey, setShowKey] = useState(false);
+  const [modalStep, setModalStep] = useState<AddStep>("connection");
+  const [advOpen, setAdvOpen] = useState(false);
+  const [listQuery, setListQuery] = useState("");
+  const modelInputRef = useRef<HTMLInputElement>(null);
   // 弹窗：点遮罩外部或按 Esc 关闭（表单本体标了 data-keep-menu）
   useDismiss(draft !== null, () => setDraft(null));
   const m = form.saved?.model;
@@ -116,7 +145,10 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
   const profiles = form.saved?.profiles ?? [];
   const activeLabel = profiles.find((p) => p.id === form.saved?.activeProfileId)?.label ?? m?.name ?? "";
 
-  const set = (patch: Partial<Draft>): void => setDraft((d) => (d ? { ...d, ...patch } : d));
+  const set = (patch: Partial<Draft>): void => {
+    form.setModelBanner(null);
+    setDraft((d) => (d ? { ...d, ...patch } : d));
+  };
 
   // ── 模型配置导出 / 导入 ────────────────────────────────
   const [io, setIo] = useState<IoState | null>(null);
@@ -169,16 +201,23 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
     form.setModelBanner({ kind: r.failed.length > 0 ? "bad" : "ok", text: "导入完成：" + bits.join(" · ") });
   };
 
-  const [advOpen, setAdvOpen] = useState(false);
-  const advHasData = draft !== null
-    && (draft.caps.tools || draft.caps.vision || draft.caps.thinking || draft.maxOutput !== "");
   useEffect(() => {
-    if (revealAdvanced === true || advHasData) setAdvOpen(true);
-  }, [revealAdvanced, advHasData]);
+    if (revealAdvanced === true) setAdvOpen(true);
+  }, [revealAdvanced]);
+
+  useEffect(() => {
+    if (modalStep !== "model" || draft === null) return;
+    document.querySelector<HTMLElement>(".ml-form.modal-card")?.scrollTo({ top: 0 });
+    requestAnimationFrame(() => modelInputRef.current?.focus({ preventScroll: true }));
+  }, [modalStep, draft?.id, draft?.underProvider]);
 
   const openAdd = (seed?: { baseUrl: string; key: string; underProvider?: boolean }): void => {
     form.setModelBanner(null);
+    form.resetModelList();
+    setListQuery("");
     setShowKey(false);
+    setAdvOpen(false);
+    setModalStep(seed?.underProvider ? "model" : "connection");
     setDraft({
       ...emptyDraft(),
       ...(seed?.baseUrl ? { baseUrl: seed.baseUrl } : {}),
@@ -191,7 +230,12 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
     const p = profiles.find((x) => x.id === id);
     if (!p) return;
     form.setModelBanner(null);
+    form.resetModelList();
+    setListQuery("");
     setShowKey(false);
+    setModalStep("model");
+    setAdvOpen(revealAdvanced === true || p.caps?.thinking === true || p.caps?.vision === true
+      || p.maxOutputTokens != null);
     setDraft({
       id,
       label: p.label,
@@ -222,29 +266,57 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
     openEdit(active);
   }, [revealAdvanced, form.saved]);
 
-  const save = (): void => {
+  /** 第一步只校验“能不能建立连接”，把模型选择留给下一步。 */
+  const goToModelStep = (): void => {
+    if (!draft) return;
+    if (draft.baseUrl.trim() === "") {
+      form.setModelBanner({ kind: "bad", text: "先填接口地址，下一步才好选模型。" });
+      return;
+    }
+    try {
+      const url = new URL(draft.baseUrl.trim());
+      if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("protocol");
+    } catch {
+      form.setModelBanner({ kind: "bad", text: "接口地址需要以 http:// 或 https:// 开头。" });
+      return;
+    }
+    if (!isLocalBase(draft.baseUrl) && draft.key.trim() === "") {
+      form.setModelBanner({ kind: "bad", text: "远程服务需要 API Key；本地 Ollama 可以留空。" });
+      return;
+    }
+    form.setModelBanner(null);
+    set({ label: draft.label.trim() || fallbackProviderName(draft.baseUrl) });
+    setModalStep("model");
+  };
+
+  const save = async (): Promise<void> => {
     if (!draft) return;
     // 往已有的一家下面加模型：不需要名字，档名就等于模型名（供应商名在右栏那一栏管）。
-    // 新建一家才问名字，问到的就是这家的显示名（providerLabel 会退回用第一份档的名字）。
-    const label = draft.underProvider ? draft.name.trim() : draft.label.trim();
+    // 新建一家的显示名允许留空，保存时用预设名或域名兜底，不再拿一个命名问题挡路。
+    const label = draft.underProvider
+      ? draft.name.trim()
+      : (draft.label.trim() || draft.name.trim() || fallbackProviderName(draft.baseUrl));
     if (label === "") {
       form.setModelBanner({ kind: "bad", text: draft.underProvider ? "模型名不能为空" : "给这一家起个名字" });
       return;
     }
     if (draft.baseUrl.trim() === "") { form.setModelBanner({ kind: "bad", text: "接口地址不能为空" }); return; }
     if (draft.name.trim() === "") { form.setModelBanner({ kind: "bad", text: "模型名不能为空" }); return; }
-    if (draft.id === null && draft.key.trim() === "") {
-      form.setModelBanner({ kind: "bad", text: "新增模型需要填 API Key（本地 Ollama 可随便填一串占位）" });
+    if (draft.id === null && !draft.underProvider && !isLocalBase(draft.baseUrl) && draft.key.trim() === "") {
+      form.setModelBanner({ kind: "bad", text: "远程服务需要填 API Key；本地 Ollama 可以留空。" });
       return;
     }
-    form.saveModelProfile({
+    const saved = await form.saveModelProfile({
       id: draft.id, label, baseUrl: draft.baseUrl,
       key: draft.key, name: draft.name, timeoutMs: draft.timeout, extraBody: draft.extra,
       caps: draft.caps, thinkingLevel: draft.thinkingLevel, thinkingLevels: draft.thinkingLevels,
-        thinkingParam: draft.thinkingParam, thinkingMode: draft.thinkingMode,
+      thinkingParam: draft.thinkingParam, thinkingMode: draft.thinkingMode,
       maxInput: draft.maxInput, maxOutput: draft.maxOutput,
     });
+    if (!saved) return;
     setDraft(null);
+    setModalStep("connection");
+    setAdvOpen(false);
   };
 
   const toggleLevel = (id: string): void => {
@@ -345,7 +417,6 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
   };
 
   /** 拉回来的模型名筛选用（清单是全量，不截断）。 */
-  const [listQuery, setListQuery] = useState("");
   const lq = listQuery.trim().toLowerCase();
   // 前缀命中的排前面（输入 deepseek 时 deepseek-chat 该在 [官B]deepseek-… 之前），其余按名字排
   const modelShown = (form.modelList?.ids ?? [])
@@ -462,226 +533,338 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
           </div>
         )}
 
-        {draft !== null && (
-          <Modal onClose={() => { setDraft(null); }}
-            label={draft.id ? "编辑模型" : draft.underProvider ? "添加模型" : "添加供应商"} className="ml-form">
-            <div className="ml-form-head">
-              <div>
-                <div className="modal-title">{draft.id ? "编辑模型" : draft.underProvider ? "添加模型" : "添加供应商"}</div>
-                <div className="modal-sub">地址与密钥为同一家供应商共用；模型参数可以分别配置。</div>
-              </div>
-              <button type="button" className="ml-btn" title="关闭" aria-label="关闭" onClick={() => setDraft(null)}><X size={16} /></button>
-            </div>
-            {!draft.underProvider && (
-            <div className="preset-row">
-              {CHAT_PRESETS.map((pr) => (
-                <button key={pr.label} type="button" className="preset"
-                  onClick={() => set({ baseUrl: pr.baseUrl, label: pr.label, ...(pr.model ? { name: pr.model } : {}) })}>{pr.label}</button>
-              ))}
-            </div>
-            )}
-            {/* 连接信息一家只有一份：只有在"开一家新供应商"时才在这里填。
-                往已有的一家加模型、或编辑已有档，这里只读——否则同一家里会出现
-                两把钥匙、或凭空多出一家（右栏那栏显示的还是第一个非空密钥，等于说假话）。 */}
-            {draft.id !== null || draft.underProvider ? (
-              <div className="field">
-                <label>连接信息（沿用这一家）</label>
-                <div className="ml-meta" id="ml-conn-static">{group?.label || "这一家"} · 密钥 {draft.key ? "已带" : "未填"}</div>
-                <div className="hint">地址和密钥在右侧「{group?.label || "这一家"}」那一栏改，改了这一家所有模型一起变。</div>
-              </div>
-            ) : (
-              <div className="form-row">
-                <div className="field">
-                  <label htmlFor="ml-3">接口地址</label>
-                  <input id="ml-3" title="协议：OpenAI Chat Completions，一般填到 /v1" placeholder="https://api.deepseek.com/v1" value={draft.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} />
-                  <div className="hint">填服务商给的地址，一般到 <code>/v1</code> 为止；点上面的服务商名字可自动填。</div>
+        {draft !== null && (() => {
+          const isNewProvider = draft.id === null && !draft.underProvider;
+          const connectionStep = isNewProvider && modalStep === "connection";
+          const modalTitle = draft.id
+            ? "编辑模型"
+            : draft.underProvider
+              ? "添加模型"
+              : connectionStep ? "接入新供应商" : "添加第一个模型";
+          const modalSub = draft.id
+            ? "只改这个模型自己的参数；地址和密钥仍由供应商统一管理。"
+            : draft.underProvider
+              ? "连接信息沿用当前供应商，只需要告诉小茉模型名。"
+              : connectionStep
+                ? "连接信息只填一次，同一家下的模型共用。名称和密钥都可以稍后再改。"
+                : "连接已经准备好，选一个服务商现在能用的模型。";
+          const canFetchModels = draft.baseUrl.trim() !== "" && (isLocalBase(draft.baseUrl) || draft.key.trim() !== "");
+          return (
+            <Modal onClose={() => setDraft(null)} label={modalTitle}
+              className={"ml-form" + (isNewProvider ? " ml-form-flow" : "")}>
+              <div className="ml-form-head">
+                <div>
+                  <div className="modal-title">{modalTitle}</div>
+                  <div className="modal-sub">{modalSub}</div>
+                  {isNewProvider && (
+                    <ol className="ml-steps" aria-label="接入步骤">
+                      <li className={connectionStep ? "on" : "done"} aria-current={connectionStep ? "step" : undefined}>
+                        <span>{connectionStep ? "1" : <Check size={11} strokeWidth={2.6} />}</span>
+                        连接服务
+                      </li>
+                      <li className={connectionStep ? "" : "on"} aria-current={connectionStep ? undefined : "step"}>
+                        <span>2</span>
+                        添加模型
+                      </li>
+                    </ol>
+                  )}
                 </div>
-                <div className="field">
-                  <label>API 密钥</label>
-                  <div className="key-wrap">
-                    <input type={showKey ? "text" : "password"} placeholder="sk-..."
-                      value={draft.key} onChange={(e) => set({ key: e.target.value })} />
-                    <button type="button" className="key-eye" aria-label={showKey ? "隐藏密钥" : "显示密钥"}
-                      title={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((v) => !v)}>
-                      {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
-                    </button>
+                <button type="button" className="ml-btn" title="关闭" aria-label="关闭" onClick={() => setDraft(null)}><X size={16} /></button>
+              </div>
+
+              {connectionStep ? (
+                <div className="ml-connect-stage">
+                  <div className="ml-stage-intro">
+                    <div className="ml-eyebrow">第 1 步 · 连接</div>
+                    <h3>这家模型从哪里调用？</h3>
+                    <p>选常用服务商会自动填好接口地址和推荐模型；自建服务直接在下方填写。</p>
                   </div>
-                </div>
-              </div>
-            )}
-            <div className="form-row">
-              <div className="field">
-                {draft.underProvider ? (
-                  <>
-                    <label>加到哪家</label>
-                    <div className="ml-meta" id="ml-1-static">{group?.label ?? draft.baseUrl}</div>
-                  </>
-                ) : (
-                  <>
-                    <label htmlFor="ml-1">{draft.id ? "显示名" : "供应商名"}</label>
-                    <input id="ml-1" maxLength={24}
-                      placeholder={draft.id ? "这份档自己的名字" : "如 DeepSeek、本地 Ollama"}
-                      value={draft.label} onChange={(e) => set({ label: e.target.value })} />
-                    {!draft.id && <div className="hint">这一家共用的名字。</div>}
-                  </>
-                )}
-              </div>
-              <div className="field">
-                <label htmlFor="ml-2">模型名
-                  <button type="button" className="pf-ghost" disabled={form.busy !== ""}
-                    onClick={() => form.fetchModelList({ baseUrl: draft.baseUrl, key: draft.key })}>
-                    {form.busy === "list" ? "拉取中…" : "从接口拉取"}
-                  </button>
-                </label>
-                <input id="ml-2" placeholder="deepseek-chat" value={draft.name} onChange={(e) => set({ name: e.target.value })} />
-                {form.modelList.show && (
-                  <div className="model-pick" id="modelList">
-                    <input className="model-filter" id="model-filter" value={listQuery} aria-label="筛选模型名"
-                      placeholder={`在拉到的 ${form.modelList.ids.length} 个里筛…`}
-                      onChange={(e) => setListQuery(e.target.value)} />
-                    <div className="model-pick-list">
-                      {modelShown.map((id) => (
-                        <button key={id} type="button" title={id} onClick={() => set({ name: id })}>{id}</button>
-                      ))}
-                      {modelShown.length === 0 && <div className="hint">没匹配到，清空筛选框就能看全部。</div>}
+
+                  <div className="ml-provider-grid" role="group" aria-label="常用供应商">
+                    {CHAT_PRESETS.map((pr) => {
+                      const selected = normBase(draft.baseUrl) === normBase(pr.baseUrl);
+                      return (
+                        <button key={pr.label} type="button" aria-pressed={selected}
+                          className={"ml-provider-card" + (selected ? " on" : "")}
+                          onClick={() => {
+                            form.setModelBanner(null);
+                            form.resetModelList();
+                            set({
+                              baseUrl: pr.baseUrl,
+                              label: pr.label,
+                              ...(pr.model ? { name: pr.model } : {}),
+                            });
+                          }}>
+                          <span className="ml-provider-mark" aria-hidden="true">{pr.label.slice(0, 1)}</span>
+                          <span className="ml-provider-copy">
+                            <b>{pr.label}</b>
+                            <small>{hostOf(pr.baseUrl)}</small>
+                          </span>
+                          {selected && <Check className="ml-provider-check" size={15} strokeWidth={2.4} />}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div className="ml-connection-card">
+                    <div className="ml-card-heading">
+                      <div>
+                        <b>连接信息</b>
+                        <span>从这里开始填写，带 * 的是必填项</span>
+                      </div>
+                      <span className="ml-connection-kind"><Server size={14} /> OpenAI 兼容接口</span>
                     </div>
-                    <div className="hint">显示 {modelShown.length} / {form.modelList.ids.length} 个 · 点一个填进模型名。</div>
+                    <div className="form-row">
+                      <div className="field">
+                        <label htmlFor="ml-provider-name">供应商名 <span className="ml-optional">可选</span></label>
+                        <input id="ml-provider-name" maxLength={24} placeholder={fallbackProviderName(draft.baseUrl)}
+                          value={draft.label} onChange={(e) => set({ label: e.target.value })} />
+                        <div className="hint">留空会自动使用服务商名，之后也能改。</div>
+                      </div>
+                      <div className="field">
+                        <label htmlFor="ml-base-url">接口地址 *</label>
+                        <input id="ml-base-url" inputMode="url" spellCheck={false}
+                          placeholder="https://api.deepseek.com/v1"
+                          value={draft.baseUrl} onChange={(e) => set({ baseUrl: e.target.value })} />
+                        <div className="hint">一般填到 <code>/v1</code>；火山方舟等按服务商文档填写。</div>
+                      </div>
+                    </div>
+                    <div className="field">
+                      <label htmlFor="ml-api-key">API Key {isLocalBase(draft.baseUrl) ? <span className="ml-optional">本地可留空</span> : "*"}</label>
+                      <div className="key-wrap">
+                        <input id="ml-api-key" type={showKey ? "text" : "password"} placeholder="sk-..."
+                          value={draft.key} onChange={(e) => set({ key: e.target.value })} />
+                        <button type="button" className="key-eye" aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                          title={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((v) => !v)}>
+                          {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                        </button>
+                      </div>
+                      <div className="ml-key-note">
+                        <ShieldCheck size={14} />
+                        <span>密钥只保存在这台设备；调用时只会发给上方填写的服务商。</span>
+                      </div>
+                    </div>
                   </div>
-                )}
-                <div className="hint">用上面的地址和密钥拉取；有些服务商不提供列表，拉不到就自己填模型名。</div>
-              </div>
-            </div>
-            <details className="advanced" open={advOpen}
-              onToggle={(e) => { setAdvOpen(e.currentTarget.open); }}>
-              <summary>高级参数（能力 / 思考 / 超时 / 额外参数）</summary>
-
-              <div className="field">
-                <label>模型能力（按服务商文档勾选）</label>
-                <div className="cap-checks">
-                  {CAP_DEFS.map((c) => (
-                    <label key={c.key} className="check">
-                      <input type="checkbox" checked={draft.caps[c.key]}
-                        onChange={(e) => set({ caps: { ...draft.caps, [c.key]: e.target.checked } })} />
-                      <span>{c.label}</span>
-                    </label>
-                  ))}
                 </div>
-                <div className="hint">按服务商文档勾真实能力。不勾「工具调用」时，请求不会携带工具定义，也不会执行任何工具；普通聊天不受影响。</div>
-              </div>
+              ) : (
+                <div className="ml-model-stage">
+                  <div className="ml-connection-summary">
+                    <span className="ml-connection-summary-icon"><Server size={17} /></span>
+                    <span className="ml-connection-summary-copy">
+                      <b>{draft.label.trim() || group?.label || fallbackProviderName(draft.baseUrl)}</b>
+                      <small>{hostOf(draft.baseUrl) || draft.baseUrl || "未填接口地址"}</small>
+                    </span>
+                    {isNewProvider ? (
+                      <button type="button" className="pf-ghost ml-summary-action"
+                        onClick={() => { form.setModelBanner(null); setModalStep("connection"); }}>
+                        <Pencil size={13} /> 修改连接
+                      </button>
+                    ) : (
+                      <span className="ml-connection-badge"><ShieldCheck size={13} /> 密钥已复用</span>
+                    )}
+                  </div>
 
-              <div className="field think-settings">
-                <label>思考</label>
-                {draft.thinkingParam === "effort" ? (
+                  <div className="ml-stage-intro compact">
+                    <div className="ml-eyebrow">{isNewProvider ? "第 2 步 · 模型" : "模型配置"}</div>
+                    <h3>选择要添加的模型</h3>
+                    <p>{isNewProvider ? "先把第一个模型加进来，之后可以继续在同一家下添加。" : "只改模型名和能力参数，不会影响这一家下的其他模型。"}</p>
+                  </div>
+
+                  <div className="field ml-model-field">
+                    <label htmlFor="ml-model-name">模型名 *
+                      <button type="button" className="pf-ghost" disabled={!canFetchModels || form.busy !== ""}
+                        title={canFetchModels ? "从接口拉取可用模型" : "先填接口地址；远程服务还需要 API Key"}
+                        onClick={() => form.fetchModelList({ baseUrl: draft.baseUrl, key: draft.key })}>
+                        {form.busy === "list" ? <Loader2 size={13} className="spin" /> : <Sparkles size={13} />}
+                        {form.busy === "list" ? "拉取中…" : "获取可选模型"}
+                      </button>
+                    </label>
+                    <input ref={modelInputRef} id="ml-model-name" spellCheck={false}
+                      placeholder="如 deepseek-chat / qwen-plus" value={draft.name}
+                      onChange={(e) => set({ name: e.target.value })} />
+                    {form.modelList.show && (
+                      <div className="model-pick" id="modelList">
+                        <input className="model-filter" id="model-filter" value={listQuery} aria-label="筛选模型名"
+                          placeholder={`在拉到的 ${form.modelList.ids.length} 个里筛…`}
+                          onChange={(e) => setListQuery(e.target.value)} />
+                        <div className="model-pick-list">
+                          {modelShown.map((id) => (
+                            <button key={id} type="button" title={id} onClick={() => set({ name: id })}>{id}</button>
+                          ))}
+                          {modelShown.length === 0 && <div className="hint">没匹配到，清空筛选框就能看全部。</div>}
+                        </div>
+                        <div className="hint">显示 {modelShown.length} / {form.modelList.ids.length} 个 · 点一个填进模型名。</div>
+                      </div>
+                    )}
+                    <div className="hint">
+                      {canFetchModels ? "可以从接口拉取，也可以直接填服务商文档里的模型名。" : "先返回上一步补齐连接信息，才能拉取模型列表。"}
+                    </div>
+                  </div>
+
+                  {draft.id !== null && (
+                    <div className="field ml-profile-name-field">
+                      <label htmlFor="ml-profile-label">配置名 <span className="ml-optional">可选</span></label>
+                      <input id="ml-profile-label" maxLength={24} placeholder={draft.name.trim() || "默认使用模型名"}
+                        value={draft.label} onChange={(e) => set({ label: e.target.value })} />
+                      <div className="hint">同一家下挂多个模型时，用它区分用途，比如「日常聊天」「便宜备用」。</div>
+                    </div>
+                  )}
+
+                  <details className="advanced" open={advOpen}
+                    onToggle={(e) => { setAdvOpen(e.currentTarget.open); }}>
+                    <summary>高级参数（能力 / 思考 / 上下文 / 超时 / 额外参数）</summary>
+
+                    <div className="field">
+                      <label>模型能力（按服务商文档勾选）</label>
+                      <div className="cap-checks">
+                        {CAP_DEFS.map((c) => (
+                          <label key={c.key} className="check">
+                            <input type="checkbox" checked={draft.caps[c.key]}
+                              onChange={(e) => set({ caps: { ...draft.caps, [c.key]: e.target.checked } })} />
+                            <span>{c.label}</span>
+                          </label>
+                        ))}
+                      </div>
+                      <div className="hint">按服务商文档勾真实能力。不勾「工具调用」时，请求不会携带工具定义，也不会执行任何工具；普通聊天不受影响。</div>
+                    </div>
+
+                    <div className="field think-settings">
+                      <label>思考</label>
+                      {draft.thinkingParam === "effort" ? (
+                        <div className="form-row">
+                          <div className="field">
+                            <label>默认强度</label>
+                            <div className="adv-chips">
+                              <button type="button" className={"adv-chip" + (draft.thinkingMode === "auto" ? " on" : "")}
+                                onClick={() => set({ thinkingMode: "auto", thinkingLevel: "" })}>跟随模型</button>
+                              {THINKING_DEFS.map((l) => (
+                                <button key={l.id} type="button"
+                                  className={"adv-chip" + (draft.thinkingLevel === l.id ? " on" : "")}
+                                  onClick={() => set({ thinkingMode: "on", thinkingLevel: l.id })}>{l.label}</button>
+                              ))}
+                            </div>
+                            <div className="hint">「跟随模型」不发送强度字段，由服务商决定；选具体档位才会显式覆盖。聊天输入区可以随时切换。</div>
+                          </div>
+                          <div className="field">
+                            <label>聊天里可选</label>
+                            <div className="adv-chips">
+                              {THINKING_DEFS.map((l) => (
+                                <button key={l.id} type="button"
+                                  className={"adv-chip" + (draft.thinkingLevels.includes(l.id) ? " on" : "")}
+                                  onClick={() => toggleLevel(l.id)}>{l.label}</button>
+                              ))}
+                            </div>
+                            <div className="hint">只勾服务商真正支持的档位；一个都不勾就显示全部。</div>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="adv-chips">
+                            {THINKING_MODE_CHIPS.map((m) => (
+                              <button key={m.id || "follow"} type="button" className={"adv-chip" + (draft.thinkingMode === m.id ? " on" : "")}
+                                onClick={() => set({ thinkingMode: m.id })}>{m.label}</button>
+                            ))}
+                          </div>
+                          <div className="hint">
+                            这类模型只有开关、没有强度。默认开思考的模型若想关掉，选「关」。
+                          </div>
+                        </>
+                      )}
+                      <details className="thinking-compat">
+                        <summary>接口格式不兼容时再改</summary>
+                        <div className="adv-chips">
+                          {THINKING_PARAM_DEFS.map((p) => (
+                            <button key={p.id} type="button" className={"adv-chip" + (draft.thinkingParam === p.id ? " on" : "")}
+                              onClick={() => set({ thinkingParam: p.id })}>{p.label}</button>
+                          ))}
+                        </div>
+                        <div className="hint">
+                          {THINKING_PARAM_DEFS.find((p) => p.id === draft.thinkingParam)?.hint}
+                          普通模型保持「reasoning_effort」即可；只有服务商明确换了字段名时才需要改。
+                        </div>
+                      </details>
+                    </div>
+
                   <div className="form-row">
                     <div className="field">
-                      <label>默认强度</label>
+                      <label htmlFor="ml-4">输入上限（token）</label>
+                      <input id="ml-4" inputMode="numeric" placeholder="如 131072；留空按 32K 保守估算" value={draft.maxInput}
+                        onChange={(e) => set({ maxInput: e.target.value.replace(/[^\d]/g, "") })} />
                       <div className="adv-chips">
-                        <button type="button" className={"adv-chip" + (draft.thinkingMode === "auto" ? " on" : "")}
-                          onClick={() => set({ thinkingMode: "auto", thinkingLevel: "" })}>跟随模型</button>
-                        {THINKING_DEFS.map((l) => (
-                          <button key={l.id} type="button"
-                            className={"adv-chip" + (draft.thinkingLevel === l.id ? " on" : "")}
-                            onClick={() => set({ thinkingMode: "on", thinkingLevel: l.id })}>{l.label}</button>
+                        {INPUT_LIMIT_CHIPS.map((c) => (
+                          <button key={c.label} type="button" className={"adv-chip" + (draft.maxInput === String(c.tokens) ? " on" : "")}
+                            onClick={() => set({ maxInput: String(c.tokens) })}>{c.label}</button>
                         ))}
                       </div>
-                      <div className="hint">「跟随模型」不发送强度字段，由服务商决定；选具体档位才会显式覆盖。聊天输入区可以随时切换。</div>
+                      <div className="hint">对话历史最多能带多长；留空按保守值算，配大了会提前截断。</div>
                     </div>
                     <div className="field">
-                      <label>聊天里可选</label>
+                      <label htmlFor="ml-5">输出上限（token）</label>
+                      <input id="ml-5" inputMode="numeric" placeholder="如 8192；留空=不填" value={draft.maxOutput}
+                        onChange={(e) => set({ maxOutput: e.target.value.replace(/[^\d]/g, "") })} />
                       <div className="adv-chips">
-                        {THINKING_DEFS.map((l) => (
-                          <button key={l.id} type="button"
-                            className={"adv-chip" + (draft.thinkingLevels.includes(l.id) ? " on" : "")}
-                            onClick={() => toggleLevel(l.id)}>{l.label}</button>
+                        {OUTPUT_LIMIT_CHIPS.map((c) => (
+                          <button key={c.label} type="button" className={"adv-chip" + (draft.maxOutput === String(c.tokens) ? " on" : "")}
+                            onClick={() => set({ maxOutput: String(c.tokens) })}>{c.label}</button>
                         ))}
                       </div>
-                      <div className="hint">只勾服务商真正支持的档位；一个都不勾就显示全部。</div>
+                      <div className="hint">一次回复最长能写多长；留空按默认值。</div>
                     </div>
                   </div>
+
+                  <div className="form-row">
+                    <div className="field">
+                      <label htmlFor="ml-6">超时（毫秒）</label>
+                      <input id="ml-6" value={draft.timeout} onChange={(e) => set({ timeout: e.target.value })} />
+                    </div>
+                    <div className="field">
+                      <label htmlFor="ml-7" title="一般不用填。只在需要往发给模型的请求体里塞额外字段时才用，格式是一个 JSON 对象。">额外参数（JSON）</label>
+                      <input id="ml-7" placeholder='一般留空；如 {"temperature":0.9}' value={draft.extra} onChange={(e) => set({ extra: e.target.value })} />
+                    </div>
+                  </div>
+                  </details>
+                </div>
+              )}
+
+              {form.modelBanner && (
+                <div className={"banner show " + form.modelBanner.kind} id="modelBanner" role={form.modelBanner.kind === "bad" ? "alert" : "status"}>
+                  <div className="body">{form.modelBanner.text}</div>
+                </div>
+              )}
+
+              <div className="actions ml-form-actions">
+                {connectionStep ? (
+                  <>
+                    <button type="button" className="btn" onClick={() => setDraft(null)}>取消</button>
+                    <span className="spacer" />
+                    <button type="button" className="primary" id="btn-next-model" onClick={goToModelStep}>
+                      下一步：添加模型 <ArrowRight size={15} />
+                    </button>
+                  </>
                 ) : (
                   <>
-                    <div className="adv-chips">
-                      {THINKING_MODE_CHIPS.map((m) => (
-                        <button key={m.id || "follow"} type="button" className={"adv-chip" + (draft.thinkingMode === m.id ? " on" : "")}
-                          onClick={() => set({ thinkingMode: m.id })}>{m.label}</button>
-                      ))}
-                    </div>
-                    <div className="hint">
-                      这类模型只有开关、没有强度。默认开思考的模型若想关掉，选「关」。
-                    </div>
+                    <button type="button" className="btn"
+                      onClick={() => { form.setModelBanner(null); isNewProvider ? setModalStep("connection") : setDraft(null); }}>
+                      {isNewProvider ? <><ArrowLeft size={15} /> 上一步</> : "取消"}
+                    </button>
+                    <span className="spacer" />
+                    <button type="button" className="btn" id="btn-test"
+                      disabled={form.busy !== "" || draft.name.trim() === ""}
+                      onClick={() => form.testModel({ baseUrl: draft.baseUrl, key: draft.key, name: draft.name })}>
+                      {form.busy === "test" ? <Loader2 size={14} className="spin" /> : <Zap size={14} />}
+                      {form.busy === "test" ? "测试中…" : "测试连接"}
+                    </button>
+                    <button type="button" className="primary" id="btn-save-profile"
+                      disabled={form.busy !== ""} onClick={() => { void save(); }}>
+                      {form.busy === "prof" ? <Loader2 size={14} className="spin" /> : <Check size={15} />}
+                      {form.busy === "prof" ? "保存中…" : draft.id ? "保存修改" : draft.underProvider ? "添加模型" : "保存模型"}
+                    </button>
                   </>
                 )}
-                <details className="thinking-compat">
-                  <summary>接口格式不兼容时再改</summary>
-                  <div className="adv-chips">
-                    {THINKING_PARAM_DEFS.map((p) => (
-                      <button key={p.id} type="button" className={"adv-chip" + (draft.thinkingParam === p.id ? " on" : "")}
-                        onClick={() => set({ thinkingParam: p.id })}>{p.label}</button>
-                    ))}
-                  </div>
-                  <div className="hint">
-                    {THINKING_PARAM_DEFS.find((p) => p.id === draft.thinkingParam)?.hint}
-                    普通模型保持「reasoning_effort」即可；只有服务商明确换了字段名时才需要改。
-                  </div>
-                </details>
               </div>
-
-              <div className="form-row">
-                <div className="field">
-                  <label htmlFor="ml-4">输入上限（token）</label>
-                  <input id="ml-4" inputMode="numeric" placeholder="如 131072；留空按 32K 保守估算" value={draft.maxInput}
-                    onChange={(e) => set({ maxInput: e.target.value.replace(/[^\d]/g, "") })} />
-                  <div className="adv-chips">
-                    {INPUT_LIMIT_CHIPS.map((c) => (
-                      <button key={c.label} type="button" className={"adv-chip" + (draft.maxInput === String(c.tokens) ? " on" : "")}
-                        onClick={() => set({ maxInput: String(c.tokens) })}>{c.label}</button>
-                    ))}
-                  </div>
-                  <div className="hint">对话历史最多能带多长；留空按保守值算，配大了会提前截断。</div>
-                </div>
-                <div className="field">
-                  <label htmlFor="ml-5">输出上限（token）</label>
-                  <input id="ml-5" inputMode="numeric" placeholder="如 8192；留空=不填" value={draft.maxOutput}
-                    onChange={(e) => set({ maxOutput: e.target.value.replace(/[^\d]/g, "") })} />
-                  <div className="adv-chips">
-                    {OUTPUT_LIMIT_CHIPS.map((c) => (
-                      <button key={c.label} type="button" className={"adv-chip" + (draft.maxOutput === String(c.tokens) ? " on" : "")}
-                        onClick={() => set({ maxOutput: String(c.tokens) })}>{c.label}</button>
-                    ))}
-                  </div>
-                  <div className="hint">一次回复最长能写多长；留空按默认值。</div>
-                </div>
-              </div>
-
-              <div className="form-row">
-                <div className="field">
-                  <label htmlFor="ml-6">超时（毫秒）</label>
-                  <input id="ml-6" value={draft.timeout} onChange={(e) => set({ timeout: e.target.value })} />
-                </div>
-                <div className="field">
-                  <label htmlFor="ml-7" title="一般不用填。只在需要往发给模型的请求体里塞额外字段时才用，格式是一个 JSON 对象。">额外参数（JSON）</label>
-                  <input id="ml-7" placeholder='一般留空；如 {"temperature":0.9}' value={draft.extra} onChange={(e) => set({ extra: e.target.value })} />
-                </div>
-              </div>
-            </details>
-            {form.modelBanner && (
-              <div className={"banner show " + form.modelBanner.kind} id="modelBanner" role={form.modelBanner.kind === "bad" ? "alert" : "status"}>
-                <div className="body">{form.modelBanner.text}</div>
-              </div>
-            )}
-            <div className="actions">
-              <button type="button" className="btn" id="btn-test" disabled={form.busy !== ""}
-                onClick={() => form.testModel({ baseUrl: draft.baseUrl, key: draft.key, name: draft.name })}>
-                {form.busy === "test" ? "测试中…" : "测试连接"}
-              </button>
-              <button type="button" className="primary" id="btn-save-profile" disabled={form.busy !== ""} onClick={save}>
-                {form.busy === "prof" ? "保存中…" : draft.id ? "保存修改" : draft.underProvider ? "保存模型" : "保存这一家"}
-              </button>
-              <button type="button" className="btn" onClick={() => setDraft(null)}>取消</button>
-            </div>
-          </Modal>
-        )}
-
+            </Modal>
+          );
+        })()}
 
         {io?.step === "export" && exportPreview && (
           <Modal onClose={() => setIo(null)} label="导出模型配置" className="ml-form">

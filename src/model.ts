@@ -126,6 +126,7 @@ export type ModelErrorCode =
   | "NETWORK"
   | "TIMEOUT"
   | "EMPTY_RESPONSE"
+  | "OUTPUT_TRUNCATED"
   | "UNKNOWN";
 
 export class ModelError extends Error {
@@ -308,6 +309,18 @@ export async function callModel(messages: ChatMessage[], options: CallOptions = 
   try {
     return await attempt(messages, options, true);
   } catch (error) {
+    // 思考模型可能把本次输出额度全花在 reasoning 上，正文一个字都没轮到。
+    // 这不是让用户手动重试的错误：自动把上限翻倍后再试一次；仍有模型档硬顶兜底，
+    // 所以不会突破用户配置，也不会无限重试。
+    if (error instanceof ModelError && error.code === "OUTPUT_TRUNCATED") {
+      const cap = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : DEFAULT_MAX_TOKENS;
+      const current = resolveMaxTokens(settings, options);
+      const next = Math.min(cap, Math.max(current * 2, 2048));
+      if (next > current) {
+        console.warn(`[model] ${options.purpose ?? "chat"} 的输出被思考用完，自动把上限从 ${current} 提到 ${next} 重试一次`);
+        return await attempt(messages, { ...options, maxTokens: next }, true);
+      }
+    }
     // 兼容重试：有些服务商不接受 max_tokens / temperature，会返回 400，
     // 且错误正文里会点到字段名。命中就去掉这两个字段重试一次。
     if (
@@ -454,7 +467,14 @@ async function readChatStream(
   holdMs: number,
   onProgress?: () => void,
   onReasoning?: (accumulated: string) => void,
-): Promise<{ content: string; reasoning: string; toolCalls: Array<{ id: string; name: string; args: string }> | null; usage: ChatUsage | null; raw: string }> {
+): Promise<{
+  content: string;
+  reasoning: string;
+  finishReason: string | null;
+  toolCalls: Array<{ id: string; name: string; args: string }> | null;
+  usage: ChatUsage | null;
+  raw: string;
+}> {
   const reader = response.body?.getReader();
   if (!reader) throw new Error("流式响应没有可读的响应体");
   const decoder = new TextDecoder();
@@ -463,20 +483,23 @@ async function readChatStream(
   let buf = "";
   let content = "";
   let reasoning = "";
+  let finishReason: string | null = null;
   let usage: ChatUsage | null = null;
   let sawToolCallDelta = false;
   let holding = holdMs > 0;
   let holdFrom = 0;
 
   const handleFrame = (payload: string): void => {
-    let frame: { choices?: Array<{ delta?: StreamDelta }>; usage?: ChatUsage };
+    let frame: { choices?: Array<{ delta?: StreamDelta; finish_reason?: string | null }>; usage?: ChatUsage };
     try {
       frame = JSON.parse(payload);
     } catch {
       return; // 心跳/半帧：跳过，不能因为一帧读不懂就把她这一轮打死
     }
     if (frame.usage) usage = frame.usage;
-    const delta = frame.choices?.[0]?.delta;
+    const choice = frame.choices?.[0];
+    if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason;
+    const delta = choice?.delta;
     if (!delta) return;
     const rc = delta.reasoning_content ?? delta.reasoning;
     const hasReasoning = typeof rc === "string" && rc !== "";
@@ -569,6 +592,7 @@ async function readChatStream(
   return {
     content,
     reasoning,
+    finishReason,
     toolCalls: toolCalls.length > 0 ? toolCalls : null,
     usage,
     raw: rawParts.join(""),
@@ -661,13 +685,17 @@ async function attempt(
     }
 
     let parsed: {
-      choices?: Array<{ message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown } }>;
+      choices?: Array<{
+        finish_reason?: string | null;
+        message?: { content?: unknown; reasoning_content?: unknown; reasoning?: unknown };
+      }>;
       usage?: ChatUsage;
     };
     try {
       parsed = streamed
         ? {
             choices: [{
+              finish_reason: streamed.finishReason,
               message: {
                 content: streamed.content,
                 ...(streamed.reasoning !== "" ? { reasoning_content: streamed.reasoning } : {}),
@@ -690,11 +718,21 @@ async function attempt(
       throw error;
     }
 
-    const content = parsed.choices?.[0]?.message?.content;
+    const choice = parsed.choices?.[0];
+    const content = choice?.message?.content;
     if (typeof content !== "string" || content.trim() === "") {
+      const truncated = choice?.finish_reason === "length";
+      const completionTokens = Number(parsed.usage?.completion_tokens) || 0;
+      const reasoningTokens = Number(parsed.usage?.completion_tokens_details?.reasoning_tokens) || 0;
+      const budget = [
+        completionTokens > 0 ? `完成 ${completionTokens} tokens` : "",
+        reasoningTokens > 0 ? `其中思考 ${reasoningTokens} tokens` : "",
+      ].filter(Boolean).join("，");
       const error = new ModelError({
-        code: "EMPTY_RESPONSE",
-        message: `模型返回内容为空（HTTP ${response.status}）`,
+        code: truncated ? "OUTPUT_TRUNCATED" : "EMPTY_RESPONSE",
+        message: truncated
+          ? `模型把输出额度用完了（finish_reason=length${budget ? `，${budget}` : ""}）`
+          : `模型返回内容为空（HTTP ${response.status}）`,
         status: response.status,
         elapsedMs,
         url,
@@ -1136,6 +1174,8 @@ export function friendlyModelError(error: unknown, turnId?: string | null): stri
       return `网络不通：${error.causeDetail || error.message} 国内直连部分海外服务会超时。到「设置 → 模型与能力 → 主对话模型」换一家国内可访问的服务商，或把接口地址指向你自己的代理。`;
     case "EMPTY_RESPONSE":
       return `模型返回空内容（HTTP ${error.status}）：可能被内容策略拦了，换个说法再试。${retryHint}`;
+    case "OUTPUT_TRUNCATED":
+      return `这次思考时间太长，模型没来得及写完结果。系统已经自动加大输出上限重试过一次；如果仍看到这条，请到「设置 → 模型与能力」把模型档的「输出上限」调大，或换一个思考更快的模型。`;
     default:
       return `发送失败：${error.message}`;
   }
@@ -1600,7 +1640,7 @@ export async function generateImage(
   ctx: {
     contactId?: string | null;
     turnId?: string | null;
-    /** 长相参考图（/media 路径）。给了就走图生图，画出来才是"她"。 */
+    /** 自拍参考图（/media 路径）。给了就走图生图，画出来才是"她"。 */
     reference?: string;
     /** 构图：square=1024x1024（默认），portrait=1024x1536（自拍/人像）。 */
     shape?: "square" | "portrait";
@@ -1616,7 +1656,7 @@ export async function generateImage(
   let referenceDataUrl: string | null = null;
   if (ctx.reference) {
     referenceDataUrl = mediaDataUrl(ctx.reference);
-    if (referenceDataUrl === null) throw new Error(`长相参考图的文件不在了：${ctx.reference}`);
+    if (referenceDataUrl === null) throw new Error(`自拍参考图的文件不在了：${ctx.reference}`);
   }
   const cap = capabilityConfig("imageGeneration");
   const url = `${cap.baseUrl}/images/generations`;

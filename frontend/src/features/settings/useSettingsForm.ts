@@ -56,7 +56,10 @@ export function useSettingsForm(onChanged: () => void): {
   testModel: (input: { baseUrl: string; key: string; name: string }) => void;
   /** 拉模型列表填模型名，和「测试连接」是两件事。 */
   fetchModelList: (input: { baseUrl: string; key: string }) => void;
-  saveModelProfile: (input: ProfileInput) => void;
+  /** 清掉上一轮拉取的模型清单，避免打开另一家时看到过期的候选。 */
+  resetModelList: () => void;
+  /** 保存成功时返回 true；调用方据此决定是否关闭弹窗，失败时保留现场。 */
+  saveModelProfile: (input: ProfileInput) => Promise<boolean>;
   applyProfile: (id: string) => void;
   deleteProfile: (id: string, label: string) => void;
   testProfile: (id: string) => void;
@@ -181,8 +184,10 @@ export function useSettingsForm(onChanged: () => void): {
       .finally(() => setBusy(""));
   };
 
+  const resetModelList = (): void => setModelList({ show: false, ids: [] });
+
   /** 保存一档模型（id=null 新建；带 id 更新）。密钥留空 = 不动原值。 */
-  const saveModelProfile = (input: ProfileInput): void => {
+  const saveModelProfile = async (input: ProfileInput): Promise<boolean> => {
     setBusy("prof");
     setModelBanner(null);
     const payload: Record<string, unknown> = {
@@ -203,13 +208,17 @@ export function useSettingsForm(onChanged: () => void): {
     const key = input.key.trim();
     if (key !== "") payload.apiKey = key;
     if (input.id) payload.id = input.id;
-    settingsApi.saveProfile(payload)
-      .then((d) => {
-        fill(d);
-        setModelBanner({ kind: "ok", text: d.note || "模型配置已保存" });
-      })
-      .catch((e: Error) => setModelBanner({ kind: "bad", text: e.message }))
-      .finally(() => setBusy(""));
+    try {
+      const d = await settingsApi.saveProfile(payload);
+      fill(d);
+      setModelBanner({ kind: "ok", text: d.note || "模型配置已保存" });
+      return true;
+    } catch (e: unknown) {
+      setModelBanner({ kind: "bad", text: e instanceof Error ? e.message : String(e) });
+      return false;
+    } finally {
+      setBusy("");
+    }
   };
 
   const applyProfile = (id: string): void => {
@@ -322,7 +331,7 @@ export function useSettingsForm(onChanged: () => void): {
   return {
     saved, loadErr, busy, reload, modelBanner, setModelBanner, personaBanner, modelList,
     oName, setOName, oImpression, setOImpression, oNotes, setONotes, oGender, setOGender,
-    testModel, fetchModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode,
+    testModel, fetchModelList, resetModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode,
     ask, askDangerous, acceptAsk, cancelAsk,
     applySnapshot: fill,
     saveOwner, resetAll, factoryResetAll, saveOwnerAvatar,

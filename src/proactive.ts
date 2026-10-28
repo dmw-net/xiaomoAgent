@@ -239,6 +239,7 @@ export function restoreProactiveTask(id: number, contactId?: string): boolean {
  *  和工具侧「不声明的工具模型调不到」同一套口径。 */
 export function buildDecideSystem(ownerPron: string, imageGenOn = false): string {
   return `你要判断：现在该不该主动给${ownerPron}发一条消息，并顺便想好下次要关注什么。
+先简要评估关键证据；如果出现新证据，可以修正判断。证据足够后就定下来，不要在已经确认的信息上反复绕圈，随后输出 JSON。
 
 只输出 JSON：
 {"should":true|false,"reason":"一句话理由","text":"要说的话","focus":"下次检查时想关注的具体事项","nextCheckHours":6}${imageGenOn ? ',"with_image":"要不要配一张图，true|false","image_prompt":"画什么的一句话画面描述"' : ""}
@@ -512,6 +513,13 @@ export function formatDue(dueAt: number, now = Date.now()): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${week} ${pad(d.getHours())}:${pad(d.getMinutes())}（已到期 ${mins} 分钟）`;
 }
 
+/**
+ * 主动判断不是短问答：开启思考时，模型要先权衡沉默时长、历史互动和上次追问是否已打扰，
+ * 最后才写一小段 JSON。400 tokens 连思考都不够（真机曾 400/400 全花在 reasoning 上），
+ * 所以这里给足「思考 + JSON」的总额度。max_tokens 是上限不是消耗量，正常输出不会因此变长。
+ */
+export const PROACTIVE_DECIDE_MAX_TOKENS = 2048;
+
 async function decideWithModel(
   contactId: string,
   focus: string,
@@ -571,7 +579,7 @@ async function decideWithModel(
     nextCheckHours?: unknown;
     with_image?: unknown;
     image_prompt?: unknown;
-  }>(messages, { purpose: "proactive", maxTokens: 400, contactId });
+  }>(messages, { purpose: "proactive", maxTokens: PROACTIVE_DECIDE_MAX_TOKENS, contactId });
 
   const hoursRaw = Number(raw.nextCheckHours);
   return {

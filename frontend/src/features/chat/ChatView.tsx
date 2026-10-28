@@ -9,7 +9,7 @@ import OnboardingChecklist from "../onboarding/Checklist";
 import { exportPersonaMd } from "../../lib/persona-doc";
 import { dayLabel, dayTimeLabel, dayOf, clockOf } from "../../lib/datetime";
 import { fmtTokens } from "../../lib/format";
-import { profilePicks } from "../../lib/providers";
+import { profilePicks, providerLabel } from "../../lib/providers";
 import { blobToDataUrl, fileToImageBlob } from "../../lib/image";
 import { CLOCK_EVENT, getClockPref, type ClockPref } from "../../lib/ui-prefs";
 import { offerUndo } from "../../lib/undo";
@@ -32,7 +32,7 @@ import { PENDING_TTL_MS, PROACTIVE_GAP_MS, PULL_IDLE_STEPS, PULL_INTERVAL_MS, TU
 import { THINKING_LEVEL_LABELS, type ContactConversationItem, type ContextUsage, type MessageRow, type ThinkingControl, type ThinkingQuickChoice } from "../../types";
 
 type Pending = { text: string; at: number; imgs: string[]; localId: string; turnId?: string; failed?: boolean; queued?: boolean; outbox?: boolean };
-type ModelOption = { value: string; label: string; detail: string };
+type ModelOption = { value: string; label: string; detail: string; provider: string };
 
 /** 会丢掉或重写已有内容的聊天动作，一律先经过同一个确认框。 */
 type PendingChatConfirm =
@@ -365,11 +365,20 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       .then(([settings, contact]) => {
         const profiles = settings.profiles ?? [];
         const byId = new Map(profiles.map((profile) => [profile.id, profile]));
-        setModelOptions(profilePicks(profiles, settings.providerNames ?? {}).map((pick) => ({
-          value: pick.value,
-          label: byId.get(pick.value)?.label || pick.label,
-          detail: byId.get(pick.value)?.name || (byId.get(pick.value)?.mode === "echo" ? "演示模式" : pick.label),
-        })));
+        const names = settings.providerNames ?? {};
+        setModelOptions(profilePicks(profiles, names).map((pick) => {
+          const profile = byId.get(pick.value);
+          const modelName = profile?.name?.trim() || profile?.label || "未填模型名";
+          const profileName = profile?.label?.trim() || "";
+          const provider = providerLabel(profile?.baseUrl, names, profiles) || "未命名供应商";
+          return {
+            value: pick.value,
+            label: modelName,
+            detail: profile?.mode === "echo" ? "演示模式"
+              : profileName !== "" && profileName !== modelName && profileName !== provider ? profileName : "",
+            provider,
+          };
+        }));
         setGlobalModelName(settings.model?.name || "");
         setGlobalModelReady(settings.modelReady === true);
         setGlobalModelEcho(settings.model?.mode === "echo");
@@ -409,12 +418,32 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       .finally(() => setModelBusy(false));
   };
   const globalModelStatus = globalModelEcho ? "演示模式" : globalModelReady ? (globalModelName || "已就绪") : "未就绪";
-  const currentModelLabel = modelProfileId !== ""
-    ? modelOptions.find((item) => item.value === modelProfileId)?.label ?? "已绑定模型"
-    : `跟随全局 · ${globalModelStatus}`;
+  const currentModel = modelOptions.find((item) => item.value === modelProfileId) ?? null;
+  const currentModelLabel = currentModel !== null
+    ? `${currentModel.provider} · ${currentModel.label}`
+    : modelProfileId !== "" ? "已绑定模型" : `跟随全局 · ${globalModelStatus}`;
   const modelQueryText = modelQuery.trim().toLowerCase();
   const visibleModels = modelQueryText === "" ? modelOptions : modelOptions.filter((item) =>
-    `${item.label} ${item.detail}`.toLowerCase().includes(modelQueryText));
+    `${item.provider} ${item.label} ${item.detail}`.toLowerCase().includes(modelQueryText));
+  const visibleModelGroups: Array<{ provider: string; items: ModelOption[] }> = [];
+  for (const item of visibleModels) {
+    const last = visibleModelGroups[visibleModelGroups.length - 1];
+    if (last?.provider === item.provider) last.items.push(item);
+    else visibleModelGroups.push({ provider: item.provider, items: [item] });
+  }
+  const showModelGroups = visibleModelGroups.length > 1;
+  const modelOptionRow = (item: ModelOption): JSX.Element => (
+    <button key={item.value} type="button" role="radio"
+      aria-checked={modelProfileId === item.value}
+      className={"model-option" + (modelProfileId === item.value ? " on" : "")}
+      disabled={modelBusy} onClick={() => chooseModel(item.value)}>
+      <span className="model-option-copy">
+        <b>{item.label}</b>
+        {item.detail !== "" && <small>{item.detail}</small>}
+      </span>
+      {modelProfileId === item.value && <Check size={15} strokeWidth={2.4} />}
+    </button>
+  );
   const thinkingSummary = thinking === null
     ? "未读取"
     : thinking.thinking.mode === "auto"
@@ -2585,15 +2614,18 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         {nodes.map(renderNode)}
 
         {failure && (
-          <div className="notice">
-            {failure.empty ? "这条回复是空的" : "联系人没回上来"}
+          <div className="notice chat-failure" role="alert">
+            <div className="chat-failure-copy">
+              <b>{failure.empty ? "这次没有生成回复" : "这次回复没有完成"}</b>
+              <span>{failure.empty ? "模型返回了空内容，可以重新生成一次。" : "可能是模型超时、网络中断或服务商限流；消息已经保留。"}</span>
+            </div>
             <button type="button" className="retry"
               onClick={() => (failure.empty ? regenerateEmpty(failure.id) : retry(failure.id))}>
-              {failure.empty ? "重新答一次" : "重试"}
+              {failure.empty ? "重新生成" : "重试"}
             </button>
             {failure.error && (
               <details className="notice-detail">
-                <summary>详情</summary>
+                <summary>技术详情</summary>
                 {failure.error}
               </details>
             )}
@@ -2620,10 +2652,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
 
       {bootErr !== "" && (
         /* 首屏拉取失败：整片空白对用户的解释力为零，必须原地给一句话 + 重试 */
-        <div className="notice">会话没载入
-          <button type="button" className="retry" onClick={boot}>重试</button>
+        <div className="notice chat-failure" role="alert">
+          <div className="chat-failure-copy"><b>会话没有载入</b><span>本地服务可能暂时不可达，或连接刚刚中断。</span></div>
+          <button type="button" className="retry" onClick={boot}>重新载入</button>
           <details className="notice-detail">
-            <summary>详情</summary>
+            <summary>技术详情</summary>
             {bootErr}
           </details>
         </div>
@@ -2852,18 +2885,15 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                               {modelProfileId === "" && <Check size={15} strokeWidth={2.4} />}
                             </button>
                           )}
-                          {visibleModels.map((item) => (
-                            <button key={item.value} type="button" role="radio"
-                              aria-checked={modelProfileId === item.value}
-                              className={"model-option" + (modelProfileId === item.value ? " on" : "")}
-                              disabled={modelBusy} onClick={() => chooseModel(item.value)}>
-                              <span className="model-option-copy">
-                                <b>{item.label}</b>
-                                <small>{item.detail || "绑定到这位联系人的对话"}</small>
-                              </span>
-                              {modelProfileId === item.value && <Check size={15} strokeWidth={2.4} />}
-                            </button>
-                          ))}
+                          {showModelGroups ? visibleModelGroups.map((group) => (
+                            <div className="model-group" key={group.provider}>
+                              <div className="model-group-head">
+                                <span>{group.provider}</span>
+                                <small>{group.items.length} 个模型</small>
+                              </div>
+                              {group.items.map(modelOptionRow)}
+                            </div>
+                          )) : visibleModels.map(modelOptionRow)}
                         </div>
                         {modelOptions.length === 0 && (
                           <div className="model-pop-empty">还没有可切换的模型档。先在设置里添加并保存一份。</div>

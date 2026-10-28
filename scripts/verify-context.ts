@@ -18,15 +18,24 @@ for (const f of ["./data/verify-context.db", "./data/verify-context.db-wal", "./
 rmSync("./data/media-verify", { recursive: true, force: true });
 
 type Req = { messages: Array<{ role: string; content: unknown }> };
+type MockReply = {
+  status?: number;
+  body?: string;
+  delayMs?: number;
+  finishReason?: string;
+  usage?: Record<string, unknown>;
+};
 const sent: Req[] = [];
+let lastBody: Record<string, unknown> = {};
 /** 当前用例决定的回复：body 就是模型「回复原文」——对话通道给人话，副通道给 JSON 字符串。delayMs 用来模拟慢模型，供打断用例。 */
-let responder: (req: Req) => { status?: number; body?: string; delayMs?: number } = () => ({ body: "好呀" });
+let responder: (req: Req) => MockReply = () => ({ body: "好呀" });
 const json = (o: unknown): { body: string } => ({ body: typeof o === "string" ? o : JSON.stringify(o) });
 const SIDE_CHANNEL = /记忆抽取器|整理一段长期陪伴|挤出对话窗口/;
 
 // 先声明成变量再赋值：`(async …) as typeof fetch` 会被 IDE 的 JavaScript 解析器误判。
 const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const parsed = JSON.parse(String(init?.body ?? "{}")) as { messages?: Req["messages"] };
+  lastBody = parsed as Record<string, unknown>;
   const req: Req = { messages: parsed.messages ?? [] };
   sent.push(req);
   const r = responder(req);
@@ -41,7 +50,10 @@ const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestI
     });
   }
   if (r.status !== undefined && r.status >= 400) return new Response(r.body ?? "bad request", { status: r.status });
-  return new Response(JSON.stringify({ choices: [{ message: { content: r.body ?? "好呀" } }] }), { status: 200 });
+  return new Response(JSON.stringify({
+    choices: [{ message: { content: r.body ?? "好呀" }, finish_reason: r.finishReason ?? null }],
+    ...(r.usage ? { usage: r.usage } : {}),
+  }), { status: 200 });
 };
 globalThis.fetch = mockFetch;
 
@@ -49,8 +61,10 @@ const { updateModel, updatePersona } = await import("../src/settings.ts");
 const { createContact, updateContact, getContact, companionPromptExtras } = await import("../src/contacts.ts");
 const { createTurn, getTurn, insertMessage, contextUsage, recentMessages, respondToTurn, editAndRegenerate, retryTurn } = await import("../src/agent.ts");
 const { listInflightCalls } = await import("../src/logs.ts");
-const { addMemoryEvent, deleteMemoryEvent, extractFailures, extractMemories, keywords, listMemoryEventsFiltered, recall } = await import("../src/memory.ts");
+const { addMemoryEvent, deleteMemoryEvent, extractFailures, extractMemories, keywords, listMemoryEventsFiltered, memoryStats, recall, recordExtractFailure } = await import("../src/memory.ts");
 const { maybeRefreshRecap } = await import("../src/recap.ts");
+const { callModelJson } = await import("../src/model.ts");
+const { PROACTIVE_DECIDE_MAX_TOKENS } = await import("../src/proactive.ts");
 const { maybeRunConsolidation } = await import("../src/consolidate.ts");
 const { buildSystemPrompt } = await import("../src/persona.ts");
 const { db } = await import("../src/db.ts");
@@ -373,21 +387,78 @@ check("他删掉的事不再被自动重新记下（P0-2 的验收项）",
   JSON.stringify(resRun));
 
 console.log("\n[15] 抽取失败计数：按联系人各记一份，通道恢复就清零");
-const settle = (): Promise<void> => new Promise((r) => setTimeout(r, 250));
-const failuresBefore = extractFailures(cid);
-// 只让副通道（抽取）坏掉、主通道照常——这样测的是"通道坏了要看得见"，不是整轮对话失败。
-responder = (req) => (SIDE_CHANNEL.test(String(req.messages[0]?.content ?? ""))
-  ? { body: "这轮我不想记东西" }
-  : { body: "好呀" });
-await runTurn("今晚吃点啥呢");
-await settle();
-check("抽取失败按联系人计数", extractFailures(cid) === failuresBefore + 1, `第 ${extractFailures(cid)} 次`);
-responder = () => json({ events: [], bond: null });
-await runTurn("那就这么定");
-await settle();
-check("通道恢复即清零：空返回（本轮不值得记）也算通道健康", extractFailures(cid) === failuresBefore);
+// 单独开一个联系人做串行直调，避免前面慢用例还在飞的后台抽取污染计数。
+const failureCid = createContact({ name: "抽取失败验证" }).id;
+const failuresBefore = extractFailures(failureCid);
 
-console.log("\n[16] 梗概重叠守卫：已原文回放的那段不再重复注入");
+responder = () => ({ body: "这轮我不想记东西" });
+let transportRejected = false;
+try {
+  await extractMemories({ turnId: "t-bad", userText: "今晚吃点啥呢", assistantText: "好呀", contactId: failureCid });
+} catch (error) {
+  transportRejected = true;
+  recordExtractFailure(error, failureCid);
+}
+check("抽取失败按联系人计数", transportRejected && extractFailures(failureCid) === failuresBefore + 1,
+  `第 ${extractFailures(failureCid)} 次`);
+
+responder = () => json({ events: [], bond: null });
+const emptyRun = await extractMemories({ turnId: "t-empty", userText: "那就这么定", assistantText: "好呀", contactId: failureCid });
+check("通道恢复即清零：空返回（本轮不值得记）也算通道健康",
+  emptyRun.added === 0 && extractFailures(failureCid) === failuresBefore);
+
+responder = () => json({ bond: null });
+let schemaRejected = false;
+try {
+  await extractMemories({ turnId: "t-schema", userText: "这个响应只有 bond", assistantText: "好呀", contactId: failureCid });
+} catch (error) {
+  schemaRejected = true;
+  recordExtractFailure(error, failureCid);
+}
+check("缺 events 的合法 JSON 算格式失败，不伪装成空结果",
+  schemaRejected && extractFailures(failureCid) === failuresBefore + 1, `第 ${extractFailures(failureCid)} 次`);
+
+responder = () => json({ events: [], bond: null });
+const recovered = await extractMemories({ turnId: "t-empty-2", userText: "恢复成真正空结果", assistantText: "好呀", contactId: failureCid });
+check("真正的 events: [] 再次清零失败计数", recovered.added === 0 && extractFailures(failureCid) === failuresBefore);
+const emptyStats = memoryStats(failureCid);
+check("空结果进入 emptyRate 统计，而不是失败计数",
+  emptyStats.extractSamples >= 2 && emptyStats.emptyRate !== null && emptyStats.emptyRate > 0,
+  `samples=${emptyStats.extractSamples} emptyRate=${emptyStats.emptyRate}`);
+
+console.log("\n[16] 主动判断：保留思考、给足预算，截断自动重试");
+check("主动判断预算给思考和 JSON 留足空间（不再是 400）",
+  PROACTIVE_DECIDE_MAX_TOKENS >= 2048, `maxTokens=${PROACTIVE_DECIDE_MAX_TOKENS}`);
+updateModel({ thinkingParam: "templateKw", thinkingMode: "on", maxOutputTokens: 4096 });
+let decideAttempts = 0;
+responder = () => {
+  decideAttempts += 1;
+  if (decideAttempts === 1) {
+    return {
+      body: "",
+      finishReason: "length",
+      usage: { completion_tokens: 400, completion_tokens_details: { reasoning_tokens: 400 } },
+    };
+  }
+  return json({ should: false, reason: "刚刚已经主动过，不再重复", focus: "看看明天状态", nextCheckHours: 6 });
+};
+const recoveredDecision = await callModelJson<{ should?: boolean }>(
+  [{ role: "user", content: "判断一下" }],
+  { purpose: "proactive", maxTokens: 400 },
+);
+const retryBody = lastBody as {
+  max_tokens?: number;
+  chat_template_kwargs?: { enable_thinking?: boolean };
+};
+check("思考吃光 400 tokens 后自动扩到 2048 重试并成功",
+  decideAttempts === 2 && recoveredDecision.should === false,
+  `attempts=${decideAttempts} result=${JSON.stringify(recoveredDecision)}`);
+check("重试仍保持思考开启，用户体验不被偷偷降级",
+  retryBody.max_tokens === 2048 && retryBody.chat_template_kwargs?.enable_thinking === true,
+  JSON.stringify(retryBody.chat_template_kwargs) + ` max_tokens=${retryBody.max_tokens}`);
+updateModel({ maxOutputTokens: 0, thinkingMode: "", thinkingParam: "effort" });
+
+console.log("\n[17] 梗概重叠守卫：已原文回放的那段不再重复注入");
 updateContact(cid, { features: { recap: true }, recap: "上次说到：两人约好周三去西湖" });
 const anchor = maxId();
 db.prepare(`UPDATE contacts SET recap_upto = ? WHERE id = ?`).run(anchor, cid);

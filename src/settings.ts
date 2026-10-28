@@ -20,6 +20,7 @@
 // 两件事互不相干，所以这一层叫 settings 而不是 runtime，避免歧义。
 
 import { randomUUID } from "node:crypto";
+import { dirname, resolve } from "node:path";
 
 import { db, kvGet, kvSet } from "./db.ts";
 import { config } from "./config.ts";
@@ -1296,7 +1297,7 @@ export function settingsSnapshot(): SettingsSnapshot {
       }]),
     ) as SettingsSnapshot["capabilities"],
     capabilitiesReady: capabilitiesStatus(),
-    dataDir: config.dataDir,
+    dataDir: config.dataDir || dirname(resolve(config.dbPath)),
     desktop: desktopPrefsSnapshot(),
   };
 }

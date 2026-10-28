@@ -2372,29 +2372,53 @@ html[data-wp-paused] .wp-stars::after,
 html[data-wp-paused] .wp-meteors .wp-meteor { animation-play-state: paused; }
 
 /* ── 桌面无边框窗口的页内标题栏（components/Titlebar.tsx）────────
-   只在 html.native-frame（桌面壳且原生装饰已关）生效。整条透明：
-   壁纸从底下透出来，只有三个按钮浮在右上角。z 档压过 --z-photo(120)，
+   只在 html.native-frame（桌面壳且原生装饰已关）生效。标题栏承担品牌、页面上下文
+   与标准窗口控制，壁纸模式下使用同一套轻玻璃材质。z 档压过 --z-photo(120)，
    弹窗开着也得能关窗口——这是原生标题栏一直有的能力。 */
-html.native-frame { --frame-h: 36px; }
+html.native-frame { --frame-h: 40px; }
 html.native-frame #shell {
-  height: calc(100dvh - var(--frame-h, 36px) - var(--kb, 0px));
-  margin-top: var(--frame-h, 36px);
+  height: calc(100dvh - var(--frame-h, 40px) - var(--kb, 0px));
+  margin-top: var(--frame-h, 40px);
 }
 .titlebar {
   position: fixed; top: 0; left: 0; right: 0;
-  height: var(--frame-h, 36px); z-index: 200;
-  display: flex; align-items: center;
+  height: var(--frame-h, 40px); z-index: 200;
+  display: flex; align-items: center; gap: 12px;
+  padding-left: 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
+  background: color-mix(in srgb, var(--bg) 94%, transparent);
+  color: var(--text-muted);
   user-select: none;
+  -webkit-backdrop-filter: blur(12px) saturate(1.08);
+  backdrop-filter: blur(12px) saturate(1.08);
 }
+.titlebar-brand { display: flex; align-items: center; gap: 7px; min-width: 0; pointer-events: none; }
+.titlebar-mark { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 12%, transparent); }
+.titlebar-app { flex: none; color: var(--text); font-size: var(--text-sm); font-weight: 600; letter-spacing: .02em; }
+.titlebar-sep { flex: none; color: var(--text-subtle); font-size: var(--text-cap); }
+.titlebar-context { overflow: hidden; color: var(--text-subtle); font-size: var(--text-xs); text-overflow: ellipsis; white-space: nowrap; }
 .titlebar-btns { margin-left: auto; display: flex; height: 100%; }
 .titlebar-btn {
   width: 46px; height: 100%;
   display: flex; align-items: center; justify-content: center;
-  color: var(--text-muted);
+  color: var(--text-subtle);
   transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
 }
-.titlebar-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+.titlebar-btn svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1.1; }
 .titlebar-btn:hover { background: var(--bg-hover); color: var(--text); }
+.titlebar-btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -3px; }
 .titlebar-btn:active { background: color-mix(in srgb, var(--bg-hover) 70%, var(--border)); }
 .titlebar-close:hover { background: #c42b1c; color: #fff; }
 .titlebar-close:active { background: #b02618; color: #fff; }
+
+html[data-glass="on"] .titlebar {
+  border-bottom-color: var(--glass-edge-soft);
+  background:
+    linear-gradient(180deg, rgb(255 255 255 / .048), rgb(255 255 255 / .008)),
+    color-mix(in srgb, var(--wp-tint) 32%, transparent);
+  box-shadow: inset 0 1px 0 rgb(255 255 255 / .08);
+  -webkit-backdrop-filter: blur(18px) saturate(1.24);
+  backdrop-filter: blur(18px) saturate(1.24);
+}
+html[data-glass="on"] .titlebar-app { color: var(--text); }
+html[data-glass="on"] .titlebar-context { color: var(--text-muted); }

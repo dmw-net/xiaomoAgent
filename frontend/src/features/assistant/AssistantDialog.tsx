@@ -72,6 +72,8 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
   // 关闭只是隐藏整层；portal 到 body 的工作区管理弹窗（新建/改名/删除）不在其中，
   // 不显式收就会留在屏幕上。弹窗一收就把内层确认框一起归零。
   useEffect(() => { if (!open) setModal(null); }, [open]);
+  // 助手是一个临时召唤层：关闭时回到居中，不把上一次的拖动位置带进下一次使用。
+  useEffect(() => { if (!open) setDrag(null); }, [open]);
 
   // 助手的头像与名字来自保留联系人（它已不在会话列表里，单独拉一次）。
   // 在弹窗里改完名字/换完头像也要重新拉一次——否则保存成功了，头部还挂着旧的那份。
@@ -129,10 +131,26 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
   const clampOffset = (x: number, y: number): { x: number; y: number } => {
     const el = dialogRef.current;
     if (!el) return { x, y };
-    const maxX = Math.max(0, window.innerWidth / 2 - el.offsetWidth / 2);
-    const maxY = Math.max(0, window.innerHeight / 2 - el.offsetHeight / 2);
-    return { x: Math.max(-maxX, Math.min(maxX, x)), y: Math.max(-maxY, Math.min(maxY, y)) };
+    const margin = 8;
+    const frameH = document.documentElement.classList.contains("native-frame")
+      ? Number.parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--frame-h")) || 40
+      : 0;
+    const safeTop = frameH + margin;
+    const baseLeft = Math.max(margin, (window.innerWidth - el.offsetWidth) / 2);
+    const availableH = Math.max(0, window.innerHeight - safeTop - margin);
+    const baseTop = safeTop + Math.max(0, (availableH - el.offsetHeight) / 2);
+    const left = Math.max(margin, Math.min(window.innerWidth - margin - el.offsetWidth, baseLeft + x));
+    const top = Math.max(safeTop, Math.min(safeTop + Math.max(0, availableH - el.offsetHeight), baseTop + y));
+    return { x: left - baseLeft, y: top - baseTop };
   };
+
+  // 窗口缩放/最大化后重新夹一次，避免已有偏移把头部重新推出去。
+  useEffect(() => {
+    if (!open || drag === null) return;
+    const onResize = (): void => setDrag((current) => current ? clampOffset(current.x, current.y) : current);
+    window.addEventListener("resize", onResize);
+    return () => window.removeEventListener("resize", onResize);
+  }, [open, drag?.x, drag?.y]);
 
   const onHeadDown = (e: React.PointerEvent<HTMLElement>): void => {
     if (narrow) return;

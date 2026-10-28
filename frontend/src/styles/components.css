@@ -917,6 +917,9 @@ button.prov-row.on { border-color: var(--border-strong); background: var(--bg-su
   font-size: var(--text-note); color: var(--text-muted); padding: var(--space-2) var(--space-6); border-radius: var(--radius-md);
 }
 .pf-pages button.on { background: var(--bg-elevated); color: var(--text); font-weight: 600; box-shadow: var(--shadow-xs); }
+/* 人格设定页：角色形象是身份资料，不再塞进工具设置；与人设正文分成两张卡。 */
+.pf-persona-stack { display: flex; flex-direction: column; gap: var(--space-4); }
+.pf-role-card .pf-set-row { border-top: none; padding-top: 0; }
 .pf-settings { display: flex; flex-direction: column; gap: var(--space-6); }
 .pf-set-card {
   display: flex; flex-direction: column; gap: var(--space-6);
@@ -1035,7 +1038,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 
 .pf-set-ctl { display: flex; flex-wrap: wrap; gap: var(--space-3); align-items: center; flex: 1.4; min-width: 220px; }
 .pf-set-note { flex: 1 1 100%; color: var(--text-subtle); font-size: var(--text-note); }
-/* 长相参考缩略图：只用来确认"传的是这张脸"，所以小方图 + 裁切，不占行高 */
+/* 自拍参考缩略图：只用来确认"传的是这张脸"，所以小方图 + 裁切，不占行高 */
 .pf-face-thumb { width: 44px; height: 44px; object-fit: cover; border-radius: var(--radius-md); border: 1px solid var(--border); background: var(--bg-elevated); }
 .pf-set-col { flex-direction: column; align-items: stretch; gap: var(--space-3); }
 .pf-bond-row input { flex: 1; min-width: 0; }
@@ -1354,6 +1357,10 @@ button.bar-btn:disabled { opacity: var(--alpha-disabled); cursor: wait; }
   /* 入场用独立 translate / scale 属性：.asst-dialog 自己的 transform 要留给拖动
      （内联 transform）与窄屏的 translateX(-50%)，keyframes 里覆写会把这两样一起打掉。 */
   animation: dialogIn var(--dur-slow) var(--ease-out);
+}
+/* 桌面无边框窗口：把弹窗的中心放到标题栏以下的可用区域，而不是整块视口的中心。 */
+html.native-frame .asst-dialog {
+  top: calc(50% + var(--frame-h, 40px) / 2);
 }
 @keyframes dialogIn { 0% { opacity: 0; translate: 0 12px; scale: .97; } }
 .asst-head {
@@ -1884,6 +1891,14 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 .model-filter button:hover { background: var(--bg-hover); color: var(--text); }
 
 .model-options { display: flex; flex-direction: column; gap: var(--space-2); }
+.model-group { display: flex; flex-direction: column; gap: var(--space-2); }
+.model-group + .model-group { margin-top: var(--space-4); }
+.model-group-head {
+  display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4);
+  padding: 1px var(--space-2) 3px;
+}
+.model-group-head span { font-size: var(--text-cap); font-weight: 600; color: var(--text-muted); }
+.model-group-head small { font-size: var(--text-cap); color: var(--text-subtle); font-variant-numeric: tabular-nums; }
 .model-option, .reason-option {
   display: flex; align-items: center; gap: var(--space-4); width: 100%;
   padding: var(--space-3) var(--space-4); border: 1px solid transparent; border-radius: var(--radius-lg);

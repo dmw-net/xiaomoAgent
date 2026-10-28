@@ -10,7 +10,7 @@ import type { Window as TauriWindow } from "@tauri-apps/api/window";
  * core:window 权限。只在「确实是 Tauri 窗口且确实没有原生装饰」时渲染——
  * 浏览器开发模式和手机端（Tauri 移动壳，窗口由系统管）都不出现。
  */
-export default function Titlebar(): JSX.Element | null {
+export default function Titlebar({ context = "" }: { context?: string }): JSX.Element | null {
   const [win, setWin] = useState<TauriWindow | null>(null);
   const [decorated, setDecorated] = useState(true);
   const [maximized, setMaximized] = useState(false);
@@ -47,7 +47,17 @@ export default function Titlebar(): JSX.Element | null {
   if (win === null || decorated) return null;
 
   return (
-    <div className="titlebar" data-tauri-drag-region aria-hidden="false">
+    <div className="titlebar" data-tauri-drag-region aria-label="窗口标题栏">
+      <div className="titlebar-brand" data-tauri-drag-region>
+        <span className="titlebar-mark" aria-hidden="true" />
+        <span className="titlebar-app">小茉</span>
+        {context !== "" && (
+          <>
+            <span className="titlebar-sep" aria-hidden="true">·</span>
+            <span className="titlebar-context">{context}</span>
+          </>
+        )}
+      </div>
       <div className="titlebar-btns">
         <button type="button" className="titlebar-btn" title="最小化" aria-label="最小化"
           onClick={() => void win.minimize()}>

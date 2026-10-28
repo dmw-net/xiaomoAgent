@@ -384,6 +384,11 @@ export default function App(): JSX.Element {
    *  从前是收起弹窗、开一张身后的整页资料，返回只把整页收掉，人再也回不到助手里。 */
   const asstShown = assistantOpen;
   const shellRef = useRef<HTMLDivElement>(null);
+  const titlebarContext = profile
+    ? "联系人资料"
+    : activeView === "chat" ? "对话"
+      : activeView === "status" ? "状态"
+        : "设置";
   // 遮罩只挡鼠标，键盘 Tab 仍能溜进身后的会话框——弹窗开着就把整个壳层置为 inert。
   useEffect(() => { if (shellRef.current) shellRef.current.inert = asstShown; }, [asstShown]);
 
@@ -391,7 +396,7 @@ export default function App(): JSX.Element {
     <>
     {/* 桌面无边框窗口的页内标题栏（浏览器/手机端渲染为 null）：必须挂在 #shell 之外——
         它是 fixed 定位的窗口级 UI，不该进三栏网格，z 档也要压过弹层。 */}
-    <Titlebar />
+    <Titlebar context={titlebarContext} />
     <div id="shell" ref={shellRef} className={[wideShell ? "wide" : "", chatListPage ? "chat-list-on" : "", chatFull ? "chat-full" : ""].join(" ").trim() || undefined}>
       <Rail
         active={activeView}

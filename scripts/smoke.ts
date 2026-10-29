@@ -3626,6 +3626,17 @@ try {
       check("群回复走群接口并携带触发消息 msg_id",
         qqMock.paths.includes("/v2/groups/GROUP-A/messages") && groupSends.some((x) => x.msg_id === "gm1"),
         JSON.stringify(groupSends.slice(-1)[0] ?? null));
+      // 分条气泡 → 分条消息：本地几颗气泡，群里就几条；同一 msg_id 下 msg_seq 必须递增。
+      const bubbleBefore = qqMock.sends.length;
+      if (groupA !== undefined) await qq.deliverToConversation(groupA.id, ["第一颗气泡", "第二颗气泡"], { triggerMessageId: "gm1" });
+      const bubbleSends = qqMock.sends.slice(bubbleBefore);
+      check("分条回复按气泡逐条发出（一颗气泡一条消息）",
+        bubbleSends.length === 2 && bubbleSends[0]?.content === "第一颗气泡" && bubbleSends[1]?.content === "第二颗气泡",
+        JSON.stringify(bubbleSends));
+      const bubbleSeqs = bubbleSends.map((x) => Number(x.msg_seq));
+      check("同一 msg_id 下的多条回复 msg_seq 递增",
+        bubbleSeqs.length === 2 && bubbleSeqs[1]! > bubbleSeqs[0]!,
+        JSON.stringify(bubbleSends.map((x) => x.msg_seq)));
 
       // 第二个群 + 记忆作用域：同一联系人下 A 群的会话/成员记忆不能进 B 群。
       sock.emit({ op: 0, t: "GROUP_ADD_ROBOT", s: 8, d: { group_openid: "GROUP-B", group_name: "测试群 B" } });
@@ -3811,6 +3822,9 @@ try {
       String(qq.splitQqText("啊".repeat(4001)).length));
     check("正常正文按空行切段、段内不硬切", qq.splitQqText("一\n二\n\n三").length === 2,
       JSON.stringify(qq.splitQqText("一\n二\n\n三")));
+    check("数组入参即消息序列：一颗气泡一条，超长的单颗再硬切",
+      qq.splitQqText(["一", "啊".repeat(4001)]).length === 3,
+      JSON.stringify(qq.splitQqText(["一", "啊".repeat(4001)]).map((s) => s.length)));
 
     // 换凭据 = 换身份：token 必须作废重来。
     const tokensBeforeSwap = qqMock.tokenCalls;

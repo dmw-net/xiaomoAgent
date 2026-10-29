@@ -42,6 +42,15 @@ export function chunkText(text: string, maxUnits: number): string[] {
 }
 
 /**
+ * 出站内容 → 平台消息序列。字符串按上限切；数组则一个元素就是一条消息
+ * （分条气泡靠它保证「本地几颗气泡、对方几条消息」），元素自身超长再切。
+ */
+export function chunkSegments(value: string | string[], maxUnits: number): string[] {
+  const items = Array.isArray(value) ? value : [value];
+  return items.flatMap((item) => chunkText(item, maxUnits));
+}
+
+/**
  * 入站幂等窗口：平台都会重投递，同一个键不能进对话两次。
  * 有界 FIFO——记满挤掉最旧的，不能让它一个人长到天上去（它是要落进绑定记录的）。
  */

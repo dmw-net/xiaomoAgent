@@ -9,7 +9,7 @@ import { db, kvGet, kvSet } from "./db.ts";
 import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
-import { asText, chunkText, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight } from "./channels/delivery.ts";
+import { asText, chunkSegments, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight } from "./channels/delivery.ts";
 import { ensureConversation, ensureLocalConversation, getConversation, listConversations, setConversationMembership, type Conversation } from "./conversations.ts";
 
 const KV_ACCOUNTS = "qq.accounts.v2";
@@ -52,7 +52,7 @@ type QQSocket = {
   onClose?: (handler: (code: number) => void) => void; onError?: (handler: (message: string) => void) => void;
 };
 
-export function splitQqText(value: string): string[] { return chunkText(value, TEXT_UNITS); }
+export function splitQqText(value: string | string[]): string[] { return chunkSegments(value, TEXT_UNITS); }
 const shortId = (): string => randomUUID().slice(0, 10);
 
 function parseAccounts(raw: string | null): StoredAccount[] {
@@ -358,7 +358,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     await callApi(account, `/v2/groups/${encodeURIComponent(groupOpenId)}/messages`, { method: "POST", body });
   };
 
-  const deliver = async (account: StoredAccount | null, text: string, opts: { proactive?: boolean; msgId?: string } = {}): Promise<void> => {
+  const deliver = async (account: StoredAccount | null, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<void> => {
     if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
     const segments = splitQqText(text); if (segments.length === 0) return;
     const startedAt = clock();
@@ -370,14 +370,14 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     });
   };
 
-  const deliverToContact = async (contactId: string, text: string, opts: { proactive?: boolean } = {}): Promise<void> => {
+  const deliverToContact = async (contactId: string, text: string | string[], opts: { proactive?: boolean } = {}): Promise<void> => {
     const account = byContact(contactId);
     if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
     const inWindow = account.replyMessageId !== "" && clock() - account.replyMessageAt < REPLY_WINDOW_MS;
     await deliver(account, text, { proactive: opts.proactive === true, msgId: inWindow ? account.replyMessageId : "" });
   };
 
-  const deliverToConversation = async (conversationId: string, text: string, opts: { triggerMessageId?: string } = {}): Promise<void> => {
+  const deliverToConversation = async (conversationId: string, text: string | string[], opts: { triggerMessageId?: string } = {}): Promise<void> => {
     const conv = getConversation(conversationId);
     if (conv === null || conv.channel !== "qq" || !conv.enabled) return;
     const account = byId(conv.account_id) ?? byContact(conv.contact_id);

@@ -1626,7 +1626,11 @@ export async function respondToTurn(
     // Markdown 内容（列表/代码块）由分割器保证整条不拆。turn 在最后一条落库后才 done，
     // 前端的"正在输入"会持续到最后一条出现，节奏才对。
     // 联系人可以把这套节奏关掉（回复方式=单条整段）：整条一个气泡、不等待。
-    const parts = getContact(contactId)?.features.splitReply === false ? [reply] : segmentReply(reply);
+    // 这一组气泡同时就是**通道出站的消息序列**：本地几颗气泡，微信/QQ 里就几条消息；
+    // 重答旧轮是整条写回原来那颗气泡，那种情况仍按一条算。
+    const parts = collapseIntoId !== null || getContact(contactId)?.features.splitReply === false
+      ? [reply]
+      : segmentReply(reply);
     if (collapseIntoId !== null) {
       // 整条写回原来那个气泡的位置（见上面 collapseIntoId 的说明），不分条、不延迟。
       // 附件跟着一起重写：重答画了新图就换上新图，没画就该清掉旧图，不能留着上一版的。
@@ -1656,13 +1660,18 @@ export async function respondToTurn(
       turn.id,
     );
 
+    // 附注跟在最后一颗气泡后面：分条时不能每颗都挂一遍。
+    const noted = (note: string): string[] =>
+      outgoingImages.length === 0
+        ? parts
+        : parts.map((part, i) => (i === parts.length - 1 ? `${part}\n${note}` : part));
     // 通道投递：QQ 群按群回复，绝不把群回复镜像到联系人私聊；
     // 主私聊里的应用/微信/QQ 消息仍镜像到微信 + QQ 私聊。
     if (conversation?.channel === "qq") {
       void import("./qq.ts")
         .then(({ qq }) => qq.deliverToConversation(
           conversationId,
-          outgoingImages.length > 0 ? `${reply}\n（画了一张图，QQ 这条只送文字，在这个应用里看）` : reply,
+          noted("（画了一张图，QQ 这条只送文字，在这个应用里看）"),
           { triggerMessageId: turn.trigger_message_id ?? undefined },
         ))
         .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
@@ -1670,13 +1679,13 @@ export async function respondToTurn(
       void import("./wechat.ts")
         .then(({ wechat }) => wechat.deliverToContact(
           contactId,
-          outgoingImages.length > 0 ? `${reply}\n（画了一张图，微信发不出去，在这个应用里看）` : reply,
+          noted("（画了一张图，微信发不出去，在这个应用里看）"),
         ))
         .catch(() => { /* 投递失败已落 wechat.links.lastError 与 model_calls */ });
       void import("./qq.ts")
         .then(({ qq }) => qq.deliverToContact(
           contactId,
-          outgoingImages.length > 0 ? `${reply}\n（画了一张图，QQ 这条只送文字，在这个应用里看）` : reply,
+          noted("（画了一张图，QQ 这条只送文字，在这个应用里看）"),
         ))
         .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
     }

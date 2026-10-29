@@ -20,7 +20,7 @@ import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
 import {
   asText,
-  chunkText,
+  chunkSegments,
   deliverOutbound,
   deliveryAllowed,
   redact,
@@ -102,8 +102,8 @@ const emptyStore = (): Store => ({ version: 1, links: [] });
 const newId = (): string => randomBytes(6).toString("hex");
 
 /** 微信正文按空行切段，段内超长再硬切。 */
-export function splitWechatText(value: string): string[] {
-  return chunkText(value, CHUNK_UNITS);
+export function splitWechatText(value: string | string[]): string[] {
+  return chunkSegments(value, CHUNK_UNITS);
 }
 
 /** 从库里那一包 JSON 还原绑定；缺字段走默认值，整包坏了当空处理。 */
@@ -488,7 +488,7 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
   /** 把一句话送到这位联系人的微信。没绑定就静默跳过；失败只记账，不抛错。 */
   const deliverToContact = async (
     contactId: string,
-    text: string,
+    text: string | string[],
     opts: { proactive?: boolean } = {},
   ): Promise<void> => {
     const link = links.byContact(contactId);

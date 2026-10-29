@@ -904,7 +904,9 @@ async function callModelWithToolsInner(
   // 上层忘了过滤也不能把 tools 发给服务商，更不能执行模型凭空返回的工具调用。
   // 门控读哪份 caps 由 toolCapsSettings 统一裁决（能力通道/联系人意图的交集），与估算同源。
   const toolSettings = toolCapsSettings(options, settings);
-  if (toolSettings.caps.tools !== true || toolsUnsupportedFor(settings)) {
+  // tools 为空也要走这一支：调用方（agent 的 runAgentLoop）在没有可声明工具时仍会进工具循环，
+  // 为的是认得出正文形式的调用；而给端点发 `tools: []` 有些服务商会直接 400。
+  if (tools.length === 0 || toolSettings.caps.tools !== true || toolsUnsupportedFor(settings)) {
     // 已知不支持 tools / 用户没勾能力：直接走无工具路径（上层已包含同样消息）。
     const content = await attempt(messages, options, true);
     // 但「端点不支持 tools 协议」不等于「模型不会调工具」：Hermes / Qwen 模板的端点会把调用

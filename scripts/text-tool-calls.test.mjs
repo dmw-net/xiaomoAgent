@@ -77,7 +77,21 @@ assert.equal(
   2,
   "model.ts 的两个返回点都要接兼容解析：原生 tool_calls 路径 + 未启用 tools 的路径",
 );
+assert(
+  /if \(tools\.length === 0 \|\| toolSettings\.caps\.tools !== true/.test(modelSource),
+  "tools 为空也必须走无工具分支：agent 在没有可声明工具时仍会进循环认正文调用，而给端点发 tools: [] 有些服务商直接 400",
+);
 const agentSource = readFileSync("src/agent.ts", "utf8");
 assert(/trimDraftBeforeToolCall\(text\)/.test(agentSource), "流式草稿写入前要截掉正文里的调用块，不能实时闪一段 XML");
+// 这条是真踩到的第二个坑：门控在 runAgentLoop 里又短路了一次，`declaredTools.length === 0`
+// 直接 return callModel，于是 callModelWithTools 里的兼容解析根本轮不到执行。
+assert(
+  !/\|\|\s*declaredTools\.length === 0[\s\S]{0,120}?callModel\(base, options\)\)/.test(agentSource),
+  "「没有可声明工具」不能短路成一次 callModel：那条路会跳过正文形式工具调用的解析",
+);
+assert(
+  /if \(!modelReadyNow\(effective\)\) \{\s*\n\s*return guardOverflow\(base, \(\) => callModel\(base, options\)\);/.test(agentSource),
+  "只有模型没就绪时才允许退回 callModel（演示模式那句提示由它负责）",
+);
 
 console.log("正文形式工具调用解析：全部通过");

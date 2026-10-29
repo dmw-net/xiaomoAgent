@@ -1138,14 +1138,16 @@ async function runAgentLoop(
   // 门控读哪份 caps 由 toolCapsSettings 统一裁决：能力显式绑档=空 caps（不带）、
   // 能力隐式回落主模型端点=按联系人聊天档意图、普通调用=请求落到的配置本身。
   const declaredTools = toolDefsForApi(contactId, permissionSnapshot);
-  if (
-    !modelReadyNow(effective)
-    || declaredTools.length === 0
-    || toolCapsSettings(options, effective).caps.tools !== true
-    || toolsUnsupportedFor(effective)
-  ) {
+  // 模型没就绪（演示模式/密钥缺失）就别进循环：callModel 自己会回那句"先接模型"的提示。
+  if (!modelReadyNow(effective)) {
     return guardOverflow(base, () => callModel(base, options));
   }
+  /* 其余三种情况——没有可声明的工具、模型档没开工具调用、端点被探测为不支持 tools——
+     从前直接短路成一次 `callModel`，**连工具循环都不进**。可这恰恰是最需要兼容解析的一条路：
+     端点没收到 tools 声明，Hermes / Qwen 模板的模型仍会把调用写进正文（见 text-tool-calls.ts），
+     真实表现就是"她说已经搜到 6 张图了"，而工具一次没跑、界面上一张图都没有。
+     现在照常进循环，只是把空清单传下去：callModelWithTools 见到空 tools 会走无工具分支，
+     但那一条分支同样会认正文形式的调用。别给端点发 tools: []——部分服务商直接 400。 */
 
   const conversationId = turn.conversation_id || localConversationId(contactId);
   const triggerSender = turn.trigger_message_id

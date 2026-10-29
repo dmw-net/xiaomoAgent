@@ -154,4 +154,17 @@ assert(
 assert(/imagesOnly=\{!showTools\}/.test(chatSource), "工具卡应支持只渲染候选图（不显示卡片本身）");
 assert(/if \(imagesOnly\) \{/.test(toolCardSource), "ToolCard 需要一条只出图的渲染分支");
 
+// 设置助手自己的「对话设置」也要能存：回复方式 / 回放比例 / 历史占比上限就摆在那一屏上，
+// 从前 formPayload 用一条 isAssistant 分支把整块 features 跳过，于是这三个开关点了既不出
+// 脏值条也没有保存入口——用户看到的就是「没有保存按钮、改了不生效」。
+const profileSource = readFileSync("frontend/src/features/profile/ProfileView.tsx", "utf8");
+assert(
+  /payload\.features = \{ splitReply: f\.splitReply, turnPct: f\.turnPct, tokenPct: f\.tokenPct \}/.test(profileSource),
+  "助手模式必须回传它那一屏能改的三项 features（后端按 key 合并，人格三段仍不碰）",
+);
+assert(
+  /const dirty = loaded && snapshot\(\) !== baseline;/.test(profileSource),
+  "脏值判定必须继续以 snapshot 与基线比对为准（保存条只在有改动时出现）",
+);
+
 console.log("聊天与助手权限 UI 回归测试：全部通过");

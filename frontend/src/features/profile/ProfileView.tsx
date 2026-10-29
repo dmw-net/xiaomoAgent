@@ -519,6 +519,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       payload.lifeline = (over.lifeline ?? lifeline).trim();
       payload.recap = (over.recap ?? recap).trim();
       payload.bond = { stage: bd.stage.trim(), warmth: bd.warmth, mood: bd.mood.trim() };
+    } else {
+      /* 助手页**也**有可改的对话设置：回复方式、回放比例、历史占比上限就摆在它自己的
+         「对话设置」里。从前整块 features 被这条 isAssistant 分支跳过了，于是那三个开关
+         点下去既不出脏值条、也没有保存入口——用户看到的就是「没有保存按钮、改了不生效」。
+         只回传这三项，人格三段与陪伴能力仍一律不碰：后端按 key 合并，漏传即保留内置值。 */
+      const f = over.features ?? features;
+      payload.features = { splitReply: f.splitReply, turnPct: f.turnPct, tokenPct: f.tokenPct };
     }
     return payload;
   };

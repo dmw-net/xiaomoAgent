@@ -9,6 +9,7 @@ import { extractMemories, likePattern, recallExplained, recallSmart, recordExtra
 import { buildSystemPrompt, toChatMessages } from "./persona.ts";
 import { capabilityExplicit, capabilityReady, effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolRounds } from "./settings.ts";import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "./model.ts";
 import { executeTool, toolDefsForApi, type ToolContext } from "./tools.ts";
+import { trimDraftBeforeToolCall } from "./text-tool-calls.ts";
 import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
 import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getContact } from "./contacts.ts";
 import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssistantToActiveProfile, type AssistantPermission } from "./assistant.ts";
@@ -1351,9 +1352,12 @@ function draftWriter(turnId: string): (text: string) => void {
     // 流式一帧几十毫秒一片，逐片写库等于给 WAL 一道持续小洪峰；200ms 一次足够看出她在写。
     if (now - lastWrite < 200) return;
     lastWrite = now;
+    // 正文形式的工具调用（见 text-tool-calls.ts）在实时打字时会闪出一整段 XML。
+    // 草稿只留到 <tool_call> 之前：调用块是写给机器的，不该出现在"她正在写"的那口气里。
+    const draft = trimDraftBeforeToolCall(text);
     // 条件写：状态一旦离开 running（取消、收尾、被别的进程判死），迟到的帧就写不进去，
     // 不会把草稿复活成"看起来像定稿"。
-    db.prepare(`UPDATE turns SET reply = ? WHERE id = ? AND status = 'running'`).run(text, turnId);
+    db.prepare(`UPDATE turns SET reply = ? WHERE id = ? AND status = 'running'`).run(draft, turnId);
   };
 }
 

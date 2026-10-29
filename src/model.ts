@@ -25,6 +25,7 @@ import { recordArtifact } from "./artifacts.ts";
 import { db } from "./db.ts";
 import { beginModelCall, endModelCall, logModelCall } from "./logs.ts";
 import { isPrivateAddress } from "./web.ts";
+import { parseTextToolCalls } from "./text-tool-calls.ts";
 import { isIP } from "node:net";
 import { MAX_IMAGE_BYTES, mediaDataUrl, saveImage, sniffImageMime } from "./media.ts";
 
@@ -905,7 +906,17 @@ async function callModelWithToolsInner(
   const toolSettings = toolCapsSettings(options, settings);
   if (toolSettings.caps.tools !== true || toolsUnsupportedFor(settings)) {
     // 已知不支持 tools / 用户没勾能力：直接走无工具路径（上层已包含同样消息）。
-    return { content: await attempt(messages, options, true), toolCalls: null };
+    const content = await attempt(messages, options, true);
+    // 但「端点不支持 tools 协议」不等于「模型不会调工具」：Hermes / Qwen 模板的端点会把调用
+    // 写进正文（见 text-tool-calls.ts）。这种调用不需要端点支持任何协议，本地就能执行；
+    // 认出来照跑。不认的话模型只会顺着自己的话往下编——真实出现过「找到了 6 张图，已经显示在
+    // 界面上啦」，而工具一次都没跑、界面上一张图都没有。执行侧仍由 visibleTools 把关，不越权。
+    const fromText = parseTextToolCalls(content);
+    if (fromText.calls.length > 0) {
+      console.warn(`[model] 端点未启用工具能力，但正文里带了 ${fromText.calls.length} 个工具调用（正文形式），按兼容格式执行`);
+      return { content: fromText.content, toolCalls: fromText.calls };
+    }
+    return { content, toolCalls: null };
   }
 
   const url = endpoint(settings);
@@ -989,13 +1000,20 @@ async function callModelWithToolsInner(
     if (toolReasoning !== "" && options.onReasoning) {
       options.onReasoning(toolReasoning, Number(parsed.usage?.completion_tokens_details?.reasoning_tokens) || 0);
     }
-    const toolCalls = (message?.tool_calls ?? [])
+    const nativeCalls = (message?.tool_calls ?? [])
       .map((call, index) => ({
         id: String(call.id ?? `call_${index}`),
         name: String(call.function?.name ?? ""),
         args: String(call.function?.arguments ?? "{}"),
       }))
       .filter((call) => call.name !== "");
+    // 没有原生 tool_calls 时再认正文里的调用块（Hermes / Qwen 模板，见 text-tool-calls.ts）。
+    // 有原生调用时也走一遍解析：只为了让正文里那半截 XML 不落到气泡里，调用仍以原生为准。
+    const fromText = parseTextToolCalls(content);
+    const toolCalls = nativeCalls.length > 0 ? nativeCalls : fromText.calls;
+    const replyText = fromText.content;
+    // 日志里要留下"这是正文形式"的痕迹：出问题时一眼能看出是端点没按 OpenAI 形状回工具调用。
+    const textCallNote = nativeCalls.length === 0 && toolCalls.length > 0 ? "（正文形式）" : "";
 
     logModelCall({
       turnId: options.turnId,
@@ -1005,10 +1023,10 @@ async function callModelWithToolsInner(
       model: settings.name,
       url,
       elapsedMs,
-      message: toolCalls.length > 0 ? `${toolCalls.length} 个工具调用` : `${content.length} 字${streamed ? "（流式）" : ""}`,
+      message: toolCalls.length > 0 ? `${toolCalls.length} 个工具调用${textCallNote}` : `${replyText.length} 字${streamed ? "（流式）" : ""}`,
       // 工具轮没有正文时把调用清单存进原文，状态页同样可回看。
-      detail: (content !== "" ? content : toolCalls.map((c) => `${c.name}(${c.args})`).join("\n")).slice(0, 800),
-      resFull: content !== "" ? content : toolCalls.map((c) => `${c.name}(${c.args})`).join("\n"),
+      detail: (replyText !== "" ? replyText : toolCalls.map((c) => `${c.name}(${c.args})`).join("\n")).slice(0, 800),
+      resFull: replyText !== "" ? replyText : toolCalls.map((c) => `${c.name}(${c.args})`).join("\n"),
       resRaw: text,
       requestBody: body,
       promptTokens: parsed.usage?.prompt_tokens ?? null,
@@ -1017,8 +1035,8 @@ async function callModelWithToolsInner(
       contactId: attr.contactId,
       profileId: attr.profileId,
     });
-    console.log(`[model] ${purpose} ok ${elapsedMs}ms（${settings.name}${toolCalls.length ? `，${toolCalls.length} 个工具调用` : ""}）`);
-    return { content, toolCalls: toolCalls.length > 0 ? toolCalls : null };
+    console.log(`[model] ${purpose} ok ${elapsedMs}ms（${settings.name}${toolCalls.length ? `，${toolCalls.length} 个工具调用${textCallNote}` : ""}）`);
+    return { content: replyText, toolCalls: toolCalls.length > 0 ? toolCalls : null };
   } catch (error) {
     if (error instanceof ModelError) throw error;
     const elapsedMs = Date.now() - started;

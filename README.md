@@ -13,7 +13,7 @@
   &nbsp;·&nbsp;
   <a href="LICENSE">Apache-2.0</a>
   <br />
-  <sub>Windows 10 / 11（64 位）· 聊天记录与密钥都留在你自己机器上</sub>
+  <sub>Windows 10 / 11（64 位）· 聊天记录与密钥都留在你自己机器上 · <a href="README.en.md">English</a></sub>
 </p>
 
 <p align="center">
@@ -71,6 +71,16 @@
   <img src="docs/screenshots/settings-model.png" alt="模型与能力" />
 </p>
 
+### 壁纸
+
+内置「星空流星」：在「设置 → 体验与提醒 → 壁纸」里一键切换；开壁纸时界面自动换成玻璃表面和暗色基底，关掉就还原。也可以上传自己的图片或视频当壁纸。
+
+<p align="center">
+  <img src="docs/screenshots/wallpaper.jpg" alt="星空流星壁纸" />
+  <br />
+  <sub>星空流星 · 玻璃表面 · 暗色基底</sub>
+</p>
+
 ### 媒体与存储
 
 「设置 → 系统与数据 → 媒体与存储」不是另一套文件管理器，而是按“它是什么、谁在用、能不能删”来管理：
@@ -98,11 +108,19 @@
 
 <p align="center">
   <img src="docs/screenshots/lan-access.png" alt="手机与远程访问设置" />
+  <br />
+  <sub>开关、局域网地址与二维码都在这一张卡片里</sub>
 </p>
 
 ### 同一个 Wi-Fi
 
 打开「允许局域网访问」，用手机扫那张二维码就行；访问码会自动填好，点「进入」即可。首次打开如果 Windows 弹防火墙提示，选「允许访问」。二维码等同于访问码，别截图外传。
+
+<p align="center">
+  <img src="docs/screenshots/mobile-chat.png" width="320" alt="手机浏览器里的对话界面" />
+  <br />
+  <sub>同一份数据，手机浏览器打开就是这样</sub>
+</p>
 
 ### 在外面用（穿透要你自己做）
 

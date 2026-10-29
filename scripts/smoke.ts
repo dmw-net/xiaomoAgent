@@ -84,6 +84,16 @@ const qqBind = {
 // 两条补丁都必须在 import server.ts 之前打好：qq 单例在模块加载时就捕获了 globalThis.fetch，
 // 而网关是 `new WebSocket(...)`（Node 22+ 自带全局实现）——没有真腾讯可连，两边都得是假的。
 const QQ_HOST = "https://api.bot.qq.com";
+// 入站图片的 CDN 也得是假的：真去抓 multimedia.nt.qq.com.cn 会打真网络。
+// 回的是一张 1×1 真 PNG——落库要过魔数白名单，假字节在这里就被 sniffImageMime 挡掉，
+// 测不到「图真进了媒体目录」这件事。
+const QQ_MEDIA_HOST = "https://multimedia.nt.qq.com.cn";
+const QQ_MEDIA_URL = `${QQ_MEDIA_HOST}/download?appid=1000&fileid=pic-1`;
+const QQ_BROKEN_MEDIA_URL = `${QQ_MEDIA_HOST}/download?appid=1000&fileid=broken`;
+const QQ_PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==",
+  "base64",
+);
 class FakeQQSocket {
   frames: Array<Record<string, unknown>> = [];
   private listeners = new Map<string, (arg?: { data?: string; code?: number }) => void>();
@@ -107,6 +117,8 @@ const qqMock = {
   /** 非 0 就拒掉下一条发送：官方形状是 HTTP 200 + 非零 code，所以这条同时验"不能只判状态码"。 */
   rejectCode: 0,
   sockets: [] as FakeQQSocket[],
+  /** 入站图片被下载过几次；「图真落了盘」这条断言要能看见下载发生过。 */
+  mediaFetches: [] as string[],
   get socket(): FakeQQSocket | null { return this.sockets[this.sockets.length - 1] ?? null; },
 };
 // 用 Object.assign 而不是 `(globalThis as unknown as { ... }).WebSocket =`：
@@ -152,6 +164,14 @@ const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestI
       return ilinkJson({ message_id: "srv-" + String(qqMock.sends.length) });
     }
     return ilinkJson({ code: 0, message: "ok" });
+  }
+  if (url.origin === QQ_MEDIA_HOST) {
+    qqMock.mediaFetches.push(url.pathname + url.search);
+    if (url.searchParams.get("fileid") === "broken") {
+      // 声明的 content-type 是 image/png，内容却是 HTML——落盘必须以字节为准。
+      return new Response("<html>not an image</html>", { status: 200, headers: { "content-type": "image/png" } });
+    }
+    return new Response(QQ_PNG, { status: 200, headers: { "content-type": "image/png", "content-length": String(QQ_PNG.length) } });
   }
   if (url.origin !== ILINK_HOST) return realFetch(input as RequestInfo, init);
   const pathname = url.pathname;
@@ -3637,6 +3657,70 @@ try {
       check("同一 msg_id 下的多条回复 msg_seq 递增",
         bubbleSeqs.length === 2 && bubbleSeqs[1]! > bubbleSeqs[0]!,
         JSON.stringify(bubbleSends.map((x) => x.msg_seq)));
+
+      // 入站三件事：@ 昵称补回正文、引用关系、群图落本地媒体库。平台把 @ 从正文里剥了，
+      // 昵称只剩在 mentions[] 里；引用关系只在 message_scene.ext 的 ref_msg_idx 里。
+      const { existsSync: existsQQMedia } = await import("node:fs");
+      const mediaFetchesBefore = qqMock.mediaFetches.length;
+      sock.emit({ op: 0, t: "GROUP_AT_MESSAGE_CREATE", s: 12, d: {
+        id: "gm2", group_openid: "GROUP-A", group_name: "测试群 A",
+        author: { member_openid: "M-2", member_name: "李四" },
+        content: "就是 他呀，快打声招呼",
+        mentions: [
+          { id: "M-9", username: "依蓝", member_openid: "M-9", bot: false },
+          { id: "M-9", username: "依蓝", member_openid: "M-9", bot: false },
+          { id: "BOT-SELF", username: "大肥鱼", bot: true },
+        ],
+        message_scene: { source: "default", ext: ["msg_idx=12", "ref_msg_idx=7"] },
+        attachments: [{ url: QQ_MEDIA_URL, content_type: "image/png", filename: "a.png", width: 1, height: 1, size: QQ_PNG.length }],
+      } });
+      await qqNap(600);
+      const gm2 = db.prepare(
+        "SELECT text, sender_name, reply_to_message_id, attachments, attachment_meta FROM messages WHERE source_message_id = 'gm2' LIMIT 1",
+      ).get() as { text: string; sender_name: string; reply_to_message_id: string | null; attachments: string | null; attachment_meta: string | null } | undefined;
+      check("被 @ 的昵称补回正文（去重、跳过机器人自己）",
+        gm2?.text === "@依蓝 就是 他呀，快打声招呼", String(gm2?.text));
+      check("引用的消息索引落成 reply_to_message_id", gm2?.reply_to_message_id === "7", String(gm2?.reply_to_message_id));
+      const gm2Images = gm2?.attachments ? (JSON.parse(gm2.attachments) as string[]) : [];
+      const gm2Image = gm2Images.find((url) => url.startsWith("/media/"));
+      check("群图下载后落进本地媒体库",
+        qqMock.mediaFetches.length > mediaFetchesBefore && gm2Image !== undefined
+          && existsQQMedia(`${MEDIA}/${gm2Image.slice("/media/".length)}`),
+        JSON.stringify({ fetches: qqMock.mediaFetches.length - mediaFetchesBefore, image: gm2Image ?? null }));
+      const gm2Meta = gm2?.attachment_meta ? (JSON.parse(gm2.attachment_meta) as Array<{ kind?: string; mime?: string }>) : [];
+      check("图片附件元信息标成 image 并带识别出的 mime",
+        gm2Meta.length === 1 && gm2Meta[0]?.kind === "image" && gm2Meta[0]?.mime === "image/png",
+        JSON.stringify(gm2Meta));
+
+      // 纯图消息（正文为空）以前会被当成空消息丢掉。
+      sock.emit({ op: 0, t: "GROUP_AT_MESSAGE_CREATE", s: 13, d: {
+        id: "gm3", group_openid: "GROUP-A", group_name: "测试群 A",
+        author: { member_openid: "M-2", member_name: "李四" }, content: "",
+        message_scene: { ext: ["msg_idx=13"] },
+        attachments: [{ url: QQ_MEDIA_URL, content_type: "image/png", size: QQ_PNG.length }],
+      } });
+      await qqNap(600);
+      const gm3 = db.prepare(
+        "SELECT text, attachments FROM messages WHERE source_message_id = 'gm3' LIMIT 1",
+      ).get() as { text: string; attachments: string | null } | undefined;
+      check("纯图消息不再被丢掉（正文空、附件在）",
+        gm3 !== undefined && gm3.text === "" && (JSON.parse(gm3.attachments ?? "[]") as string[]).length === 1,
+        JSON.stringify(gm3 ?? null));
+
+      // 抓回来不是图：消息要照收（只丢那张图），不能整条吞掉。
+      sock.emit({ op: 0, t: "GROUP_AT_MESSAGE_CREATE", s: 14, d: {
+        id: "gm4", group_openid: "GROUP-A", group_name: "测试群 A",
+        author: { member_openid: "M-2", member_name: "李四" }, content: "这张图挂了",
+        message_scene: { ext: ["msg_idx=14"] },
+        attachments: [{ url: QQ_BROKEN_MEDIA_URL, content_type: "image/png", size: 128 }],
+      } });
+      await qqNap(600);
+      const gm4 = db.prepare(
+        "SELECT text, attachments FROM messages WHERE source_message_id = 'gm4' LIMIT 1",
+      ).get() as { text: string; attachments: string | null } | undefined;
+      check("坏图只丢图、不吞消息（魔数不认就不落盘）",
+        gm4?.text === "这张图挂了" && gm4?.attachments === null,
+        JSON.stringify(gm4 ?? null));
 
       // 第二个群 + 记忆作用域：同一联系人下 A 群的会话/成员记忆不能进 B 群。
       sock.emit({ op: 0, t: "GROUP_ADD_ROBOT", s: 8, d: { group_openid: "GROUP-B", group_name: "测试群 B" } });

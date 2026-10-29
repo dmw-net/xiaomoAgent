@@ -11,6 +11,8 @@ import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
 import { asText, chunkSegments, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight } from "./channels/delivery.ts";
 import { ensureConversation, ensureLocalConversation, getConversation, listConversations, setConversationMembership, type Conversation } from "./conversations.ts";
+import { MAX_IMAGE_BYTES, saveImage, sniffImageMime } from "./media.ts";
+import type { MessageAttachmentMeta } from "../shared/api.ts";
 
 const KV_ACCOUNTS = "qq.accounts.v2";
 const LEGACY_KV_CREDENTIALS = "qq.credentials";
@@ -54,6 +56,44 @@ type QQSocket = {
 
 export function splitQqText(value: string | string[]): string[] { return chunkSegments(value, TEXT_UNITS); }
 const shortId = (): string => randomUUID().slice(0, 10);
+
+/**
+ * 消息场景里的 ext 是 `key=value` 的字符串数组（msg_idx / ref_msg_idx / auth_token），
+ * 不是对象——按对象读会永远拿到空。重复投递的判定与「引用了哪条」都靠它。
+ */
+function sceneExt(message: Record<string, unknown>): Map<string, string> {
+  const scene = (message.message_scene ?? {}) as Record<string, unknown>;
+  const out = new Map<string, string>();
+  for (const item of Array.isArray(scene.ext) ? scene.ext : []) {
+    const pair = asText(item); const eq = pair.indexOf("=");
+    if (eq > 0) out.set(pair.slice(0, eq), pair.slice(eq + 1));
+  }
+  return out;
+}
+
+function inboundImageFiles(message: Record<string, unknown>): Array<Record<string, unknown>> {
+  return (Array.isArray(message.attachments) ? message.attachments : [])
+    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
+    .filter((item) => asText(item.content_type).startsWith("image/") && asText(item.url) !== "");
+}
+
+/**
+ * 平台把 @ 从正文里剥掉了，被 @ 的昵称只剩在 mentions[] 里——不补回正文，
+ * 模型看到的「就是 他呀」就丢了「在跟谁说话」。bot 自己不在 mentions 里，仍再挡一次。
+ */
+function withMentions(text: string, message: Record<string, unknown>): string {
+  const names: string[] = [];
+  for (const item of Array.isArray(message.mentions) ? message.mentions : []) {
+    if (item === null || typeof item !== "object") continue;
+    const user = item as Record<string, unknown>;
+    if (user.bot === true) continue;
+    const name = asText(user.username ?? user.member_name ?? user.nickname);
+    if (name !== "" && !names.includes(name)) names.push(name);
+  }
+  if (names.length === 0) return text;
+  const prefix = names.map((name) => `@${name}`).join(" ");
+  return text === "" ? prefix : `${prefix} ${text}`;
+}
 
 function parseAccounts(raw: string | null): StoredAccount[] {
   if (raw === null || raw === "") return [];
@@ -344,6 +384,40 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     return data;
   };
 
+  /**
+   * 收进来的图先落到本地媒体库：视觉通道只认 /media 路径，而 QQ 的 CDN 地址过期很快，
+   * 不能留到看图时再抓。抓不动的一张就跳过（只记日志），别让一张坏图吞掉整条消息。
+   */
+  const saveInboundImages = async (
+    account: StoredAccount,
+    message: Record<string, unknown>,
+  ): Promise<{ urls: string[]; meta: MessageAttachmentMeta[] }> => {
+    const urls: string[] = []; const meta: MessageAttachmentMeta[] = [];
+    for (const file of inboundImageFiles(message)) {
+      const target = asText(file.url); const started = Date.now();
+      try {
+        if (!/^https?:\/\//i.test(target)) throw new Error("附件地址不是 http(s)");
+        const declared = Number(file.size ?? 0);
+        if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) throw new Error(`图片超过 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB，已跳过`);
+        const response = await http(target);
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const length = Number(response.headers.get("content-length") ?? 0);
+        if (Number.isFinite(length) && length > MAX_IMAGE_BYTES) throw new Error(`图片超过 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB，已跳过`);
+        const body = Buffer.from(await response.arrayBuffer());
+        const mime = sniffImageMime(body);
+        const saved = saveImage(body, mime);
+        urls.push(saved.url); meta.push({ url: saved.url, kind: "image", mime });
+      } catch (error) {
+        logModelCall({
+          purpose: "qq", ok: false, code: "QQ_MEDIA", model: "qqbot", url: "/qq/inbound-image",
+          elapsedMs: Date.now() - started, message: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+          contactId: account.contactId,
+        });
+      }
+    }
+    return { urls, meta };
+  };
+
   const nextSeq = (key: string): number => { const used = replyCounters.get(key) ?? 0; const next = used >= 65_535 ? 1 : used + 1; replyCounters.set(key, next); return next; };
   const sendPrivate = async (account: StoredAccount, content: string, msgId = ""): Promise<void> => {
     if (account.userOpenId === "") throw new Error("这位联系人还没绑到 QQ openid");
@@ -416,17 +490,22 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       return;
     }
     if (account.userOpenId !== openId || !account.enabled) return;
-    const key = `${account.id}|${openId}|${messageId}|${asText(message.msg_idx)}`;
+    // 纯图消息（content 为空）平台照样推，别按空正文丢掉。
+    if (text === "" && inboundImageFiles(message).length === 0) return;
+    const scene = sceneExt(message);
+    const key = `${account.id}|${openId}|${messageId}|${scene.get("msg_idx") ?? ""}`;
     const seen = new SeenKeys(SEEN_LIMIT, account.recentMessageIds);
-    if (seen.has(key) || text === "") return;
+    if (seen.has(key)) return;
+    const media = await saveInboundImages(account, message);
     const conv = ensureLocalConversation(account.contactId);
     account.replyMessageId = messageId; account.replyMessageAt = clock();
     account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
     seen.remember(key); account.recentMessageIds = seen.toArray(); persist();
     const channel = getChannel("web"); if (channel === undefined) return;
-    channel.receive(text, account.contactId, undefined, "qq", undefined, {
+    channel.receive(withMentions(text, message), account.contactId, media.urls.length > 0 ? media.urls : undefined, "qq", undefined, {
       conversationId: conv.id, senderId: openId, senderName: asText(author.username ?? author.nickname) || "QQ 用户",
-      sourceMessageId: messageId, replyToMessageId: asText((message.message_reference as Record<string, unknown> | undefined)?.message_id), atBot: false,
+      sourceMessageId: messageId, replyToMessageId: scene.get("ref_msg_idx"), atBot: false,
+      ...(media.meta.length > 0 ? { attachmentMeta: media.meta } : {}),
     });
   };
 
@@ -434,8 +513,10 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     const groupOpenId = asText(message.group_openid ?? message.group_id); const messageId = asText(message.id);
     if (groupOpenId === "" || messageId === "") return;
     if (!account.enabled) return;
-    const text = asText(message.content); if (text === "") return;
-    const key = `${account.id}|group|${groupOpenId}|${messageId}|${asText(message.msg_idx)}`;
+    const text = asText(message.content);
+    if (text === "" && inboundImageFiles(message).length === 0) return;
+    const scene = sceneExt(message);
+    const key = `${account.id}|group|${groupOpenId}|${messageId}|${scene.get("msg_idx") ?? ""}`;
     const seen = new SeenKeys(SEEN_LIMIT, account.recentMessageIds); if (seen.has(key)) return;
     const author = (message.author ?? {}) as Record<string, unknown>;
     const senderId = asText(author.member_openid ?? author.id);
@@ -445,9 +526,11 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
     seen.remember(key); account.recentMessageIds = seen.toArray(); persist();
     const channel = getChannel("web"); if (channel === undefined) return;
-    channel.receive(text, account.contactId, undefined, "qq", undefined, {
+    const media = await saveInboundImages(account, message);
+    channel.receive(withMentions(text, message), account.contactId, media.urls.length > 0 ? media.urls : undefined, "qq", undefined, {
       conversationId: conv.id, senderId, senderName, sourceMessageId: messageId,
-      replyToMessageId: asText((message.message_reference as Record<string, unknown> | undefined)?.message_id), atBot: true,
+      replyToMessageId: scene.get("ref_msg_idx"), atBot: true,
+      ...(media.meta.length > 0 ? { attachmentMeta: media.meta } : {}),
     });
   };
 

@@ -1457,8 +1457,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       if (m.superseded_at !== null && m.superseded_kind !== "retract") { stale.push(m); continue; }
       if (stale.length > 0 && m.turn_id !== lastLiveTurn) flushStale();
       if (m.kind === "tool") {
-        // 关掉「工具调用过程」就整条不渲染：留痕仍在库里，状态页也照常看得见
-        if (!showTools) continue;
+        // 关掉「工具调用过程」只是不想看她查了什么；卡片上挂着的候选图是**用户要的产出**
+        // （搜图本来就是为了挑一张）。跟着一起吞掉，就会出现「她说图已经显示在界面上、
+        // 界面上却什么都没有」——图明明在库里，只是被这条显示开关拦掉了。
+        if (!showTools && (m.attachments ?? []).length === 0) continue;
         // 工具卡也算"一天里的话"：跨天落在工具卡上时同样要出日分隔，
         // 否则前一天的回复和今天的第一句之间什么标记都没有。
         const dayChanged = lastDay === null || dayOf(m.created_at) !== lastDay;
@@ -2421,7 +2423,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         </div>
       ) : null;
       case "tool":
-        return <ToolCard key={n.m.id} m={n.m} contactAvatar={contactAvatar} contactName={characterName} onImageClick={openZoom} />;
+        return <ToolCard key={n.m.id} m={n.m} imagesOnly={!showTools}
+          contactAvatar={contactAvatar} contactName={characterName} onImageClick={openZoom} />;
       case "msg": {
         const m = n.m;
         // 单条逐字期间，同轮定稿气泡已经在库里/列表里了，但必须等草稿打完再露出来。

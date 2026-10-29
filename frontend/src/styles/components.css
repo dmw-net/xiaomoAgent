@@ -1440,10 +1440,12 @@ html.native-frame .asst-dialog {
 .asst-acts { display: inline-flex; align-items: center; gap: var(--space-1); }
 .asst-head .contact-chip { margin-top: 0; }
 .asst-body { flex: 1; min-height: 0; display: flex; position: relative; }
-/* 确认卡片浮在聊天层上方（z-index 高于设置屏 1）：confirm 档下等待用户真实点击的
-   不可逆操作摆在这里——同意/拒绝是后端确认凭证的唯一注入口。 */
+/* 确认卡片浮在聊天层上方（z-index 高于设置屏）：confirm 档下等待用户真实点击的
+   不可逆操作摆在这里——同意/拒绝是后端确认凭证的唯一注入口。
+   取值必须跟着 .asst-settings 一起抬：它涨到 --z-dock + 1 之后，2 就会被设置屏压住，
+   等待确认的卡片正好在最该被看见的时候消失。 */
 .asst-pending {
-  position: absolute; top: 10px; left: 12px; right: 12px; z-index: 2;
+  position: absolute; top: 10px; left: 12px; right: 12px; z-index: calc(var(--z-dock) + 2);
   display: flex; flex-direction: column; gap: 8px; pointer-events: none;
 }
 .asst-pending-item {
@@ -1540,8 +1542,17 @@ button.asst-perm-option:disabled { opacity: var(--alpha-disabled); cursor: wait;
 .asst-perm-confirm-body li + li { margin-top: 2px; }
 /* 助手设置是弹窗里的第二屏，盖在聊天那层上（聊天不卸载，草稿与流式都留着）。
    资料页本来就有自己的滚动与悬浮保存条，这里只给它一个有界的高度。 */
-.asst-settings { position: absolute; inset: 0; z-index: 1; background: var(--bg-elevated); display: flex; }
+/* 设置屏铺满整个弹窗体，**包括输入区**：#composer 是 z-index: --z-dock 的独立浮层
+   （见 foundation.css 那条，它要盖住消息流），设置屏只给 1 的话输入框照样浮在上面——
+   表现就是「设置页底下还挂着一个对话框」，它还把设置页最后一行挡住。 */
+.asst-settings {
+  position: absolute; inset: 0; z-index: calc(var(--z-dock) + 1);
+  background: var(--bg-elevated); display: flex;
+}
 .asst-settings > * { flex: 1; min-width: 0; }
+/* 设置屏是另一张页面，不是聊天的一部分：把输入区整个收掉，而不是只用层级盖住。
+   只盖不藏的话，Tab 仍能聚焦到看不见的输入框里，盲打的内容没有任何落点。 */
+.asst-body.settings-on #composer { display: none; }
 /* 弹窗头部已经有名字与关闭了，资料页顶部那 32px 内边距在这里纯粹是挤高度 */
 .asst-settings .pf { padding-top: var(--space-5); }
 /* 工作区管理弹窗沿用的一组：新建/重命名/删除，以及列表拉取失败提示 */

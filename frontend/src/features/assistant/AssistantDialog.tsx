@@ -272,7 +272,7 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
           </div>
         </header>
         {listErr && <div className="ws-err">{listErr}</div>}
-        <div className="asst-body">
+        <div className={"asst-body" + (showSettings ? " settings-on" : "")}>
           {/* 待确认卡片浮在最上层：confirm 档下助手发起的不可逆操作在这里等用户真实点击。
               点完走 confirm/decline 接口，后端执行并合成续跑消息，后续轮次由 ChatView 的轮询接管。 */}
           <PendingCard contactId={threadContactId(sel)} active={open} />

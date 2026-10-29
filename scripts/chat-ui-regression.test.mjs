@@ -19,6 +19,7 @@ import { strict as assert } from "node:assert";
 const rowSource = readFileSync("frontend/src/features/chat/MessageRow.tsx", "utf8");
 const thinkingSource = readFileSync("frontend/src/features/chat/ThinkingBlock.tsx", "utf8");
 const chatSource = readFileSync("frontend/src/features/chat/ChatView.tsx", "utf8");
+const toolCardSource = readFileSync("frontend/src/features/chat/ToolCard.tsx", "utf8");
 const modalSource = readFileSync("frontend/src/components/Modal.tsx", "utf8");
 const experienceCss = readFileSync("frontend/src/styles/experience.css", "utf8");
 const componentsCss = readFileSync("frontend/src/styles/components.css", "utf8");
@@ -122,5 +123,35 @@ assert(/context\.assistantPermission \?\? assistantPermission\(\)/.test(assistan
 assert(/INFO_NOTICE_TTL_MS\s*=\s*2600/.test(noticesSource), "信息 toast 应保留 2.6 秒自动消失");
 assert(/ERROR_NOTICE_TTL_MS\s*=\s*8000/.test(noticesSource), "报错 toast 应在 8 秒后自动消失，不能永久停留");
 assert(/opts\?\.info\s*&&\s*!opts\.retryTurnId\s*\?\s*INFO_NOTICE_TTL_MS\s*:\s*ERROR_NOTICE_TTL_MS/.test(noticesSource), "info 与错误 toast 必须使用各自时限，可重试提示也需自动消失");
+
+// 设置助手的设置屏要盖住整个弹窗体，包括聊天输入区。
+// 真实问题：#composer 是 z-index: --z-dock 的独立浮层，设置屏只给 1 的话输入框会从设置页底下
+// 探出来（"设置页下面居然还挂着一个对话框"），还把设置页最后一行挡住。
+assert(
+  /\.asst-settings\s*\{[\s\S]*?z-index:\s*calc\(var\(--z-dock\) \+ 1\)/.test(componentsCss),
+  "设置屏层级必须高于 --z-dock 的聊天输入区",
+);
+assert(cssZ("z-dock") > 0, "必须能读到 --z-dock 的取值");
+assert(
+  /\.asst-body\.settings-on #composer\s*\{\s*display:\s*none/.test(componentsCss),
+  "设置屏打开时要把输入区收掉：只靠层级盖住的话，Tab 仍能聚焦到看不见的输入框里打字",
+);
+assert(
+  /className=\{"asst-body" \+ \(showSettings \? " settings-on" : ""\)\}/.test(assistantDialogSource),
+  "打开设置屏时必须给 asst-body 打上 settings-on",
+);
+assert(
+  /\.asst-pending\s*\{[\s\S]*?z-index:\s*calc\(var\(--z-dock\) \+ 2\)/.test(componentsCss),
+  "等待确认的卡片必须压在新的设置屏之上，否则最该被看见的时候反而消失",
+);
+
+// 候选图不是「过程」而是产出：关掉工具调用过程也得显示，否则会出现
+// 「她说图已经显示在界面上、界面上什么都没有」。
+assert(
+  /if \(!showTools && \(m\.attachments \?\? \[\]\)\.length === 0\) continue;/.test(chatSource),
+  "关掉工具调用过程时，带候选图的工具卡仍要渲染",
+);
+assert(/imagesOnly=\{!showTools\}/.test(chatSource), "工具卡应支持只渲染候选图（不显示卡片本身）");
+assert(/if \(imagesOnly\) \{/.test(toolCardSource), "ToolCard 需要一条只出图的渲染分支");
 
 console.log("聊天与助手权限 UI 回归测试：全部通过");

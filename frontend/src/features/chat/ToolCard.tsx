@@ -25,10 +25,12 @@ const TOOL_LABEL: Record<string, string> = {
 };
 
 /** 工具调用卡：紧凑一行，展示"她在查什么"而不是甩 JSON；有详情时可点开回看。 */
-function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick }: {
+function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imagesOnly = false }: {
   m: MessageRow; contactAvatar?: string; contactName?: string;
   /** 点图放大：搜到的候选图跟气泡里的图走同一条灯箱通道（ChatView 的 openZoom）。 */
   onImageClick?: (url: string) => void;
+  /** 「工具调用过程」关掉时只留候选图：图是用户要的产出，不该被这条显示开关一起吞掉。 */
+  imagesOnly?: boolean;
 }): JSX.Element {
   const p = useMemo((): ToolPayload => {
     try { return JSON.parse(m.text) as ToolPayload; } catch { return {}; /* 旧数据或解析失败走回退 */ }
@@ -54,6 +56,24 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick }: {
         : <ChevronRight size={12} strokeWidth={2} className="tool-caret" />)}
     </>
   );
+
+  // 只留候选图：不加头像列，也不给卡片留空壳，图本身就是这一行的全部内容。
+  if (imagesOnly) {
+    return (
+      <div className="msg-row her gap" data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
+        <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} />
+        <div className="tool-wrap">
+          <div className="tool-imgs">
+            {imgs.map((url, index) => (
+              <img key={`${index}-${url}`} src={url} alt={`${contactName}搜到的第 ${index + 1} 张候选图`}
+                title={`第 ${index + 1} 张候选图`} decoding="async"
+                onClick={() => onImageClick?.(url)} />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className={"msg-row her gap"} data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>

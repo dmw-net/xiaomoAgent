@@ -42,6 +42,15 @@ const SEEN_LIMIT = 160;
 const BIND_TTL_MS = 10 * 60_000;
 const REPLY_WINDOW_MS = 60 * 60_000;
 const TOKEN_SKEW_MS = 60_000;
+/**
+ * 平台判定"AccessToken 无效/过期"的错误码：命中时缓存里的旧 token 可能已提前作废
+ * （AppSecret 在开放平台被重置、平台侧轮转），必须强制重取再试，不能傻用旧值到 TTL。
+ */
+const AUTH_FAIL_CODES = new Set([40034001, 40034003]);
+/** getAppAccessToken 的"凭据真坏了"错误码（区分于 100001 限流与网络失败）。 */
+const CRED_FAIL_CODES = new Set([100004, 100007, 100013, 100016]);
+/** token 探活间隔：每 30 分钟用 AppID/Secret 直接换一次 token，主动发现"提前失效"。 */
+const TOKEN_PROBE_MS = 30 * 60_000;
 const RECONNECT_STEPS_MS = [1_000, 3_000, 8_000, 20_000, 45_000, 90_000];
 const BIND_PHRASE = "绑定";
 
@@ -320,10 +329,13 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   let hydrated = false;
   let disposed = false;
   let problem = "";
+  let tokenProbeTimer: ReturnType<typeof setInterval> | null = null;
   const windows = new Map<string, BindWindow>();
   const replyCounters = new Map<string, number>();
   const qrTasks = new Map<string, { taskId: string; contactId: string; bindKey: string; expiresAt: number }>();
   const workers = new Map<string, { gateway: Gateway; token: SingleFlight<string> }>();
+  /** 每个账号最近一次"取访问凭证失败"的明确原因（区分凭据真坏 / 临时不可用）。探活据此升级状态。 */
+  const credentialFaults = new Map<string, string>();
 
   const persist = (): void => kvSet(KV_ACCOUNTS, JSON.stringify({ version: 2, accounts }));
   const hydrate = (): void => {
@@ -362,10 +374,16 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       const data = await response.json().catch(() => null) as Record<string, unknown> | null;
       const value = asText(data?.access_token); const expiresIn = Number(data?.expires_in);
       if (value === "" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
-        const message = asText(data?.message) || `HTTP ${response.status}`;
+        const code = Number(data?.code ?? 0);
+        // 区分「凭据真坏了」与「临时不可用」：前者是平台明确判死（secret 不对 / 机器人没了 / 被封），
+        // 探活要靠它把状态升级为"需要重扫"；后者（限流、网络抖动）重试就好，不该惊动用户。
+        const transient = code === 100001 || response.status >= 500;
+        const message = asText(data?.message) || (transient ? `HTTP ${response.status}` : "换不到访问凭证");
         logModelCall({ purpose: "qq", ok: false, code: "QQ_TOKEN", model: "qqbot", url: "/app/getAppAccessToken", elapsedMs: Date.now() - started, message: message.slice(0, 300), contactId: current.contactId });
-        throw new Error("换不到访问凭证：" + message);
+        if (!transient) credentialFaults.set(current.id, message.slice(0, 200)); else credentialFaults.delete(current.id);
+        throw new Error((transient ? "取访问凭证失败（临时）：" : "换不到访问凭证：") + message);
       }
+      credentialFaults.delete(current.id);
       logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: "/app/getAppAccessToken", elapsedMs: Date.now() - started, contactId: current.contactId });
       tokenTtl = Math.max(30_000, expiresIn * 1000 - TOKEN_SKEW_MS); return value;
     }, () => tokenTtl, clock);
@@ -393,6 +411,9 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   const statusOf = (account: StoredAccount | null): QQStatus => {
     if (account === null || account.appId === "" || account.clientSecret === "") return "not-configured";
     if (!account.enabled) return "disabled";
+    // 凭据被平台判死（secret 重置/机器人失效）时，即使网关还连得上也必须显式暴露——
+    // 这是"token 过期了但界面看不出"那次事故的直接解法。
+    if (credentialFaults.has(account.id)) return "attention";
     return getWorker(account).gateway.phase;
   };
   const gatewayStatus = (contactId?: string): QQStatus => {
@@ -405,16 +426,35 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   };
 
   const callApi = async (account: StoredAccount, path: string, init: { method?: string; body?: unknown } = {}): Promise<Record<string, unknown>> => {
-    const started = Date.now(); const header = await getWorker(account).token.get();
-    const response = await http(API_ORIGIN + path, { method: init.method ?? "GET", headers: { authorization: `QQBot ${header}`, "content-type": "application/json" }, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
-    const data = await response.json().catch(() => ({})) as Record<string, unknown>; const code = Number(data.code ?? 0);
-    if (!response.ok || (Number.isFinite(code) && code !== 0)) {
-      const message = asText(data.message) || `HTTP ${response.status}`;
-      logModelCall({ purpose: "qq", ok: false, code: "QQ_API_" + String(code), model: "qqbot", url: path, elapsedMs: Date.now() - started, message: message.slice(0, 300), contactId: account.contactId });
-      throw new Error(explain(code, message));
+    const worker = getWorker(account);
+    // 一次调用：取 token → 打 API → 归一化成 {code, message, data, failed}。
+    const callOnce = async (): Promise<{ code: number; message: string; data: Record<string, unknown>; failed: boolean }> => {
+      const started = Date.now(); const header = await worker.token.get();
+      const response = await http(API_ORIGIN + path, { method: init.method ?? "GET", headers: { authorization: `QQBot ${header}`, "content-type": "application/json" }, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
+      const data = await response.json().catch(() => ({})) as Record<string, unknown>; const code = Number(data.code ?? 0);
+      if (!response.ok || (Number.isFinite(code) && code !== 0)) {
+        const message = asText(data.message) || `HTTP ${response.status}`;
+        logModelCall({ purpose: "qq", ok: false, code: "QQ_API_" + String(code), model: "qqbot", url: path, elapsedMs: Date.now() - started, message: message.slice(0, 300), contactId: account.contactId });
+        return { code, message, data, failed: true };
+      }
+      logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: path, elapsedMs: Date.now() - started, contactId: account.contactId });
+      return { code, message: "", data, failed: false };
+    };
+    let result = await callOnce();
+    // token 被平台提前作废（AppSecret 在开放平台被重置 / 平台侧轮转）时，缓存里的旧 token 可能
+    // 已无效——命中鉴权失效码就强制重取一次再试，别傻用旧值到 TTL 自然结束。
+    if (result.failed && AUTH_FAIL_CODES.has(result.code)) {
+      worker.token.invalidate();
+      const retried = await callOnce();
+      if (!retried.failed) return retried.data;
+      noteProblem(account, new Error("强制重取凭证后仍失败：" + (retried.message === "" ? "未知" : retried.message)));
+      throw new Error(explain(retried.code, retried.message));
     }
-    logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: path, elapsedMs: Date.now() - started, contactId: account.contactId });
-    return data;
+    if (result.failed) {
+      noteProblem(account, new Error(explain(result.code, result.message)));
+      throw new Error(explain(result.code, result.message));
+    }
+    return result.data;
   };
 
   /**
@@ -920,6 +960,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     if (nextAppId !== account.appId) { account.userOpenId = ""; account.replyMessageId = ""; account.replyMessageAt = 0; }
     account.appId = nextAppId; account.clientSecret = nextSecret;
     account.enabled = patch.enabled !== undefined ? patch.enabled === true : account.enabled; account.lastError = "";
+    credentialFaults.delete(account.id); // 换了凭据：旧的探活故障作废，交给下一轮探活重新判
     if (accounts.length > ACCOUNT_CAP) accounts = accounts.slice(-ACCOUNT_CAP);
     persist(); if (configured(account) && account.enabled) void getWorker(account).gateway.open();
     return { configured: hasCredentials(account) };
@@ -1020,9 +1061,41 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     return { status: "created", error: "", appId: redact(appId) };
   };
 
-  const startAll = (): void => { hydrate(); for (const account of accounts) if (configured(account) && account.enabled) void getWorker(account).gateway.open(); };
-  const stopAll = (): void => { for (const worker of workers.values()) worker.gateway.evacuate(); };
-  const clearAll = (): void => { for (const worker of workers.values()) { worker.gateway.close(); worker.gateway.forget(); worker.token.invalidate(); } workers.clear(); windows.clear(); replyCounters.clear(); qrTasks.clear(); accounts = []; hydrated = true; problem = ""; persist(); };
+  /**
+   * 主动探活：对每个已配置且启用的账号，直接调一次 getAppAccessToken（绕过 SingleFlight 缓存），
+   * 把"token 被平台提前作废 / AppSecret 重置"变成**可被检测到的事实**，而不是等某条消息发出失败
+   * 才被动暴露。每 30 分钟跑一次（token 生命周期 7200s，这个频率足以兜住提前失效）。
+   * 失败原因已写进 credentialFaults，statusOf 会把该账号状态升级为 attention。
+   */
+  const probeCredentials = async (): Promise<void> => {
+    hydrate();
+    for (const account of accounts) {
+      if (!configured(account) || !account.enabled) continue;
+      try {
+        await getWorker(account).token.get(true); // 强制重取，绕过 TTL 缓存
+        const hadFault = credentialFaults.has(account.id);
+        credentialFaults.delete(account.id);
+        if (hadFault) { account.lastError = ""; persist(); } // 只清凭据故障本身留下的错误，别的提示（如未绑 openid）不动
+      } catch {
+        // 失败原因已在 makeWorker 里写进 credentialFaults；这里把网关状态一并拉成 attention，
+        // 让用户在状态页一眼看到"凭据出问题了"，而不是等某条消息报错。
+        const worker = workers.get(account.id);
+        if (worker !== undefined) worker.gateway.phase = "attention";
+        noteProblem(account, new Error("访问凭证探活失败：" + (credentialFaults.get(account.id) ?? "未知原因")));
+      }
+    }
+  };
+  const startTokenProbe = (): void => {
+    if (tokenProbeTimer !== null || disposed) return;
+    void probeCredentials();
+    tokenProbeTimer = setInterval(() => { void probeCredentials(); }, TOKEN_PROBE_MS);
+    tokenProbeTimer.unref?.();
+  };
+  const stopTokenProbe = (): void => { if (tokenProbeTimer !== null) { clearInterval(tokenProbeTimer); tokenProbeTimer = null; } };
+
+  const startAll = (): void => { hydrate(); for (const account of accounts) if (configured(account) && account.enabled) void getWorker(account).gateway.open(); startTokenProbe(); };
+  const stopAll = (): void => { stopTokenProbe(); for (const worker of workers.values()) worker.gateway.evacuate(); };
+  const clearAll = (): void => { for (const worker of workers.values()) { worker.gateway.close(); worker.gateway.forget(); worker.token.invalidate(); } workers.clear(); windows.clear(); replyCounters.clear(); qrTasks.clear(); credentialFaults.clear(); accounts = []; hydrated = true; problem = ""; persist(); };
 
   return {
     deliverToContact, deliverToConversation, deliverProactiveToGroup,
@@ -1031,7 +1104,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     setCredentials, beginCredentialQr, pollCredentialQr, setFlags, setFlagsByContact, disconnect,
     disconnectByContact: (contactId: string): boolean => { const account = byContact(contactId); return account === null ? false : disconnect(account.id); },
     startAll, stopAll,
-    dispose: (): void => { disposed = true; for (const worker of workers.values()) worker.gateway.close(); },
+    dispose: (): void => { disposed = true; stopTokenProbe(); for (const worker of workers.values()) worker.gateway.close(); },
     clearAll, gatewayStatus,
     lastGatewayError: (): string => problem,
     splitQqText,

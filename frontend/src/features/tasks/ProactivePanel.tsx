@@ -180,16 +180,29 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
     setGatesNonce((n) => n + 1);
   }, [active, list.reset]);
 
+  // 切到「为什么没说」时重拉一次闸门（后端 inspectGates 纯只读、无副作用，代价很低）。
+  // 否则进页时拉的快照会停留在那一刻：期间新增/取消最早一条计划后，「下一条计划」卡片
+  // 和配额/安静时长都会和「待执行」列表劈叉。
+  useEffect(() => {
+    if (tab === "gates") setGatesNonce((n) => n + 1);
+  }, [tab]);
+
   const cancel = (row: TaskRow): void => {
     // 取消只会动这一条（pending → cancelled，它就该从「待执行」里出去）：就地摘掉。
     // 整表重拉既把人甩回顶上，又把邻行换成另一批。
     const index = rows.findIndex((x) => x.id === row.id);
     void proactiveApi.cancelProactiveTask(row.id, contactId).then(() => {
       list.drop(row.id);
+      // 取消的可能是最早 pending，「为什么没说」里「下一条计划」卡片要跟着刷新。
+      setGatesNonce((n) => n + 1);
       // 点错了要能反悔：后端有 restore，就给 5 秒撤销，与删记忆/归档联系人同一口径。
       offerUndo(`已取消「${row.focus}」`, () => {
         void proactiveApi.restoreProactiveTask(row.id, contactId)
-          .then(() => list.insertAt(index < 0 ? 0 : index, row))
+          .then(() => {
+            list.insertAt(index < 0 ? 0 : index, row);
+            // 撤销把任务放回 pending，最早 pending 可能又变了。
+            setGatesNonce((g) => g + 1);
+          })
           .catch((e: Error) => setOut({ cls: "ping-out bad", text: "撤销失败：" + e.message }));
       });
     })
@@ -262,7 +275,11 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
           </div>
           {adding && (
             <AddTaskForm contactId={contactId} who={who} onClose={() => setAdding(false)}
-              onAdded={(row) => list.insertAt(0, row)} />
+              onAdded={(row) => {
+                list.insertAt(0, row);
+                // 新计划可能变成最早 pending，「为什么没说」里「下一条计划」卡片要跟着刷新。
+                setGatesNonce((n) => n + 1);
+              }} />
           )}
         </>
       )}

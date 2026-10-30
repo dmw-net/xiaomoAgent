@@ -15,6 +15,7 @@ import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, readMedia, saveAudio
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { config } from "./config.ts";
 import { createQQOneBotService } from "./qq-onebot.ts";
+import { captureInboundEmote, renderEmote, type EmoteSendResult, type QqEmoteIntent } from "./qq-emote.ts";
 
 const KV_ACCOUNTS = "qq.accounts.v2";
 const LEGACY_KV_CREDENTIALS = "qq.credentials";
@@ -50,6 +51,8 @@ export type QQStatus = "connected" | "connecting" | "disabled" | "attention" | "
 export type QQConversationView = { id: string; kind: "private" | "group"; title: string; titleSource: "auto" | "custom"; externalId: string; enabled: boolean; groupProactive: boolean; leftAt: number | null; messageCount: number; lastMessageAt: string };
 export type QQBindingView = {
   id: string; contactId: string; userOpenId: string; enabled: boolean; proactive: boolean;
+  /** 是否已认领到真实 openid。凭据配好但没绑定时为 false——UI 据此显示「去绑定」入口。 */
+  hasUserOpenId: boolean;
   status: QQStatus; hasReplyWindow: boolean; lastError: string; lastReceivedAt: string;
   lastSentAt: string; createdAt: string; conversations: QQConversationView[];
 };
@@ -448,6 +451,8 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
           const mime = sniffImageMime(body);
           if (mime === "") throw new Error("图片魔数无法识别");
           savedUrl = saveImage(body, mime).url; savedMime = mime;
+          // 表情系统自动采集：开关开着就把他发来的图顺手登记成素材（关则 no-op）。
+          captureInboundEmote(savedUrl);
         } else if (entry.kind === "audio") {
           const saved = saveAudio(body); savedUrl = saved.url; savedMime = saved.mime;
         } else {
@@ -673,6 +678,33 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     await deliverMediaToContact(conv.contact_id, text, media);
   };
 
+  /**
+   * 发一个表情（表情系统入口，官方渠道版）。按当前渠道把意图渲染成能落地的形态：
+   *   - 图片类（image/custom）→ 走富媒体上传（官方原生支持）。
+   *   - face/mface → 官方没有内置/动态表情概念，降级成 emoji 或标签文字，知情返回 native=false。
+   * 按会话分派：群走群 external_id，私聊走联系人账号。
+   */
+  const deliverEmote = async (conversationId: string, intent: QqEmoteIntent): Promise<EmoteSendResult> => {
+    const conv = getConversation(conversationId);
+    if (conv === null || conv.channel !== "qq" || !conv.enabled) {
+      return { ok: false, native: false, via: "skipped", detail: "会话不可用或不是 QQ 会话" };
+    }
+    const render = renderEmote(intent);
+    if (render.mediaRefs.length > 0) {
+      // 图片类表情：只发图本身，不重复发标签文字。
+      if (conv.kind === "group") await deliverMediaToGroup(conv.contact_id, conversationId, "", render.mediaRefs);
+      else await deliverMediaToContact(conv.contact_id, "", render.mediaRefs);
+      return { ok: true, native: render.native, via: "media", detail: render.mediaRefs[0]?.url };
+    }
+    // face/mface 官方渠道降级：能降级成文字就发文字，纯原生表情（无降级文案）则跳过。
+    if (render.fallbackText !== "") {
+      if (conv.kind === "group") await deliverToConversation(conversationId, render.fallbackText);
+      else await deliverToContact(conv.contact_id, render.fallbackText);
+      return { ok: true, native: render.native, via: "text", detail: render.fallbackText };
+    }
+    return { ok: false, native: false, via: "skipped", detail: "官方渠道发不了这种表情，已跳过" };
+  };
+
   const deliver = async (account: StoredAccount | null, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<void> => {
     if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
     const segments = splitQqText(text); if (segments.length === 0) return;
@@ -864,7 +896,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
 
   const viewOf = (account: StoredAccount): QQBindingView => ({
     id: account.id, contactId: account.contactId, userOpenId: redact(account.userOpenId), enabled: account.enabled,
-    proactive: account.proactive, status: statusOf(account),
+    proactive: account.proactive, hasUserOpenId: account.userOpenId !== "", status: statusOf(account),
     hasReplyWindow: account.replyMessageId !== "" && clock() - account.replyMessageAt < REPLY_WINDOW_MS,
     lastError: account.lastError, lastReceivedAt: account.lastReceivedAt, lastSentAt: account.lastSentAt,
     createdAt: account.createdAt, conversations: conversationsFor(account.contactId),
@@ -994,7 +1026,8 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
 
   return {
     deliverToContact, deliverToConversation, deliverProactiveToGroup,
-    deliverMediaToContact, deliverMediaToGroup, deliverMediaToConversation, beginBind, pollBind, snapshotFor, summary,
+    deliverMediaToContact, deliverMediaToGroup, deliverMediaToConversation,
+    deliverEmote, beginBind, pollBind, snapshotFor, summary,
     setCredentials, beginCredentialQr, pollCredentialQr, setFlags, setFlagsByContact, disconnect,
     disconnectByContact: (contactId: string): boolean => { const account = byContact(contactId); return account === null ? false : disconnect(account.id); },
     startAll, stopAll,

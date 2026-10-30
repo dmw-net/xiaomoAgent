@@ -24,6 +24,7 @@ import { logModelCall } from "./logs.ts";
 import { asText, redact } from "./channels/delivery.ts";
 import { ensureConversation, ensureLocalConversation, getConversation, listConversations, listGroupProactiveConversations } from "./conversations.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
+import { renderEmote, type EmoteSendResult, type QqEmoteIntent } from "./qq-emote.ts";
 import type { QQService, QqMediaRef, QQBindingView, QQConversationView, QQStatus } from "./qq.ts";
 
 /** 一个 OneBot 端点 = 一个真实 QQ 号，绑定到一个联系人。 */
@@ -254,7 +255,7 @@ export function createQQOneBotService(): QQService {
 
   const viewOf = (acc: OneBotAccount): QQBindingView => ({
     id: acc.id, contactId: acc.contactId, userOpenId: redact(acc.qqNumber),
-    enabled: acc.enabled, proactive: acc.proactive, status: statusOf(),
+    enabled: acc.enabled, proactive: acc.proactive, hasUserOpenId: acc.qqNumber !== "", status: statusOf(),
     hasReplyWindow: false, lastError: acc.lastError, lastReceivedAt: acc.lastReceivedAt,
     lastSentAt: acc.lastSentAt, createdAt: acc.createdAt, conversations: convsFor(acc.contactId),
   });
@@ -308,6 +309,38 @@ export function createQQOneBotService(): QQService {
     await deliverMediaToContact(conv.contact_id, text, media);
   };
 
+  /**
+   * 发一个表情（表情系统入口，OneBot 渠道版）。OneBot 协议端对 face/mface/image 都原生支持，
+   * 直接把 renderEmote 产出的段塞进协议端 HTTP API。按会话分派：群走 primary 号 external_id，
+   * 私聊走该联系人绑定的号。
+   */
+  const deliverEmote = async (conversationId: string, intent: QqEmoteIntent): Promise<EmoteSendResult> => {
+    const conv = getConversation(conversationId);
+    if (conv === null || conv.channel !== "qq" || !conv.enabled) {
+      return { ok: false, native: false, via: "skipped", detail: "会话不可用或不是 QQ 会话" };
+    }
+    const render = renderEmote(intent);
+    if (render.segments.length === 0) {
+      // 只有降级文字（理论上 OneBot 不会走到这，但留个兜底）。
+      if (render.fallbackText !== "") {
+        if (conv.kind === "group") await deliverToConversation(conversationId, render.fallbackText);
+        else await deliverToContact(conv.contact_id, render.fallbackText);
+        return { ok: true, native: render.native, via: "text", detail: render.fallbackText };
+      }
+      return { ok: false, native: false, via: "skipped", detail: "没有可发的表情内容" };
+    }
+    if (conv.kind === "group") {
+      const acc = primaryAccount();
+      if (acc === null) return { ok: false, native: false, via: "skipped", detail: "没有可用的 OneBot 账号" };
+      await sendOut(acc, "group", conv.external_id, "", render.segments);
+    } else {
+      const acc = byContact(conv.contact_id);
+      if (acc === null || !acc.enabled) return { ok: false, native: false, via: "skipped", detail: "联系人没有绑定 OneBot 账号" };
+      await sendOut(acc, "private", acc.qqNumber, "", render.segments);
+    }
+    return { ok: true, native: render.native, via: "native" };
+  };
+
   // 官方 Bot 专属的凭据/扫码路径：OneBot 用真实号登录，一律不支持，返回安全态。
   const unsupported = (what: string): void => { console.warn(`[qq/onebot] ${what} 在 OneBot 后端不适用（真实号由协议端登录）`); };
 
@@ -318,6 +351,7 @@ export function createQQOneBotService(): QQService {
     deliverMediaToContact,
     deliverMediaToGroup,
     deliverMediaToConversation,
+    deliverEmote,
     beginBind: (contactId: string) => { unsupported("beginBind"); void contactId; return { attemptId: "", keyword: "绑定", expiresInMs: 0 }; },
     pollBind: (_contactId: string, _attemptId: string) => ({ status: "gone", error: "OneBot 后端不支持认领绑定" }),
     snapshotFor: (contactId: string) => {

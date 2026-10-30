@@ -492,6 +492,20 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
         </div>
       )}
 
+      {/* 凭据配好了但 openid 还没认领（大肥鱼这种：只在群里说过话、从没私聊绑过）：
+          必须给「去绑定」入口——否则 bot 回你"去绑定"你却无处可点。 */}
+      {backend === "official" && binding && !binding.hasUserOpenId && !attempt && (
+        <div className="wx-actions">
+          <button type="button" className="primary sm" disabled={busy} onClick={() => { void startBind(); }}>
+            {busy ? "正在开启…" : "去绑定（认领 openid）"}
+          </button>
+          <span className="hint">
+            还没认领到 openid：点了之后，让{who}在 QQ 里**私聊**给机器人发「绑定」两个字（10 分钟内有效）。
+            没认领到 openid，主动私聊消息和被动回复窗口都用不了。
+          </span>
+        </div>
+      )}
+
       {attempt && (
         <div className="qq-code-row">
           <span className="hint">在 QQ 里发这两个字</span>

@@ -25,6 +25,8 @@ export type QQBindingView = {
   contactId: string;
   /** openid 已脱敏：界面只要认得出"是哪一个"。 */
   userOpenId: string;
+  /** 凭据已配但还没认领到 openid（false 时界面要给出「去绑定」入口）。 */
+  hasUserOpenId: boolean;
   enabled: boolean;
   proactive: boolean;
   status: QQStatus;

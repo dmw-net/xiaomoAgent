@@ -29,12 +29,16 @@ export default function ThreadChip({ threads, current, dialogOpen, onPick, onRen
   // 于是弹窗隐藏了、portal 在 body 的下拉还挂着。弹窗一收就把下拉一起归零。
   useEffect(() => { if (!dialogOpen) setOpen(false); }, [dialogOpen]);
 
-  const active = threads.find((t) => t.id === current);
+  // 调用方（AssistantDialog）在数据没到时可能把 threads 传成 undefined/null——
+  // 这里收口成数组，别让渲染期对 undefined 调 .find/.map 把整棵 React 树挂掉（白屏）。
+  const th = Array.isArray(threads) ? threads : [];
+
+  const active = th.find((t) => t.id === current);
 
   const toggle = (): void => {
     // place() 必须放在 setState 更新器之外：更新器会被 StrictMode 双调用，
     // 放进去等于切两次开关，下拉刚打开就被关掉。
-    if (!open) place(threads.length, 40);
+    if (!open) place(th.length, 40);
     setOpen(!open);
   };
 
@@ -48,7 +52,7 @@ export default function ThreadChip({ threads, current, dialogOpen, onPick, onRen
         <div className="switch-pop" data-keep-menu="" role="listbox" aria-label="选择工作区"
           style={{ left: pos.left, top: pos.top, width: POP_W, transform: pos.flip ? "translateY(-100%)" : undefined }}>
           <div className="switch-cap">工作区</div>
-          {threads.map((t) => (
+          {th.map((t) => (
             <div key={t.id || "builtin"} className={"switch-item" + (t.id === current ? " on" : "")}>
               <button type="button" className="switch-pick" role="option" aria-selected={t.id === current}
                 onClick={() => { setOpen(false); onPick(t.id); }}>

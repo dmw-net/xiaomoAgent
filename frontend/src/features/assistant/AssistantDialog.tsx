@@ -63,7 +63,9 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
 
   const reload = useCallback((): void => {
     assistantApi.listThreads()
-      .then((d) => setThreads(d.threads))
+      // 后端某次返回里缺 threads 字段时，d.threads 是 undefined——直接 set 会让 state
+      // 变 undefined，随后 threads.length/.map/.find 全崩（白屏）。这里收口成数组。
+      .then((d) => setThreads(Array.isArray(d.threads) ? d.threads : []))
       .catch((error: Error) => setListErr(error.message));
   }, []);
   useEffect(() => { reload(); }, [reload]);

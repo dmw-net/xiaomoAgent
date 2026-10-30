@@ -399,19 +399,20 @@ async function runProactiveCheckInner(
       text: cleanText, kind: "proactive", contactId,
       ...(images.length > 0 ? { attachments: images } : {}),
     });
-    // 绑定过微信且允许主动触达的联系人，同一句投到微信（内部静默跳过/不抛错）。
-    // 带图就在文字里说破：微信那条链路发不出媒体，不说她等于凭空消失了这张画。
+    // 绑定过微信的联系人，同一句投到微信。微信这条链路仍发不出媒体，
+    // 带图就在文字里说破，免得那张画凭空消失。QQ 现在能真正发图了，不再需要这句兜底。
     void wechat.deliverToContact(
       contactId,
       images.length > 0 ? `${cleanText}\n（画了一张图，微信发不出去，在这个应用里看）` : cleanText,
       { proactive: true },
     );
-    void qq.deliverToContact(
-      contactId,
-      images.length > 0 ? `${cleanText}\n（画了一张图，QQ 这条只送文字，在这个应用里看）` : cleanText,
-      { proactive: true },
-    );
-    void qq.deliverProactiveToGroup(contactId, cleanText);
+    const qqMedia = images.map((url) => ({ url }));
+    if (qqMedia.length > 0) {
+      void qq.deliverMediaToContact(contactId, cleanText, qqMedia, { proactive: true });
+    } else {
+      void qq.deliverToContact(contactId, cleanText, { proactive: true });
+    }
+    void qq.deliverProactiveToGroup(contactId, cleanText, qqMedia);
     markSpokenToday(contactId);
     finishTask(task.id, "done", `已发送：${cleanText.slice(0, 40)}（${decision.reason}）`);
     scheduleNext(contactId, decision.focus, decision.nextCheckHours);

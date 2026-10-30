@@ -4,14 +4,14 @@
 // token、网关与重连状态。QQ 私聊并入联系人主会话；每个 QQ 群单独一段
 // Conversation，群 openid 只在所属 BotAccount 下解释。
 
-import { createDecipheriv, randomBytes, randomUUID } from "node:crypto";
+import { createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { db, kvGet, kvSet } from "./db.ts";
 import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
 import { asText, chunkSegments, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight } from "./channels/delivery.ts";
 import { ensureConversation, ensureLocalConversation, getConversation, listConversations, listGroupProactiveConversations, setConversationMembership, type Conversation } from "./conversations.ts";
-import { MAX_IMAGE_BYTES, saveImage, sniffImageMime } from "./media.ts";
+import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, readMedia, saveAudio, saveImage, saveVideo, sniffImageMime } from "./media.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 
 const KV_ACCOUNTS = "qq.accounts.v2";
@@ -24,6 +24,16 @@ const QR_COMPLETED = 2;
 const QR_EXPIRED = 3;
 const INTENT_GROUP_C2C = 1 << 25;
 const TEXT_UNITS = 4000;
+/** 官方富媒体直传（file_data 塞 base64）硬上限 5MB；超过必须走分片上传。 */
+const QQ_DIRECT_UPLOAD_MAX = 5 * 1024 * 1024;
+/** 分片预上传 md5_10m 校验：官方规定取文件前 10002432 字节的 MD5。 */
+const QQ_MD5_10M_BYTES = 1_002_432;
+
+/**
+ * 出站媒体引用：一个本地 /media 路径 + 可选展示名。
+ * 调用方（proactive / agent）只认 /media URL；label 影响上传时的 file_name。
+ */
+export type QqMediaRef = { url: string; label?: string };
 const ACCOUNT_CAP = 40;
 const SEEN_LIMIT = 160;
 const BIND_TTL_MS = 10 * 60_000;
@@ -71,10 +81,28 @@ function sceneExt(message: Record<string, unknown>): Map<string, string> {
   return out;
 }
 
-function inboundImageFiles(message: Record<string, unknown>): Array<Record<string, unknown>> {
-  return (Array.isArray(message.attachments) ? message.attachments : [])
-    .filter((item): item is Record<string, unknown> => item !== null && typeof item === "object")
-    .filter((item) => asText(item.content_type).startsWith("image/") && asText(item.url) !== "");
+/** 入站附件按 content_type 前缀分到媒体大类；识别不出的（文档等）返回空串。 */
+function inboundKindOf(contentType: string): "image" | "audio" | "video" | "" {
+  const t = contentType.toLowerCase();
+  if (t.startsWith("image/")) return "image";
+  if (t.startsWith("audio/")) return "audio";
+  if (t.startsWith("video/")) return "video";
+  return "";
+}
+
+type InboundMedia = { file: Record<string, unknown>; kind: "image" | "audio" | "video" };
+
+/** 收进来的全部媒体附件（图/音/视频）。文档类暂不落库（媒体库没有通用文件白名单）。 */
+function inboundMediaFiles(message: Record<string, unknown>): InboundMedia[] {
+  const out: InboundMedia[] = [];
+  for (const item of (Array.isArray(message.attachments) ? message.attachments : [])) {
+    if (item === null || typeof item !== "object") continue;
+    const record = item as Record<string, unknown>;
+    const kind = inboundKindOf(asText(record.content_type));
+    if (kind === "" || asText(record.url) === "") continue;
+    out.push({ file: record, kind });
+  }
+  return out;
 }
 
 /**
@@ -388,28 +416,46 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
    * 收进来的图先落到本地媒体库：视觉通道只认 /media 路径，而 QQ 的 CDN 地址过期很快，
    * 不能留到看图时再抓。抓不动的一张就跳过（只记日志），别让一张坏图吞掉整条消息。
    */
-  const saveInboundImages = async (
+  /**
+   * 收进来的媒体先落到本地媒体库：视觉/听觉通道只认 /media 路径，而 QQ 的 CDN 地址
+   * 过期很快，不能留到看时再抓。一张/一段坏媒体就跳过（只记日志），别让它吞掉整条消息。
+   * 文档类附件暂不落库（媒体库没有通用文件白名单）。
+   */
+  const saveInboundMedia = async (
     account: StoredAccount,
     message: Record<string, unknown>,
   ): Promise<{ urls: string[]; meta: MessageAttachmentMeta[] }> => {
     const urls: string[] = []; const meta: MessageAttachmentMeta[] = [];
-    for (const file of inboundImageFiles(message)) {
-      const target = asText(file.url); const started = Date.now();
+    const limitOf = (kind: InboundMedia["kind"]): number =>
+      kind === "video" ? MAX_VIDEO_BYTES : kind === "audio" ? MAX_AUDIO_BYTES : MAX_IMAGE_BYTES;
+    for (const entry of inboundMediaFiles(message)) {
+      const target = asText(entry.file.url); const started = Date.now();
+      const limit = limitOf(entry.kind);
       try {
         if (!/^https?:\/\//i.test(target)) throw new Error("附件地址不是 http(s)");
-        const declared = Number(file.size ?? 0);
-        if (Number.isFinite(declared) && declared > MAX_IMAGE_BYTES) throw new Error(`图片超过 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB，已跳过`);
+        const declared = Number(entry.file.size ?? 0);
+        if (Number.isFinite(declared) && declared > limit) throw new Error(`媒体超过 ${limit / (1024 * 1024)}MB，已跳过`);
         const response = await http(target);
         if (!response.ok) throw new Error(`HTTP ${response.status}`);
         const length = Number(response.headers.get("content-length") ?? 0);
-        if (Number.isFinite(length) && length > MAX_IMAGE_BYTES) throw new Error(`图片超过 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB，已跳过`);
+        if (Number.isFinite(length) && length > limit) throw new Error(`媒体超过 ${limit / (1024 * 1024)}MB，已跳过`);
         const body = Buffer.from(await response.arrayBuffer());
-        const mime = sniffImageMime(body);
-        const saved = saveImage(body, mime);
-        urls.push(saved.url); meta.push({ url: saved.url, kind: "image", mime });
+        if (body.length === 0) throw new Error("附件内容为空");
+        let savedUrl: string; let savedMime: string;
+        if (entry.kind === "image") {
+          const mime = sniffImageMime(body);
+          if (mime === "") throw new Error("图片魔数无法识别");
+          savedUrl = saveImage(body, mime).url; savedMime = mime;
+        } else if (entry.kind === "audio") {
+          const saved = saveAudio(body); savedUrl = saved.url; savedMime = saved.mime;
+        } else {
+          const saved = saveVideo(body); savedUrl = saved.url; savedMime = saved.mime;
+        }
+        urls.push(savedUrl);
+        meta.push({ url: savedUrl, kind: entry.kind, mime: savedMime });
       } catch (error) {
         logModelCall({
-          purpose: "qq", ok: false, code: "QQ_MEDIA", model: "qqbot", url: "/qq/inbound-image",
+          purpose: "qq", ok: false, code: "QQ_MEDIA", model: "qqbot", url: "/qq/inbound-" + entry.kind,
           elapsedMs: Date.now() - started, message: (error instanceof Error ? error.message : String(error)).slice(0, 300),
           contactId: account.contactId,
         });
@@ -430,6 +476,181 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     const body: Record<string, unknown> = { msg_type: 0, content };
     if (msgId !== "") { body.msg_id = msgId; body.msg_seq = nextSeq(`${account.id}|group|${groupOpenId}|${msgId}`); }
     await callApi(account, `/v2/groups/${encodeURIComponent(groupOpenId)}/messages`, { method: "POST", body });
+  };
+
+  /** mime/扩展 → 官方 file_type：1=图片, 2=视频, 3=语音, 4=文件。 */
+  const mediaTypeOfExt = (ext: string): number => {
+    switch (ext) {
+      case "png": case "jpg": case "jpeg": case "gif": case "webp": case "bmp": return 1;
+      case "mp4": case "webm": return 2;
+      case "silk": case "mp3": case "wav": case "ogg": case "m4a": case "opus": case "weba": case "aac": return 3;
+      default: return 4;
+    }
+  };
+
+  /** 上传文件名：label 自带扩展名就用它，否则按 mime 推断补上。 */
+  const mediaFileNameOf = (ref: QqMediaRef, ext: string): string => {
+    const label = ref.label?.trim() ?? "";
+    if (label !== "" && label.includes(".")) return label;
+    if (label !== "") return label + (ext !== "" ? `.${ext}` : "");
+    return ext !== "" ? `xiaomo.${ext}` : "xiaomo.file";
+  };
+
+  /**
+   * 把本地 /media 文件上传到官方富媒体端点，拿回 file_info。
+   * targetId 是「发到哪」的 openid（私聊=userOpenId，群=groupOpenId）——上传与发送必须同场景，
+   * file_info 不能跨场景复用，所以这里一并带上。≤5MB 走二进制直传；>5MB 走分片。
+   */
+  const uploadMedia = async (
+    account: StoredAccount,
+    target: "private" | "group",
+    targetId: string,
+    ref: QqMediaRef,
+  ): Promise<string> => {
+    const idPath = target === "private" ? encodeURIComponent(account.userOpenId) : encodeURIComponent(targetId);
+    const prefix = target === "private" ? "users" : "groups";
+    const file = readMedia(ref.url);
+    if (file === null) throw new Error("本地媒体文件读不到，无法上传到 QQ：" + ref.url);
+    const { buffer, mime } = file;
+    const ext = ref.url.split(".").pop()?.toLowerCase() ?? "";
+    const fileType = mediaTypeOfExt(ext);
+    const nameWithExt = mediaFileNameOf(ref, ext);
+
+    if (buffer.length <= QQ_DIRECT_UPLOAD_MAX) {
+      // 直传：file_data 传 base64 字符串
+      const started = clock();
+      const data = await callApi(account, `/${prefix}/${idPath}/files`, {
+        method: "POST",
+        body: { file_type: fileType, file_name: nameWithExt, file_data: buffer.toString("base64"), srv_send_msg: false },
+      });
+      const fileInfo = asText(data.file_info);
+      if (fileInfo === "") throw new Error("上传成功但没返回 file_info");
+      logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: `/${prefix}/{id}/files`, elapsedMs: clock() - started, contactId: account.contactId });
+      return fileInfo;
+    }
+
+    // 分片上传
+    const wholeMd5 = createHash("md5").update(buffer).digest("hex");
+    const wholeSha1 = createHash("sha1").update(buffer).digest("hex");
+    const md510m = createHash("md5").update(buffer.subarray(0, QQ_MD5_10M_BYTES)).digest("hex");
+    const prep = await callApi(account, `/${prefix}/${idPath}/upload_prepare`, {
+      method: "POST",
+      body: {
+        file_type: fileType, file_size: String(buffer.length), file_name: nameWithExt,
+        md5: wholeMd5, sha1: wholeSha1, md5_10m: md510m,
+      },
+    });
+    const uploadId = asText(prep.upload_id);
+    if (uploadId === "") throw new Error("分片预上传没拿到 upload_id");
+    const blockSize = Number(asText(prep.block_size) || String(5 * 1024 * 1024));
+    const parts = Array.isArray(prep.parts) ? (prep.parts as Array<Record<string, unknown>>) : [];
+    for (let i = 0; i < parts.length; i += 1) {
+      const part = parts[i];
+      if (part === null || part === undefined) continue;
+      const index = Number(asText(part.index) || String(i));
+      const presigned = asText(part.presigned_url);
+      if (presigned === "") throw new Error("分片 " + index + " 缺预签名 URL");
+      const sizeOf = part.block_size !== undefined ? Number(part.block_size) : blockSize;
+      // 末片可能小于 blockSize；按文件实际剩余长度收口，多出的字节不传。
+      const chunkStart = index * blockSize;
+      const chunkLen = index === parts.length - 1 ? buffer.length - chunkStart : sizeOf;
+      const chunkBuf = buffer.subarray(chunkStart, chunkStart + chunkLen);
+      // PUT 分片到预签名 COS URL（腾讯 COS 直传，不走鉴权头）。
+      const putResp = await http(presigned, { method: "PUT", headers: { "content-type": mime }, body: Buffer.from(chunkBuf) });
+      if (!putResp.ok) throw new Error("分片 " + index + " PUT 失败：HTTP " + putResp.status);
+      await callApi(account, `/${prefix}/${idPath}/upload_part_finish`, {
+        method: "POST",
+        body: {
+          upload_id: uploadId, part_index: index, block_size: String(sizeOf),
+          md5: createHash("md5").update(chunkBuf).digest("hex"),
+        },
+      });
+    }
+    // 合并
+    const merged = await callApi(account, `/${prefix}/${idPath}/files`, {
+      method: "POST",
+      body: { file_type: fileType, file_name: nameWithExt, upload_id: uploadId, srv_send_msg: false },
+    });
+    const fileInfo = asText(merged.file_info);
+    if (fileInfo === "") throw new Error("分片合并成功但没返回 file_info");
+    return fileInfo;
+  };
+
+  /** 发一条富媒体消息（msg_type=7 + media.file_info）。 */
+  const sendMedia = async (
+    account: StoredAccount,
+    target: "private" | "group",
+    targetId: string,
+    ref: QqMediaRef,
+    msgId: string,
+  ): Promise<void> => {
+    const fileInfo = await uploadMedia(account, target, targetId, ref);
+    const idPath = target === "private" ? encodeURIComponent(account.userOpenId) : encodeURIComponent(targetId);
+    const prefix = target === "private" ? "users" : "groups";
+    const body: Record<string, unknown> = { msg_type: 7, media: { file_info: fileInfo } };
+    if (msgId !== "") { body.msg_id = msgId; body.msg_seq = nextSeq(`${account.id}|${target}|${targetId}|${msgId}`); }
+    await callApi(account, `/${prefix}/${idPath}/messages`, { method: "POST", body });
+  };
+
+  /** 把文字 + 一组本地媒体投到私聊。媒体逐个发，单个失败不吞掉后面的。 */
+  const deliverMediaToContact = async (
+    contactId: string,
+    text: string,
+    media: QqMediaRef[],
+    opts: { proactive?: boolean } = {},
+  ): Promise<void> => {
+    const account = byContact(contactId);
+    if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
+    if (text !== "") {
+      const inWindow = account.replyMessageId !== "" && clock() - account.replyMessageAt < REPLY_WINDOW_MS;
+      await deliver(account, text, { proactive: opts.proactive === true, msgId: inWindow ? account.replyMessageId : "" });
+    }
+    const refMsgId = text !== "" ? account.replyMessageId : "";
+    for (const ref of media) {
+      try {
+        await sendMedia(account, "private", "", ref, refMsgId);
+        account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist();
+      } catch (error) {
+        const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+        account.lastError = message; persist();
+        console.warn(`[qq] 媒体投递失败（${contactId}）：${message}`);
+      }
+    }
+  };
+
+  /** 把一组本地媒体按顺序投到指定群（主动消息无 msg_id 引用）。 */
+  const deliverMediaToGroup = async (
+    contactId: string,
+    groupConvId: string,
+    text: string,
+    media: QqMediaRef[],
+  ): Promise<void> => {
+    const conv = getConversation(groupConvId);
+    if (conv === null || conv.channel !== "qq" || conv.kind !== "group" || !conv.enabled) return;
+    const account = byId(conv.account_id) ?? byContact(contactId);
+    if (account === null || !configured(account)) return;
+    if (text !== "") {
+      const segments = splitQqText(text);
+      if (segments.length > 0) {
+        const startedAt = clock();
+        await deliverOutbound({
+          segments, send: (segment) => sendGroup(account, conv.external_id, segment, ""), elapsed: () => clock() - startedAt,
+          onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
+          onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 群媒体文字失败（${conv.id}）：${message}`); },
+          log: (ok, message, elapsedMs) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), contactId: account.contactId }),
+        });
+      }
+    }
+    for (const ref of media) {
+      try {
+        await sendMedia(account, "group", conv.external_id, ref, "");
+        account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist();
+      } catch (error) {
+        const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
+        account.lastError = message; persist();
+        console.warn(`[qq] 群媒体投递失败（${conv.id}）：${message}`);
+      }
+    }
   };
 
   const deliver = async (account: StoredAccount | null, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<void> => {
@@ -472,35 +693,60 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
    * 不走 replyWindow，直接走 sendGroup（群消息无需 msg_id 引用）。
    * 调用方（proactive.ts）负责检查 quiet hours 与每日配额，这里只管"能不能发"。
    */
-  const deliverProactiveToGroup = async (contactId: string, text: string): Promise<void> => {
+  /**
+   * 群主动消息：遍历该联系人下已勾选"允许主动群消息"的群会话并投递。
+   * 不走 replyWindow，直接走 sendGroup/sendMedia（群消息无需 msg_id 引用）。
+   * 调用方（proactive.ts）负责检查 quiet hours 与每日配额，这里只管"能不能发"。
+   * media 可选：配图/文件随每个群一起发（逐群上传，file_info 不能跨群复用）。
+   */
+  const deliverProactiveToGroup = async (
+    contactId: string,
+    text: string,
+    media: QqMediaRef[] = [],
+  ): Promise<void> => {
     const groupConvs = listGroupProactiveConversations(contactId);
     if (groupConvs.length === 0) return;
-    const segments = splitQqText(text); if (segments.length === 0) return;
+    const segments = splitQqText(text);
     for (const conv of groupConvs) {
       const account = byId(conv.account_id) ?? byContact(contactId);
       if (account === null || !configured(account)) continue;
-      const startedAt = clock();
-      await deliverOutbound({
-        segments,
-        send: (segment) => sendGroup(account, conv.external_id, segment, ""),
-        elapsed: () => clock() - startedAt,
-        onDelivered: () => {
+      if (segments.length > 0) {
+        const startedAt = clock();
+        await deliverOutbound({
+          segments,
+          send: (segment) => sendGroup(account, conv.external_id, segment, ""),
+          elapsed: () => clock() - startedAt,
+          onDelivered: () => {
+            account.lastSentAt = new Date(clock()).toISOString();
+            account.lastError = "";
+            persist();
+          },
+          onFailed: (message) => {
+            account.lastError = message;
+            persist();
+            console.warn(`[qq] 群主动投递失败（${conv.id}）：${message}`);
+          },
+          log: (ok, message, elapsedMs) => logModelCall({
+            purpose: "qq", ok, model: "qqbot",
+            url: "/v2/groups/{group_openid}/messages",
+            elapsedMs, ...(message === "" ? {} : { message }),
+            contactId: account.contactId,
+          }),
+        });
+      }
+      for (const ref of media) {
+        try {
+          await sendMedia(account, "group", conv.external_id, ref, "");
           account.lastSentAt = new Date(clock()).toISOString();
           account.lastError = "";
           persist();
-        },
-        onFailed: (message) => {
+        } catch (error) {
+          const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
           account.lastError = message;
           persist();
-          console.warn(`[qq] 群主动投递失败（${conv.id}）：${message}`);
-        },
-        log: (ok, message, elapsedMs) => logModelCall({
-          purpose: "qq", ok, model: "qqbot",
-          url: "/v2/groups/{group_openid}/messages",
-          elapsedMs, ...(message === "" ? {} : { message }),
-          contactId: account.contactId,
-        }),
-      });
+          console.warn(`[qq] 群媒体投递失败（${conv.id}）：${message}`);
+        }
+      }
     }
   };
 
@@ -527,13 +773,13 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       return;
     }
     if (account.userOpenId !== openId || !account.enabled) return;
-    // 纯图消息（content 为空）平台照样推，别按空正文丢掉。
-    if (text === "" && inboundImageFiles(message).length === 0) return;
+    // 纯媒体消息（content 为空）平台照样推，别按空正文丢掉。
+    if (text === "" && inboundMediaFiles(message).length === 0) return;
     const scene = sceneExt(message);
     const key = `${account.id}|${openId}|${messageId}|${scene.get("msg_idx") ?? ""}`;
     const seen = new SeenKeys(SEEN_LIMIT, account.recentMessageIds);
     if (seen.has(key)) return;
-    const media = await saveInboundImages(account, message);
+    const media = await saveInboundMedia(account, message);
     const conv = ensureLocalConversation(account.contactId);
     account.replyMessageId = messageId; account.replyMessageAt = clock();
     account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
@@ -551,7 +797,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     if (groupOpenId === "" || messageId === "") return;
     if (!account.enabled) return;
     const text = asText(message.content);
-    if (text === "" && inboundImageFiles(message).length === 0) return;
+    if (text === "" && inboundMediaFiles(message).length === 0) return;
     const scene = sceneExt(message);
     const key = `${account.id}|group|${groupOpenId}|${messageId}|${scene.get("msg_idx") ?? ""}`;
     const seen = new SeenKeys(SEEN_LIMIT, account.recentMessageIds); if (seen.has(key)) return;
@@ -563,7 +809,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
     seen.remember(key); account.recentMessageIds = seen.toArray(); persist();
     const channel = getChannel("web"); if (channel === undefined) return;
-    const media = await saveInboundImages(account, message);
+    const media = await saveInboundMedia(account, message);
     channel.receive(withMentions(text, message), account.contactId, media.urls.length > 0 ? media.urls : undefined, "qq", undefined, {
       conversationId: conv.id, senderId, senderName, sourceMessageId: messageId,
       replyToMessageId: scene.get("ref_msg_idx"), atBot: true,
@@ -727,7 +973,8 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   const clearAll = (): void => { for (const worker of workers.values()) { worker.gateway.close(); worker.gateway.forget(); worker.token.invalidate(); } workers.clear(); windows.clear(); replyCounters.clear(); qrTasks.clear(); accounts = []; hydrated = true; problem = ""; persist(); };
 
   return {
-    deliverToContact, deliverToConversation, deliverProactiveToGroup, beginBind, pollBind, snapshotFor, summary,
+    deliverToContact, deliverToConversation, deliverProactiveToGroup,
+    deliverMediaToContact, deliverMediaToGroup, beginBind, pollBind, snapshotFor, summary,
     setCredentials, beginCredentialQr, pollCredentialQr, setFlags, setFlagsByContact, disconnect,
     disconnectByContact: (contactId: string): boolean => { const account = byContact(contactId); return account === null ? false : disconnect(account.id); },
     startAll, stopAll,

@@ -157,6 +157,21 @@ export function saveAudio(buffer: Buffer): { url: string; id: string; mime: stri
   return { url: `/media/${id}.${ext}`, id, mime };
 }
 
+/** 存一段视频（入站/出站共用）；只认 mp4 与 webm，超出 100MB 直接拒。 */
+export function saveVideo(buffer: Buffer): { url: string; id: string; mime: string } {
+  if (buffer.length === 0 || buffer.length > MAX_VIDEO_BYTES) {
+    throw new Error(`视频大小需在 ${MAX_VIDEO_BYTES / (1024 * 1024)}MB 以内`);
+  }
+  const imageMime = sniffImageMime(buffer);
+  if (imageMime !== "") throw new Error("声明是视频但魔数是图片，已拒绝");
+  const mime = sniffVideoMime(buffer);
+  const ext = VIDEO_EXT[mime];
+  if (!ext) throw new Error("视频格式不支持（仅 mp4 / webm）");
+  const id = randomBytes(8).toString("hex");
+  writeFileSync(join(mediaDir(), `${id}.${ext}`), buffer);
+  return { url: `/media/${id}.${ext}`, id, mime };
+}
+
 /** 文件类型由扩展名决定；壁纸的文件仍是 image/video，来源另由 MediaSource 表示。 */
 export function mediaTypeOfUrl(url: string): "image" | "video" | "audio" | "file" {
   const ext = (url.split(".").pop() ?? "").toLowerCase();

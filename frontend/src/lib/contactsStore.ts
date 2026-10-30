@@ -1,5 +1,6 @@
 import { fetchContacts } from "../api/contacts";
 import { getNotifyPref } from "./notify";
+import { onBusEvent } from "./eventBus";
 import type { ContactItem } from "../types";
 
 /**
@@ -64,3 +65,9 @@ export function refreshContacts(): void {
 
 // 聊天读掉消息、联系人增删后走同一个广播刷新
 window.addEventListener("xiaomo:contacts-changed", refreshContacts);
+
+// 事件总线：服务端一有会话活跃/新消息就推下来，侧栏未读数不必等 10s 轮询。
+// refreshContacts 自带「后台标签页退避」与 in-flight 去重，事件风暴也不会多拉。
+onBusEvent((event) => {
+  if (event.type === "activity" || event.type === "message" || event.type === "sync") refreshContacts();
+});

@@ -3,7 +3,7 @@
 // 为什么用它：MVP 阶段一个文件就够，备份=复制一个文件，无需装数据库服务。
 // 上量后的迁移路径：Postgres + pgvector，本文件的表结构可几乎原样搬过去。
 
-import { DatabaseSync } from "node:sqlite";
+import { DatabaseSync, type StatementSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { config } from "./config.ts";
@@ -23,6 +23,38 @@ export let db = new DatabaseSync(dbFile);
 applyPragmas(db);
 
 /**
+ * 语句级缓存：热路径（agent 循环、记忆扫描）同一句 SQL 会被现场 prepare 成千上万次，
+ * node:sqlite 每做一次 prepare 都要走一遍 SQL 解析。LRU 收口后重复 SQL 就是 Map 命中。
+ *
+ * 两条失效纪律：
+ * - reopenDb 换了句柄，旧句柄上的 statement 全部作废，必须整表清空；
+ * - compactDb 的 VACUUM 重建整个库文件，旧 statement 同样不能再用，清一遍。
+ */
+const STMT_CACHE_MAX = 512;
+const stmtCache = new Map<string, StatementSync>();
+
+export function q(sql: string): StatementSync {
+  const hit = stmtCache.get(sql);
+  if (hit !== undefined) {
+    // LRU：迭代顺序即插入顺序，先删再插等于把它顶到最新。
+    stmtCache.delete(sql);
+    stmtCache.set(sql, hit);
+    return hit;
+  }
+  const stmt = db.prepare(sql);
+  stmtCache.set(sql, stmt);
+  if (stmtCache.size > STMT_CACHE_MAX) {
+    const oldest = stmtCache.keys().next().value as string | undefined;
+    if (oldest !== undefined) stmtCache.delete(oldest);
+  }
+  return stmt;
+}
+
+function dropStmtCache(): void {
+  stmtCache.clear();
+}
+
+/**
  * 重新打开当前库文件。数据导入会先关掉连接再替换文件；替换失败、旧文件回滚后
  * 如果不重开，进程里剩下的是一个 closed 句柄，之后每个接口都是 "database is not open"。
  */
@@ -30,6 +62,7 @@ export function reopenDb(): void {
   try { db.close(); } catch { /* 可能已经关闭 */ }
   db = new DatabaseSync(dbFile);
   applyPragmas(db);
+  dropStmtCache(); // 旧句柄上的 statement 全部作废
   console.log("[db] 已重新打开数据库");
 }
 
@@ -50,6 +83,8 @@ export function compactDb(): boolean {
     ok = false;
     console.warn("[db] 数据清理完成，但数据库压缩失败：", error instanceof Error ? error.message : String(error));
   }
+  // VACUUM 重建了整个库文件：缓存里那些 statement 指向的旧字节布局全部作废，必须清掉。
+  if (ok) dropStmtCache();
   try {
     db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   } catch { /* 压缩失败或别的进程正读时留 WAL 也没关系 */ }

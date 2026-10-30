@@ -33,11 +33,16 @@ function obfuscate(): Plugin {
     // 表现是白屏 + "Failed to fetch dynamically imported module"。
     // 实测踩过：静态语法检查、跨 chunk 导入交叉校验全绿，只有真跑浏览器才暴露。
     async generateBundle(_options, bundle) {
-      for (const [fileName, chunk] of Object.entries(bundle)) {
-        if (chunk.type !== "chunk") continue;
-        if (!fileName.endsWith(".js")) continue;
-        if (fileName.includes("vendor")) continue;
-        const { default: Obfuscator } = await import("javascript-obfuscator");
+      const targets = Object.entries(bundle).filter(
+        ([fileName, chunk]) => chunk.type === "chunk" && fileName.endsWith(".js") && !fileName.includes("vendor"),
+      );
+      if (targets.length === 0) return;
+      // 模块只 import 一次（从前是每个 chunk 各 import 一遍）；chunk 互不依赖，并批跑。
+      const [{ default: Obfuscator }, { transform }] = await Promise.all([
+        import("javascript-obfuscator"),
+        import("esbuild"),
+      ]);
+      await Promise.all(targets.map(async ([_fileName, chunk]) => {
         const obfuscated = Obfuscator.obfuscate(chunk.code, {
           seed: 20261017,
           compact: true,
@@ -58,14 +63,13 @@ function obfuscate(): Plugin {
         }).getObfuscatedCode();
         // 再压一遍：混淆器产出的 `_0x...` 标识符比压缩后的短名长得多，不压会白涨 ~40%。
         // 放在混淆之后是安全的（esbuild 语义等价），也让体积回到接近未混淆时的水平。
-        const { transform } = await import("esbuild");
         const min = await transform(obfuscated, {
           minify: true,
           legalComments: "none",
           target: "es2021",
         });
         chunk.code = min.code;
-      }
+      }));
     },
   };
 }

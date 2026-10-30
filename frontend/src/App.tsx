@@ -24,6 +24,7 @@ import { settingsApi, contactId, setContactId } from "./api";
 import { getCachedContacts, refreshContacts, subscribeContacts } from "./lib/contactsStore";
 import { showMessageNotification, syncAppBadge } from "./lib/notify";
 import { startOutbox } from "./lib/outbox";
+import { startEventBus } from "./lib/eventBus";
 import type { ContactItem, ContactConversationItem } from "./types";
 
 type ProfileTarget = { mode: "create" | "edit"; id: string; page?: ProfilePage; draft?: PersonaDraft } | null;
@@ -103,6 +104,7 @@ export default function App(): JSX.Element {
   useEffect(() => subscribeContacts(applyContactMeta), [applyContactMeta]);
   useEffect(() => { refreshContacts(); }, []);
   useEffect(() => { startOutbox(); }, []);
+  useEffect(() => { startEventBus(); }, []);
   useEffect(() => {
     setVisitedViews((prev) => {
       if (prev.has(view)) return prev;

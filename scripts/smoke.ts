@@ -255,6 +255,50 @@ try {
   const jsonCsp = (await (await fetch(`${BASE}/healthz`)).headers.get("content-security-policy")) ?? "";
   check("JSON 响应不带 CSP（按类型发，不是一刀切）", jsonCsp === "", jsonCsp);
 
+  // 事件总线（SSE）：/api/events 是提示通道，连接即发一帧 sync（客户端据此对齐增量）。
+  // 用原生 http 而不是 fetch：EventSource 的流式语义 fetch 不好表达，这里只验连接首帧。
+  {
+    const http = await import("node:http");
+    const port = Number(new URL(BASE).port);
+    const seen = await new Promise<{ status: number; contentType: string; firstFrame: string; heartbeat: boolean }>((resolve) => {
+      const req = http.request({
+        host: new URL(BASE).hostname, port, path: "/api/events", method: "GET",
+        headers: { accept: "text/event-stream" },
+      }, (res) => {
+        let buf = "";
+        let sawHeartbeat = false;
+        res.on("data", (chunk: Buffer) => {
+          buf += chunk.toString("utf8");
+          if (buf.includes(": ping")) sawHeartbeat = true;
+          // 收到首帧 sync 就够：再等一下确认注释心跳行也会来（25s 太慢，只验 sync 结构）。
+          const m = /data: (\{.*"type":"sync".*\})/.exec(buf);
+          if (m) {
+            req.destroy();
+            resolve({ status: res.statusCode, contentType: String(res.headers["content-type"] ?? ""), firstFrame: m[1] ?? "", heartbeat: sawHeartbeat });
+          }
+        });
+        res.on("end", () => resolve({ status: res.statusCode, contentType: String(res.headers["content-type"] ?? ""), firstFrame: buf.slice(0, 200), heartbeat: sawHeartbeat }));
+        res.on("error", () => resolve({ status: res.statusCode, contentType: "", firstFrame: "", heartbeat: false }));
+      });
+      req.on("error", () => resolve({ status: 0, contentType: "", firstFrame: "", heartbeat: false }));
+      req.end();
+    });
+    check("SSE 端点返回 text/event-stream", seen.contentType.includes("text/event-stream"), seen.contentType);
+    check("SSE 连接即发一帧 sync（客户端据此对齐 since= 增量）", seen.status === 200 && seen.firstFrame.includes('"type":"sync"'), seen.firstFrame.slice(0, 80));
+  }
+
+  // 静态 ETag/304：同一路径两次请求，第一次带 etag、第二次 if-none-match 命中就 304 零正文。
+  // 桌面重开/移动刷新都命中 304，省去每次重下 320KB 产物原文。
+  {
+    const first = await fetch(`${BASE}/index.html`, { headers: { "if-none-match": "" } });
+    const etag = first.headers.get("etag") ?? "";
+    check("静态文件响应带弱 ETag", etag.startsWith('W/"'), etag);
+    const second = await fetch(`${BASE}/index.html`, { headers: { "if-none-match": etag } });
+    check("命中 if-none-match 直接 304 零正文", second.status === 304, `status=${second.status}`);
+    const third = await fetch(`${BASE}/index.html`);
+    check("无条件请求仍是 200", third.status === 200, `status=${third.status}`);
+  }
+
   // 桌面两项偏好在**非桌面模式**下的形态。desktop.json 只有桌面壳才会给，
   // 所以开发/CLI 下快照必须是 null、写接口必须明说"只有桌面版才有"——
   // 而不是默默写一个不存在的文件、界面上留着一个骗人的开关。（真桌面链路在 verify-bundle 里验。）

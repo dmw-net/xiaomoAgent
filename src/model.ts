@@ -479,8 +479,33 @@ async function readChatStream(
   const reader = response.body?.getReader();
   if (!reader) throw new Error("流式响应没有可读的响应体");
   const decoder = new TextDecoder();
-  const rawParts: string[] = [];
   const calls = new Map<number, { id: string; name: string; args: string }>();
+  // 诊断原文只留头尾：中间是重复帧、排障信息密度低，而长回复的整条流可达数 MB，
+  // 全部驻留到流结束是隐藏的 O(响应总量)。头部帧看形状、尾部帧看 usage/finish，
+  // 各留 32KB 已够；超出部分按字符如实记省略量。
+  const SSE_RAW_HEAD = 32 * 1024;
+  const SSE_RAW_TAIL = 32 * 1024;
+  let rawHead = "";
+  let rawOmitted = 0;
+  const rawTailParts: string[] = [];
+  let rawTailLen = 0;
+  const noteRaw = (chunk: string): void => {
+    if (rawHead.length < SSE_RAW_HEAD) {
+      const room = SSE_RAW_HEAD - rawHead.length;
+      rawHead += chunk.slice(0, room);
+      chunk = chunk.slice(room);
+    }
+    rawOmitted += chunk.length;
+    // 环形块表：超出预算的尾部丢最早那块，摊还 O(1)（整串 concat+slice 是 O(n·32KB)）。
+    if (chunk !== "") {
+      rawTailParts.push(chunk);
+      rawTailLen += chunk.length;
+    }
+    while (rawTailLen > SSE_RAW_TAIL && rawTailParts.length > 1) {
+      const drop = rawTailParts.shift() as string;
+      rawTailLen -= drop.length;
+    }
+  };
   let buf = "";
   let content = "";
   let reasoning = "";
@@ -536,7 +561,7 @@ async function readChatStream(
     const { value, done } = await reader.read();
     if (done) break;
     const text = decoder.decode(value, { stream: true });
-    rawParts.push(text);
+    noteRaw(text);
     buf += text;
     // 一行没有换行就永远留在 buf 里：不给个顶，一个不发换行的上游（或一次畸形的分块）
     // 能让它长到吃掉整个响应。超了就整块丢掉并告警——真出现这种情况时流式本来也已经不可信了，
@@ -590,13 +615,17 @@ async function readChatStream(
       args: call.args !== "" ? call.args : "{}",
     }))
     .filter((call) => call.name !== "");
+  // 头尾拼接 + 省略量：排障要看的是帧形状与 usage/finish，中间帧形状重复，记个数就够。
+  const raw = rawOmitted > 0
+    ? `${rawHead}……（中间 ${rawOmitted} 字符已省略）……${rawTailParts.join("")}`
+    : rawHead + rawTailParts.join("");
   return {
     content,
     reasoning,
     finishReason,
     toolCalls: toolCalls.length > 0 ? toolCalls : null,
     usage,
-    raw: rawParts.join(""),
+    raw,
   };
 }
 

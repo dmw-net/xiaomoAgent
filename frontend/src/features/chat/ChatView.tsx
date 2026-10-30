@@ -13,6 +13,7 @@ import { profilePicks, providerLabel } from "../../lib/providers";
 import { blobToDataUrl, fileToImageBlob } from "../../lib/image";
 import { CLOCK_EVENT, getClockPref, type ClockPref } from "../../lib/ui-prefs";
 import { offerUndo } from "../../lib/undo";
+import { onBusEvent } from "../../lib/eventBus";
 import { enqueueOutbox, flushOutbox, outboxForContact, subscribeOutbox } from "../../lib/outbox";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useAnchoredPop } from "../../hooks/useAnchoredPop";
@@ -549,6 +550,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   /** 当前会话 id 的镜像：异步回调（录音转写）回来时要确认"人还是不是同一个"。 */
   const cidRef = useRef(cid);
   cidRef.current = cid;
+  /** msgScope 的稳定镜像：事件回调（不随渲染重建）读它判作用域。 */
+  const msgScopeRef = useRef(msgScope);
+  msgScopeRef.current = msgScope;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const recChunksRef = useRef<Blob[]>([]);
@@ -1672,6 +1676,30 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     if (wasPausedRef.current && !paused) void pullRef.current?.();
     wasPausedRef.current = !!paused;
   }, [paused]);
+
+  /**
+   * 事件总线：服务端推下来的「她那边有新动静」——空闲（没有在飞处理单、页面可见）时
+   * 立刻做**增量**拉取，把「她回的话 / 主动说的话」从 2.5~10s 的轮询退避提前到事件到达。
+   * 一轮在飞时由 watch 那拍负责消息列表，这里整拍跳过，避免两个轮询者打架。
+   * 只拉自己这一屏的联系人（作用域与 send/读光口同一套 cid ?? msgScope）；
+   * 全量重绘仍归 watch / 编辑那些显式动作，总线只补增量那一小块。
+   */
+  useEffect(() => {
+    const onEvent = (event: import("../../lib/eventBus").BusEvent): void => {
+      const scope = cidRef.current ?? msgScopeRef.current;
+      if (event.type === "sync") {
+        // 重连对齐帧：整段拉一次补齐推送前漏掉的（仅在空闲时，避免与在飞轮打架）。
+        if (pendingTurnRef.current === null && !asleep()) void pullRef.current?.();
+        return;
+      }
+      if ("contactId" in event && event.contactId !== scope) return;
+      if (pendingTurnRef.current !== null) return; // 在飞轮交给 watch
+      if (asleep()) return;
+      idleTicksRef.current = 0; // 有动静：让下一拍轮询回到最快档
+      void pullRef.current?.();
+    };
+    return onBusEvent(onEvent);
+  }, []);
 
   // 滚动跟随：只在用户本来贴着底部时才自动滚
   useLayoutEffect(() => {

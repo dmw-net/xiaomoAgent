@@ -3,12 +3,12 @@
 // 关键设计：这是"薄循环"。它只做四件事——召回记忆、拼上下文、调模型、落库。
 
 import { randomUUID } from "node:crypto";
-import { db, withTx } from "./db.ts";
+import { q, withTx } from "./db.ts";
 import { config } from "./config.ts";
 import { extractMemories, likePattern, recallExplained, recallSmart, recordExtractFailure } from "./memory.ts";
 import { buildSystemPrompt, toChatMessages } from "./persona.ts";
 import { capabilityExplicit, capabilityReady, effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolRounds } from "./settings.ts";import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "./model.ts";
-import { executeTool, toolDefsForApi, type ToolContext } from "./tools.ts";
+import { executeTool, toolDefsForApi, type ToolContext, type ToolResult } from "./tools.ts";
 import { trimDraftBeforeToolCall } from "./text-tool-calls.ts";
 import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
 import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getContact } from "./contacts.ts";
@@ -16,6 +16,7 @@ import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssist
 import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "./reply-segmentation.ts";
 import { dataUrlBytes, mediaDataUrl, releaseMediaFiles } from "./media.ts";
+import { emitMessage, emitTurn, emitActivity } from "./events.ts";
 import type { CapabilityName } from "./settings.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { getConversation, localConversationId, touchConversation, type Conversation } from "./conversations.ts";
@@ -60,7 +61,7 @@ export function createTurn(input: {
   clientId?: string;
 }): void {
   const conversationId = input.conversationId || localConversationId(input.contactId);
-  db.prepare(
+  q(
     `INSERT INTO turns
        (id, channel, text, contact_id, conversation_id, trigger_message_id, trigger_ids, context_start_id,
         attachments, attachment_meta, client_id, status, created_at)
@@ -82,12 +83,12 @@ export function createTurn(input: {
 }
 
 export function getTurn(id: string): TurnRow | null {
-  const row = db.prepare("SELECT * FROM turns WHERE id = ?").get(id) as TurnRow | undefined;
+  const row = q("SELECT * FROM turns WHERE id = ?").get(id) as TurnRow | undefined;
   return row ?? null;
 }
 
 export function getTurnByClientId(contactId: string, clientId: string): TurnRow | null {
-  const row = db.prepare("SELECT * FROM turns WHERE contact_id = ? AND client_id = ?").get(contactId, clientId) as TurnRow | undefined;
+  const row = q("SELECT * FROM turns WHERE contact_id = ? AND client_id = ?").get(contactId, clientId) as TurnRow | undefined;
   return row ?? null;
 }
 
@@ -115,8 +116,7 @@ export function insertMessage(input: {
 }): number {
   const conversationId = input.conversationId || localConversationId(input.contactId);
   const now = Date.now();
-  const result = db
-    .prepare(
+  const result = q(
       `INSERT INTO messages
          (channel, role, text, kind, turn_id, contact_id, conversation_id, sender_id, sender_name,
           source_message_id, reply_to_message_id, at_bot, source_meta, attachments, attachment_meta, reasoning, tool_detail, created_at)
@@ -143,6 +143,11 @@ export function insertMessage(input: {
       now,
     );
   touchConversation(conversationId, now);
+  // 事件总线：新行落库（气泡 / 工具卡）立刻推给在线订阅者，前端不必等轮询。
+  // 提示通道：事件只说「有行落了」，正文由前端走 /api/messages?since= 取。
+  emitMessage(input.contactId, conversationId, Number(result.lastInsertRowid));
+  // 会话有新动静（供侧栏未读 / 10s 轮询退避到活跃档），与 message 成对发出。
+  emitActivity(input.contactId);
   return Number(result.lastInsertRowid);
 }
 
@@ -155,7 +160,7 @@ export function insertMessage(input: {
 export const REASONING_WINDOW = 20;
 
 export function trimReasoningWindow(contactId: string): void {
-  db.prepare(
+  q(
     `UPDATE messages SET reasoning = NULL
      WHERE contact_id = ? AND reasoning IS NOT NULL
        AND id NOT IN (
@@ -173,7 +178,7 @@ export function trimReasoningWindow(contactId: string): void {
 export const TOOL_DETAIL_WINDOW = 10;
 
 export function trimToolDetailWindow(contactId: string): void {
-  db.prepare(
+  q(
     `UPDATE messages SET tool_detail = NULL
      WHERE contact_id = ? AND tool_detail IS NOT NULL AND kind = 'tool'
        AND turn_id NOT IN (
@@ -185,16 +190,14 @@ export function trimToolDetailWindow(contactId: string): void {
 
 /** 这条处理单的用户消息是否已经写过（重试时用来避免重复）。 */
 export function turnHasUserMessage(turnId: string): boolean {
-  const row = db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE turn_id = ? AND role = 'user'`)
+  const row = q(`SELECT COUNT(*) AS c FROM messages WHERE turn_id = ? AND role = 'user'`)
     .get(turnId) as { c: number };
   return row.c > 0;
 }
 
 /** 删掉某轮助手的回复（重试前清理，避免界面上出现两次回复）。 */
 export function deleteAssistantMessagesForTurn(turnId: string): number {
-  const result = db
-    .prepare(`DELETE FROM messages WHERE turn_id = ? AND role = 'assistant'`)
+  const result = q(`DELETE FROM messages WHERE turn_id = ? AND role = 'assistant'`)
     .run(turnId);
   return Number(result.changes);
 }
@@ -208,8 +211,7 @@ export function deleteAssistantMessagesForTurn(turnId: string): number {
  */
 /** 这段会话聊了多少轮（活着的 user 消息数）：按会话比例回放时要拿它当分母。 */
 export function countLiveTurns(contactId: string, conversationId = localConversationId(contactId)): number {
-  return (db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool' AND role = 'user'`)
+  return (q(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool' AND role = 'user'`)
     .get(contactId, conversationId) as { c: number }).c;
 }
 
@@ -252,12 +254,11 @@ export function recentMessages(
   const cap = upToMessageId === undefined || upToMessageId === null ? "" : " AND id <= ?";
   const capArgs: number[] = cap === "" ? [] : [upToMessageId as number];
   const cols = `id, role, text, attachments, turn_id, sender_id, sender_name, at_bot`;
-  const boundary = turns === ALL_TURNS ? undefined : db
-    .prepare(`SELECT id FROM messages WHERE ${live}${cap} AND role = 'user' ORDER BY id DESC LIMIT 1 OFFSET ?`)
+  const boundary = turns === ALL_TURNS ? undefined : q(`SELECT id FROM messages WHERE ${live}${cap} AND role = 'user' ORDER BY id DESC LIMIT 1 OFFSET ?`)
     .get(contactId, conversationId, ...capArgs, Math.max(1, turns) - 1) as { id: number } | undefined;
   return (boundary
-    ? db.prepare(`SELECT ${cols} FROM messages WHERE ${live}${cap} AND id >= ? ORDER BY id ASC`).all(contactId, conversationId, ...capArgs, boundary.id)
-    : db.prepare(`SELECT ${cols} FROM messages WHERE ${live}${cap} ORDER BY id ASC`).all(contactId, conversationId, ...capArgs)
+    ? q(`SELECT ${cols} FROM messages WHERE ${live}${cap} AND id >= ? ORDER BY id ASC`).all(contactId, conversationId, ...capArgs, boundary.id)
+    : q(`SELECT ${cols} FROM messages WHERE ${live}${cap} ORDER BY id ASC`).all(contactId, conversationId, ...capArgs)
   ) as unknown as Array<{
     id: number; role: string; text: string; attachments: string | null; turn_id: string | null;
     sender_id?: string | null; sender_name?: string | null; at_bot?: number;
@@ -323,24 +324,21 @@ export const CHAT_FIRST_PAGE = 500;
 export const CHAT_EARLIER_PAGE = 200;
 
 export function messagesSince(contactId: string, sinceId: number, limit = 100, conversationId = localConversationId(contactId)): MessageRow[] {
-  const rows = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
+  const rows = q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
     .all(contactId, conversationId, sinceId, limit) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments);
 }
 
 /** 这一位库里总共有多少条消息（含已失效的）——界面上那句「共 N 条」。 */
 export function countMessagesFor(contactId: string, conversationId = localConversationId(contactId)): number {
-  const row = db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ?`)
+  const row = q(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ?`)
     .get(contactId, conversationId) as { c: number };
   return row.c;
 }
 
 /** 比 beforeId 更早的还有多少条——决定「载入更早」要不要继续显示、上面报什么数。 */
 export function countMessagesBefore(contactId: string, beforeId: number, conversationId = localConversationId(contactId)): number {
-  const row = db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ? AND id < ?`)
+  const row = q(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND conversation_id = ? AND id < ?`)
     .get(contactId, conversationId, beforeId) as { c: number };
   return row.c;
 }
@@ -357,11 +355,9 @@ export function countMessagesBefore(contactId: string, beforeId: number, convers
  */
 export function messagesForTurn(turnId: string, contactId?: string): MessageRow[] {
   const rows = contactId === undefined
-    ? db
-        .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE turn_id = ? ORDER BY id ASC`)
+    ? q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE turn_id = ? ORDER BY id ASC`)
         .all(turnId) as unknown as Array<MessageRow & { attachments: unknown }>
-    : db
-        .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE turn_id = ? AND contact_id = ? ORDER BY id ASC`)
+    : q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE turn_id = ? AND contact_id = ? ORDER BY id ASC`)
         .all(turnId, contactId) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments);
 }
@@ -373,8 +369,7 @@ export function messagesForTurn(turnId: string, contactId?: string): MessageRow[
  * （id > since）看不到旧消息的状态变化，所以编辑之后必须整体重绘一次。
  */
 export function messagesBefore(contactId: string, beforeId: number, limit = CHAT_EARLIER_PAGE, conversationId = localConversationId(contactId)): MessageRow[] {
-  const rows = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
+  const rows = q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id < ? ORDER BY id DESC LIMIT ?`)
     .all(contactId, conversationId, beforeId, limit) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments).reverse();
 }
@@ -383,8 +378,7 @@ export type MessageHit = { id: number; contact_id: string; role: string; text: s
 
 /** 全历史搜索（微信式「我上周说的那句话在哪」）：只搜仍在对话里的活跃消息。 */
 export function searchMessages(text: string, limit = 50): MessageHit[] {
-  return db
-    .prepare(
+  return q(
       `SELECT id, contact_id, role, text, created_at FROM messages
        WHERE superseded_at IS NULL AND kind != 'tool' AND text LIKE ? ESCAPE '\\'
          AND contact_id IN (SELECT id FROM contacts WHERE archived_at IS NULL)
@@ -394,16 +388,14 @@ export function searchMessages(text: string, limit = 50): MessageHit[] {
 }
 
 export function allMessages(contactId: string, limit = CHAT_FIRST_PAGE, conversationId = localConversationId(contactId)): MessageRow[] {
-  const rows = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? ORDER BY id DESC LIMIT ?`)
+  const rows = q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? ORDER BY id DESC LIMIT ?`)
     .all(contactId, conversationId, Math.min(1000, Math.max(1, limit))) as unknown as Array<MessageRow & { attachments: unknown }>;
   return rows.map(withParsedAttachments).reverse();
 }
 
 /** 会话内搜索：只在当前联系人、仍有效且不是工具卡的正文里找。 */
 export function searchMessagesForContact(contactId: string, text: string, limit = 200, conversationId = localConversationId(contactId)): MessageRow[] {
-  const rows = db
-    .prepare(
+  const rows = q(
       `SELECT ${MESSAGE_COLUMNS} FROM messages
        WHERE contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool' AND text LIKE ? ESCAPE '\\'
        ORDER BY id DESC LIMIT ?`,
@@ -414,23 +406,20 @@ export function searchMessagesForContact(contactId: string, text: string, limit 
 
 /** 搜索命中不在当前窗口时，取命中消息前后各半页，直接把它带进视口。 */
 export function messagesAround(contactId: string, messageId: number, limit = 160, conversationId = localConversationId(contactId)): MessageRow[] | null {
-  const anchor = db.prepare("SELECT id FROM messages WHERE id = ? AND contact_id = ? AND conversation_id = ?")
+  const anchor = q("SELECT id FROM messages WHERE id = ? AND contact_id = ? AND conversation_id = ?")
     .get(messageId, contactId, conversationId) as { id: number } | undefined;
   if (!anchor) return null;
   const cap = Math.min(300, Math.max(40, limit));
   const beforeLimit = Math.floor(cap / 2) + 1;
-  const before = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id <= ? ORDER BY id DESC LIMIT ?`)
+  const before = q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id <= ? ORDER BY id DESC LIMIT ?`)
     .all(contactId, conversationId, messageId, beforeLimit) as unknown as Array<MessageRow & { attachments: unknown }>;
-  const after = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
+  const after = q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE contact_id = ? AND conversation_id = ? AND id > ? ORDER BY id ASC LIMIT ?`)
     .all(contactId, conversationId, messageId, cap - before.length) as unknown as Array<MessageRow & { attachments: unknown }>;
   return [...before.reverse(), ...after].map(withParsedAttachments);
 }
 
 export function getMessage(id: number): (MessageRow & { turn_id: string | null }) | null {
-  const row = db
-    .prepare(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`)
+  const row = q(`SELECT ${MESSAGE_COLUMNS} FROM messages WHERE id = ?`)
     .get(id) as (MessageRow & { turn_id: string | null; attachments: unknown }) | undefined;
   return row === undefined ? null : (withParsedAttachments(row) as MessageRow & { turn_id: string | null });
 }
@@ -441,8 +430,7 @@ export function getMessage(id: number): (MessageRow & { turn_id: string | null }
  * 返回受影响条数。
  */
 export function sweepStaleTurns(): number {
-  const result = db
-    .prepare(`UPDATE turns SET status = 'failed', error = '服务重启时这一轮没有跑完，可重试', finished_at = ? WHERE status IN ('queued', 'running')`)
+  const result = q(`UPDATE turns SET status = 'failed', error = '服务重启时这一轮没有跑完，可重试', finished_at = ? WHERE status IN ('queued', 'running')`)
     .run(Date.now());
   return Number(result.changes);
 }
@@ -450,7 +438,7 @@ export function sweepStaleTurns(): number {
 /** 状态页用的：最近若干条处理单，用于发现"卡住的处理"和"失败的处理"。offset 供翻页。 */
 /** 某条消息属于哪个联系人（撤回/删除回执要按该联系人的性别说话）。找不到返回 null。 */
 export function contactOfMessage(messageId: number): string | null {
-  const row = db.prepare("SELECT contact_id FROM messages WHERE id = ?").get(messageId) as { contact_id: string | null } | undefined;
+  const row = q("SELECT contact_id FROM messages WHERE id = ?").get(messageId) as { contact_id: string | null } | undefined;
   return row?.contact_id ?? null;
 }
 
@@ -463,23 +451,20 @@ export function recentTurns(limit = 15, offset = 0, contactId?: string, conversa
   const safeLimit = Math.min(100, Math.max(1, limit));
   const safeOffset = Math.max(0, offset);
   if (contactId !== undefined && conversationId !== undefined) {
-    return db
-      .prepare(
+    return q(
         `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
          FROM turns WHERE superseded_at IS NULL AND contact_id = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       )
       .all(contactId, conversationId, safeLimit, safeOffset) as unknown as TurnRow[];
   }
   if (contactId !== undefined) {
-    return db
-      .prepare(
+    return q(
         `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
          FROM turns WHERE superseded_at IS NULL AND contact_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
       )
       .all(contactId, safeLimit, safeOffset) as unknown as TurnRow[];
   }
-  return db
-    .prepare(
+  return q(
       `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
        FROM turns WHERE superseded_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
     )
@@ -500,8 +485,7 @@ export type TurnStats = {
  * 被编辑作废的轮次（superseded_at 非空）一律不计入——它们已经不是当前对话的一部分了。
  */
 export function turnStats(): TurnStats {
-  const counts = db
-    .prepare(`SELECT status, COUNT(*) AS c FROM turns WHERE superseded_at IS NULL GROUP BY status`)
+  const counts = q(`SELECT status, COUNT(*) AS c FROM turns WHERE superseded_at IS NULL GROUP BY status`)
     .all() as unknown as Array<{ status: string; c: number }>;
   const byStatus: Record<string, number> = {};
   let total = 0;
@@ -510,14 +494,12 @@ export function turnStats(): TurnStats {
     total += row.c;
   }
 
-  const latency = db
-    .prepare(
+  const latency = q(
       `SELECT AVG(finished_at - created_at) AS avg_ms FROM turns
        WHERE status = 'done' AND finished_at IS NOT NULL AND superseded_at IS NULL`,
     )
     .get() as { avg_ms: number | null };
-  const lastFail = db
-    .prepare(`SELECT MAX(finished_at) AS t FROM turns WHERE status = 'failed' AND superseded_at IS NULL`)
+  const lastFail = q(`SELECT MAX(finished_at) AS t FROM turns WHERE status = 'failed' AND superseded_at IS NULL`)
     .get() as { t: number | null };
 
   return {
@@ -537,16 +519,26 @@ export function turnStats(): TurnStats {
  * 那句被改掉的话不该继续影响"她该不该主动找你"的判断。
  */
 export function lastUserMessageAt(contactId: string, conversationId = localConversationId(contactId)): number | null {
-  const row = db
-    .prepare(
+  const row = q(
       `SELECT created_at FROM messages WHERE contact_id = ? AND conversation_id = ? AND role = 'user' AND superseded_at IS NULL ORDER BY id DESC LIMIT 1`,
     )
     .get(contactId, conversationId) as { created_at: number } | undefined;
   return row?.created_at ?? null;
 }
 
-/** token 粗估：中日韩字符按 1 字 1 token，其余按 4 字符 1 token。只用于占用展示，不做计费。 */
+/** token 粗估：中日韩字符按 1 字 1 token，其余按 4 字符 1 token。只用于占用展示，不做计费。
+ *  系统提示词、工具定义、整段历史在裁剪循环里会被反复重估（trimHistoryToBudget 每丢一轮
+ *  全量再算一遍），结果按文本内容缓存：同一段文字永远是同一个数，重估就是 Map 命中。 */
+const TOKEN_CACHE_MAX = 2048;
+const tokenCache = new Map<string, number>();
+
 export function estimateTokens(text: string): number {
+  const hit = tokenCache.get(text);
+  if (hit !== undefined) {
+    tokenCache.delete(text);
+    tokenCache.set(text, hit);
+    return hit;
+  }
   let cjk = 0;
   let other = 0;
   for (const ch of text) {
@@ -560,7 +552,16 @@ export function estimateTokens(text: string): number {
     ) cjk += 1;
     else other += 1;
   }
-  return cjk + Math.ceil(other / 4);
+  const value = cjk + Math.ceil(other / 4);
+  // 超长文本（几千字的整包 prompt）缓存收益低、占位大，超过 4096 字不存。
+  if (text.length <= 4096) {
+    tokenCache.set(text, value);
+    if (tokenCache.size > TOKEN_CACHE_MAX) {
+      const oldest = tokenCache.keys().next().value as string | undefined;
+      if (oldest !== undefined) tokenCache.delete(oldest);
+    }
+  }
+  return value;
 }
 
 /** 一张图按 1000 token 估。服务商不给精确数，量级对就够判断占比了。 */
@@ -806,8 +807,7 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
   ].filter((part) => part.tokens > 0);
   // 截断可见化（纪律 #3）：最近 N 轮之外的消息不会进上下文，用户必须看得见。
   // 轮数以 user 消息为边界；开头自发/主动消息不单独计轮。
-  const liveTurns = (db
-    .prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND superseded_at IS NULL AND kind != 'tool' AND role = 'user'`)
+  const liveTurns = (q(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND superseded_at IS NULL AND kind != 'tool' AND role = 'user'`)
     .get(cid) as { c: number }).c;
   const settingTurns = history.filter((m) => m.role === "user").length;
   // 「全部」这一档要能看见代价：整段历史（不受回放窗口限制）按同一套合并口径估的 token。
@@ -1151,7 +1151,7 @@ async function runAgentLoop(
 
   const conversationId = turn.conversation_id || localConversationId(contactId);
   const triggerSender = turn.trigger_message_id
-    ? db.prepare("SELECT sender_id FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1")
+    ? q("SELECT sender_id FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1")
         .get(conversationId, turn.trigger_message_id) as { sender_id?: string | null } | undefined
     : undefined;
   const context: ToolContext = {
@@ -1194,16 +1194,52 @@ async function runAgentLoop(
           function: { name: call.name, arguments: redactToolArguments(call.args) },
         })),
       });
-      for (const call of response.toolCalls) {
-        // 同一轮里还有多个工具调用时，逐个之前也让一次路：已经取消就别再执行剩下的
-        // （出图那一发尤其贵——十几秒 + 一张每日配额）。附件那一行保留原样：
-        // 图画都画了，中途被打断也别把那张图丢掉。
+      // ── 同轮工具调用的执行策略 ──
+      // 独立工具（搜记忆 / 查时间 / 联网 / 技能 / 扩展）互不依赖：原来逐个 await，
+      // 整轮延迟 = 各工具延迟**之和**（搜索 3s + 出图 15s = 18s 起步）；现在并批跑，
+      // 整轮延迟 = 最慢那一个。
+      // 出图单列串行轨：十几秒一发 + 每日配额闸门（imagesToday/IMAGE_DAILY_LIMIT），
+      // 两张并行等于一次烧掉两份额度——昂贵独占操作不做「省事」的并行。
+      // 让路检查保留三处：批前（已取消就整批不发）、批后（在飞的不追回，已画出的图不丢）、
+      // 出图串行轨的逐个之间（原语义）。
+      type ToolCallItem = { id: string; name: string; args: string };
+      const calls = response.toolCalls as ToolCallItem[];
+      const EXPENSIVE_TOOL_NAMES = new Set(["generate_image"]);
+      const slots: Array<{ call: ToolCallItem; started: number; result: ToolResult | null; elapsedMs: number }> =
+        calls.map((call) => ({ call, started: 0, result: null, elapsedMs: 0 }));
+      const runSlot = async (slot: (typeof slots)[number]): Promise<void> => {
+        slot.started = Date.now();
+        slot.result = await executeTool(slot.call.name, slot.call.args, context);
+        slot.elapsedMs = Date.now() - slot.started;
+      };
+      if (shouldYield()) return "";
+      // 独立批：并发上限 4。不设限的话 8 轮里一次带 8 个扩展工具 / 多条 web_fetch，
+      // 出网门（web.ts）与本地读盘会被同时打满，收益（再省几秒）远小于风险。
+      const parallelSlots = slots.filter((slot) => !EXPENSIVE_TOOL_NAMES.has(slot.call.name));
+      {
+        let cursor = 0;
+        const workers = Array.from({ length: Math.min(4, parallelSlots.length) }, async () => {
+          for (;;) {
+            const next = parallelSlots[cursor];
+            cursor += 1;
+            if (next === undefined) return;
+            await runSlot(next);
+          }
+        });
+        await Promise.all(workers);
+      }
+      // 昂贵轨：串行 + 逐个让路（原语义）。
+      for (const slot of slots.filter((s) => EXPENSIVE_TOOL_NAMES.has(s.call.name))) {
         if (shouldYield()) return "";
-        const started = Date.now();
-        const result = await executeTool(call.name, call.args, context);
-        const elapsedMs = Date.now() - started;
-        // 工具产物（出图）当场交出去挂到这条回复上。放在打断检查之前是故意的：
-        // 图画都画了，中途被打断也别把那张图丢掉。
+        await runSlot(slot);
+      }
+      // 按模型**声明顺序**消费：tool_call_id 一对一，界面工具卡的先后要跟着调用顺序走，
+      // 不能跟着完成顺序走（搜索 3s 先回、出图 15s 后回，界面上却要是「先出图后搜索」）。
+      const interrupted = shouldYield();
+      for (const slot of slots) {
+        const call = slot.call;
+        const result = slot.result as ToolResult;
+        // 工具产物（出图）当场交出去挂到这条回复上。已画出的图即使在飞中被取消也不丢。
         if (result.ok && result.attachments && result.attachments.length > 0) onFiles?.(result.attachments);
         console.log(`[agent] 工具 ${call.name} → ${result.ok ? "ok" : `失败：${result.error}`}`);
         // 工具卡实时落库：界面能"看见她在查"，过程不再是黑箱。
@@ -1218,7 +1254,7 @@ async function runAgentLoop(
             tool: call.name,
             ok: result.ok,
             summary: result.ok ? toolSummary(call.name, result.result) : String(result.error || "执行失败"),
-            elapsedMs,
+            elapsedMs: slot.elapsedMs,
           }),
           toolDetail: result.ok ? (toolDetail(call.name, result.result) || null) : null,
           // 搜到的候选图挂在这张卡上（不是挂到她的回复上）：见 toolAttachments 的注释。
@@ -1230,6 +1266,8 @@ async function runAgentLoop(
           content: capToolResult(result.ok ? result.result : { error: result.error }, call.name),
         });
       }
+      // 批后让路：已执行的工具产物已挂上（上面的循环），不再进入下一轮模型调用。
+      if (interrupted) return "";
     }
 
     // 轮数用尽仍没给最终回复：保留全部工具消息，只追加一句收口指令。
@@ -1258,7 +1296,7 @@ async function runAgentLoop(
 
 /** 改她的一条回复文本（不重新生成、不动后续）。返回 false = 这条不存在或不是有效回复。 */
 export function updateAssistantText(id: number, text: string): boolean {
-  const res = db.prepare(
+  const res = q(
     `UPDATE messages SET text = ? WHERE id = ? AND role = 'assistant' AND kind = 'chat' AND superseded_at IS NULL`,
   ).run(text, id);
   return res.changes > 0;
@@ -1273,11 +1311,11 @@ export function updateAssistantText(id: number, text: string): boolean {
  * 只改 messages 会让界面改对了、重答却按旧话回答。
  */
 export function updateUserMessageText(id: number, text: string): boolean {
-  const row = db.prepare(`SELECT turn_id FROM messages WHERE id = ? AND role = 'user' AND superseded_at IS NULL`)
+  const row = q(`SELECT turn_id FROM messages WHERE id = ? AND role = 'user' AND superseded_at IS NULL`)
     .get(id) as { turn_id: string | null } | undefined;
   if (!row) return false;
-  db.prepare(`UPDATE messages SET text = ? WHERE id = ?`).run(text, id);
-  if (row.turn_id) db.prepare(`UPDATE turns SET text = ? WHERE id = ?`).run(text, row.turn_id);
+  q(`UPDATE messages SET text = ? WHERE id = ?`).run(text, id);
+  if (row.turn_id) q(`UPDATE turns SET text = ? WHERE id = ?`).run(text, row.turn_id);
   return true;
 }
 
@@ -1359,7 +1397,7 @@ function draftWriter(turnId: string): (text: string) => void {
     const draft = trimDraftBeforeToolCall(text);
     // 条件写：状态一旦离开 running（取消、收尾、被别的进程判死），迟到的帧就写不进去，
     // 不会把草稿复活成"看起来像定稿"。
-    db.prepare(`UPDATE turns SET reply = ? WHERE id = ? AND status = 'running'`).run(draft, turnId);
+    q(`UPDATE turns SET reply = ? WHERE id = ? AND status = 'running'`).run(draft, turnId);
   };
 }
 
@@ -1373,7 +1411,7 @@ function reasoningDraftWriter(turnId: string): (text: string) => void {
     const now = Date.now();
     if (now - lastWrite < 180) return;
     lastWrite = now;
-    db.prepare(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(text, turnId);
+    q(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(text, turnId);
   };
 }
 
@@ -1406,17 +1444,18 @@ export async function respondToTurn(
   // `void (async () => …)()` 吞掉，于是这一轮**永远停在 queued**：
   // 前端轮询到天荒地老，界面上没有任何错误，只有重启（sweepStaleTurns）才清得掉。
   try {
-    for (const row of db.prepare(
+    for (const row of q(
       `SELECT id FROM turns WHERE contact_id = ? AND conversation_id = ? AND id <> ? AND status IN ('queued','running')`,
     ).all(contactId, conversationId, turn.id) as Array<{ id: string }>) {
-      db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`)
+      q(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`)
         .run(Date.now(), row.id);
+      emitTurn(contactId, conversationId, row.id, "cancelled");
       console.log(`[agent] turn ${row.id} 被别的进程打断（跨进程协作取消）`);
     }
   } catch (error) {
     const message = `启动失败：${error instanceof Error ? error.message : String(error)}`;
     try {
-      db.prepare(`UPDATE turns SET status = 'failed', error = ?, reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`)
+      q(`UPDATE turns SET status = 'failed', error = ?, reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`)
         .run(message, Date.now(), turn.id);
     } catch { /* 库本身连不上就没啥可做了，交给进程级兜底日志 */ }
     if (activeTurns.get(conversationId)?.turnId === turn.id) activeTurns.delete(conversationId);
@@ -1431,7 +1470,7 @@ export async function respondToTurn(
     // 起跑时上面已经把这一轮写成 running，所以这里读到 cancelled 只可能是别人要求我们停，
     // 不会是把一条历史 cancelled 轮误当成取消信号。
     if (!controller.signal.aborted) {
-      const live = db.prepare(`SELECT status FROM turns WHERE id = ?`).get(turn.id) as { status: string } | undefined;
+      const live = q(`SELECT status FROM turns WHERE id = ?`).get(turn.id) as { status: string } | undefined;
       if (live?.status !== "cancelled") return false;
     }
     // 收尾只属于仍持有这一轮的执行体：同 turnId 重入（重试/重答）时登记表里已换成
@@ -1443,10 +1482,11 @@ export async function respondToTurn(
     const reentered = incumbent !== undefined && incumbent.controller !== controller && incumbent.turnId === turn.id;
     if (!reentered) {
       deleteAssistantMessagesForTurn(turn.id);
-      db.prepare(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`).run(
+      q(`UPDATE turns SET status = 'cancelled', error = '被新消息打断', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ?`).run(
         Date.now(),
         turn.id,
       );
+      emitTurn(contactId, conversationId, turn.id, "cancelled");
       console.log(`[agent] turn ${turn.id} 已取消（被新消息打断）`);
     }
     return true;
@@ -1454,7 +1494,8 @@ export async function respondToTurn(
 
   try {
     // 状态翻转也放进 try：万一 UPDATE 抛错，还能走下面的失败落库而不是黑洞。
-    db.prepare("UPDATE turns SET status = 'running', error = NULL, reply = NULL, reasoning_draft = NULL WHERE id = ?").run(turn.id);
+    q("UPDATE turns SET status = 'running', error = NULL, reply = NULL, reasoning_draft = NULL WHERE id = ?").run(turn.id);
+    emitTurn(contactId, conversationId, turn.id, "running");
     /**
      * 重答一条**较早**的轮次时，新回复必须留在它原来位置上。
      * 消息表以自增 id 当时间轴（上下文窗口按 id 取、supersedeAfter 也按 id 比较），
@@ -1469,12 +1510,12 @@ export async function respondToTurn(
      * 界面看到一张坏掉的工具卡，上下文里也找不到这条回复。
      */
     const collapseIntoId = opts.isRetry && opts.collapseReply
-      ? ((db.prepare(`SELECT id FROM messages WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC LIMIT 1`)
+      ? ((q(`SELECT id FROM messages WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC LIMIT 1`)
         .get(turn.id) as { id: number } | undefined)?.id ?? null)
       : null;
     if (opts.isRetry) {
       if (collapseIntoId !== null) {
-        db.prepare(`DELETE FROM messages WHERE turn_id = ? AND role = 'assistant' AND id <> ?`).run(turn.id, collapseIntoId);
+        q(`DELETE FROM messages WHERE turn_id = ? AND role = 'assistant' AND id <> ?`).run(turn.id, collapseIntoId);
       } else {
         deleteAssistantMessagesForTurn(turn.id);
       }
@@ -1494,14 +1535,14 @@ export async function respondToTurn(
     // 不截就会把后面的对话当成"最新的话"，重答第 1 轮却回答第 3 轮的问题。
     // 这一步排在拼提示词之前：梗概要不要注入，取决于它覆盖的那段是否已在窗口里原文回放。
     const upToRow = opts.isRetry
-      ? db.prepare(`SELECT id FROM messages WHERE turn_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1`)
+      ? q(`SELECT id FROM messages WHERE turn_id = ? AND role = 'user' ORDER BY id ASC LIMIT 1`)
         .get(turn.id) as { id: number } | undefined
       : undefined;
     const rawRows = recentMessages(contactId, undefined, upToRow?.id ?? null, conversationId);
     // 混合召回：查询句先向量化（embedding 能力没配/失败时自动退纯词面）。
     // 群聊还要带当前发言成员 openid，只召回 global + 本群 + 本成员三类记忆。
     const triggerSender = conversation?.kind === "group" && turn.trigger_message_id
-      ? db.prepare(`SELECT sender_id, sender_name FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1`)
+      ? q(`SELECT sender_id, sender_name FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1`)
           .get(conversationId, turn.trigger_message_id) as { sender_id?: string | null; sender_name?: string | null } | undefined
       : undefined;
     const memoryScope = { conversationId, memberId: triggerSender?.sender_id ?? undefined };
@@ -1622,7 +1663,7 @@ export async function respondToTurn(
     if (cancelIfAborted()) return "";
     const reasoning = reasoningParts.join("\n\n");
     // 收尾补最后一拍：节流器可能吃掉最后一段，定稿前必须让草稿与最终 reasoning 完全一致。
-    db.prepare(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(reasoning || null, turn.id);
+    q(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(reasoning || null, turn.id);
     // 一条回复最多挂一张图：工具描述里已经要求"同一轮最多画一张"，这里再兜一道，
     // 免得 3 轮循环各画一张、气泡上挂出一串画廊。
     // 名字避开外层那个"本轮入站附件"attachments——那是他发来的图，这是她发出去的。
@@ -1640,7 +1681,7 @@ export async function respondToTurn(
     if (collapseIntoId !== null) {
       // 整条写回原来那个气泡的位置（见上面 collapseIntoId 的说明），不分条、不延迟。
       // 附件跟着一起重写：重答画了新图就换上新图，没画就该清掉旧图，不能留着上一版的。
-      db.prepare(`UPDATE messages SET text = ?, attachments = ?, reasoning = ? WHERE id = ?`)
+      q(`UPDATE messages SET text = ?, attachments = ?, reasoning = ? WHERE id = ?`)
         .run(reply, outgoingImages.length > 0 ? JSON.stringify(outgoingImages) : null, reasoning || null, collapseIntoId);
     } else {
       for (let i = 0; i < parts.length; i += 1) {
@@ -1660,11 +1701,13 @@ export async function respondToTurn(
     trimReasoningWindow(contactId);
     trimToolDetailWindow(contactId);
     if (cancelIfAborted()) return "";
-    db.prepare("UPDATE turns SET status = 'done', reply = ?, finished_at = ? WHERE id = ?").run(
+    q("UPDATE turns SET status = 'done', reply = ?, finished_at = ? WHERE id = ?").run(
       reply,
       Date.now(),
       turn.id,
     );
+    emitTurn(contactId, conversationId, turn.id, "done");
+    emitActivity(contactId);
 
     // 附注跟在最后一颗气泡后面：分条时不能每颗都挂一遍。
     const noted = (note: string): string[] =>
@@ -1740,11 +1783,12 @@ export async function respondToTurn(
     // 原始字串甩到界面上。详细原因已由 model.ts 落进 model_calls 表，可通过 /api/logs 查看。
     const message = friendlyModelError(error, turn.id);
     const rawDetail = error instanceof Error ? error.message : String(error);
-    db.prepare("UPDATE turns SET status = 'failed', reasoning_draft = NULL, error = ?, finished_at = ? WHERE id = ?").run(
+    q("UPDATE turns SET status = 'failed', reasoning_draft = NULL, error = ?, finished_at = ? WHERE id = ?").run(
       message,
       Date.now(),
       turn.id,
     );
+    emitTurn(contactId, conversationId, turn.id, "failed");
     console.error(`[agent] turn ${turn.id} 失败：${rawDetail}`);
     throw error;
   } finally {
@@ -1764,8 +1808,7 @@ export async function respondToTurn(
  *  必须排除 superseded_at：编辑早先一句话会把后面那些轮次整批作废，它们不再进上下文，
  *  可 rowid 仍然最大——不排除的话，刚重新生成的那一轮反而会被误判成「不是最新」。 */
 function isLatestTurnOfContact(contactId: string, turnId: string): boolean {
-  const row = db
-    .prepare(`SELECT id FROM turns WHERE contact_id = ? AND superseded_at IS NULL ORDER BY rowid DESC LIMIT 1`)
+  const row = q(`SELECT id FROM turns WHERE contact_id = ? AND superseded_at IS NULL ORDER BY rowid DESC LIMIT 1`)
     .get(contactId) as { id: string } | undefined;
   return row?.id === turnId;
 }
@@ -1798,7 +1841,7 @@ export async function retryTurn(turnId: string, opts: { regenerate?: boolean } =
   // 前端 watch 第一拍就读到 done，当场收工——「正在回复」闪一下就灭，
   // 而真正的回复要一秒后才落地（实测：46ms regenerate → 55ms 就重绘收尾）。
   // respondToTurn 里只按 id 排除自己，标成 queued 不会被它自己的打断逻辑误杀。
-  db.prepare(`UPDATE turns SET status = 'queued', reply = NULL, reasoning_draft = NULL, error = NULL, finished_at = NULL WHERE id = ?`).run(turnId);
+  q(`UPDATE turns SET status = 'queued', reply = NULL, reasoning_draft = NULL, error = NULL, finished_at = NULL WHERE id = ?`).run(turnId);
   turn.status = "queued";
 
   void respondToTurn(turn, { isRetry: true, collapseReply }).catch(() => {
@@ -1819,13 +1862,17 @@ export async function retryTurn(turnId: string, opts: { regenerate?: boolean } =
 export function cancelTurn(turnId: string): boolean {
   const turn = getTurn(turnId);
   if (!turn) return false;
-  const changed = db.prepare(
+  const changed = q(
     `UPDATE turns SET status = 'cancelled', error = '已手动停止', reply = NULL, reasoning_draft = NULL, finished_at = ? WHERE id = ? AND status IN ('queued','running')`,
   ).run(Date.now(), turnId);
-  if (turn.contact_id) {
-    const conversationId = turn.conversation_id || localConversationId(turn.contact_id);
+  const contactId = turn.contact_id;
+  if (contactId) {
+    const conversationId = turn.conversation_id || localConversationId(contactId);
     const active = activeTurns.get(conversationId);
     if (active && active.turnId === turnId) active.controller.abort();
+  }
+  if (contactId && Number(changed.changes) > 0) {
+    emitTurn(contactId, turn.conversation_id || localConversationId(contactId), turnId, "cancelled");
   }
   return Number(changed.changes) > 0;
 }
@@ -1835,15 +1882,15 @@ export function cancelTurn(turnId: string): boolean {
 function updateMessageText(id: number, text: string, attachmentsJson?: string | null): void {
   // attachmentsJson === undefined = 只改文字、附件原样不动；传值（含 null）= 覆盖。
   if (attachmentsJson === undefined) {
-    db.prepare(`UPDATE messages SET text = ? WHERE id = ?`).run(text, id);
+    q(`UPDATE messages SET text = ? WHERE id = ?`).run(text, id);
     return;
   }
-  db.prepare(`UPDATE messages SET text = ?, attachments = ? WHERE id = ?`).run(text, attachmentsJson, id);
+  q(`UPDATE messages SET text = ?, attachments = ? WHERE id = ?`).run(text, attachmentsJson, id);
 }
 
 /** 把一条消息认领到某个处理单上（编辑没有 turn_id 的历史消息时才用得到）。 */
 function attachMessageToTurn(messageId: number, turnId: string): void {
-  db.prepare(`UPDATE messages SET turn_id = ? WHERE id = ?`).run(turnId, messageId);
+  q(`UPDATE messages SET turn_id = ? WHERE id = ?`).run(turnId, messageId);
 }
 
 /**
@@ -1858,7 +1905,7 @@ function attachMessageToTurn(messageId: number, turnId: string): void {
 function resetTurnForEdit(turnId: string, text: string, attachments: string[]): void {
   // 附件必须跟着一起改：respondToTurn 重放图片读的是 turns.attachments，
   // 只改消息不改处理单，会出现「气泡里图变了、她看见的还是旧图」。
-  db.prepare(
+  q(
     `UPDATE turns SET status = 'queued', reply = NULL, reasoning_draft = NULL, error = NULL, finished_at = NULL, superseded_at = NULL, text = ?, attachments = ? WHERE id = ?`,
   ).run(text, attachments.length > 0 ? JSON.stringify(attachments) : null, turnId);
 }
@@ -1884,19 +1931,17 @@ function supersedeAfterInner(messageId: number, exceptTurnId?: string): { messag
   // 必须按联系人收口：messages.id 是**全局**自增，不收口的话在 A 里保存一次编辑，
   // B / C 里所有更晚的消息都会被一起折叠成「被编辑取代」——
   // 「换了个联系人聊天，发现原联系人的消息被折叠了」就是这个 bug 的表现。
-  const scope = db.prepare(`SELECT contact_id FROM messages WHERE id = ?`).get(messageId) as
+  const scope = q(`SELECT contact_id FROM messages WHERE id = ?`).get(messageId) as
     | { contact_id: string | null }
     | undefined;
   if (!scope) return { messages: 0, turns: 0 };
   const cid = scope.contact_id;
 
   // 先记下受影响的处理单：UPDATE 一旦跑过，就再也按 id 找不出它们属于哪些轮次了。
-  const turnRows = db
-    .prepare(`SELECT DISTINCT turn_id FROM messages WHERE id > ? AND contact_id IS ? AND turn_id IS NOT NULL`)
+  const turnRows = q(`SELECT DISTINCT turn_id FROM messages WHERE id > ? AND contact_id IS ? AND turn_id IS NOT NULL`)
     .all(messageId, cid) as unknown as Array<{ turn_id: string }>;
 
-  const messageResult = db
-    .prepare(
+  const messageResult = q(
       `UPDATE messages SET superseded_at = ?, superseded_kind = 'edit' WHERE id > ? AND contact_id IS ? AND superseded_at IS NULL`,
     )
     .run(now, messageId, cid);
@@ -1905,8 +1950,7 @@ function supersedeAfterInner(messageId: number, exceptTurnId?: string): { messag
   const ids = turnRows.map((row) => row.turn_id).filter((id) => id !== exceptTurnId);
   if (ids.length > 0) {
     const placeholders = ids.map(() => "?").join(",");
-    const turnResult = db
-      .prepare(`UPDATE turns SET superseded_at = ? WHERE id IN (${placeholders}) AND superseded_at IS NULL`)
+    const turnResult = q(`UPDATE turns SET superseded_at = ? WHERE id IN (${placeholders}) AND superseded_at IS NULL`)
       .run(now, ...ids);
     turns = Number(turnResult.changes);
   }
@@ -2008,7 +2052,7 @@ export function retractMessage(messageId: number): { messageId: number } {
   if (!message) throw new Error("这条消息不存在");
   if (message.superseded_at !== null) throw new Error("这条已经不在对话里了");
 
-  db.prepare(`UPDATE messages SET superseded_at = ?, superseded_kind = 'retract' WHERE id = ?`).run(
+  q(`UPDATE messages SET superseded_at = ?, superseded_kind = 'retract' WHERE id = ?`).run(
     Date.now(),
     messageId,
   );
@@ -2049,7 +2093,7 @@ function mediaUrlsOfDeletion(messageId: number): string[] {
     } catch { /* 脏数据按无附件 */ }
   };
   if (message?.turn_id) {
-    const rows = db.prepare(`SELECT attachments FROM messages WHERE turn_id = ?`).all(message.turn_id) as Array<{ attachments: unknown }>;
+    const rows = q(`SELECT attachments FROM messages WHERE turn_id = ?`).all(message.turn_id) as Array<{ attachments: unknown }>;
     for (const row of rows) collect(row.attachments);
   } else {
     collect(message?.attachments);
@@ -2066,11 +2110,11 @@ function deleteMessageInner(messageId: number): { messages: number; turns: numbe
   let turns = 0;
 
   if (turnId !== null) {
-    messages = Number(db.prepare(`DELETE FROM messages WHERE turn_id = ?`).run(turnId).changes);
-    turns = Number(db.prepare(`DELETE FROM turns WHERE id = ?`).run(turnId).changes);
+    messages = Number(q(`DELETE FROM messages WHERE turn_id = ?`).run(turnId).changes);
+    turns = Number(q(`DELETE FROM turns WHERE id = ?`).run(turnId).changes);
   } else {
     // 历史遗留消息没有 turn_id，只删它自己（和撤回一样只能作用于单条）。
-    messages = Number(db.prepare(`DELETE FROM messages WHERE id = ?`).run(messageId).changes);
+    messages = Number(q(`DELETE FROM messages WHERE id = ?`).run(messageId).changes);
   }
 
   console.log(`[agent] 删除 ${messages} 条消息${turns > 0 ? `、${turns} 条处理单` : ""}`);

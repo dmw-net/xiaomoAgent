@@ -5,7 +5,7 @@
 // 摘要和会话级记忆必须带 conversation_id。
 
 import { randomUUID } from "node:crypto";
-import { db, withTx } from "./db.ts";
+import { db, q, withTx } from "./db.ts";
 import { ensureConversationReadCursor, mergeConversationReadCursors, removeConversationReadCursor, resetConversationReadCursor, seedConversationReadBaselines } from "./contacts.ts";
 import { releaseMediaFiles } from "./media.ts";
 
@@ -60,21 +60,21 @@ function rowToConversation(row: Record<string, unknown>): Conversation {
 
 export function getConversation(id: string): Conversation | null {
   if (id === "") return null;
-  const row = db.prepare("SELECT * FROM conversations WHERE id = ?").get(id) as Record<string, unknown> | undefined;
+  const row = q("SELECT * FROM conversations WHERE id = ?").get(id) as Record<string, unknown> | undefined;
   return row === undefined ? null : rowToConversation(row);
 }
 
 export function ensureLocalConversation(contactId: string, title = ""): Conversation {
   const id = localConversationId(contactId);
-  const fallbackTitle = title || (db.prepare("SELECT name FROM contacts WHERE id = ?").get(contactId) as { name?: string } | undefined)?.name || "本机对话";
-  const inserted = db.prepare(
+  const fallbackTitle = title || (q("SELECT name FROM contacts WHERE id = ?").get(contactId) as { name?: string } | undefined)?.name || "本机对话";
+  const inserted = q(
     `INSERT OR IGNORE INTO conversations
        (id, contact_id, channel, kind, external_id, account_id, title, enabled, created_at)
      VALUES (?, ?, 'web', 'private', 'local', '', ?, 1, ?)`,
   ).run(id, contactId, fallbackTitle, Date.now());
   if (Number(inserted.changes) > 0) ensureConversationReadCursor(id);
   // 用户改过联系人名时只补空标题，不覆盖手动改过的会话名。
-  db.prepare("UPDATE conversations SET title = ? WHERE id = ? AND title = ''").run(fallbackTitle, id);
+  q("UPDATE conversations SET title = ? WHERE id = ? AND title = ''").run(fallbackTitle, id);
   return getConversation(id)!;
 }
 
@@ -89,7 +89,7 @@ export function ensureConversation(input: {
   enabled?: boolean;
 }): Conversation {
   const accountId = input.accountId ?? "";
-  const existing = db.prepare(
+  const existing = q(
     `SELECT * FROM conversations
      WHERE contact_id = ? AND channel = ? AND kind = ? AND external_id = ? AND account_id = ?`,
   ).get(input.contactId, input.channel, input.kind, input.externalId, accountId) as Record<string, unknown> | undefined;
@@ -99,10 +99,10 @@ export function ensureConversation(input: {
     if (platformTitle !== "") {
       // 平台名持续留在 auto_title，自定义名则只更新后备值、不改用户看到的标题。
       if (conv.title_source === "custom") {
-        db.prepare("UPDATE conversations SET auto_title = ? WHERE id = ?").run(platformTitle, conv.id);
+        q("UPDATE conversations SET auto_title = ? WHERE id = ?").run(platformTitle, conv.id);
         conv.auto_title = platformTitle;
       } else {
-        db.prepare("UPDATE conversations SET title = ?, auto_title = ?, title_source = 'auto' WHERE id = ?")
+        q("UPDATE conversations SET title = ?, auto_title = ?, title_source = 'auto' WHERE id = ?")
           .run(platformTitle, platformTitle, conv.id);
         conv.title = platformTitle;
         conv.auto_title = platformTitle;
@@ -116,7 +116,7 @@ export function ensureConversation(input: {
     : `conv-${randomUUID().replaceAll("-", "").slice(0, 16)}`);
   const platformTitle = input.title?.trim() ?? "";
   const initialTitle = platformTitle || (input.kind === "group" ? "QQ 群" : "QQ 私聊");
-  db.prepare(
+  q(
     `INSERT INTO conversations
        (id, contact_id, channel, kind, external_id, account_id, title, title_source, auto_title, enabled, created_at)
      VALUES (?, ?, ?, ?, ?, ?, ?, 'auto', ?, ?, ?)`,
@@ -154,11 +154,11 @@ export function renameQQGroupConversation(
   if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") return null;
   if (title === null) {
     const fallback = conv.auto_title || "QQ 群";
-    db.prepare("UPDATE conversations SET title = ?, title_source = 'auto' WHERE id = ?").run(fallback, id);
+    q("UPDATE conversations SET title = ?, title_source = 'auto' WHERE id = ?").run(fallback, id);
   } else {
     const normalized = normalizeConversationTitle(title);
     if (normalized === "" || normalized.length > MAX_CONVERSATION_TITLE_LENGTH) return null;
-    db.prepare("UPDATE conversations SET title = ?, title_source = 'custom' WHERE id = ?").run(normalized, id);
+    q("UPDATE conversations SET title = ?, title_source = 'custom' WHERE id = ?").run(normalized, id);
   }
   return getConversation(id);
 }
@@ -171,7 +171,7 @@ export function renameQQGroupConversation(
  * 这里保留原消息 id 与时间，只改 conversation_id，因此不会重排历史。
  */
 export function mergePrivateConversationsIntoLocal(): void {
-  const rows = db.prepare(
+  const rows = q(
     `SELECT id, contact_id FROM conversations
       WHERE kind = 'private' AND channel IN ('qq', 'wechat')`,
   ).all() as Array<{ id: string; contact_id: string }>;
@@ -180,25 +180,25 @@ export function mergePrivateConversationsIntoLocal(): void {
     for (const row of rows) {
       const local = ensureLocalConversation(row.contact_id);
       if (local.id === row.id) continue;
-      db.prepare("UPDATE messages SET conversation_id = ? WHERE conversation_id = ?").run(local.id, row.id);
-      db.prepare("UPDATE turns SET conversation_id = ? WHERE conversation_id = ?").run(local.id, row.id);
-      db.prepare("UPDATE memory_events SET scope_conversation_id = ? WHERE scope_conversation_id = ?").run(local.id, row.id);
-      db.prepare("UPDATE memory_events SET source_conversation_id = ? WHERE source_conversation_id = ?").run(local.id, row.id);
-      const last = db.prepare("SELECT MAX(created_at) AS at FROM messages WHERE conversation_id = ?")
+      q("UPDATE messages SET conversation_id = ? WHERE conversation_id = ?").run(local.id, row.id);
+      q("UPDATE turns SET conversation_id = ? WHERE conversation_id = ?").run(local.id, row.id);
+      q("UPDATE memory_events SET scope_conversation_id = ? WHERE scope_conversation_id = ?").run(local.id, row.id);
+      q("UPDATE memory_events SET source_conversation_id = ? WHERE source_conversation_id = ?").run(local.id, row.id);
+      const last = q("SELECT MAX(created_at) AS at FROM messages WHERE conversation_id = ?")
         .get(local.id) as { at: number | null } | undefined;
-      db.prepare(`UPDATE conversations
+      q(`UPDATE conversations
         SET last_message_at = CASE
           WHEN ? > COALESCE(last_message_at, 0) THEN ? ELSE last_message_at END
         WHERE id = ?`).run(Number(last?.at ?? 0), Number(last?.at ?? 0), local.id);
       mergeConversationReadCursors(row.id, local.id);
-      db.prepare("DELETE FROM conversations WHERE id = ?").run(row.id);
+      q("DELETE FROM conversations WHERE id = ?").run(row.id);
     }
   });
 }
 
 /** 启动迁移：每个联系人都有一段主会话，所有旧消息/轮次回填到它。 */
 export function ensureDefaultConversations(): void {
-  const contacts = db.prepare("SELECT id, name FROM contacts").all() as Array<{ id: string; name: string }>;
+  const contacts = q("SELECT id, name FROM contacts").all() as Array<{ id: string; name: string }>;
   for (const contact of contacts) ensureLocalConversation(contact.id, contact.name);
   db.exec(`
     UPDATE messages SET conversation_id = 'local-' || contact_id
@@ -217,7 +217,7 @@ export function ensureDefaultConversations(): void {
 
 export function listConversations(contactId: string): Conversation[] {
   ensureLocalConversation(contactId);
-  const rows = db.prepare(
+  const rows = q(
     `SELECT * FROM conversations WHERE contact_id = ?
      ORDER BY CASE WHEN channel = 'web' AND kind = 'private' THEN 0 ELSE 1 END,
               COALESCE(last_message_at, created_at) DESC`,
@@ -237,13 +237,13 @@ export function listConversationsForContacts(contactIds: string[]): Map<string, 
 
   const marks = ids.map(() => "?").join(",");
   // 本地主会话缺失通常是新建联系人还没被列表打开过：批量补，不逐个 INSERT。
-  const missing = db.prepare(
+  const missing = q(
     `SELECT c.id FROM contacts c
      WHERE c.id IN (${marks})
        AND NOT EXISTS (SELECT 1 FROM conversations v WHERE v.id = 'local-' || c.id)`,
   ).all(...ids) as Array<{ id: string }>;
   if (missing.length > 0) {
-    db.prepare(
+    q(
       `INSERT OR IGNORE INTO conversations
          (id, contact_id, channel, kind, external_id, account_id, title, enabled, created_at)
        SELECT 'local-' || c.id, c.id, 'web', 'private', 'local', '', c.name, 1, ?
@@ -252,14 +252,14 @@ export function listConversationsForContacts(contactIds: string[]): Map<string, 
     for (const row of missing) ensureConversationReadCursor(localConversationId(row.id));
   }
   // 与 ensureLocalConversation 同一套补标题：只改空标题，不覆盖用户自定义名。
-  db.prepare(
+  q(
     `UPDATE conversations
      SET title = COALESCE((SELECT name FROM contacts WHERE contacts.id = conversations.contact_id), '本机对话')
      WHERE id IN (SELECT 'local-' || c.id FROM contacts c WHERE c.id IN (${marks}))
        AND title = ''`,
   ).run(...ids);
 
-  const rows = db.prepare(
+  const rows = q(
     `SELECT * FROM conversations WHERE contact_id IN (${marks})
      ORDER BY contact_id,
               CASE WHEN channel = 'web' AND kind = 'private' THEN 0 ELSE 1 END,
@@ -279,7 +279,7 @@ export function findConversation(input: {
   externalId: string;
   accountId?: string;
 }): Conversation | null {
-  const row = db.prepare(
+  const row = q(
     `SELECT * FROM conversations
      WHERE contact_id = ? AND channel = ? AND kind = ? AND external_id = ? AND account_id = ?`,
   ).get(input.contactId, input.channel, input.kind, input.externalId, input.accountId ?? "") as Record<string, unknown> | undefined;
@@ -287,7 +287,7 @@ export function findConversation(input: {
 }
 
 export function setConversationEnabled(id: string, enabled: boolean): boolean {
-  return Number(db.prepare("UPDATE conversations SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id).changes) > 0;
+  return Number(q("UPDATE conversations SET enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id).changes) > 0;
 }
 
 /**
@@ -299,9 +299,9 @@ export function setConversationMembership(id: string, joined: boolean, at = Date
   if (conv === null) return null;
   if (joined) {
     const enabled = conv.left_at === null ? conv.enabled : true;
-    db.prepare("UPDATE conversations SET left_at = NULL, enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
+    q("UPDATE conversations SET left_at = NULL, enabled = ? WHERE id = ?").run(enabled ? 1 : 0, id);
   } else {
-    db.prepare("UPDATE conversations SET left_at = COALESCE(left_at, ?), enabled = 0 WHERE id = ?").run(at, id);
+    q("UPDATE conversations SET left_at = COALESCE(left_at, ?), enabled = 0 WHERE id = ?").run(at, id);
   }
   return getConversation(id);
 }
@@ -334,19 +334,19 @@ export function clearQQGroupHistory(id: string, contactId: string): ClearedConve
   if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") return null;
   if (conv.left_at === null) return null;
 
-  const messageRows = db.prepare("SELECT attachments FROM messages WHERE conversation_id = ?")
+  const messageRows = q("SELECT attachments FROM messages WHERE conversation_id = ?")
     .all(id) as Array<{ attachments: string | null }>;
-  const turnRows = db.prepare("SELECT attachments FROM turns WHERE conversation_id = ?")
+  const turnRows = q("SELECT attachments FROM turns WHERE conversation_id = ?")
     .all(id) as Array<{ attachments: string | null }>;
   const urls = [...new Set([...mediaUrlsFromAttachmentRows(messageRows), ...mediaUrlsFromAttachmentRows(turnRows)])];
 
   const cleared = withTx(() => {
-    const messages = Number(db.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id).changes);
-    const turns = Number(db.prepare("DELETE FROM turns WHERE conversation_id = ?").run(id).changes);
-    const memories = Number(db.prepare("DELETE FROM memory_events WHERE scope_conversation_id = ?").run(id).changes);
+    const messages = Number(q("DELETE FROM messages WHERE conversation_id = ?").run(id).changes);
+    const turns = Number(q("DELETE FROM turns WHERE conversation_id = ?").run(id).changes);
+    const memories = Number(q("DELETE FROM memory_events WHERE scope_conversation_id = ?").run(id).changes);
     // 被提升到联系人全局的记忆保留，但不再保留指向已清空群会话的来源。
-    db.prepare("UPDATE memory_events SET source_conversation_id = NULL WHERE source_conversation_id = ?").run(id);
-    db.prepare(`UPDATE conversations
+    q("UPDATE memory_events SET source_conversation_id = NULL WHERE source_conversation_id = ?").run(id);
+    q(`UPDATE conversations
       SET summary = '', summary_updated_at = NULL, summary_upto = NULL, last_message_at = NULL
       WHERE id = ?`).run(id);
     return { messages, turns, memories };
@@ -362,20 +362,20 @@ export function removeQQGroupConversation(id: string, contactId: string): Cleare
   if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group" || conv.left_at === null) return null;
   const cleared = clearQQGroupHistory(id, contactId);
   if (cleared === null) return null;
-  db.prepare("DELETE FROM conversations WHERE id = ?").run(id);
+  q("DELETE FROM conversations WHERE id = ?").run(id);
   removeConversationReadCursor(id);
   return cleared;
 }
 
 export function touchConversation(id: string, at = Date.now()): void {
-  db.prepare("UPDATE conversations SET last_message_at = ? WHERE id = ?").run(at, id);
+  q("UPDATE conversations SET last_message_at = ? WHERE id = ?").run(at, id);
 }
 
 export function updateConversationSummary(id: string, summary: string, upto?: number): void {
-  db.prepare("UPDATE conversations SET summary = ?, summary_updated_at = ?, summary_upto = COALESCE(?, summary_upto) WHERE id = ?")
+  q("UPDATE conversations SET summary = ?, summary_updated_at = ?, summary_upto = COALESCE(?, summary_upto) WHERE id = ?")
     .run(summary, Date.now(), upto ?? null, id);
 }
 
 export function deleteConversationsForContact(contactId: string): void {
-  db.prepare("DELETE FROM conversations WHERE contact_id = ?").run(contactId);
+  q("DELETE FROM conversations WHERE contact_id = ?").run(contactId);
 }

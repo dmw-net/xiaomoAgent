@@ -73,9 +73,10 @@ export function findFirstExternalUrl(text: string): string {
   const scan = visible
     .replace(/`[^`\n]*`/g, "")
     .replace(/!\[[^\]\n]*\]\(\s*https?:\/\/[^)\s]+\s*\)/g, "");
-  const re = new RegExp(INLINE_RE.source, "g");
+  // 复用模块级已编译的全局实例（重置 lastIndex 即可）：每次调用 new RegExp 会重编译一遍 pattern。
+  INLINE_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = re.exec(scan)) !== null) {
+  while ((match = INLINE_RE.exec(scan)) !== null) {
     const token = match[0];
     if (token.startsWith("[")) {
       const parts = MD_LINK_RE.exec(token);
@@ -89,11 +90,12 @@ export function findFirstExternalUrl(text: string): string {
 
 function inline(text: string, keyBase: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const re = new RegExp(INLINE_RE.source, "g");
+  // 复用模块级编译好的全局正则（重置 lastIndex 即可），避免每次调用都 new RegExp 重编译。
+  INLINE_RE.lastIndex = 0;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
-  while ((m = re.exec(text)) !== null) {
+  while ((m = INLINE_RE.exec(text)) !== null) {
     if (m.index > last) nodes.push(text.slice(last, m.index));
     const token = m[0];
     if (token.startsWith("**")) {
@@ -158,11 +160,11 @@ export function renderMd(text: string): ReactNode {
 /** 工具详情等纯文本区域：保留原排版，只把裸 URL 变成可点击的域名链接。 */
 export function renderLinkedText(text: string): ReactNode {
   const nodes: ReactNode[] = [];
-  const re = new RegExp(BARE_URL_RE.source, "g");
+  BARE_URL_RE.lastIndex = 0;
   let last = 0;
   let match: RegExpExecArray | null;
   let i = 0;
-  while ((match = re.exec(text)) !== null) {
+  while ((match = BARE_URL_RE.exec(text)) !== null) {
     if (match.index > last) nodes.push(text.slice(last, match.index));
     const { url, tail } = bareUrlParts(match[0]);
     nodes.push(<MdLink key={"u" + i} href={url} label={linkDomain(url)} />);

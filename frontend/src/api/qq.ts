@@ -47,6 +47,19 @@ export function fetchQQBinding(contactId: string): Promise<{ binding: QQBindingV
   return getJson(`/api/contacts/${encodeURIComponent(contactId)}/qq`);
 }
 
+/** 当前 QQ 后端选型（official/onebot）。资料页据此分流：官方走扫码/凭据，OneBot 走「填真实 QQ 号」。 */
+export function fetchQQBackend(): Promise<{ backend: "official" | "onebot"; onebotReady: boolean }> {
+  return getJson("/api/qq/backend");
+}
+
+/** OneBot 模式：把「真实 QQ 号」绑到这位联系人。协议端侧登录，这里只存映射。 */
+export function bindQQOneBot(
+  contactId: string,
+  patch: { qqNumber: string; enabled?: boolean; proactive?: boolean },
+): Promise<{ ok: boolean; binding: QQBindingView | null; configured: boolean; status: QQStatus; conversations: QQConversationView[] }> {
+  return postJson(`/api/contacts/${encodeURIComponent(contactId)}/qq/onebot-bind`, patch);
+}
+
 /** 开一个认领窗口：对方在 QQ 里发回那两个关键字，网关推回来时我们就认出这位联系人。 */
 export function beginQQBind(contactId: string): Promise<{ attemptId: string; keyword: string; expiresInMs: number }> {
   return postJson(`/api/contacts/${encodeURIComponent(contactId)}/qq/bind`);

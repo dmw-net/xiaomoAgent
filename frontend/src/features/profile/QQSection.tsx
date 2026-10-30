@@ -20,6 +20,10 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   const [binding, setBinding] = useState<QQBindingView | null>(null);
   const [configured, setConfigured] = useState(false);
   const [status, setStatus] = useState<QQStatus>("not-configured");
+  /** 后端选型：official=官方 Bot（扫码/凭据），onebot=第三方协议端（填真实 QQ 号）。 */
+  const [backend, setBackend] = useState<"official" | "onebot">("official");
+  /** OneBot 模式：待填的真实 QQ 号。 */
+  const [obQqNumber, setObQqNumber] = useState("");
   const [appId, setAppId] = useState("");
   const [secret, setSecret] = useState("");
   /** 这位联系人的凭据拿到后表单收起；不给"换一台"的入口就等于配错一次只能去改库。 */
@@ -57,6 +61,15 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
     };
   }, []);
 
+  /** 后端选型是进程级的（环境变量定死），不随联系人变；挂载时探一次。 */
+  useEffect(() => {
+    let cancelled = false;
+    qqApi.fetchQQBackend().then((data) => {
+      if (!cancelled) setBackend(data.backend);
+    }).catch(() => { /* 拿不到就保持 official 默认态 */ });
+    return () => { cancelled = true; };
+  }, []);
+
   const refresh = async (): Promise<void> => {
     if (busyRef.current) return;   // 上一发没回来就不叠加（慢网下轮询会自己叠自己）
     busyRef.current = true;
@@ -77,6 +90,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
     setEditingGroupId(""); setGroupTitleDraft(""); setRenameBusy(false); setToggleBusyId("");
     setToggleProactiveBusyId("");
     setClearTarget(null); setClearBusy(false); setRemoveTarget(null); setRemoveBusy(false); setGroupQuery("");
+    setObQqNumber("");   // 换联系人：上一位填的号不能带过来
     stopQrPoll(); setQr(null);   // 换联系人：上一位没扫完的码不该继续在后台轮
     boundRef.current = false;   // 换联系人：上一位的绑定状态不能带过来
     void refresh();
@@ -107,6 +121,27 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
 
   const stopQrPoll = (): void => {
     if (qrTimer.current) { clearInterval(qrTimer.current); qrTimer.current = null; }
+  };
+
+  /** OneBot 模式：把填好的真实 QQ 号绑到这位联系人，成功后刷新快照。 */
+  const saveOneBotBind = async (): Promise<void> => {
+    const number = obQqNumber.trim();
+    if (number === "") { setErr("先填上这位联系人的真实 QQ 号"); return; }
+    setErr(""); setNote(""); setBusy(true);
+    try {
+      const data = await qqApi.bindQQOneBot(contactId, { qqNumber: number });
+      if (!alive.current) return;
+      setObQqNumber("");
+      setBinding(data.binding);
+      setConfigured(data.configured);
+      setStatus(data.status);
+      boundRef.current = data.binding !== null;
+      setNote("真实 QQ 号已绑定。这位联系人的 QQ 消息会经 OneBot 协议端收发；在协议端用这个号登录后即生效。");
+    } catch (e: unknown) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (alive.current) setBusy(false);
+    }
   };
 
   /**
@@ -355,8 +390,12 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
         <div>
           <div className="pf-set-title">QQ 连接</div>
           <div className="pf-model-hint">
-            接官方 QQ 机器人（开放平台）。QQ 私聊会并入联系人主私聊，和应用、微信保持同一段上下文；
-            每个 QQ 群则单独隔离。只送文字：画好的图仍在这个应用里看。
+            {backend === "onebot"
+              ? "走 OneBot 协议端（NapCat / go-cqhttp 等）。真实 QQ 号在协议端登录，可主动发消息、收发图/语音/视频/文件。"
+              : "接官方 QQ 机器人（开放平台）。QQ 私聊会并入联系人主私聊，和应用、微信保持同一段上下文；"}
+            {backend === "onebot"
+              ? "每个 QQ 群单独隔离。"
+              : "每个 QQ 群则单独隔离。画好的图与文件会直接发出去。"}
           </div>
         </div>
         {binding && <span className={"wx-badge wx-badge-" + binding.status}>{qqApi.QQ_STATUS_LABEL[binding.status]}</span>}
@@ -368,8 +407,9 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
         )}
       </div>
 
-      {/* ① 凭据：每位联系人一份，拿到一次就收起。扫码是官方推荐路径，手填留作兜底。 */}
-      {(!configured || editingCreds) && (
+      {/* ① 凭据：每位联系人一份，拿到一次就收起。扫码是官方推荐路径，手填留作兜底。
+          官方后端专属；OneBot 后端在协议端登录真实号，下面走另一个表单。 */}
+      {backend === "official" && (!configured || editingCreds) && (
         <div className="qq-creds">
           <div className="hint">
             用手机 QQ 扫一次就能把机器人建好、凭据自动填进来，不用去开放平台手抄。
@@ -410,8 +450,28 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
         </div>
       )}
 
-      {/* ② 已配置但这位联系人还没绑：开认领窗口。凭据已配好时留一个"换一台机器人"的入口。 */}
-      {configured && !binding && !attempt && (
+      {/* ①' OneBot 后端：不用扫码/凭据，真实 QQ 号在协议端登录，这里只存「号→联系人」映射。 */}
+      {backend === "onebot" && (!configured || !binding) && (
+        <div className="qq-creds">
+          <div className="hint">
+            走 OneBot 协议端（NapCat / go-cqhttp 等）。真实 QQ 号在协议端扫码登录，
+            这里只需记下「这个号对应哪位联系人」。号要在协议端先登录并开通前向 WebSocket，小茉才收得到消息。
+          </div>
+          <label>真实 QQ 号
+            <input value={obQqNumber} inputMode="numeric" maxLength={15} placeholder="如 123456789"
+              onChange={(e) => setObQqNumber(e.target.value.replace(/[^\d]/g, ""))} />
+          </label>
+          <div className="wx-actions">
+            <button type="button" className="primary sm" disabled={busy || obQqNumber.trim() === ""}
+              onClick={() => { void saveOneBotBind(); }}>
+              {busy ? "保存中…" : "绑定到这位联系人"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ② 已配置但这位联系人还没绑（官方后端专属：开认领窗口，让对方发「绑定」两个字）。 */}
+      {backend === "official" && configured && !binding && !attempt && (
         <div className="wx-actions">
           <button type="button" className="pf-ghost" disabled={busy} onClick={() => { void startBind(); }}>
             {busy ? "正在开启…" : "去绑定"}
@@ -426,7 +486,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
           )}
         </div>
       )}
-      {configured && binding && !editingCreds && (
+      {backend === "official" && configured && binding && !editingCreds && (
         <div className="wx-actions">
           <button type="button" className="pf-ghost" disabled={busy} onClick={() => setEditingCreds(true)}>换机器人凭据</button>
         </div>

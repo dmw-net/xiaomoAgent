@@ -6,10 +6,25 @@
 // contacts.detailRoutes 之前，正是为这一点（见 router.ts 的分段注释）。
 
 import { qq } from "../../qq.ts";
+import { upsertOneBotAccount } from "../../qq-onebot.ts";
+import { config } from "../../config.ts";
 import { wechat } from "../../wechat.ts";
 import { getContact } from "../../contacts.ts";
 import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
+
+/** GET /api/qq/backend：当前 QQ 后端选型（official/onebot）+ OneBot 侧配置是否就绪。
+ *  前端资料页按它分流：官方模式显示扫码/凭据，OneBot 模式显示「填真实 QQ 号」。 */
+const qqBackendRoute: Route = ({ res }) => {
+  const configured = config.qq.onebotHttpBase !== "";
+  sendJson(res, 200, {
+    ok: true,
+    backend: config.qq.backend,
+    /** OneBot 侧最小可运行条件：HTTP 出站地址已配。WS 入站可缺省（只出不进也能跑）。 */
+    onebotReady: config.qq.backend === "onebot" && configured,
+  });
+  return true;
+};
 
 /** /api/qq/credentials：GET 总览/按联系人快照；POST 必须带 contactId（凭据按联系人隔离）。 */
 export const qqCredentialsRoute: Route = async ({ res, url, path, method, req }) => {
@@ -88,6 +103,25 @@ export const qqContactRoute: Route = async ({ req, res, path, method }) => {
     } catch (error) {
       sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
     }
+    return true;
+  }
+  if (method === "POST" && action === "/onebot-bind" && arg === "") {
+    // OneBot 后端专属：把「真实 QQ 号」绑到这位联系人。官方后端下调用是无效安全态。
+    if (config.qq.backend !== "onebot") {
+      sendJson(res, 409, { ok: false, error: "OneBot 绑定仅在 QQ_BACKEND=onebot 时可用；当前是官方 Bot 后端" });
+      return true;
+    }
+    const body = await readJson<Record<string, unknown>>(req);
+    const qqNumber = typeof body.qqNumber === "string" ? body.qqNumber.trim() : "";
+    if (qqNumber === "" || !/^\d{5,15}$/.test(qqNumber)) {
+      sendJson(res, 400, { ok: false, error: "请填有效的 QQ 号（5-15 位数字）" });
+      return true;
+    }
+    const patch: { enabled?: boolean; proactive?: boolean } = {};
+    if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+    if (typeof body.proactive === "boolean") patch.proactive = body.proactive;
+    upsertOneBotAccount(contactId, qqNumber, patch);
+    sendJson(res, 200, { ok: true, ...qq.snapshotFor(contactId) });
     return true;
   }
   if (method === "GET" && action === "/bind" && arg !== "") {
@@ -169,6 +203,7 @@ export const wechatContactRoute: Route = async ({ req, res, path, method }) => {
 };
 
 export const routes: Route[] = [
+  qqBackendRoute,
   qqCredentialsRoute,
   qqQrRoute,
   qqQrPollRoute,

@@ -10,6 +10,7 @@ import {
   removeQQGroupConversation,
   renameQQGroupConversation,
   setConversationEnabled,
+  setConversationGroupProactive,
 } from "../../conversations.ts";
 import { countMessagesFor } from "../../agent.ts";
 import { readJson, sendJson } from "../http.ts";
@@ -28,6 +29,7 @@ const conversationsListRoute: Route = ({ res, url, path, method }) => {
     kind: conv.kind,
     title: conv.title,
     enabled: conv.enabled,
+    groupProactive: conv.group_proactive,
     leftAt: conv.left_at,
     summary: conv.summary,
     lastMessageAt: conv.last_message_at,
@@ -142,10 +144,38 @@ const conversationRemoveRoute: Route = ({ res, url, path, method }) => {
   return true;
 };
 
+/** QQ 群「允许主动群消息」开关（对应 QQ 侧"机器人主动在群内发言"权限在应用侧的映射）。
+ *  仅在 kind="group" 且 channel="qq" 的会话上有效；已离群的群不开启。 */
+const conversationGroupProactiveRoute: Route = async ({ req, res, url, path, method }) => {
+  const m = method === "POST" ? path.match(/^\/api\/conversations\/([^/]+)\/group-proactive$/) : null;
+  if (m === null) return false;
+  const contactId = strictContactId(url, res);
+  if (contactId === null) return true;
+  const id = decodeURIComponent(m[1] ?? "");
+  const conv = getConversation(id);
+  if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") {
+    sendJson(res, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
+    return true;
+  }
+  if (conv.left_at !== null) {
+    sendJson(res, 409, { ok: false, error: "机器人已不在该群，无法开启群主动消息" });
+    return true;
+  }
+  const body = await readJson<{ groupProactive?: unknown }>(req);
+  if (typeof body.groupProactive !== "boolean") {
+    sendJson(res, 400, { ok: false, error: "groupProactive 必须是布尔值" });
+    return true;
+  }
+  setConversationGroupProactive(id, body.groupProactive);
+  sendJson(res, 200, { ok: true, conversation: { ...getConversation(id)! } });
+  return true;
+};
+
 export const routes: Route[] = [
   conversationsListRoute,
   conversationFlagsRoute,
   conversationTitleRoute,
   conversationHistoryRoute,
   conversationRemoveRoute,
+  conversationGroupProactiveRoute,
 ];

@@ -10,7 +10,7 @@ import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
 import { asText, chunkSegments, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight } from "./channels/delivery.ts";
-import { ensureConversation, ensureLocalConversation, getConversation, listConversations, setConversationMembership, type Conversation } from "./conversations.ts";
+import { ensureConversation, ensureLocalConversation, getConversation, listConversations, listGroupProactiveConversations, setConversationMembership, type Conversation } from "./conversations.ts";
 import { MAX_IMAGE_BYTES, saveImage, sniffImageMime } from "./media.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 
@@ -35,7 +35,7 @@ const BIND_PHRASE = "绑定";
 const OP = { DISPATCH: 0, HEARTBEAT: 1, IDENTIFY: 2, RESUME: 6, RECONNECT: 7, INVALID_SESSION: 9, HELLO: 10 } as const;
 
 export type QQStatus = "connected" | "connecting" | "disabled" | "attention" | "not-configured";
-export type QQConversationView = { id: string; kind: "private" | "group"; title: string; titleSource: "auto" | "custom"; externalId: string; enabled: boolean; leftAt: number | null; messageCount: number; lastMessageAt: string };
+export type QQConversationView = { id: string; kind: "private" | "group"; title: string; titleSource: "auto" | "custom"; externalId: string; enabled: boolean; groupProactive: boolean; leftAt: number | null; messageCount: number; lastMessageAt: string };
 export type QQBindingView = {
   id: string; contactId: string; userOpenId: string; enabled: boolean; proactive: boolean;
   status: QQStatus; hasReplyWindow: boolean; lastError: string; lastReceivedAt: string;
@@ -467,6 +467,43 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     });
   };
 
+  /**
+   * 群主动消息：遍历该联系人下已勾选"允许主动群消息"的群会话并投递。
+   * 不走 replyWindow，直接走 sendGroup（群消息无需 msg_id 引用）。
+   * 调用方（proactive.ts）负责检查 quiet hours 与每日配额，这里只管"能不能发"。
+   */
+  const deliverProactiveToGroup = async (contactId: string, text: string): Promise<void> => {
+    const groupConvs = listGroupProactiveConversations(contactId);
+    if (groupConvs.length === 0) return;
+    const segments = splitQqText(text); if (segments.length === 0) return;
+    for (const conv of groupConvs) {
+      const account = byId(conv.account_id) ?? byContact(contactId);
+      if (account === null || !configured(account)) continue;
+      const startedAt = clock();
+      await deliverOutbound({
+        segments,
+        send: (segment) => sendGroup(account, conv.external_id, segment, ""),
+        elapsed: () => clock() - startedAt,
+        onDelivered: () => {
+          account.lastSentAt = new Date(clock()).toISOString();
+          account.lastError = "";
+          persist();
+        },
+        onFailed: (message) => {
+          account.lastError = message;
+          persist();
+          console.warn(`[qq] 群主动投递失败（${conv.id}）：${message}`);
+        },
+        log: (ok, message, elapsedMs) => logModelCall({
+          purpose: "qq", ok, model: "qqbot",
+          url: "/v2/groups/{group_openid}/messages",
+          elapsedMs, ...(message === "" ? {} : { message }),
+          contactId: account.contactId,
+        }),
+      });
+    }
+  };
+
   const expireWindows = (): void => { for (const [id, window] of windows) if (window.expiresAt <= clock()) windows.delete(id); };
   const claimBinding = async (window: BindWindow, account: StoredAccount, openId: string, messageId: string): Promise<void> => {
     for (const other of accounts) if (other.id !== account.id && other.userOpenId === openId) other.userOpenId = "";
@@ -553,7 +590,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     // QQ 私聊已并入联系人主会话；这里只暴露需要独立切换的群。
     return listConversations(contactId).filter((conv) => conv.channel === "qq" && conv.kind === "group").map((conv) => ({
       id: conv.id, kind: conv.kind, title: conv.title, titleSource: conv.title_source,
-      externalId: redact(conv.external_id), enabled: conv.enabled, leftAt: conv.left_at,
+      externalId: redact(conv.external_id), enabled: conv.enabled, groupProactive: conv.group_proactive, leftAt: conv.left_at,
       messageCount: Number((db.prepare("SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?").get(conv.id) as { c: number }).c),
       lastMessageAt: conv.last_message_at ? new Date(conv.last_message_at).toISOString() : "",
     }));
@@ -690,7 +727,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   const clearAll = (): void => { for (const worker of workers.values()) { worker.gateway.close(); worker.gateway.forget(); worker.token.invalidate(); } workers.clear(); windows.clear(); replyCounters.clear(); qrTasks.clear(); accounts = []; hydrated = true; problem = ""; persist(); };
 
   return {
-    deliverToContact, deliverToConversation, beginBind, pollBind, snapshotFor, summary,
+    deliverToContact, deliverToConversation, deliverProactiveToGroup, beginBind, pollBind, snapshotFor, summary,
     setCredentials, beginCredentialQr, pollCredentialQr, setFlags, setFlagsByContact, disconnect,
     disconnectByContact: (contactId: string): boolean => { const account = byContact(contactId); return account === null ? false : disconnect(account.id); },
     startAll, stopAll,

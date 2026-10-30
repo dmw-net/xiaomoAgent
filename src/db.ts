@@ -388,6 +388,9 @@ ensureColumn("conversations", "summary_upto", "summary_upto INTEGER");
 ensureColumn("conversations", "title_source", "title_source TEXT NOT NULL DEFAULT 'auto'");
 ensureColumn("conversations", "auto_title", "auto_title TEXT NOT NULL DEFAULT ''");
 ensureColumn("conversations", "left_at", "left_at INTEGER");
+// 群主动消息开关：对应 QQ 群设置里"机器人主动在群聊内发言"在应用侧的映射。
+// 默认 0（关闭），需用户在 QQ 侧先开启权限、再在应用里勾选才生效。
+ensureColumn("conversations", "group_proactive", "group_proactive INTEGER NOT NULL DEFAULT 0");
 
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);

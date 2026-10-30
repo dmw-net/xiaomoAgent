@@ -339,6 +339,7 @@ async function runProactiveCheckInner(
     await channel.deliver({ text: task.focus, kind: "proactive", contactId });
     void wechat.deliverToContact(contactId, task.focus, { proactive: true });
     void qq.deliverToContact(contactId, task.focus, { proactive: true });
+    void qq.deliverProactiveToGroup(contactId, task.focus);
     finishTask(task.id, "done", `到点提醒已送达：${task.focus.slice(0, 40)}`);
     console.log(`[proactive] 到点提醒送达（${trigger}）：${task.focus.slice(0, 40)}`);
     return { spoken: true, reason: "到点提醒", text: task.focus };
@@ -410,6 +411,7 @@ async function runProactiveCheckInner(
       images.length > 0 ? `${cleanText}\n（画了一张图，QQ 这条只送文字，在这个应用里看）` : cleanText,
       { proactive: true },
     );
+    void qq.deliverProactiveToGroup(contactId, cleanText);
     markSpokenToday(contactId);
     finishTask(task.id, "done", `已发送：${cleanText.slice(0, 40)}（${decision.reason}）`);
     scheduleNext(contactId, decision.focus, decision.nextCheckHours);

@@ -2242,6 +2242,13 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 }
 .qq-conv-clear:hover,
 .qq-conv-remove:hover { background: var(--danger-soft); }
+.qq-conv-proactive {
+  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
+  color: var(--text-muted); font-size: var(--text-note); user-select: none;
+  padding: 1px 4px; border-radius: 5px;
+}
+.qq-conv-proactive:hover { color: var(--text); background: color-mix(in srgb, var(--bg-hover) 55%, transparent); }
+.qq-conv-proactive input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); }
 .qq-conv-edit-icon {
   display: grid; width: 23px; height: 23px; flex: none; place-items: center; padding: 0; border-radius: 6px !important;
   color: var(--text-muted); opacity: .7; transition: opacity .16s ease, color .16s ease, background .16s ease;

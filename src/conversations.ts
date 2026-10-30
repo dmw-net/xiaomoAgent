@@ -26,6 +26,8 @@ export type Conversation = {
   auto_title: string;
   left_at: number | null;
   enabled: boolean;
+  /** 群级主动消息开关；仅对 kind="group" 且 channel="qq" 有意义，对应 QQ 侧"机器人主动在群内发言"权限。 */
+  group_proactive: boolean;
   summary: string;
   summary_updated_at: number | null;
   summary_upto: number | null;
@@ -50,6 +52,7 @@ function rowToConversation(row: Record<string, unknown>): Conversation {
     auto_title: String(row.auto_title ?? ""),
     left_at: row.left_at === null || row.left_at === undefined ? null : Number(row.left_at),
     enabled: Number(row.enabled ?? 1) !== 0,
+    group_proactive: Number(row.group_proactive ?? 0) !== 0,
     summary: String(row.summary ?? ""),
     summary_updated_at: row.summary_updated_at === null || row.summary_updated_at === undefined ? null : Number(row.summary_updated_at),
     summary_upto: row.summary_upto === null || row.summary_upto === undefined ? null : Number(row.summary_upto),
@@ -365,6 +368,25 @@ export function removeQQGroupConversation(id: string, contactId: string): Cleare
   q("DELETE FROM conversations WHERE id = ?").run(id);
   removeConversationReadCursor(id);
   return cleared;
+}
+
+export function setConversationGroupProactive(id: string, groupProactive: boolean): boolean {
+  return Number(q("UPDATE conversations SET group_proactive = ? WHERE id = ?").run(groupProactive ? 1 : 0, id).changes) > 0;
+}
+
+/** 列出该联系人下已开启群主动消息的 QQ 群会话（用于 proactive 投递）。 */
+export function listGroupProactiveConversations(contactId: string): Array<Pick<Conversation, "id" | "external_id" | "account_id" | "title">> {
+  const rows = q(
+    `SELECT id, external_id, account_id, title FROM conversations
+     WHERE contact_id = ? AND channel = 'qq' AND kind = 'group'
+       AND enabled = 1 AND group_proactive = 1 AND left_at IS NULL`,
+  ).all(contactId) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: String(row.id ?? ""),
+    external_id: String(row.external_id ?? ""),
+    account_id: String(row.account_id ?? ""),
+    title: String(row.title ?? ""),
+  }));
 }
 
 export function touchConversation(id: string, at = Date.now()): void {

@@ -41,6 +41,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   const [removeTarget, setRemoveTarget] = useState<QQConversationView | null>(null);
   const [removeBusy, setRemoveBusy] = useState(false);
   const [groupQuery, setGroupQuery] = useState("");
+  const [toggleProactiveBusyId, setToggleProactiveBusyId] = useState("");
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const qrTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const alive = useRef(true);
@@ -74,6 +75,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   useEffect(() => {
     setBinding(null); setAttempt(null); setNote(""); setErr(""); setEditingCreds(false); setManualOpen(false);
     setEditingGroupId(""); setGroupTitleDraft(""); setRenameBusy(false); setToggleBusyId("");
+    setToggleProactiveBusyId("");
     setClearTarget(null); setClearBusy(false); setRemoveTarget(null); setRemoveBusy(false); setGroupQuery("");
     stopQrPoll(); setQr(null);   // 换联系人：上一位没扫完的码不该继续在后台轮
     boundRef.current = false;   // 换联系人：上一位的绑定状态不能带过来
@@ -229,6 +231,30 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
       }
     } finally {
       if (alive.current) setToggleBusyId("");
+    }
+  };
+
+  const toggleGroupProactive = async (conv: QQConversationView): Promise<void> => {
+    if (toggleProactiveBusyId !== "" || conv.leftAt !== null) return;
+    const next = !conv.groupProactive;
+    setToggleProactiveBusyId(conv.id); setErr("");
+    // 乐观更新
+    setBinding((prev) => prev === null ? prev : {
+      ...prev,
+      conversations: prev.conversations.map((item) => item.id === conv.id ? { ...item, groupProactive: next } : item),
+    });
+    try {
+      await qqApi.setQQConversationGroupProactive(contactId, conv.id, next);
+    } catch (e: unknown) {
+      if (alive.current) {
+        setBinding((prev) => prev === null ? prev : {
+          ...prev,
+          conversations: prev.conversations.map((item) => item.id === conv.id ? { ...item, groupProactive: conv.groupProactive } : item),
+        });
+        setErr(e instanceof Error ? e.message : String(e));
+      }
+    } finally {
+      if (alive.current) setToggleProactiveBusyId("");
     }
   };
 
@@ -508,6 +534,13 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
                       onClick={() => { setErr(""); setRemoveTarget(conv); }}>
                       <CircleMinus size={11} strokeWidth={1.9} />移除群聊
                     </button>
+                  )}
+                  {conv.leftAt === null && (
+                    <label className="qq-conv-proactive" title="开启后，主动消息（如定期关心、到点提醒）会同时推送到该群。需先在手机 QQ 群设置里打开「机器人主动在群内发言」。">
+                      <input type="checkbox" checked={conv.groupProactive} disabled={toggleBusyId !== ""}
+                        onChange={() => { void toggleGroupProactive(conv); }} />
+                      <span>群主动消息</span>
+                    </label>
                   )}
                 </div>
               </div>

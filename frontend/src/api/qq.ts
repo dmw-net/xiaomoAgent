@@ -66,6 +66,11 @@ export function setQQConversationEnabled(contactId: string, conversationId: stri
   return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/flags?contactId=${encodeURIComponent(contactId)}`, { enabled });
 }
 
+/** 切换某 QQ 群的「允许主动群消息」开关；需先确认 QQ 侧机器人已开启"主动在群内发言"权限。 */
+export function setQQConversationGroupProactive(contactId: string, conversationId: string, groupProactive: boolean): Promise<unknown> {
+  return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/group-proactive?contactId=${encodeURIComponent(contactId)}`, { groupProactive });
+}
+
 /** title=null 时恢复最近一次平台自动群名；自定义名不会被后续事件覆盖。 */
 export function renameQQConversation(
   contactId: string,

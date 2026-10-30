@@ -1718,11 +1718,17 @@ export async function respondToTurn(
     // 主私聊里的应用/微信/QQ 消息仍镜像到微信 + QQ 私聊。
     if (conversation?.channel === "qq") {
       void import("./qq.ts")
-        .then(({ qq }) => qq.deliverToConversation(
-          conversationId,
-          noted("（画了一张图，QQ 这条只送文字，在这个应用里看）"),
-          { triggerMessageId: turn.trigger_message_id ?? undefined },
-        ))
+        .then(async ({ qq }) => {
+          // 群里文字带引用 @ 的那条；图单独发一条（群图片不必引用原消息）。
+          await qq.deliverToConversation(
+            conversationId,
+            reply,
+            { triggerMessageId: turn.trigger_message_id ?? undefined },
+          );
+          if (outgoingImages.length > 0) {
+            await qq.deliverMediaToGroup(contactId, conversationId, "", outgoingImages.map((url) => ({ url })));
+          }
+        })
         .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
     } else {
       void import("./wechat.ts")
@@ -1732,10 +1738,14 @@ export async function respondToTurn(
         ))
         .catch(() => { /* 投递失败已落 wechat.links.lastError 与 model_calls */ });
       void import("./qq.ts")
-        .then(({ qq }) => qq.deliverToContact(
-          contactId,
-          noted("（画了一张图，QQ 这条只送文字，在这个应用里看）"),
-        ))
+        .then(async ({ qq }) => {
+          // 私聊能发媒体：带图就走 文字+图，无图只发文字。
+          if (outgoingImages.length > 0) {
+            await qq.deliverMediaToContact(contactId, reply, outgoingImages.map((url) => ({ url })));
+          } else {
+            await qq.deliverToContact(contactId, reply);
+          }
+        })
         .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
     }
 

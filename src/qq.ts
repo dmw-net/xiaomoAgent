@@ -13,6 +13,8 @@ import { asText, chunkSegments, deliverOutbound, deliveryAllowed, redact, SeenKe
 import { ensureConversation, ensureLocalConversation, getConversation, listConversations, listGroupProactiveConversations, setConversationMembership, type Conversation } from "./conversations.ts";
 import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, readMedia, saveAudio, saveImage, saveVideo, sniffImageMime } from "./media.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
+import { config } from "./config.ts";
+import { createQQOneBotService } from "./qq-onebot.ts";
 
 const KV_ACCOUNTS = "qq.accounts.v2";
 const LEGACY_KV_CREDENTIALS = "qq.credentials";
@@ -653,6 +655,24 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     }
   };
 
+  /**
+   * 按会话分派「文字 + 媒体」：私聊走联系人账号，群走该群 external_id。
+   * 普通对话回复带图时用它闭环（之前是文字 + 一句"图发不出去"的兜底）。
+   */
+  const deliverMediaToConversation = async (
+    conversationId: string,
+    text: string,
+    media: QqMediaRef[],
+  ): Promise<void> => {
+    const conv = getConversation(conversationId);
+    if (conv === null || conv.channel !== "qq") return;
+    if (conv.kind === "group") {
+      await deliverMediaToGroup(conv.contact_id, conversationId, text, media);
+      return;
+    }
+    await deliverMediaToContact(conv.contact_id, text, media);
+  };
+
   const deliver = async (account: StoredAccount | null, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<void> => {
     if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
     const segments = splitQqText(text); if (segments.length === 0) return;
@@ -974,7 +994,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
 
   return {
     deliverToContact, deliverToConversation, deliverProactiveToGroup,
-    deliverMediaToContact, deliverMediaToGroup, beginBind, pollBind, snapshotFor, summary,
+    deliverMediaToContact, deliverMediaToGroup, deliverMediaToConversation, beginBind, pollBind, snapshotFor, summary,
     setCredentials, beginCredentialQr, pollCredentialQr, setFlags, setFlagsByContact, disconnect,
     disconnectByContact: (contactId: string): boolean => { const account = byContact(contactId); return account === null ? false : disconnect(account.id); },
     startAll, stopAll,
@@ -985,4 +1005,22 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   };
 }
 
-export const qq = createQQService();
+/** 官方 Bot API 后端的单例。消费点应通过 qq-routed.ts 的门面（按 config.qq.backend 选择后端）。 */
+export const qqOfficial = createQQService();
+
+/**
+ * 后端统一接口：消费点（proactive / agent / index / 路由）只认这个面，
+ * 不关心背后是官方 Bot API 还是 OneBot v11 协议端。QQService = 官方后端的返回形状。
+ */
+export type QQService = typeof qqOfficial;
+
+/**
+ * 消费点统一用的单例。按 config.qq.backend 选后端：
+ *   - "official"（默认）→ qq.ts 的官方 Bot API 后端；
+ *   - "onebot"         → qq-onebot.ts 的 OneBot v11 协议端后端。
+ * 两边都实现同一个 QQService 面，消费点零改动即可切换。
+ * 选择发生在模块加载期（环境变量在启动前定死），改后需重启。
+ */
+export const qq: QQService = config.qq.backend === "onebot"
+  ? createQQOneBotService()
+  : qqOfficial;

@@ -153,6 +153,22 @@ export const config = Object.freeze({
   }),
   /** 记忆整理（合并/过期/生活线/温度计）的最小间隔天数；0 = 关闭后台整理。 */
   consolidateIntervalDays: Math.min(90, uint("CONSOLIDATE_INTERVAL_DAYS", 7)),
+  /**
+   * QQ 通道后端选择：
+   *  - "official"（默认）走腾讯官方 Bot API（api.bot.qq.com，C2C/群 intent）。
+   *  - "onebot" 走 OneBot v11 协议端（NapCat / go-cqhttp / LLOneBot 等），用真实 QQ 号扫码登录，
+   *    可主动发群消息、管群，适合官方 Bot 权限不够的场景。出站走该协议端 HTTP API，
+   *    入站靠它推 forward websocket 事件。
+   */
+  qq: Object.freeze({
+    backend: str("QQ_BACKEND", "official") === "onebot" ? "onebot" : "official",
+    /** OneBot 协议端出站 API 的 HTTP 根地址（如 http://127.0.0.1:3000）。 */
+    onebotHttpBase: str("QQ_ONEBOT_HTTP", "http://127.0.0.1:3000").replace(/\/+$/, ""),
+    /** OneBot 入站 forward websocket 地址（如 ws://127.0.0.1:3001）。留空 = 只出站不收件。 */
+    onebotWsUrl: str("QQ_ONEBOT_WS"),
+    /** OneBot 访问令牌；协议端配了 access_token 才需要。 */
+    onebotToken: str("QQ_ONEBOT_TOKEN"),
+  }),
 });
 
 /**

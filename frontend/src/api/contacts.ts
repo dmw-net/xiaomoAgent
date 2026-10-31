@@ -26,6 +26,10 @@ export type CompanionFeatures = {
   reminders: boolean;
   /** 图像生成：她能画一张发回来（要 设置 → 能力模型 → 图像生成 配好才真生效）。默认关。 */
   imageGen: boolean;
+  /** 表情包：send_emote 工具（图片表情包 / 内置表情 / 商城动态表情），QQ 通道能力，默认关。 */
+  emotes: boolean;
+  /** 发语音：send_voice 工具（TTS 合成语音条/语音气泡），要 设置 → 能力模型 → 语音合成 配好才真生效。默认关。 */
+  voice: boolean;
   /**
    * 联网：web_search / web_fetch 两个工具对她可见。默认关——这是唯一会主动向外发请求的能力，
    * 且抓回的网页文字会进她的上下文（结果里已强制标注"只当资料"）。设置助手不受这一项影响。

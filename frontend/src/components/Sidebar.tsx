@@ -129,18 +129,25 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
 
   const nameOf = (id: string): string => contacts.find((c) => c.id === id)?.name ?? "联系人";
   /** 截断要说清楚：硬切 40 字会让「我下周去北」看起来就是那句话的全部内容。 */
-  const clip = (s: string): string => (s.length > 40 ? s.slice(0, 40) + "…" : s);
+  const clip = (s: unknown): string => {
+    const v = typeof s === "string" ? s : "";
+    return v.length > 40 ? v.slice(0, 40) + "…" : v;
+  };
 
   // ── 导出 / 归档 / 恢复 ──
   const exportMd = (contact: ContactItem): void => {
     void contactsApi
       .fetchContact(contact.id)
-      .then((d) => exportPersonaMd(d.contact.name, {
-        name: d.contact.name,
-        background: d.contact.card.background ?? "",
-        identity: d.contact.card.identity ?? "",
-        relationship: d.contact.card.relationship ?? "",
-      }))
+      .then((d) => {
+        const c = d?.contact;
+        if (!c) throw new Error("联系人数据读取异常");
+        return exportPersonaMd(c.name, {
+          name: c.name,
+          background: c.card?.background ?? "",
+          identity: c.card?.identity ?? "",
+          relationship: c.card?.relationship ?? "",
+        });
+      })
       .catch((e: Error) => setError("导出失败：" + e.message));
   };
 

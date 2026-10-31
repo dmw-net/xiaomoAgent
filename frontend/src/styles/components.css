@@ -1141,6 +1141,39 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .wx-badge-connecting, .wx-badge-disabled, .wx-badge-unbound { color: var(--text-subtle); }
 .wx-badge-not-configured { color: var(--text-subtle); border-style: dashed; }
 .qq-creds { margin-top: var(--space-5); display: flex; flex-direction: column; gap: var(--space-4); }
+/* 接入渠道切换（QQ 连接卡顶部）：分段控件 + 说明 + 待重启提示条。 */
+.qq-backend { margin-top: var(--space-5); display: flex; flex-direction: column; gap: var(--space-3); }
+.qq-backend .seg { margin-bottom: 0; align-self: flex-start; }
+.qq-backend-head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.qq-backend-label { font-size: var(--text-note); font-weight: 600; color: var(--text-secondary); }
+.qq-backend-note {
+  display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
+  padding: var(--space-2) var(--space-4); border-radius: var(--radius-md);
+  font-size: var(--text-note); color: var(--text-muted);
+  background: var(--bg-sunken); border: 1px solid var(--border);
+}
+.qq-backend-note.pending { color: var(--warning, #e0a94e); border-color: var(--warning, #e0a94e); }
+/* OneBot 绑定入口的账号确认卡：头像 + 昵称 + 号码 + 一键绑定。 */
+.ob-account { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
+.ob-account-avatar { width: 40px; height: 40px; border-radius: var(--radius-full, 50%); object-fit: cover; }
+.ob-account-fallback {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-secondary); font-weight: 600;
+}
+.ob-account-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ob-account-name { font-weight: 600; }
+.ob-account-num { font-family: var(--font-mono); font-size: var(--text-note); color: var(--text-muted); }
+/* OneBot 连接面板：指引 + 地址就地改 + 保存并连接。 */
+/* OneBot 连接面板：一键托管流 + 手动兜底（收起）。 */
+.ob-connect { display: flex; flex-direction: column; gap: var(--space-3); }
+.ob-connect-head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.ob-connect-title { font-weight: 600; font-size: var(--text-note); color: var(--text-secondary); }
+.ob-qr { display: flex; align-items: center; gap: var(--space-4); }
+.ob-qr img { border-radius: var(--radius-md); border: 1px solid var(--border); background: #fff; }
+.ob-manual summary { cursor: pointer; font-size: var(--text-note); color: var(--text-muted); }
+.ob-manual[open] summary { margin-bottom: var(--space-3); }
+.ob-manual label { display: block; font-size: var(--text-note); color: var(--text-muted); margin-top: var(--space-3); }
+.ob-manual label > input { display: block; width: 100%; margin-top: var(--space-2); }
 .qq-creds label { display: block; font-size: var(--text-note); color: var(--text-muted); }
 .qq-creds label > input { display: block; width: 100%; margin-top: var(--space-2); }
 /* 绑定码要能整串选中、能复制：等宽 + 可选，别让它跟着行高被截断 */

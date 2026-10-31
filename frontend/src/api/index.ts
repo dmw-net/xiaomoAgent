@@ -28,3 +28,5 @@ export * as lanApi from "./lan";
 export type { LanState } from "./lan";
 export * as wallpaperApi from "./wallpaper";
 export type { WeChatLink } from "./wechat";
+export * as emotesApi from "./emotes";
+export type { EmoteAsset, EmoteCapabilities, EmoteFace, EmoteOverview } from "./emotes";

@@ -32,7 +32,11 @@ export default function RecallSection({ contactId, embedded = false, contactName
     setProbing(true);
     void memoryApi
       .recall(q, 6, contactId)
-      .then((d) => { if (seq === probeSeq.current) setProbe(d); })
+      .then((d) => {
+        if (seq !== probeSeq.current) return;
+        // 后端正常一定带 events；但缺字段/旧 bundle/异常响应下不能崩，归一化成空数组。
+        setProbe({ ...(d ?? {}), events: Array.isArray(d?.events) ? d.events : [] });
+      })
       .catch((e: Error) => {
         if (seq === probeSeq.current) setProbe({ events: [], total: -1, keywords: [], err: e.message });
       })
@@ -47,6 +51,9 @@ export default function RecallSection({ contactId, embedded = false, contactName
 
   // 换联系人时组件重挂，这里的计时器随实例一起消失，不用手动清
   useEffect(() => () => { if (timer.current) clearTimeout(timer.current); }, []);
+
+  // 渲染兜底：events 必须是数组（数据入口已归一化，这里再保险一次，防任何路径漏网）。
+  const events = Array.isArray(probe?.events) ? probe.events : [];
 
   return (
     <div className={embedded ? "card card-pad pf-set-card pf-memory-probe" : "section"} {...panel}>
@@ -77,12 +84,12 @@ export default function RecallSection({ contactId, embedded = false, contactName
         {probe && !probe.err && (
           <div className="result" id="probeResult">
             <div className="sum">
-              找到 <b>{probe.events.length}</b> 条
+              找到 <b>{events.length}</b> 条
             </div>
-            {probe.events.length === 0 && (
+            {events.length === 0 && (
               <div className="hint">没找到：可能还没记过，或换个说法再试。</div>
             )}
-            {probe.events.map((e) => (
+            {events.map((e) => (
               <MemoryCard key={e.id} event={e} />
             ))}
           </div>

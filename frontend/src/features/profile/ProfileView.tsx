@@ -26,13 +26,16 @@ import Tabs, { panelAria, type PanelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import type { PersonaDraft } from "../../lib/persona-doc";
 
-const shortPreview = (text: string, max = 260): string => text.length > max ? text.slice(0, max) + "…" : text;
+const shortPreview = (text: unknown, max = 260): string => {
+  const s = typeof text === "string" ? text : "";
+  return s.length > max ? s.slice(0, max) + "…" : s;
+};
 
 /** 与后端 FEATURE_DEFAULTS 对齐：除历史行为（memoryExtract 记记忆、splitReply 分条气泡）
  *  与显示开关外默认全关——新增能力由用户主动开，历史行为保持原样、由用户主动关。 */
 const FEATURE_DEFAULTS: CompanionFeatures = {
   memoryExtract: true, tools: true, clock: true, memorySearch: true,
-  lifeline: false, recap: false, consolidate: false, reminders: false, imageGen: false, web: false, toolRounds: 0, bond: false,
+  lifeline: false, recap: false, consolidate: false, reminders: false, imageGen: false, emotes: false, voice: false, web: false, toolRounds: 0, bond: false,
   splitReply: true, turnPct: 0, tokenPct: 0, showThinking: true, showTools: true,
   dailyLimit: 0, temperature: -1, bannedWords: "", schedule: "", lastConsolidatedAt: null,
 };
@@ -73,6 +76,8 @@ const TOOL_ITEMS: ToolRow[] = [
   { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。" },
   { kind: "toggle", key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
   { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。自拍参考图在「人格设定 → 角色形象」。` },
+  { kind: "toggle", key: "emotes", label: "表情包", hint: () => "随手甩个表情（图片表情包 / 内置表情 / 商城动态表情）。是 QQ 通道的能力，没挂 QQ 号的联系人发不出去；素材库在 设置 → 表情 里维护。默认关，开了才声明工具。" },
+  { kind: "toggle", key: "voice", label: "发语音", hint: (p) => `${p}可以把想说的话合成一条语音发出去：QQ 里是原生语音条，应用里是可播放的语音气泡。要先在 设置 → 能力模型 → 语音合成 配好 TTS。默认关，开了才声明工具。` },
   { kind: "pointer", label: "技能", hint: "把自定义技能当成一份做法说明书；有可用技能时自动挂载，内容与开关在 设置 → 技能。" },
 ];
 
@@ -347,21 +352,23 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     if (mode !== "edit") return;
     void contactsApi.fetchContact(contactId)
       .then((d) => {
+        const c = d?.contact;
+        if (!c) { setError("联系人数据读取异常，请刷新重试"); return; }
         setDraft({
-          name: d.contact.name || "",
-          background: d.contact.card.background || "",
-          identity: d.contact.card.identity || "",
-          relationship: d.contact.card.relationship || "",
+          name: c.name || "",
+          background: c.card?.background || "",
+          identity: c.card?.identity || "",
+          relationship: c.card?.relationship || "",
         });
-        setModelProfile(d.contact.model_profile ?? "");
-        setRecentTurns(d.contact.recent_turns ?? 0);
-        setGender(d.contact.gender ?? "female");
-        setAvatar(d.contact.avatar || "");
-        setFaceRef(d.contact.faceRef ?? "");
-        setFeatures({ ...FEATURE_DEFAULTS, ...(d.contact.features ?? {}) });
-        setLifeline(d.contact.lifeline ?? "");
-        setRecap(d.contact.recap ?? "");
-        setBond({ ...EMPTY_BOND, ...(d.contact.bond ?? {}) });
+        setModelProfile(c.model_profile ?? "");
+        setRecentTurns(c.recent_turns ?? 0);
+        setGender(c.gender ?? "female");
+        setAvatar(c.avatar || "");
+        setFaceRef(c.faceRef ?? "");
+        setFeatures({ ...FEATURE_DEFAULTS, ...(c.features ?? {}) });
+        setLifeline(c.lifeline ?? "");
+        setRecap(c.recap ?? "");
+        setBond({ ...EMPTY_BOND, ...(c.bond ?? {}) });
         setLoaded(true);
       })
       .catch((e: Error) => setError(e.message));
@@ -594,11 +601,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           // 不同步基线的话，用户什么都没改也会浮出「有未保存的修改」。
           // setState 是异步的，所以基线走 formPayload 的 over 参数按即将生效的值算，
           // 保证和下一次 snapshot() 用的是同一套投影，而不是手工拼一份。
+          const c = d?.contact;
+          if (!c) return undefined;
           const applied = {
-            features: { ...FEATURE_DEFAULTS, ...(d.contact.features ?? {}) },
-            lifeline: d.contact.lifeline ?? "",
-            recap: d.contact.recap ?? "",
-            bond: { ...EMPTY_BOND, ...(d.contact.bond ?? {}) },
+            features: { ...FEATURE_DEFAULTS, ...(c.features ?? {}) },
+            lifeline: c.lifeline ?? "",
+            recap: c.recap ?? "",
+            bond: { ...EMPTY_BOND, ...(c.bond ?? {}) },
           };
           setFeatures(applied.features);
           setLifeline(applied.lifeline);
@@ -638,11 +647,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     void contactsApi.resetContactCard(contactId)
       .then(() => contactsApi.fetchContact(contactId))
       .then((d) => {
+        const c = d?.contact;
+        if (!c) throw new Error("联系人数据读取异常");
         const next: Draft = {
-          name: d.contact.name || "",
-          background: d.contact.card.background || "",
-          identity: d.contact.card.identity || "",
-          relationship: d.contact.card.relationship || "",
+          name: c.name || "",
+          background: c.card?.background || "",
+          identity: c.card?.identity || "",
+          relationship: c.card?.relationship || "",
         };
         // 服务端已经落库，所以草稿与基线都要立刻按新值对齐：
         // setState 是异步的，基线走 formPayload 的 draft 参数算，否则脏值条会一直挂着。

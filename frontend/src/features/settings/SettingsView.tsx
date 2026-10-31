@@ -8,6 +8,7 @@ import ModelSection from "./ModelSection";
 import CapabilitySection from "./CapabilitySection";
 import SkillSection from "./SkillSection";
 import ExtensionSection from "./ExtensionSection";
+import EmoteSection from "./EmoteSection";
 import OwnerSection from "./OwnerSection";
 import AppearanceSection from "./AppearanceSection";
 import { useSettingsForm } from "./useSettingsForm";
@@ -20,13 +21,14 @@ export type SettingsTab =
   | "model"
   | "capability"
   | "skill"
+  | "emote"
   | "appearance"
   | "about"
   | "experience"
   | "system";
 
 type SettingsGroup = "owner" | "model" | "experience" | "system" | "about";
-type ModelTab = "model" | "capability" | "skill";
+type ModelTab = "model" | "capability" | "skill" | "emote";
 
 type GroupDef = {
   key: SettingsGroup;
@@ -48,6 +50,7 @@ const MODEL_TABS: Array<{ key: ModelTab; label: string }> = [
   { key: "model", label: "主对话模型" },
   { key: "capability", label: "能力模型" },
   { key: "skill", label: "技能与工具" },
+  { key: "emote", label: "表情" },
 ];
 
 type SearchEntry = {
@@ -66,6 +69,7 @@ const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "model", modelTab: "capability", title: "能力模型", meta: "看图、听音、说话、画图、记忆检索", anchor: "settings-capabilities", keywords: "视觉 语音 识别 合成 图像 生成 向量 能力" },
   { group: "model", modelTab: "skill", title: "技能", meta: "SKILL.md、技能目录、重新扫描", anchor: "settings-skills", keywords: "技能 skill 提示词 工具 目录" },
   { group: "model", modelTab: "skill", title: "扩展与 MCP", meta: "MCP、Webhook、JS 工具、脚本许可", anchor: "settings-extensions", keywords: "扩展 mcp webhook 脚本 js 插件 工具" },
+  { group: "model", modelTab: "emote", title: "表情", meta: "表情包素材库、自动采集、本地导入", anchor: "settings-emotes", keywords: "表情 表情包 emoji sticker 素材 采集 导入 接梗 反应" },
   { group: "experience", title: "外观与壁纸", meta: "浅色、深色、强调色、壁纸", anchor: "settings-appearance", keywords: "主题 颜色 强调色 壁纸 玻璃 背景" },
   { group: "experience", title: "聊天显示", meta: "气泡时间、列表密度", anchor: "settings-chat-display", keywords: "时间 日期 密度 列表 气泡" },
   { group: "experience", title: "系统通知", meta: "新消息通知与权限", anchor: "settings-notifications", keywords: "通知 提醒 消息 权限" },
@@ -79,14 +83,14 @@ const SEARCH_ENTRIES: SearchEntry[] = [
 
 function groupOf(tab: SettingsTab): SettingsGroup {
   if (tab === "owner" || tab === "home") return "owner";
-  if (tab === "model" || tab === "capability" || tab === "skill") return "model";
+  if (tab === "model" || tab === "capability" || tab === "skill" || tab === "emote") return "model";
   if (tab === "appearance" || tab === "experience") return "experience";
   if (tab === "system") return "system";
   return "about";
 }
 
 function modelTabOf(tab: SettingsTab): ModelTab {
-  return tab === "capability" || tab === "skill" ? tab : "model";
+  return tab === "capability" || tab === "skill" || tab === "emote" ? tab : "model";
 }
 
 function groupLabel(group: SettingsGroup): string {
@@ -281,6 +285,11 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
         <TabPanel active={modelTab === "skill"} aria={panelAria("set-model", "skill")}>
           <SkillSection ask={form.askDangerous} />
           <ExtensionSection ask={form.askDangerous} />
+        </TabPanel>
+      ) : null}
+      {visitedModelTabs.has("emote") || modelTab === "emote" ? (
+        <TabPanel active={modelTab === "emote"} aria={panelAria("set-model", "emote")}>
+          <EmoteSection ask={form.askDangerous} />
         </TabPanel>
       ) : null}
     </>

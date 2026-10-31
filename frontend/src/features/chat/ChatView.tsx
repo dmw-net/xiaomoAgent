@@ -385,7 +385,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         setGlobalModelName(settings.model?.name || "");
         setGlobalModelReady(settings.modelReady === true);
         setGlobalModelEcho(settings.model?.mode === "echo");
-        setModelProfileId(contact.contact.model_profile ?? "");
+        setModelProfileId(contact.contact?.model_profile ?? "");
         setModelError("");
       })
       .catch((error: Error) => setModelError(error.message));
@@ -2659,12 +2659,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             setHeadMenu(false);
             const scope = cid ?? msgScope ?? "";
             void contactsApi.fetchContact(scope)
-              .then((d) => exportPersonaMd(d.contact.name, {
-                name: d.contact.name,
-                background: d.contact.card.background ?? "",
-                identity: d.contact.card.identity ?? "",
-                relationship: d.contact.card.relationship ?? "",
-              }))
+              .then((d) => {
+                const c = d?.contact;
+                if (!c) throw new Error("联系人数据读取异常");
+                return exportPersonaMd(c.name, {
+                  name: c.name,
+                  background: c.card?.background ?? "",
+                  identity: c.card?.identity ?? "",
+                  relationship: c.card?.relationship ?? "",
+                });
+              })
               .catch(() => addNotice("没导出成，稍后再试"));
           }}>
             <span className="lb"><FileDown size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />导出人格文档</span>

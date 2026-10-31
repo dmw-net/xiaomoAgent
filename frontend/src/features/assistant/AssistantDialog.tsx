@@ -81,8 +81,10 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
   // 在弹窗里改完名字/换完头像也要重新拉一次——否则保存成功了，头部还挂着旧的那份。
   const loadIdentity = useCallback((): void => {
     void contactsApi.fetchContact("assistant").then((d) => {
-      setAvatar(d.contact.avatar || "");
-      setAsstName(d.contact.name || DEFAULT_ASSISTANT_NAME);
+      const c = d?.contact;
+      if (!c) return;
+      setAvatar(c.avatar || "");
+      setAsstName(c.name || DEFAULT_ASSISTANT_NAME);
     }).catch(() => {});
   }, []);
   useEffect(() => { loadIdentity(); }, [loadIdentity]);

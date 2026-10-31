@@ -106,8 +106,9 @@ export default function EmoteSection({ ask }: {
     });
   };
 
-  /** 网格卡片显示名：label 空就兜底第一个 tag。 */
-  const displayName = (a: EmoteAsset): string => a.label !== "" ? a.label : (a.tags[0] ?? "");
+  /** 网格卡片显示名：素材库里已不会再出现哈希名（后端写入侧挡掉 + 存量清洗），
+   *  真没名字的（自动采集来的）就标「未命名」，让下面那行标签去说明它属于哪一批。 */
+  const displayName = (a: EmoteAsset): string => a.label !== "" ? a.label : "未命名";
 
   const chipTags = [...tagCounts.keys()].sort();
 

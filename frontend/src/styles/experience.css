@@ -1212,6 +1212,190 @@ button.tool-btn {
   font-size: var(--text-sm);
 }
 
+/* ── 表情分区：素材库网格 + 单张表情卡。图片按比例自适应，不裁脸不裁图。 ── */
+.emote-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+  padding: 14px;
+}
+
+.emote-item {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-sunken);
+  overflow: hidden;
+}
+
+.emote-item img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1;
+  object-fit: contain;
+  background: transparent;
+}
+
+.emote-item-cap {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 4px 6px;
+  background: color-mix(in srgb, var(--bg-sunken) 88%, transparent);
+  backdrop-filter: blur(2px);
+}
+
+.emote-item-label {
+  display: block;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.emote-item-tags {
+  display: block;
+  font-size: 10px;
+  line-height: 1.3;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.emote-item-del {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 7px;
+  border: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
+  color: var(--text-muted);
+  cursor: pointer;
+}
+
+.emote-item-del:hover:not(:disabled) { color: var(--danger, #d33); border-color: var(--danger, #d33); }
+.emote-item-del:disabled { opacity: 0.5; cursor: default; }
+
+.emote-foot { margin: 12px 2px 0; }
+
+.emote-upload,
+.emote-import,
+.emote-capture { box-shadow: none; }
+
+/* 搜索框 */
+.emote-toolbar { margin: 14px 0 0; }
+
+.emote-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--bg-sunken);
+  margin-bottom: 10px;
+}
+
+.emote-search input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: var(--text-base);
+  outline: none;
+}
+
+.emote-search input::placeholder { color: var(--text-muted); }
+
+.emote-search-clear {
+  border: none;
+  background: transparent;
+  color: var(--text-muted);
+  font-size: 16px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 2px;
+}
+
+.emote-search-clear:hover { color: var(--text); }
+
+/* 标签筛选 chips */
+.emote-tag-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.emote-tag-chips .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: border-color .15s, background .15s;
+}
+
+.emote-tag-chips .chip:hover { border-color: var(--text-muted); }
+.emote-tag-chips .chip.on {
+  background: color-mix(in srgb, var(--accent, #4a7cff) 14%, var(--bg-sunken));
+  border-color: var(--accent, #4a7cff);
+  color: var(--accent, #4a7cff);
+  font-weight: 600;
+}
+
+.emote-tag-chips .chip small { opacity: 0.6; font-size: 10px; }
+
+/* 内置表情词表 chips */
+.emote-face-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 10px;
+}
+
+.emote-face-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-sunken);
+  color: var(--text);
+  font-size: var(--text-sm);
+  cursor: pointer;
+  transition: transform .15s, border-color .15s;
+}
+
+.emote-face-chip:hover {
+  transform: translateY(-1px);
+  border-color: var(--accent, #4a7cff);
+}
+
+.emote-face-chip span { font-weight: 500; }
+
+/* 网格卡片标签多行截断 */
+.emote-item-tags {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+}
+
 /* ── 设置页：有界列表与紧凑条目 ─────────────────────────────── */
 
 .settings-list-scroll {

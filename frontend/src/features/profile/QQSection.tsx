@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { CircleMinus, PencilLine, Search, Trash2, UsersRound, X } from "lucide-react";
-import { qqApi, type QQBindingView, type QQConversationView, type QQStatus } from "../../api";
+import { avatarApi, qqApi, type QQBindingView, type QQConversationView, type QQStatus } from "../../api";
 import Modal from "../../components/Modal";
 
 const GROUP_TITLE_MAX = 40;
@@ -22,8 +22,31 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   const [status, setStatus] = useState<QQStatus>("not-configured");
   /** 后端选型：official=官方 Bot（扫码/凭据），onebot=第三方协议端（填真实 QQ 号）。 */
   const [backend, setBackend] = useState<"official" | "onebot">("official");
+  /** 渠道切换：后端当场热切（旧渠道 stopAll、新渠道 startAll），成功后卡片随渠道换形态。 */
+  const [savedBackend, setSavedBackend] = useState<"official" | "onebot" | null>(null);
+  const [backendBusy, setBackendBusy] = useState(false);
+  const [backendNote, setBackendNote] = useState("");
   /** OneBot 模式：待填的真实 QQ 号。 */
   const [obQqNumber, setObQqNumber] = useState("");
+  /** 主人的真实 QQ 号（可选）：群聊里把主人从群成员里认出来，不再见谁都叫主人。 */
+  const [obOwnerQq, setObOwnerQq] = useState("");
+  /** OneBot 绑定入口：协议端探测结果（登录账号/连通性），带头像地址与手动兜底开关。 */
+  const [obStatus, setObStatus] = useState<qqApi.OneBotLoginInfo | null>(null);
+  const [obAvatar, setObAvatar] = useState("");
+  const [obManual, setObManual] = useState(false);
+  const [obProbeTick, setProbeTick] = useState(0);
+  /** 协议端连接面板：地址可就地改（热生效），不再逼用户去改配置文件。 */
+  const [obAddr, setObAddr] = useState("");
+  const [obWsAddr, setObWsAddr] = useState("");
+  const [obAddrBusy, setObAddrBusy] = useState(false);
+  const [obAddrNote, setObAddrNote] = useState("");
+  /** 小茉托管的 NapCat：一键安装/启动/登录的状态源与动作入口。 */
+  const [napcat, setNapcat] = useState<qqApi.NapcatStatus | null>(null);
+  const [napcatBusy, setNapcatBusy] = useState<"install" | "start" | null>(null);
+  const [napcatNote, setNapcatNote] = useState("");
+  const [napcatQr, setNapcatQr] = useState("");
+  /** 渠道切换确认框：切是全局且即时生效的，别让一次误触悄悄改了所有联系人的收发路径。 */
+  const [confirmBackend, setConfirmBackend] = useState<"official" | "onebot" | null>(null);
   const [appId, setAppId] = useState("");
   const [secret, setSecret] = useState("");
   /** 这位联系人的凭据拿到后表单收起；不给"换一台"的入口就等于配错一次只能去改库。 */
@@ -61,14 +84,208 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
     };
   }, []);
 
-  /** 后端选型是进程级的（环境变量定死），不随联系人变；挂载时探一次。 */
+  /** 渠道选型是进程级的；挂载时探一次：运行中的值 + 库里已保存的值。 */
   useEffect(() => {
     let cancelled = false;
     qqApi.fetchQQBackend().then((data) => {
-      if (!cancelled) setBackend(data.backend);
+      if (cancelled) return;
+      setBackend(data.backend);
+      setSavedBackend(data.saved);
     }).catch(() => { /* 拿不到就保持 official 默认态 */ });
     return () => { cancelled = true; };
   }, []);
+
+  /** 切换接入渠道（全局）：后端当场热切，成功后刷新绑定态——两种渠道的凭据/绑定互不相通。 */
+  const switchBackend = async (next: "official" | "onebot"): Promise<void> => {
+    if (backendBusy || next === savedBackend) return;
+    setBackendBusy(true); setBackendNote("");
+    try {
+      const r = await qqApi.setQQBackend(next);
+      if (!alive.current) return;
+      setSavedBackend(r.backend);
+      setBackend(r.backend);
+      setBackendNote("渠道已切换，即时生效");
+      void refresh();
+    } catch (e: unknown) {
+      if (alive.current) setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (alive.current) setBackendBusy(false);
+    }
+  };
+
+  /** 托管 NapCat 的状态轮询：只在 OneBot 渠道、且还没登录完成时转；登录成功即停。 */
+  useEffect(() => {
+    if (backend !== "onebot") return;
+    let cancelled = false;
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const probeNapcat = async (): Promise<void> => {
+      try {
+        const s = await qqApi.fetchNapcatStatus();
+        if (cancelled) return;
+        setNapcat(s);
+        setNapcatQr((prev) => (s.loggedIn ? "" : (s.qrUrl !== "" ? s.qrUrl : prev)));
+        if (s.loggedIn && timer !== null) { clearInterval(timer); timer = null; }
+      } catch { /* 状态拿不到就下一轮再说 */ }
+    };
+    void probeNapcat();
+    timer = setInterval(() => { void probeNapcat(); }, 4000);
+    return () => { cancelled = true; if (timer !== null) clearInterval(timer); };
+  }, [backend]);
+
+  /** 一键安装 / 一键启动：动作是长请求，期间锁按钮，结束把状态轮询立刻拉一把。 */
+  const runNapcat = async (action: "install" | "start"): Promise<void> => {
+    if (napcatBusy !== null) return;
+    setNapcatBusy(action); setNapcatNote("");
+    try {
+      const r = await qqApi.napcatAction(action);
+      if (!alive.current) return;
+      if (!r.ok) setNapcatNote(r.error);
+      else if (r.needsQr === true) setNapcatNote("NapCat 已启动，用手机 QQ 扫下面的二维码登录（下次启动自动登录，不用再扫）");
+      else setNapcatNote(action === "install" ? "安装完成，正在启动…" : "NapCat 已就绪");
+      setProbeTick((t) => t + 1);
+    } catch (e: unknown) {
+      setNapcatNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (alive.current) setNapcatBusy(null);
+    }
+  };
+
+  /** 保存协议端地址并立刻重连探测：面板上的「保存并连接」。出站（HTTP）与收件（forward WS）一起存。 */
+  const connectOneBot = async (): Promise<void> => {
+    if (obAddrBusy) return;
+    setObAddrBusy(true); setObAddrNote("");
+    try {
+      await qqApi.saveOneBotSettings({ httpBase: obAddr.trim(), wsUrl: obWsAddr.trim() });
+      setObAddrNote("已保存，正在重连…");
+      setObStatus(null);
+      setProbeTick((t) => t + 1);
+    } catch (e: unknown) {
+      setObAddrNote(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (alive.current) setObAddrBusy(false);
+    }
+  };
+
+  /** 托管 NapCat 二维码：拿登录链接渲染成图，首次登录让用户扫一下。 */
+  const [napcatQrDataUrl, setNapcatQrDataUrl] = useState("");
+  useEffect(() => {
+    if (napcatQr === "") { setNapcatQrDataUrl(""); return; }
+    let cancelled = false;
+    import("qrcode").then(({ toDataURL }) => toDataURL(napcatQr, { margin: 1, width: 200 }))
+      .then((url) => { if (!cancelled) setNapcatQrDataUrl(url); })
+      .catch(() => { /* 渲染不出就摆链接 */ });
+    return () => { cancelled = true; };
+  }, [napcatQr]);
+
+  /** 协议端连接面板（离线态共用，绑定与否都在这修）：
+   *  主路径是小茉托管的一键安装/启动/扫码——用户全程只点按钮、扫一次码；
+   *  自备 NapCat 的手动地址连接收进兜底，别让两条路长得一样重要。 */
+  const obConnectPanel = (): JSX.Element => {
+    const nc = napcat;
+    return (
+      <div className="ob-connect">
+        <div className="ob-connect-head">
+          <span className="ob-connect-title">一键连接 NapCat</span>
+          <span className="hint">小茉帮你装好、起好、配好，你只需点按钮、扫一次码</span>
+        </div>
+        {nc === null ? (
+          <div className="hint">正在检查本机 NapCat…</div>
+        ) : nc.loggedIn && nc.uin !== "" ? (
+          <div className="hint">
+            NapCat 已就绪：{nc.nickname}（{nc.uin}）已登录，收发通道都开着。绑定入口在下面。
+          </div>
+        ) : (
+          <>
+            {!nc.installed ? (
+              <div className="wx-actions">
+                <button type="button" className="primary sm" disabled={napcatBusy !== null}
+                  onClick={() => { void runNapcat("install"); }}>
+                  {napcatBusy === "install" ? "正在下载安装…" : "① 安装 NapCat"}
+                </button>
+                <span className="hint">从官方 release 下载（约 20MB），装进小茉的数据目录</span>
+              </div>
+            ) : napcatBusy === "start" || (!nc.running && napcatBusy === null && napcatNote === "") ? (
+              <div className="wx-actions">
+                <span className="hint">{napcatBusy === "start" ? "正在启动并配置 NapCat（最长约 3 分钟）…" : "NapCat 已安装，尚未启动"}</span>
+              </div>
+            ) : null}
+            {nc.installed && !nc.running && napcatBusy === null && (
+              <div className="wx-actions">
+                <button type="button" className="primary sm" onClick={() => { void runNapcat("start"); }}>
+                  ② 启动 NapCat
+                </button>
+              </div>
+            )}
+            {napcatQrDataUrl !== "" && (
+              <div className="ob-qr">
+                <img src={napcatQrDataUrl} alt="QQ 登录二维码" width={200} height={200} />
+                <div className="hint">用手机 QQ 扫码登录。扫过一次后小茉会记住这个号，下次启动自动登录。</div>
+              </div>
+            )}
+            {nc.phase === "waiting_qrcode" && napcatQrDataUrl === "" && (
+              <div className="hint">正在生成登录二维码…</div>
+            )}
+          </>
+        )}
+        {napcatNote !== "" && <div className="hint">{napcatNote}</div>}
+
+        {/* 兜底：自备 NapCat 的手动连接。收起，主路径走完的人不该看到这一堆字段。 */}
+        <details className="ob-manual">
+          <summary>我自己已经装了 NapCat，手动填地址</summary>
+          <div className="hint">
+            NapCat 网络配置里开两个服务再填进来：HTTP 服务器（发件，默认监听 3000）+
+            WebSocket 服务器（收件，默认 3001；不填只发不收）。
+          </div>
+          <label>发件 · HTTP API 地址
+            <input value={obAddr} placeholder="http://127.0.0.1:3000"
+              onChange={(e) => setObAddr(e.target.value)} />
+          </label>
+          <label>收件 · WebSocket 服务器地址
+            <input value={obWsAddr} placeholder="ws://127.0.0.1:3001"
+              onChange={(e) => setObWsAddr(e.target.value)} />
+          </label>
+          <div className="wx-actions">
+            <button type="button" className="primary sm" disabled={obAddrBusy}
+              onClick={() => { void connectOneBot(); }}>
+              {obAddrBusy ? "连接中…" : "保存并连接"}
+            </button>
+            <button type="button" className="pf-ghost" disabled={obAddrBusy}
+              onClick={() => { setObStatus(null); setProbeTick((t) => t + 1); }}>
+              重试
+            </button>
+            {obAddrNote !== "" && <span className="hint">{obAddrNote}</span>}
+          </div>
+        </details>
+      </div>
+    );
+  };
+
+  /** OneBot 渠道下探测协议端：读出它登录的账号（头像+昵称）供一键绑定；连不上给引导文案。
+   *  绑定态也要探——「需要处理」徽章背后必须有一个能就地处理的入口，不能只亮红灯。
+   *  顺带把协议端地址的现值带回来，连接面板就地可改。 */
+  useEffect(() => {
+    if (backend !== "onebot") return;
+    let cancelled = false;
+    setObStatus(null); setObAvatar("");
+    qqApi.fetchOneBotSettings().then((s) => {
+      if (cancelled) return;
+      setObAddr(s.httpBase);
+      setObWsAddr(s.wsUrl);
+    }).catch(() => { /* 拿不到就空着，面板里可填 */ });
+    qqApi.fetchOneBotStatus().then(async (info) => {
+      if (cancelled) return;
+      setObStatus(info);
+      if (info.reachable && info.userId !== "") {
+        try {
+          const a = await avatarApi.fetchQqAvatar(info.userId);
+          if (!cancelled) setObAvatar(a.url);
+        } catch { /* 没抓到头像就摆字块，不影响绑定 */ }
+      }
+    }).catch(() => {
+      if (!cancelled) setObStatus({ reachable: false, userId: "", nickname: "", error: "探测请求失败" });
+    });
+    return () => { cancelled = true; };
+  }, [backend, obProbeTick, binding]);
 
   const refresh = async (): Promise<void> => {
     if (busyRef.current) return;   // 上一发没回来就不叠加（慢网下轮询会自己叠自己）
@@ -123,13 +340,14 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
     if (qrTimer.current) { clearInterval(qrTimer.current); qrTimer.current = null; }
   };
 
-  /** OneBot 模式：把填好的真实 QQ 号绑到这位联系人，成功后刷新快照。 */
-  const saveOneBotBind = async (): Promise<void> => {
-    const number = obQqNumber.trim();
+  /** OneBot 模式：把真实 QQ 号绑到这位联系人（一键绑定与手填共用），成功后刷新快照。 */
+  const saveOneBotBind = async (numberOverride?: string): Promise<void> => {
+    const number = (numberOverride ?? obQqNumber).trim();
     if (number === "") { setErr("先填上这位联系人的真实 QQ 号"); return; }
     setErr(""); setNote(""); setBusy(true);
     try {
-      const data = await qqApi.bindQQOneBot(contactId, { qqNumber: number });
+      const owner = obOwnerQq.trim();
+      const data = await qqApi.bindQQOneBot(contactId, { qqNumber: number, ...(owner !== "" ? { ownerQq: owner } : {}) });
       if (!alive.current) return;
       setObQqNumber("");
       setBinding(data.binding);
@@ -407,6 +625,35 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
         )}
       </div>
 
+      {/* 接入渠道：全局一份（进程级），放在这张卡上因为 QQ 配置的家在这里。
+          选中即热切换：旧渠道收线、新渠道上线，卡片随渠道换形态，不用重启。 */}
+      <div className="qq-backend">
+        <div className="qq-backend-head">
+          <span className="qq-backend-label">接入渠道</span>
+          <span className="hint">全局设置，所有联系人共用；切换即时生效</span>
+        </div>
+        <div className="seg" role="radiogroup" aria-label="QQ 接入渠道">
+          <button type="button" className={backend === "official" ? "on" : ""} disabled={backendBusy}
+            onClick={() => setConfirmBackend("official")}>
+            官方机器人
+          </button>
+          <button type="button" className={backend === "onebot" ? "on" : ""} disabled={backendBusy}
+            onClick={() => setConfirmBackend("onebot")}>
+            OneBot 协议端
+          </button>
+        </div>
+        <div className="hint">
+          {backend === "onebot"
+            ? "真实 QQ 号在 NapCat / LLOneBot 等协议端登录：可主动发消息，face/商城表情、图/语音/视频/文件都原生支持。"
+            : "QQ 开放平台官方机器人：扫码建号最稳，受平台主动消息与富媒体权限限制。"}
+        </div>
+        {backendNote !== "" && (
+          <div className="qq-backend-note">
+            <span>{backendNote}</span>
+          </div>
+        )}
+      </div>
+
       {/* ① 凭据：每位联系人一份，拿到一次就收起。扫码是官方推荐路径，手填留作兜底。
           官方后端专属；OneBot 后端在协议端登录真实号，下面走另一个表单。 */}
       {backend === "official" && (!configured || editingCreds) && (
@@ -450,23 +697,83 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
         </div>
       )}
 
-      {/* ①' OneBot 后端：不用扫码/凭据，真实 QQ 号在协议端登录，这里只存「号→联系人」映射。 */}
+      {/* ①' OneBot 后端：不用扫码/凭据，真实 QQ 号在协议端登录，这里只存「号→联系人」映射。
+          绑定入口先探测协议端、直接读出它登录的账号——头像 + 昵称 + 一键确认，
+          手填只是「登录的不是这个号」时的兜底，两条路不该长得一样重要。 */}
       {backend === "onebot" && (!configured || !binding) && (
         <div className="qq-creds">
-          <div className="hint">
-            走 OneBot 协议端（NapCat / go-cqhttp 等）。真实 QQ 号在协议端扫码登录，
-            这里只需记下「这个号对应哪位联系人」。号要在协议端先登录并开通前向 WebSocket，小茉才收得到消息。
-          </div>
-          <label>真实 QQ 号
-            <input value={obQqNumber} inputMode="numeric" maxLength={15} placeholder="如 123456789"
-              onChange={(e) => setObQqNumber(e.target.value.replace(/[^\d]/g, ""))} />
-          </label>
-          <div className="wx-actions">
-            <button type="button" className="primary sm" disabled={busy || obQqNumber.trim() === ""}
-              onClick={() => { void saveOneBotBind(); }}>
-              {busy ? "保存中…" : "绑定到这位联系人"}
-            </button>
-          </div>
+          {obStatus === null ? (
+            <div className="hint">正在探测 OneBot 协议端…</div>
+          ) : obStatus.reachable && obStatus.userId !== "" ? (
+            <>
+              <div className="hint">协议端已连上，当前登录的账号是：</div>
+              <div className="ob-account">
+                {obAvatar !== ""
+                  ? <img className="ob-account-avatar" src={obAvatar} alt="" />
+                  : <span className="ob-account-avatar ob-account-fallback">{(obStatus.nickname || obStatus.userId).slice(0, 1)}</span>}
+                <div className="ob-account-meta">
+                  <div className="ob-account-name">{obStatus.nickname !== "" ? obStatus.nickname : "QQ 用户"}</div>
+                  <div className="ob-account-num">{obStatus.userId}</div>
+                </div>
+                <button type="button" className="primary sm" disabled={busy}
+                  onClick={() => { void saveOneBotBind(obStatus.userId); }}>
+                  {busy ? "绑定中…" : "绑定这个号"}
+                </button>
+              </div>
+              {!obManual && (
+                <button type="button" className="pf-ghost" onClick={() => setObManual(true)}>
+                  登录的不是这个号？手动填
+                </button>
+              )}
+            </>
+          ) : (
+            obConnectPanel()
+          )}
+          {(obManual || (obStatus !== null && !obStatus.reachable)) && (
+            <>
+              <label>真实 QQ 号
+                <input value={obQqNumber} inputMode="numeric" maxLength={15} placeholder="如 123456789"
+                  onChange={(e) => setObQqNumber(e.target.value.replace(/[^\d]/g, ""))} />
+              </label>
+              <label>主人 QQ 号（可选，群聊里据此认出哪句是主人说的）
+                <input value={obOwnerQq} inputMode="numeric" maxLength={15} placeholder="你自己的 QQ 号"
+                  onChange={(e) => setObOwnerQq(e.target.value.replace(/[^\d]/g, ""))} />
+              </label>
+              <div className="wx-actions">
+                <button type="button" className="primary sm" disabled={busy || obQqNumber.trim() === ""}
+                  onClick={() => { void saveOneBotBind(); }}>
+                  {busy ? "保存中…" : "绑定到这位联系人"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* ①'' OneBot 已绑定：协议端连接状态必须一直可见、可就地处理——
+          「需要处理」徽章亮着却无处可点，是最伤产品的死角。在线时给账号对账，离线时给修复路径。 */}
+      {backend === "onebot" && binding && obStatus !== null && (
+        <div className="qq-creds">
+          {obStatus.reachable && obStatus.userId !== "" ? (
+            <div className="ob-account">
+              {obAvatar !== ""
+                ? <img className="ob-account-avatar" src={obAvatar} alt="" />
+                : <span className="ob-account-avatar ob-account-fallback">{(obStatus.nickname || obStatus.userId).slice(0, 1)}</span>}
+              <div className="ob-account-meta">
+                <div className="ob-account-name">协议端已连接：{obStatus.nickname !== "" ? obStatus.nickname : "QQ 用户"}</div>
+                <div className="ob-account-num">
+                  {obStatus.userId}
+                  {(() => {
+                    // 绑定号在视图里是脱敏的（••••1234），只能拿尾号对账：对不上就明说，别让用户蒙在鼓里。
+                    const boundTail = binding.userOpenId.replace(/[^0-9]/g, "");
+                    return boundTail !== "" && !obStatus.userId.endsWith(boundTail) ? " · 与绑定号不一致" : "";
+                  })()}
+                </div>
+              </div>
+            </div>
+          ) : (
+            obConnectPanel()
+          )}
         </div>
       )}
 
@@ -518,7 +825,8 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
       )}
 
       {note !== "" && <div className="wx-note">{note}</div>}
-      {binding && !binding.hasReplyWindow && (
+      {/* 回复窗口是官方渠道的概念（msg_id 一小时被动窗口）；OneBot 真实号没有这个限制，别把官方的规矩念给 OneBot 用户听。 */}
+      {binding && backend === "official" && !binding.hasReplyWindow && (
         <div className="wx-note">
           还没有可回复的窗口：请先在 QQ 里给{who}发一条消息。官方只允许在收到消息后的一小时内被动回复，
           超窗的句子要靠「消息能力」权限，没申请到就发不出去（发不出去会显示在下面）。
@@ -595,20 +903,18 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
                   <span className="qq-conv-meta">
                     {conv.leftAt !== null
                       ? conv.messageCount > 0 ? "已离群 · 仅保留历史" : "已离群 · 历史已清除"
+                      : !conv.enabled ? "已停用 · 不响应群消息"
                       : `${conv.titleSource === "custom" ? "自定义名称" : "平台群名"} · 群聊`}
                   </span>
-                  {conv.leftAt !== null && conv.messageCount > 0 && (
-                    <button type="button" className="qq-conv-clear" title="清除该群全部历史"
-                      onClick={() => { setErr(""); setClearTarget(conv); }}>
-                      <Trash2 size={11} strokeWidth={1.9} />清除历史
-                    </button>
-                  )}
-                  {conv.leftAt !== null && (
-                    <button type="button" className="qq-conv-remove" title="从群聊列表彻底移除"
-                      onClick={() => { setErr(""); setRemoveTarget(conv); }}>
-                      <CircleMinus size={11} strokeWidth={1.9} />移除群聊
-                    </button>
-                  )}
+                  <button type="button" className="qq-conv-clear" title="清除该群全部历史（会话保留，继续收发）"
+                    onClick={() => { setErr(""); setClearTarget(conv); }}>
+                    <Trash2 size={11} strokeWidth={1.9} />清除历史
+                  </button>
+                  <button type="button" className="qq-conv-remove"
+                    title={conv.enabled && conv.leftAt === null ? "先停用收件才能移除" : "从群聊列表彻底移除"}
+                    onClick={() => { setErr(""); setRemoveTarget(conv); }}>
+                    <CircleMinus size={11} strokeWidth={1.9} />移除群聊
+                  </button>
                   {conv.leftAt === null && (
                     <label className="qq-conv-proactive" title="开启后，主动消息（如定期关心、到点提醒）会同时推送到该群。需先在手机 QQ 群设置里打开「机器人主动在群内发言」。">
                       <input type="checkbox" checked={conv.groupProactive} disabled={toggleBusyId !== ""}
@@ -725,6 +1031,25 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
           <div className="add-row">
             <button type="button" onClick={() => setConfirmOff(false)}>取消</button>
             <button type="button" className="primary" disabled={busy} onClick={() => { void disconnect(); }}>确认解绑</button>
+          </div>
+        </Modal>
+      )}
+
+      {confirmBackend !== null && (
+        <Modal onClose={() => setConfirmBackend(null)} label="切换 QQ 接入渠道" className="wx-modal">
+          <div className="modal-title">切换到{confirmBackend === "onebot" ? " OneBot 协议端" : "官方机器人"}？</div>
+          <div className="modal-sub">
+            {confirmBackend === "onebot"
+              ? "所有联系人的 QQ 将改走 OneBot 协议端收发，官方机器人的凭据保留但暂停使用。协议端没在运行时 QQ 消息会暂时中断，连接后自动恢复；绑定入口会读出协议端登录的号供确认。"
+              : "所有联系人的 QQ 将改走官方 Bot 平台收发，需要已扫码配置机器人凭据；协议端登录不受影响但暂停使用。"}
+            {" "}切换全局生效、即时完成，随时可以切回来。
+          </div>
+          <div className="add-row">
+            <button type="button" onClick={() => setConfirmBackend(null)}>取消</button>
+            <button type="button" className="primary" disabled={backendBusy}
+              onClick={() => { const target = confirmBackend; setConfirmBackend(null); if (target !== null) void switchBackend(target); }}>
+              确认切换
+            </button>
           </div>
         </Modal>
       )}

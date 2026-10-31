@@ -47,15 +47,58 @@ export function fetchQQBinding(contactId: string): Promise<{ binding: QQBindingV
   return getJson(`/api/contacts/${encodeURIComponent(contactId)}/qq`);
 }
 
-/** 当前 QQ 后端选型（official/onebot）。资料页据此分流：官方走扫码/凭据，OneBot 走「填真实 QQ 号」。 */
-export function fetchQQBackend(): Promise<{ backend: "official" | "onebot"; onebotReady: boolean }> {
+/** 当前 QQ 后端选型（official/onebot）。资料页据此分流：官方走扫码/凭据，OneBot 走「填真实 QQ 号」。
+ *  saved 是界面里选过、写在库里的渠道；与运行中的 backend 不同即「已切换待重启」。 */
+export type QQBackendInfo = {
+  backend: "official" | "onebot";
+  saved: "official" | "onebot" | null;
+  restartPending: boolean;
+  onebotReady: boolean;
+};
+export function fetchQQBackend(): Promise<QQBackendInfo> {
   return getJson("/api/qq/backend");
 }
 
-/** OneBot 模式：把「真实 QQ 号」绑到这位联系人。协议端侧登录，这里只存映射。 */
+/** 切换 QQ 接入渠道：后端当场热切（旧渠道收线、新渠道上线），返回 applied=true 即已生效。 */
+export function setQQBackend(backend: "official" | "onebot"): Promise<{ ok: boolean; backend: "official" | "onebot"; applied: boolean }> {
+  return postJson("/api/qq/backend", { backend });
+}
+
+/** 探测 OneBot 协议端并读出它当前登录的账号（绑定入口用：头像 + 昵称 + 一键绑定）。 */
+export type OneBotLoginInfo = { reachable: boolean; userId: string; nickname: string; error: string };
+export function fetchOneBotStatus(): Promise<OneBotLoginInfo> {
+  return getJson("/api/qq/onebot/status");
+}
+
+/** 小茉托管的 NapCat 状态（一键安装/启动的轮询源）。 */
+export type NapcatStatus = {
+  installed: boolean; running: boolean; loggedIn: boolean;
+  phase: string; qrUrl: string; uin: string; nickname: string; error: string;
+};
+export function fetchNapcatStatus(): Promise<NapcatStatus> {
+  return getJson("/api/qq/napcat");
+}
+/** 安装（下载解压，较慢）/ 启动（拉起+配置+等登录，最长约 3 分钟）。
+ *  这两个动作天然慢，必须放宽前端 10 秒默认超时，否则按钮永远"请求超时"。 */
+export function napcatAction(action: "install" | "start"): Promise<{ ok: boolean; error: string; needsQr?: boolean }> {
+  return postJson("/api/qq/napcat", { action }, 240_000);
+}
+
+/** 协议端连接设置：HTTP 出站地址 / forward WS / 令牌（令牌不回传，只有 hasToken）。 */
+export type OneBotSettingsView = { httpBase: string; wsUrl: string; hasToken: boolean };
+export function fetchOneBotSettings(): Promise<OneBotSettingsView> {
+  return getJson("/api/qq/onebot/settings");
+}
+/** 保存协议端连接设置；OneBot 正在跑时后端会热重启收发通道，返回 applied=true 即已生效。 */
+export function saveOneBotSettings(patch: { httpBase?: string; wsUrl?: string; token?: string }): Promise<OneBotSettingsView & { applied: boolean }> {
+  return postJson("/api/qq/onebot/settings", patch);
+}
+
+/** OneBot 模式：把「真实 QQ 号」绑到这位联系人。协议端侧登录，这里只存映射。
+ *  ownerQq 可选：主人的真实 QQ 号，群聊里据此把主人从群成员里认出来。 */
 export function bindQQOneBot(
   contactId: string,
-  patch: { qqNumber: string; enabled?: boolean; proactive?: boolean },
+  patch: { qqNumber: string; ownerQq?: string; enabled?: boolean; proactive?: boolean },
 ): Promise<{ ok: boolean; binding: QQBindingView | null; configured: boolean; status: QQStatus; conversations: QQConversationView[] }> {
   return postJson(`/api/contacts/${encodeURIComponent(contactId)}/qq/onebot-bind`, patch);
 }

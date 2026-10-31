@@ -109,7 +109,7 @@ export const NO_STORE = "no-store";
  * - `script-src 'self' 'unsafe-inline'`：'unsafe-inline' 是被迫的——index.html 里那段主题引导
  *   脚本必须在首帧前跑（防闪白，见 frontend/index.html 的注释）。想收掉它得把脚本外置成
  *   带 hash 的单独文件，那是前端构建的活，不在这里偷偷改。
- * - `img-src`/`media-src` 带 blob:：语音与图片放大走的是本地 blob。
+ * - `img-src`/`media-src` 带 data: 和 blob:：语音播放（ChatView 的 dataUrl）与头像等走 data:，图片放大走本地 blob。
  * - 不放 https:：界面里所有图都是 /media 或 data:（头像也早已落盘到 /media）。
  */
 export const HTML_SECURITY_HEADERS: Record<string, string> = {
@@ -118,7 +118,7 @@ export const HTML_SECURITY_HEADERS: Record<string, string> = {
     "script-src 'self' 'unsafe-inline'",
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob:",
-    "media-src 'self' blob:",
+    "media-src 'self' data: blob:",
     "font-src 'self' data:",
     "connect-src 'self'",
     "object-src 'none'",

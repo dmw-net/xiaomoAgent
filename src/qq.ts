@@ -9,8 +9,8 @@ import { db, kvGet, kvSet } from "./db.ts";
 import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
-import { asText, chunkSegments, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight } from "./channels/delivery.ts";
-import { ensureConversation, ensureLocalConversation, getConversation, listConversations, listGroupProactiveConversations, setConversationMembership, type Conversation } from "./conversations.ts";
+import { asText, chunkSegments, CredentialCache, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight, withRaw } from "./channels/delivery.ts";
+import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, listGroupProactiveConversations, setConversationMembership, type Conversation } from "./conversations.ts";
 import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, readMedia, saveAudio, saveImage, saveVideo, sniffImageMime } from "./media.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { config } from "./config.ts";
@@ -21,22 +21,26 @@ const KV_ACCOUNTS = "qq.accounts.v2";
 const LEGACY_KV_CREDENTIALS = "qq.credentials";
 const LEGACY_KV_BINDINGS = "qq.bindings";
 const API_ORIGIN = "https://api.bot.qq.com";
+
 const PLATFORM_ORIGIN = "https://q.qq.com";
 const QR_NONE = 0;
 const QR_COMPLETED = 2;
 const QR_EXPIRED = 3;
 const INTENT_GROUP_C2C = 1 << 25;
 const TEXT_UNITS = 4000;
-/** 官方富媒体直传（file_data 塞 base64）硬上限 5MB；超过必须走分片上传。 */
-const QQ_DIRECT_UPLOAD_MAX = 5 * 1024 * 1024;
-/** 分片预上传 md5_10m 校验：官方规定取文件前 10002432 字节的 MD5。 */
-const QQ_MD5_10M_BYTES = 1_002_432;
+/** 官方富媒体本地上传只有两条路（rich-media 文档）：URL 上传（需公网可访问）和分片上传（upload_prepare → 分片 PUT → part_finish → 合并）。
+ *  本地 /media 文件不在公网，一律走分片路径；<5MB 的单分片也照走这套，官方不认 base64 直传字段。 */
+/** 分片预上传 md5_10m 校验：官方规定取文件前 10002432 字节（约 9.54MB）的 MD5。 */
+const QQ_MD5_10M_BYTES = 10_002_432;
 
 /**
  * 出站媒体引用：一个本地 /media 路径 + 可选展示名。
  * 调用方（proactive / agent）只认 /media URL；label 影响上传时的 file_name。
  */
 export type QqMediaRef = { url: string; label?: string };
+
+/** 一组媒体投递的回执：send_emote 等调用方要靠它如实回报，不能再"吞了错误还报成功"。 */
+export type MediaOutcome = { sent: number; failed: number; lastError: string };
 const ACCOUNT_CAP = 40;
 const SEEN_LIMIT = 160;
 const BIND_TTL_MS = 10 * 60_000;
@@ -51,6 +55,26 @@ const AUTH_FAIL_CODES = new Set([40034001, 40034003]);
 const CRED_FAIL_CODES = new Set([100004, 100007, 100013, 100016]);
 /** token 探活间隔：每 30 分钟用 AppID/Secret 直接换一次 token，主动发现"提前失效"。 */
 const TOKEN_PROBE_MS = 30 * 60_000;
+/**
+ * 富媒体凭证（file_info）缓存的有效期口径。平台在 /files 响应里回 `ttl`（秒，0=可长期使用），
+ * 所以有效期照它算，不自己猜：
+ *   - 有 ttl → ttl 减掉一个提前作废的余量，避免卡在边界上发失败；
+ *   - 没回 ttl（字段缺失/非数字）→ 保守按 6 小时；
+ *   - ttl=0（官方语义"可长期使用"）→ 仍按天重传，防平台侧悄悄回收。
+ */
+const FILE_INFO_MARGIN_MS = 60_000;
+const FILE_INFO_NO_TTL_MS = 6 * 3_600_000;
+const FILE_INFO_LONG_LIVED_MS = 24 * 3_600_000;
+/** 缓存条数上限：一张图一条，200 条足够盖住常用表情包，超了从最旧的开始丢。 */
+const FILE_INFO_CACHE_MAX = 200;
+
+/** 平台 ttl（秒）→ 缓存有效期（毫秒）。-1 表示平台没回这个字段。 */
+export function fileInfoLifetimeMs(ttlSeconds: number): number {
+  if (!Number.isFinite(ttlSeconds)) return FILE_INFO_NO_TTL_MS;
+  if (ttlSeconds === 0) return FILE_INFO_LONG_LIVED_MS;
+  if (ttlSeconds < 0) return FILE_INFO_NO_TTL_MS;
+  return Math.max(0, ttlSeconds * 1000 - FILE_INFO_MARGIN_MS);
+}
 const RECONNECT_STEPS_MS = [1_000, 3_000, 8_000, 20_000, 45_000, 90_000];
 const BIND_PHRASE = "绑定";
 
@@ -371,7 +395,9 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       if (current.appId === "" || current.clientSecret === "") throw new Error("还没填 QQ 机器人的 AppID 与 AppSecret");
       const started = Date.now();
       const response = await http(`${API_ORIGIN}/app/getAppAccessToken`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ appId: current.appId, clientSecret: current.clientSecret }) });
-      const data = await response.json().catch(() => null) as Record<string, unknown> | null;
+      const rawBody = await response.text().catch(() => "");
+      let data: Record<string, unknown> | null = null;
+      try { data = rawBody === "" ? null : JSON.parse(rawBody) as Record<string, unknown>; } catch { /* 非 JSON 报文走下面的空判 */ }
       const value = asText(data?.access_token); const expiresIn = Number(data?.expires_in);
       if (value === "" || !Number.isFinite(expiresIn) || expiresIn <= 0) {
         const code = Number(data?.code ?? 0);
@@ -379,7 +405,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
         // 探活要靠它把状态升级为"需要重扫"；后者（限流、网络抖动）重试就好，不该惊动用户。
         const transient = code === 100001 || response.status >= 500;
         const message = asText(data?.message) || (transient ? `HTTP ${response.status}` : "换不到访问凭证");
-        logModelCall({ purpose: "qq", ok: false, code: "QQ_TOKEN", model: "qqbot", url: "/app/getAppAccessToken", elapsedMs: Date.now() - started, message: message.slice(0, 300), contactId: current.contactId });
+        logModelCall({ purpose: "qq", ok: false, code: "QQ_TOKEN", model: "qqbot", url: "/app/getAppAccessToken", elapsedMs: Date.now() - started, message: message.slice(0, 300), resRaw: rawBody.slice(0, 2000), contactId: current.contactId });
         if (!transient) credentialFaults.set(current.id, message.slice(0, 200)); else credentialFaults.delete(current.id);
         throw new Error((transient ? "取访问凭证失败（临时）：" : "换不到访问凭证：") + message);
       }
@@ -428,17 +454,21 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   const callApi = async (account: StoredAccount, path: string, init: { method?: string; body?: unknown } = {}): Promise<Record<string, unknown>> => {
     const worker = getWorker(account);
     // 一次调用：取 token → 打 API → 归一化成 {code, message, data, failed}。
-    const callOnce = async (): Promise<{ code: number; message: string; data: Record<string, unknown>; failed: boolean }> => {
+    const callOnce = async (): Promise<{ code: number; message: string; data: Record<string, unknown>; failed: boolean; raw: string }> => {
       const started = Date.now(); const header = await worker.token.get();
       const response = await http(API_ORIGIN + path, { method: init.method ?? "GET", headers: { authorization: `QQBot ${header}`, "content-type": "application/json" }, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }) });
-      const data = await response.json().catch(() => ({})) as Record<string, unknown>; const code = Number(data.code ?? 0);
+      // 先取原文再解析：失败时把服务商原始报文留给日志（res_full），详情弹窗才有东西可看。
+      const rawBody = await response.text().catch(() => "");
+      let data: Record<string, unknown> = {};
+      try { data = rawBody === "" ? {} : JSON.parse(rawBody) as Record<string, unknown>; } catch { /* 非 JSON 报文原样进日志 */ }
+      const code = Number(data.code ?? 0);
       if (!response.ok || (Number.isFinite(code) && code !== 0)) {
         const message = asText(data.message) || `HTTP ${response.status}`;
-        logModelCall({ purpose: "qq", ok: false, code: "QQ_API_" + String(code), model: "qqbot", url: path, elapsedMs: Date.now() - started, message: message.slice(0, 300), contactId: account.contactId });
-        return { code, message, data, failed: true };
+        logModelCall({ purpose: "qq", ok: false, code: "QQ_API_" + String(code), model: "qqbot", url: path, elapsedMs: Date.now() - started, message: message.slice(0, 300), resRaw: rawBody.slice(0, 2000), contactId: account.contactId });
+        return { code, message, data, failed: true, raw: rawBody.slice(0, 2000) };
       }
       logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: path, elapsedMs: Date.now() - started, contactId: account.contactId });
-      return { code, message: "", data, failed: false };
+      return { code, message: "", data, failed: false, raw: "" };
     };
     let result = await callOnce();
     // token 被平台提前作废（AppSecret 在开放平台被重置 / 平台侧轮转）时，缓存里的旧 token 可能
@@ -448,11 +478,11 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       const retried = await callOnce();
       if (!retried.failed) return retried.data;
       noteProblem(account, new Error("强制重取凭证后仍失败：" + (retried.message === "" ? "未知" : retried.message)));
-      throw new Error(explain(retried.code, retried.message));
+      throw withRaw(new Error(explain(retried.code, retried.message)), retried.raw);
     }
     if (result.failed) {
       noteProblem(account, new Error(explain(result.code, result.message)));
-      throw new Error(explain(result.code, result.message));
+      throw withRaw(new Error(explain(result.code, result.message)), result.raw);
     }
     return result.data;
   };
@@ -544,40 +574,45 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   };
 
   /**
+   * file_info 缓存（有界、带有效期）。同一张梗图往往被反复甩，而每次上传要跑满四次往返，
+   * 其中一次还是直传腾讯 COS——业内（TG file_id / WA media_id / 微信 media_id）统一是
+   * 「按内容缓存平台侧凭证，到期前复用」。
+   * 键必须带场景：官方语义里 file_info 不能跨私聊/群复用，混用就是拿错凭证。
+   */
+  const fileInfoCache = new CredentialCache<string>(FILE_INFO_CACHE_MAX, clock);
+  const fileInfoKey = (account: StoredAccount, target: "private" | "group", targetId: string, md5: string): string =>
+    `${account.id}|${target}|${targetId}|${md5}`;
+
+  /**
    * 把本地 /media 文件上传到官方富媒体端点，拿回 file_info。
    * targetId 是「发到哪」的 openid（私聊=userOpenId，群=groupOpenId）——上传与发送必须同场景，
-   * file_info 不能跨场景复用，所以这里一并带上。≤5MB 走二进制直传；>5MB 走分片。
+   * file_info 不能跨场景复用，所以这里一并带上。本地文件一律走分片上传（小文件只是单分片）。
    */
   const uploadMedia = async (
     account: StoredAccount,
     target: "private" | "group",
     targetId: string,
     ref: QqMediaRef,
-  ): Promise<string> => {
+  ): Promise<{ fileInfo: string; cacheKey: string; fromCache: boolean }> => {
     const idPath = target === "private" ? encodeURIComponent(account.userOpenId) : encodeURIComponent(targetId);
-    const prefix = target === "private" ? "users" : "groups";
+    // 官方富媒体接口挂在 /v2 下（/v2/users/{openid}/upload_prepare|files）——
+    // 少了这段前缀平台会回 11001「不支持的调用」，与文字消息的 /v2/users/.../messages 同一版式。
+    const prefix = target === "private" ? "v2/users" : "v2/groups";
     const file = readMedia(ref.url);
     if (file === null) throw new Error("本地媒体文件读不到，无法上传到 QQ：" + ref.url);
     const { buffer, mime } = file;
     const ext = ref.url.split(".").pop()?.toLowerCase() ?? "";
     const fileType = mediaTypeOfExt(ext);
     const nameWithExt = mediaFileNameOf(ref, ext);
-
-    if (buffer.length <= QQ_DIRECT_UPLOAD_MAX) {
-      // 直传：file_data 传 base64 字符串
-      const started = clock();
-      const data = await callApi(account, `/${prefix}/${idPath}/files`, {
-        method: "POST",
-        body: { file_type: fileType, file_name: nameWithExt, file_data: buffer.toString("base64"), srv_send_msg: false },
-      });
-      const fileInfo = asText(data.file_info);
-      if (fileInfo === "") throw new Error("上传成功但没返回 file_info");
-      logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: `/${prefix}/{id}/files`, elapsedMs: clock() - started, contactId: account.contactId });
-      return fileInfo;
-    }
-
-    // 分片上传
     const wholeMd5 = createHash("md5").update(buffer).digest("hex");
+    const cacheKey = fileInfoKey(account, target, targetId, wholeMd5);
+    const cached = fileInfoCache.get(cacheKey);
+    if (cached !== undefined) return { fileInfo: cached, cacheKey, fromCache: true };
+
+    // 本地文件一律走分片上传（官方 rich-media 文档不认 base64 直传字段；
+    // 小文件 <5MB 只是单分片，流程与大图相同——upload_prepare 返回 parts，
+    // 1 个 part 也照样 PUT + part_finish + 合并）。
+    const started = clock();
     const wholeSha1 = createHash("sha1").update(buffer).digest("hex");
     const md510m = createHash("md5").update(buffer.subarray(0, QQ_MD5_10M_BYTES)).digest("hex");
     const prep = await callApi(account, `/${prefix}/${idPath}/upload_prepare`, {
@@ -620,7 +655,12 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     });
     const fileInfo = asText(merged.file_info);
     if (fileInfo === "") throw new Error("分片合并成功但没返回 file_info");
-    return fileInfo;
+    // 有效期照平台回的 ttl 算（秒，0=可长期使用）；没回这个字段时按保守值，不当成长期有效。
+    const ttlRaw = merged.ttl;
+    const ttlSeconds = ttlRaw === undefined || ttlRaw === null || asText(ttlRaw) === "" ? -1 : Number(asText(ttlRaw));
+    fileInfoCache.set(cacheKey, fileInfo, fileInfoLifetimeMs(ttlSeconds));
+    logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: `/${prefix}/{id}/files`, elapsedMs: clock() - started, contactId: account.contactId });
+    return { fileInfo, cacheKey, fromCache: false };
   };
 
   /** 发一条富媒体消息（msg_type=7 + media.file_info）。 */
@@ -631,23 +671,37 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     ref: QqMediaRef,
     msgId: string,
   ): Promise<void> => {
-    const fileInfo = await uploadMedia(account, target, targetId, ref);
-    const idPath = target === "private" ? encodeURIComponent(account.userOpenId) : encodeURIComponent(targetId);
-    const prefix = target === "private" ? "users" : "groups";
-    const body: Record<string, unknown> = { msg_type: 7, media: { file_info: fileInfo } };
-    if (msgId !== "") { body.msg_id = msgId; body.msg_seq = nextSeq(`${account.id}|${target}|${targetId}|${msgId}`); }
-    await callApi(account, `/${prefix}/${idPath}/messages`, { method: "POST", body });
+    const post = async (fileInfo: string): Promise<void> => {
+      const idPath = target === "private" ? encodeURIComponent(account.userOpenId) : encodeURIComponent(targetId);
+      const prefix = target === "private" ? "v2/users" : "v2/groups";
+      const body: Record<string, unknown> = { msg_type: 7, media: { file_info: fileInfo } };
+      // msg_seq 每次尝试都重新取号：重发不能复用同一个序号，否则平台按重复消息丢掉。
+      if (msgId !== "") { body.msg_id = msgId; body.msg_seq = nextSeq(`${account.id}|${target}|${targetId}|${msgId}`); }
+      await callApi(account, `/${prefix}/${idPath}/messages`, { method: "POST", body });
+    };
+    const uploaded = await uploadMedia(account, target, targetId, ref);
+    if (!uploaded.fromCache) { await post(uploaded.fileInfo); return; }
+    // 凭证是从缓存拿的：平台可能已经回收了它。失败就作废重传一次，别把「缓存过期」误报成「这张图发不出去」。
+    // 刚上传完就失败的不重试——那是格式(850019)/配额(40093002)类硬失败，重传只会再烧一次上传。
+    try {
+      await post(uploaded.fileInfo);
+    } catch {
+      fileInfoCache.invalidate(uploaded.cacheKey);
+      const fresh = await uploadMedia(account, target, targetId, ref);
+      await post(fresh.fileInfo);
+    }
   };
 
   /** 把文字 + 一组本地媒体投到私聊。媒体逐个发，单个失败不吞掉后面的。 */
   const deliverMediaToContact = async (
     contactId: string,
-    text: string,
+    text: string | string[],
     media: QqMediaRef[],
     opts: { proactive?: boolean } = {},
-  ): Promise<void> => {
+  ): Promise<MediaOutcome> => {
+    const outcome: MediaOutcome = { sent: 0, failed: 0, lastError: "" };
     const account = byContact(contactId);
-    if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
+    if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return outcome;
     if (text !== "") {
       const inWindow = account.replyMessageId !== "" && clock() - account.replyMessageAt < REPLY_WINDOW_MS;
       await deliver(account, text, { proactive: opts.proactive === true, msgId: inWindow ? account.replyMessageId : "" });
@@ -657,12 +711,15 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       try {
         await sendMedia(account, "private", "", ref, refMsgId);
         account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist();
+        outcome.sent += 1;
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
         account.lastError = message; persist();
+        outcome.failed += 1; outcome.lastError = message;
         console.warn(`[qq] 媒体投递失败（${contactId}）：${message}`);
       }
     }
+    return outcome;
   };
 
   /** 把一组本地媒体按顺序投到指定群（主动消息无 msg_id 引用）。 */
@@ -671,11 +728,12 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     groupConvId: string,
     text: string,
     media: QqMediaRef[],
-  ): Promise<void> => {
+  ): Promise<MediaOutcome> => {
+    const outcome: MediaOutcome = { sent: 0, failed: 0, lastError: "" };
     const conv = getConversation(groupConvId);
-    if (conv === null || conv.channel !== "qq" || conv.kind !== "group" || !conv.enabled) return;
+    if (conv === null || conv.channel !== "qq" || conv.kind !== "group" || !conv.enabled) return outcome;
     const account = byId(conv.account_id) ?? byContact(contactId);
-    if (account === null || !configured(account)) return;
+    if (account === null || !configured(account)) return outcome;
     if (text !== "") {
       const segments = splitQqText(text);
       if (segments.length > 0) {
@@ -684,7 +742,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
           segments, send: (segment) => sendGroup(account, conv.external_id, segment, ""), elapsed: () => clock() - startedAt,
           onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
           onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 群媒体文字失败（${conv.id}）：${message}`); },
-          log: (ok, message, elapsedMs) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), contactId: account.contactId }),
+          log: (ok, message, elapsedMs, raw) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), ...(raw ? { resRaw: raw } : {}), contactId: account.contactId }),
         });
       }
     }
@@ -692,12 +750,15 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       try {
         await sendMedia(account, "group", conv.external_id, ref, "");
         account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist();
+        outcome.sent += 1;
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
         account.lastError = message; persist();
+        outcome.failed += 1; outcome.lastError = message;
         console.warn(`[qq] 群媒体投递失败（${conv.id}）：${message}`);
       }
     }
+    return outcome;
   };
 
   /**
@@ -732,9 +793,19 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     const render = renderEmote(intent);
     if (render.mediaRefs.length > 0) {
       // 图片类表情：只发图本身，不重复发标签文字。
-      if (conv.kind === "group") await deliverMediaToGroup(conv.contact_id, conversationId, "", render.mediaRefs);
-      else await deliverMediaToContact(conv.contact_id, "", render.mediaRefs);
-      return { ok: true, native: render.native, via: "media", detail: render.mediaRefs[0]?.url };
+      const outcome = conv.kind === "group"
+        ? await deliverMediaToGroup(conv.contact_id, conversationId, "", render.mediaRefs)
+        : await deliverMediaToContact(conv.contact_id, "", render.mediaRefs);
+      if (outcome.sent > 0) return { ok: true, native: render.native, via: "media", detail: render.mediaRefs[0]?.url };
+      // 富媒体一条没发出去：有降级文案就降级成文字发出去，回执里带上失败原因——
+      // 之前这里无条件报 ok，模型被"发出去了"的回执骗着在 QQ 里说"喏，发了"，图其实没到。
+      const fallback = render.fallbackText;
+      if (fallback !== "") {
+        if (conv.kind === "group") await deliverToConversation(conversationId, fallback);
+        else await deliverToContact(conv.contact_id, fallback);
+        return { ok: true, native: false, via: "text", detail: `图片没发出去（${outcome.lastError || "原因不明"}），已改发文字「${fallback}」` };
+      }
+      return { ok: false, native: false, via: "skipped", detail: outcome.lastError || "图片表情投递失败" };
     }
     // face/mface 官方渠道降级：能降级成文字就发文字，纯原生表情（无降级文案）则跳过。
     if (render.fallbackText !== "") {
@@ -753,7 +824,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       segments, send: (segment) => sendPrivate(account, segment, opts.msgId ?? ""), elapsed: () => clock() - startedAt,
       onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
       onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 投递失败（${account.contactId}）：${message}`); },
-      log: (ok, message, elapsedMs) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/users/{openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), contactId: account.contactId }),
+      log: (ok, message, elapsedMs, raw) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/users/{openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), ...(raw ? { resRaw: raw } : {}), contactId: account.contactId }),
     });
   };
 
@@ -776,7 +847,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       segments, send: (segment) => sendGroup(account, conv.external_id, segment, opts.triggerMessageId ?? ""), elapsed: () => clock() - startedAt,
       onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
       onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 群投递失败（${conv.id}）：${message}`); },
-      log: (ok, message, elapsedMs) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), contactId: account.contactId }),
+      log: (ok, message, elapsedMs, raw) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), ...(raw ? { resRaw: raw } : {}), contactId: account.contactId }),
     });
   };
 
@@ -818,10 +889,11 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
             persist();
             console.warn(`[qq] 群主动投递失败（${conv.id}）：${message}`);
           },
-          log: (ok, message, elapsedMs) => logModelCall({
+          log: (ok, message, elapsedMs, raw) => logModelCall({
             purpose: "qq", ok, model: "qqbot",
             url: "/v2/groups/{group_openid}/messages",
             elapsedMs, ...(message === "" ? {} : { message }),
+            ...(raw ? { resRaw: raw } : {}),
             contactId: account.contactId,
           }),
         });
@@ -895,7 +967,14 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     const seen = new SeenKeys(SEEN_LIMIT, account.recentMessageIds); if (seen.has(key)) return;
     const author = (message.author ?? {}) as Record<string, unknown>;
     const senderId = asText(author.member_openid ?? author.id);
-    const senderName = asText(author.member_name ?? author.username ?? author.nickname) || "群成员";
+    const senderName = (asText(author.member_name ?? author.username ?? author.nickname) || "群成员")
+      // 主人识别（官方渠道）：私聊绑定的 userOpenId 就是主人本人的 openid——同一用户在同一
+      // 机器人下 openid 跨 C2C/群稳定，比对即可。没有 C2C 绑定的机器人认不出主人，不硬猜。
+      + (account.userOpenId !== "" && senderId === account.userOpenId ? "（主人）" : "");
+    // 渠道过户（双向）：OneBot 时期留下的同联系人群会话（数字群号命名空间）恰好一条就认领，
+    // 免得切回官方后同一个群裂成两条。官方会话归属回官方账号。
+    const adoptable = findAdoptableGroupConversation(account.contactId, false);
+    if (adoptable !== null) adoptGroupConversation(adoptable.id, groupOpenId, account.id);
     const conv = ensureConversation({ contactId: account.contactId, channel: "qq", kind: "group", externalId: groupOpenId, accountId: account.id, title: asText(message.group_name) });
     if (conv.left_at !== null || !conv.enabled) return;
     account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
@@ -1017,11 +1096,14 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   const platformCall = async (path: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
     const started = Date.now();
     const response = await http(PLATFORM_ORIGIN + path, { method: "POST", headers: { accept: "application/json", "content-type": "application/json" }, body: JSON.stringify(payload) });
-    const data = await response.json().catch(() => ({})) as Record<string, unknown>; const retcode = Number(data.retcode ?? 0);
+    const rawBody = await response.text().catch(() => "");
+    let data: Record<string, unknown> = {};
+    try { data = rawBody === "" ? {} : JSON.parse(rawBody) as Record<string, unknown>; } catch { /* 非 JSON 报文原样进日志 */ }
+    const retcode = Number(data.retcode ?? 0);
     if (!response.ok || (Number.isFinite(retcode) && retcode !== 0)) {
       const message = asText(data.msg) || asText(data.message) || `HTTP ${response.status}`;
-      logModelCall({ purpose: "qq", ok: false, code: "QQ_BIND_" + String(retcode), model: "qqbot", url: path, elapsedMs: Date.now() - started, message: message.slice(0, 300) });
-      throw new Error(message === "" ? "QQ 开放平台拒绝了这次请求" : message);
+      logModelCall({ purpose: "qq", ok: false, code: "QQ_BIND_" + String(retcode), model: "qqbot", url: path, elapsedMs: Date.now() - started, message: message.slice(0, 300), resRaw: rawBody.slice(0, 2000) });
+      throw withRaw(new Error(message === "" ? "QQ 开放平台拒绝了这次请求" : message), rawBody.slice(0, 2000));
     }
     logModelCall({ purpose: "qq", ok: true, model: "qqbot", url: path, elapsedMs: Date.now() - started });
     const inner = data.data; return inner !== null && typeof inner === "object" ? inner as Record<string, unknown> : {};
@@ -1121,12 +1203,60 @@ export const qqOfficial = createQQService();
 export type QQService = typeof qqOfficial;
 
 /**
- * 消费点统一用的单例。按 config.qq.backend 选后端：
+ * 消费点统一用的门面。背后两个后端：
  *   - "official"（默认）→ qq.ts 的官方 Bot API 后端；
  *   - "onebot"         → qq-onebot.ts 的 OneBot v11 协议端后端。
- * 两边都实现同一个 QQService 面，消费点零改动即可切换。
- * 选择发生在模块加载期（环境变量在启动前定死），改后需重启。
+ * 两边都实现同一个 QQService 面，消费点零感知即可切换——而且切换是**运行期热切**：
+ * 门面把每次成员调用实时分发到当前生效的实例，切换瞬间旧后端 stopAll、新后端 startAll，
+ * 在飞的投递跑完旧实例自然收尾，下一条消息就走新渠道，全程不断服务。
+ *
+ * 选型的真源：界面里切换后落 KV（`qq.backend`）并当场热切；KV 同时是下次启动的初值，
+ * 环境变量/desktop.json 只是没有界面选择时的缺省（config 是冻结的，不回写）。
+ * 生效值统一从 qqBackend() 读：表情能力探测、路由分流都认它，永远对齐。
  */
-export const qq: QQService = config.qq.backend === "onebot"
-  ? createQQOneBotService()
-  : qqOfficial;
+const QQ_BACKEND_KV = "qq.backend";
+const savedBackend = kvGet(QQ_BACKEND_KV);
+let effectiveBackend: "official" | "onebot" =
+  savedBackend === "official" || savedBackend === "onebot" ? savedBackend : config.qq.backend;
+/** 当前生效的 QQ 渠道（热切换由 applyQQBackend 改写，读方拿到的永远是现行值）。 */
+export function qqBackend(): "official" | "onebot" { return effectiveBackend; }
+/** 界面里选过、写在库里的渠道；与 qqBackend() 一致是常态，不一致只出现在写盘失败的瞬间。 */
+export function qqBackendSaved(): "official" | "onebot" | null {
+  const value = kvGet(QQ_BACKEND_KV);
+  return value === "official" || value === "onebot" ? value : null;
+}
+export function saveQQBackend(backend: "official" | "onebot"): void {
+  kvSet(QQ_BACKEND_KV, backend);
+}
+
+// ── 渠道热切换：门面 + 双后端缓存 ─────────────────────────────
+// 两个后端实例都常驻（懒创建），`qq` 门面的每次调用都实时分发到当前生效的那个。
+let officialService: QQService = qqOfficial;
+let onebotService: QQService | null = null;
+const activeService = (): QQService => {
+  if (effectiveBackend === "onebot") {
+    if (onebotService === null) onebotService = createQQOneBotService();
+    return onebotService;
+  }
+  return officialService;
+};
+
+/** 运行期切换渠道：落库由调用方（saveQQBackend）负责，这里只负责把进程切过去。 */
+export function applyQQBackend(backend: "official" | "onebot"): void {
+  if (backend === effectiveBackend) return;
+  const previous = activeService();
+  effectiveBackend = backend;
+  const next = activeService();
+  previous.stopAll();
+  next.startAll();
+  console.log(`[qq] 渠道已热切换：${previous === officialService ? "official" : "onebot"} → ${backend}`);
+}
+
+/**
+ * 门面：Proxy 把每个成员调用转发到当前生效的后端实例。
+ * 服务的公开面全是方法（读写 KV、发消息、开/停网关），逐调用分发没有一致性问题；
+ * 切换瞬间拿到的引用换目标，等于"下一条消息就走新渠道"。
+ */
+export const qq: QQService = new Proxy({} as QQService, {
+  get: (_target, prop) => Reflect.get(activeService(), prop),
+});

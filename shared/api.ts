@@ -15,6 +15,8 @@ export type MessageAttachmentMeta = {
   url: string;
   kind: MessageAttachmentKind;
   mime?: string;
+  /** 人类可读名（表情包的词、原始文件名）；历史标记靠它让模型记住"自己发过哪张"。 */
+  label?: string;
   durationMs?: number;
   transcript?: string;
   /** 0..1 的归一化包络；只用于界面绘制，不参与任何模型请求。 */

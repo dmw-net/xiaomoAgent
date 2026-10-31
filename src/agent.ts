@@ -15,7 +15,7 @@ import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getC
 import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssistantToActiveProfile, type AssistantPermission } from "./assistant.ts";
 import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "./reply-segmentation.ts";
-import { dataUrlBytes, mediaDataUrl, releaseMediaFiles } from "./media.ts";
+import { dataUrlBytes, mediaDataUrl, mediaTypeOfUrl, releaseMediaFiles } from "./media.ts";
 import { emitMessage, emitTurn, emitActivity } from "./events.ts";
 import type { CapabilityName } from "./settings.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
@@ -246,21 +246,22 @@ export function recentMessages(
   upToMessageId?: number | null,
   conversationId = localConversationId(contactId),
 ): Array<{
-  id: number; role: string; text: string; attachments: string | null; turn_id: string | null;
+  id: number; role: string; text: string; attachments: string | null; attachment_meta?: string | null; turn_id: string | null;
   sender_id?: string | null; sender_name?: string | null; at_bot?: number;
 }> {
   const turns = limitTurns ?? effectiveRecentTurnsFor(contactId, conversationId);
   const live = `contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool'`;
   const cap = upToMessageId === undefined || upToMessageId === null ? "" : " AND id <= ?";
   const capArgs: number[] = cap === "" ? [] : [upToMessageId as number];
-  const cols = `id, role, text, attachments, turn_id, sender_id, sender_name, at_bot`;
+  // attachment_meta 随行：她自己的图不回放原图，meta.label 是历史标记里"发过哪张"的唯一线索。
+  const cols = `id, role, text, attachments, attachment_meta, turn_id, sender_id, sender_name, at_bot`;
   const boundary = turns === ALL_TURNS ? undefined : q(`SELECT id FROM messages WHERE ${live}${cap} AND role = 'user' ORDER BY id DESC LIMIT 1 OFFSET ?`)
     .get(contactId, conversationId, ...capArgs, Math.max(1, turns) - 1) as { id: number } | undefined;
   return (boundary
     ? q(`SELECT ${cols} FROM messages WHERE ${live}${cap} AND id >= ? ORDER BY id ASC`).all(contactId, conversationId, ...capArgs, boundary.id)
     : q(`SELECT ${cols} FROM messages WHERE ${live}${cap} ORDER BY id ASC`).all(contactId, conversationId, ...capArgs)
   ) as unknown as Array<{
-    id: number; role: string; text: string; attachments: string | null; turn_id: string | null;
+    id: number; role: string; text: string; attachments: string | null; attachment_meta?: string | null; turn_id: string | null;
     sender_id?: string | null; sender_name?: string | null; at_bot?: number;
   }>;
 }
@@ -876,6 +877,10 @@ export function toolSummary(name: string, result: unknown): string {
     const secs = r?.seconds ? `（${r.seconds} 秒）` : "";
     return r?.selfie ? `发了一张自拍${secs}` : `画了一张图${secs}`;
   }
+  if (name === "send_voice") {
+    // 结果形状 { via, native, note }；说了什么要从卡片本身的 args 拿不到，摘要只报「发了」。
+    return "发了一条语音";
+  }
   if (name === "app_status") return "读取了应用当前配置状态";
   if (name === "configure_model" || name === "activate_model") {
     // configure_model 回 {label, activated:boolean}；activate_model 回 {activated:"档名"}——
@@ -1069,8 +1074,10 @@ async function runAgentLoop(
   onReasoning?: (text: string, tokens: number) => void,
   /** 思考流式出口：本次调用累计推理，和已完成轮次的推理拼成整轮实时草稿。 */
   onReasoningDraft?: (text: string) => void,
-  /** 工具产出的文件（出图）出口：循环里每产一张就交出去，由调用方挂到这条回复的附件上。 */
-  onFiles?: (urls: string[]) => void,
+  /** 工具产出的文件（出图/语音）出口：循环里每产一件就交出去，由调用方挂到这条回复的附件上。 */
+  onFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
+  /** 工具已自行发进渠道的文件出口（send_emote 原生表情）：挂气泡用，但通道投递要跳过，防同一张图发两遍。 */
+  onChannelDeliveredFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
   /**
    * 流式草稿出口。**只有陪聊这一路会传**（抽取/主动性/整理都不传），
    * 于是也只有它们会向服务商要 `stream: true` —— 那些调用要的是结构不是过程，
@@ -1240,7 +1247,11 @@ async function runAgentLoop(
         const call = slot.call;
         const result = slot.result as ToolResult;
         // 工具产物（出图）当场交出去挂到这条回复上。已画出的图即使在飞中被取消也不丢。
-        if (result.ok && result.attachments && result.attachments.length > 0) onFiles?.(result.attachments);
+        // 工具标记 deliveredToChannel 的（send_emote 已原生发进 QQ）：挂气泡但不进通道投递序列。
+        if (result.ok && result.attachments && result.attachments.length > 0) {
+          if (result.deliveredToChannel === true) onChannelDeliveredFiles?.(result.attachments, result.attachmentMeta);
+          else onFiles?.(result.attachments, result.attachmentMeta);
+        }
         console.log(`[agent] 工具 ${call.name} → ${result.ok ? "ok" : `失败：${result.error}`}`);
         // 工具卡实时落库：界面能"看见她在查"，过程不再是黑箱。
         // kind=tool 的行不进上下文（recentMessages 已排除），只做过程展示。
@@ -1339,6 +1350,9 @@ function parseImageAttachments(raw: string | null | undefined): string[] {
 const NO_VISION_REASON = "图片理解能力没配置，你看不到内容——直接告诉他你看不了，别猜也别编";
 /** 配好了，但这张已滑出重放窗口：同样看不到。 */
 const OUT_OF_WINDOW_REASON = "太久了，已滑出回放窗口，你看不到内容了——直说记不清，别猜也别编";
+/** 她自己发出的图（画的图/表情包）从不回放：不是太久，是设计如此。标记必须说对原因，
+ *  否则她会对着刚发一分钟的图纳闷"这明明刚刚才发"。 */
+const OWN_IMAGE_REASON = "这是你自己发出的图，原图不回放给你——记住你当时发了什么就行，别装作看得见图里细节";
 
 function imageMark(reason: string, count: number): string {
   return `[图片${count > 1 ? ` ×${count}` : ""}：${reason}]`;
@@ -1355,18 +1369,37 @@ function imageMark(reason: string, count: number): string {
  * 导出是为了冒烟能直接断言：这里曾经只处理纯图消息（text === ""），
  * "文字 + 图"的消息会把图**静默丢掉**，她既看不见图也不知道有图。
  */
-export function imageProxiedHistory<T extends { text: string; attachments: string | null }>(
+export function imageProxiedHistory<T extends { role?: string; text: string; attachments: string | null; attachment_meta?: string | null }>(
   rows: T[],
   replay: ReadonlySet<string>,
   visionOn: boolean,
 ): T[] {
-  const reason = visionOn ? OUT_OF_WINDOW_REASON : NO_VISION_REASON;
   return rows.map((row) => {
     const hidden = parseImageAttachments(row.attachments).filter((url) => !replay.has(url));
     if (hidden.length === 0) return row;
-    const mark = imageMark(reason, hidden.length);
+    // 自己发的图有专用实话（不回放≠太久）；meta.label 有多少念多少——
+    // 「你发过表情包『在看』」比一张无名图强得多，那是她下一轮唯一的记忆锚点。
+    if (row.role === "assistant") {
+      const labels = ownImageLabels(row.attachment_meta, hidden);
+      const reason = labels !== "" ? `你发过的是：${labels}。${OWN_IMAGE_REASON}` : OWN_IMAGE_REASON;
+      const mark = imageMark(reason, hidden.length);
+      return { ...row, text: row.text === "" ? mark : `${row.text}\n${mark}` };
+    }
+    const mark = imageMark(visionOn ? OUT_OF_WINDOW_REASON : NO_VISION_REASON, hidden.length);
     return { ...row, text: row.text === "" ? mark : `${row.text}\n${mark}` };
   });
+}
+
+/** 从 attachment_meta 里抠出这些 url 的 label（表情包的词/文件名），拼成「『在看』『摸鱼』」样式。 */
+function ownImageLabels(metaRaw: string | null | undefined, urls: string[]): string {
+  if (metaRaw === null || metaRaw === undefined || metaRaw === "") return "";
+  let list: Array<{ url?: unknown; label?: unknown }> = [];
+  try { const parsed: unknown = JSON.parse(metaRaw); if (Array.isArray(parsed)) list = parsed as Array<{ url?: unknown; label?: unknown }>; } catch { return ""; }
+  const labels = urls
+    .map((url) => list.find((m) => m.url === url)?.label)
+    .filter((l): l is string => typeof l === "string" && l.trim() !== "")
+    .map((l) => `「${l.trim()}」`);
+  return labels.join("");
 }
 
 /** 每联系人同一时刻只允许一轮在飞：新轮开始即打断旧轮（barge-in）。 */
@@ -1655,10 +1688,21 @@ export async function respondToTurn(
     // 否则下一轮她会把推理当成自己说过的话再读一遍，token 翻倍还污染记忆抽取。
     const reasoningParts: string[] = [];
     const producedFiles: string[] = [];
+    const producedMeta: MessageAttachmentMeta[] = [];
+    const channelDeliveredFiles: string[] = [];
+    const channelDeliveredMeta: MessageAttachmentMeta[] = [];
     const reply = await runAgentLoop(turn, system, history, visionCapability, controller.signal,
       (text) => { if (text.trim() !== "") reasoningParts.push(text.trim()); },
       reasoningDraftWriter(turn.id),
-      (urls) => { producedFiles.push(...urls); },
+      (urls, metas) => {
+        producedFiles.push(...urls);
+        if (metas !== undefined) producedMeta.push(...metas);
+      },
+      // 已由工具发进渠道的表情图：只挂气泡（带 label 元数据），绝不进 outgoingImages（否则 QQ 会再收一遍）。
+      (urls, metas) => {
+        channelDeliveredFiles.push(...urls);
+        if (metas !== undefined) channelDeliveredMeta.push(...metas);
+      },
       draftWriter(turn.id), cancelIfAborted, assistantPermissionSnapshot);
     if (cancelIfAborted()) return "";
     const reasoning = reasoningParts.join("\n\n");
@@ -1675,14 +1719,26 @@ export async function respondToTurn(
     // 联系人可以把这套节奏关掉（回复方式=单条整段）：整条一个气泡、不等待。
     // 这一组气泡同时就是**通道出站的消息序列**：本地几颗气泡，微信/QQ 里就几条消息；
     // 重答旧轮是整条写回原来那颗气泡，那种情况仍按一条算。
+    // 气泡附件 = 出图（要走通道投递）∪ 已进渠道的表情（只在气泡上展示）。一轮仍最多一张。
+    const bubbleImages = outgoingImages.length > 0 ? outgoingImages : channelDeliveredFiles.slice(0, 1);
+    // 气泡附件的元数据（表情的 label / 语音的时长与转写）：来源两条——已进渠道的表情、
+    // 本地产出的语音（send_voice 应用端路径）。按挂上气泡的 URL 过滤，别把没挂的带下去。
+    const bubbleMeta = [...channelDeliveredMeta, ...producedMeta].filter((m) => bubbleImages.includes(m.url));
     const parts = collapseIntoId !== null || getContact(contactId)?.features.splitReply === false
       ? [reply]
       : segmentReply(reply);
     if (collapseIntoId !== null) {
       // 整条写回原来那个气泡的位置（见上面 collapseIntoId 的说明），不分条、不延迟。
       // 附件跟着一起重写：重答画了新图就换上新图，没画就该清掉旧图，不能留着上一版的。
-      q(`UPDATE messages SET text = ?, attachments = ?, reasoning = ? WHERE id = ?`)
-        .run(reply, outgoingImages.length > 0 ? JSON.stringify(outgoingImages) : null, reasoning || null, collapseIntoId);
+      // 元数据（表情 label / 语音时长转写）同理，跟着附件一起换。
+      q(`UPDATE messages SET text = ?, attachments = ?, attachment_meta = ?, reasoning = ? WHERE id = ?`)
+        .run(
+          reply,
+          bubbleImages.length > 0 ? JSON.stringify(bubbleImages) : null,
+          bubbleImages.length > 0 && bubbleMeta.length > 0 ? JSON.stringify(bubbleMeta) : null,
+          reasoning || null,
+          collapseIntoId,
+        );
     } else {
       for (let i = 0; i < parts.length; i += 1) {
         if (i > 0) {
@@ -1694,7 +1750,9 @@ export async function respondToTurn(
           channel: turn.channel, role: "assistant", text: parts[i] ?? "", turnId: turn.id, contactId, conversationId,
           // 一轮只挂一处：第一条气泡带这段思考与这张图，后面的气泡不重复显示
           ...(i === 0 && reasoning !== "" ? { reasoning } : {}),
-          ...(i === 0 && outgoingImages.length > 0 ? { attachments: outgoingImages } : {}),
+          ...(i === 0 && bubbleImages.length > 0 ? { attachments: bubbleImages } : {}),
+          // 表情图带 label、语音带时长与转写：气泡标注 + 历史标记（她下一轮靠它记得发过哪张/说过哪句）都靠它。
+          ...(i === 0 && bubbleImages.length > 0 && bubbleMeta.length > 0 ? { attachmentMeta: bubbleMeta } : {}),
         });
       }
     }
@@ -1716,13 +1774,15 @@ export async function respondToTurn(
         : parts.map((part, i) => (i === parts.length - 1 ? `${part}\n${note}` : part));
     // 通道投递：QQ 群按群回复，绝不把群回复镜像到联系人私聊；
     // 主私聊里的应用/微信/QQ 消息仍镜像到微信 + QQ 私聊。
+    // 投递的是分好的 parts（气泡序列）而不是整段 reply——"本地几颗气泡，QQ 里几条消息"
+    // 从前只是注释里的愿望：传整段出去，官方按 4000 字硬切、OneBot 更是整条一坨。
     if (conversation?.channel === "qq") {
       void import("./qq.ts")
         .then(async ({ qq }) => {
           // 群里文字带引用 @ 的那条；图单独发一条（群图片不必引用原消息）。
           await qq.deliverToConversation(
             conversationId,
-            reply,
+            parts,
             { triggerMessageId: turn.trigger_message_id ?? undefined },
           );
           if (outgoingImages.length > 0) {
@@ -1734,16 +1794,19 @@ export async function respondToTurn(
       void import("./wechat.ts")
         .then(({ wechat }) => wechat.deliverToContact(
           contactId,
-          noted("（画了一张图，微信发不出去，在这个应用里看）"),
+          // 附注措辞跟着产物类型走：出图说"画了图"，语音说"发了语音"——微信两头都发不出去。
+          noted(mediaTypeOfUrl(outgoingImages[0] ?? "") === "audio"
+            ? "（发了条语音，微信发不出去，在这个应用里看）"
+            : "（画了一张图，微信发不出去，在这个应用里看）"),
         ))
         .catch(() => { /* 投递失败已落 wechat.links.lastError 与 model_calls */ });
       void import("./qq.ts")
         .then(async ({ qq }) => {
-          // 私聊能发媒体：带图就走 文字+图，无图只发文字。
+          // 私聊能发媒体：带图就走 文字+图，无图只发文字。同样传 parts 保住气泡节奏。
           if (outgoingImages.length > 0) {
-            await qq.deliverMediaToContact(contactId, reply, outgoingImages.map((url) => ({ url })));
+            await qq.deliverMediaToContact(contactId, parts, outgoingImages.map((url) => ({ url })));
           } else {
-            await qq.deliverToContact(contactId, reply);
+            await qq.deliverToContact(contactId, parts);
           }
         })
         .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });

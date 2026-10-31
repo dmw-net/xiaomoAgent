@@ -157,6 +157,67 @@ export function saveAudio(buffer: Buffer): { url: string; id: string; mime: stri
   return { url: `/media/${id}.${ext}`, id, mime };
 }
 
+/**
+ * 估一段音频的时长（毫秒）：WAV 按 RIFF 块走精确算；MP3 跳过 ID3 后解析首帧头按 CBR 估
+ * （VBR 会有偏差，够气泡展示用）。认不出的容器（m4a/ogg/webm）返回 undefined，
+ * 前端气泡有自己的兜底展示，不要为它编一个假时长。
+ */
+export function audioDurationMs(body: Buffer, mime: string): number | undefined {
+  try {
+    if (mime === "audio/wav") return wavDurationMs(body);
+    if (mime === "audio/mpeg") return mp3DurationMs(body);
+  } catch { /* 头解析失败就当不知道 */ }
+  return undefined;
+}
+
+/** RIFF 块链：找到 fmt 拿 byteRate，找到 data 拿数据量，时长 = 数据量 / 每秒字节。 */
+function wavDurationMs(body: Buffer): number | undefined {
+  if (body.length < 44 || body.subarray(0, 4).toString() !== "RIFF" || body.subarray(8, 12).toString() !== "WAVE") return undefined;
+  let byteRate = 0;
+  let dataBytes = 0;
+  let offset = 12;
+  while (offset + 8 <= body.length) {
+    const id = body.subarray(offset, offset + 4).toString();
+    const size = body.readUInt32LE(offset + 4);
+    if (id === "fmt ") {
+      if (offset + 8 + 16 > body.length) return undefined;
+      byteRate = body.readUInt32LE(offset + 16);
+    } else if (id === "data") {
+      dataBytes = Math.min(size, body.length - offset - 8);
+    }
+    offset += 8 + size + (size % 2);
+    if (byteRate > 0 && dataBytes > 0) break;
+  }
+  if (byteRate <= 0 || dataBytes <= 0) return undefined;
+  return Math.round((dataBytes / byteRate) * 1000);
+}
+
+const MP3_V1_L3_BITRATE_KBPS = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+const MP3_V2_L3_BITRATE_KBPS = [0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160];
+const MP3_SAMPLE_RATE_HZ: Record<number, number[]> = { 3: [44100, 48000, 32000], 2: [22050, 24000, 16000], 0: [11025, 12000, 8000] };
+
+/** 跳过 ID3v2 与填充，定位首个帧头，按帧头比特率做 CBR 估算。 */
+function mp3DurationMs(body: Buffer): number | undefined {
+  let offset = 0;
+  if (body.subarray(0, 3).toString() === "ID3") {
+    // ID3v2 大小是 4 字节 syncsafe（每字节只用低 7 位）。
+    const size = ((body[6]! & 0x7f) << 21) | ((body[7]! & 0x7f) << 14) | ((body[8]! & 0x7f) << 7) | (body[9]! & 0x7f);
+    offset = 10 + size;
+  }
+  while (offset < body.length - 4 && (body[offset] !== 0xff || (body[offset + 1]! & 0xe0) !== 0xe0)) offset += 1;
+  if (offset >= body.length - 4) return undefined;
+  const versionBits = (body[offset + 1]! >> 3) & 0x03; // 3=MPEG1, 2=MPEG2, 0=MPEG2.5
+  const layerBits = (body[offset + 1]! >> 1) & 0x03; // 1=Layer III
+  const bitrateIdx = body[offset + 2]! >> 4;
+  const sampleIdx = (body[offset + 2]! >> 2) & 0x03;
+  if (layerBits !== 1 || bitrateIdx === 0 || bitrateIdx === 15 || sampleIdx === 3) return undefined;
+  const rates = MP3_SAMPLE_RATE_HZ[versionBits];
+  if (rates === undefined) return undefined;
+  const bitrateBps = (versionBits === 3 ? MP3_V1_L3_BITRATE_KBPS[bitrateIdx] : MP3_V2_L3_BITRATE_KBPS[bitrateIdx])! * 1000;
+  if (bitrateBps <= 0) return undefined;
+  return Math.round(((body.length - offset) * 8 * 1000) / bitrateBps);
+}
+
 /** 存一段视频（入站/出站共用）；只认 mp4 与 webm，超出 100MB 直接拒。 */
 export function saveVideo(buffer: Buffer): { url: string; id: string; mime: string } {
   if (buffer.length === 0 || buffer.length > MAX_VIDEO_BYTES) {
@@ -245,6 +306,18 @@ export function readMedia(url: string): { buffer: Buffer; mime: string } | null 
   if (!existsSync(file)) return null;
   const ext = file.slice(file.lastIndexOf(".") + 1);
   return { buffer: readFileSync(file), mime: EXT_MIME[ext] ?? "application/octet-stream" };
+}
+
+/**
+ * 站内 /media 路径 → 本机绝对路径（文件不在盘上返回 null）。
+ * 给「让外部进程自己去读这个文件」的场合用：OneBot 协议端的 `file` 字段只认
+ * 绝对路径 / file:/// / http URL / base64，站内相对路径它解不出来。
+ */
+export function mediaAbsPath(url: string): string | null {
+  const name = anyMediaFileName(url);
+  if (name === null) return null;
+  const file = resolve(mediaDir(), name);
+  return existsSync(file) ? file : null;
 }
 
 export function mediaUrlExists(url: string): boolean {

@@ -67,6 +67,29 @@ export function getConversation(id: string): Conversation | null {
   return row === undefined ? null : rowToConversation(row);
 }
 
+/**
+ * 找可以"过户"的旧群会话：同一个物理群在官方（openid，非纯数字）与 OneBot（群号，纯数字）
+ * 两个 ID 命名空间下长得不一样，渠道来回切会各留一条孤儿。incomingNumeric 表示来的是
+ * 哪个命名空间：true（OneBot 群号）就找官方遗留的 openid 会话，false 反之——对称过户，
+ * 来回切都不裂。只有恰好一个候选时才返回，多个候选宁可新建也不能张冠李戴。
+ */
+export function findAdoptableGroupConversation(contactId: string, incomingNumeric: boolean): Conversation | null {
+  const rows = q(
+    `SELECT * FROM conversations
+     WHERE contact_id = ? AND channel = 'qq' AND kind = 'group' AND enabled = 1`,
+  ).all(contactId) as Array<Record<string, unknown>>;
+  const candidates = rows
+    .map(rowToConversation)
+    .filter((c) => c.external_id !== "" && (/^\d+$/.test(c.external_id) !== incomingNumeric));
+  return candidates.length === 1 ? (candidates[0] ?? null) : null;
+}
+
+/** 把旧群会话过户成新渠道的群：换 external_id 与归属账号（ID 命名空间换了），历史与记忆原地保留。 */
+export function adoptGroupConversation(conversationId: string, newExternalId: string, accountId = ""): void {
+  q("UPDATE conversations SET external_id = ?, account_id = ? WHERE id = ?")
+    .run(newExternalId, accountId, conversationId);
+}
+
 export function ensureLocalConversation(contactId: string, title = ""): Conversation {
   const id = localConversationId(contactId);
   const fallbackTitle = title || (q("SELECT name FROM contacts WHERE id = ?").get(contactId) as { name?: string } | undefined)?.name || "本机对话";
@@ -335,7 +358,7 @@ function mediaUrlsFromAttachmentRows(rows: Array<{ attachments: string | null }>
 export function clearQQGroupHistory(id: string, contactId: string): ClearedConversationHistory | null {
   const conv = getConversation(id);
   if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") return null;
-  if (conv.left_at === null) return null;
+  // 不再按 left_at 拦：清除历史对在收的群同样合法（清完继续收）；防手滑由入口确认框负责。
 
   const messageRows = q("SELECT attachments FROM messages WHERE conversation_id = ?")
     .all(id) as Array<{ attachments: string | null }>;
@@ -359,10 +382,13 @@ export function clearQQGroupHistory(id: string, contactId: string): ClearedConve
   return { ...cleared, media: urls.length };
 }
 
-/** 从列表彻底移除已离群群：先清历史，再删除会话外壳与已读游标。 */
+/** 从列表彻底移除群会话：先清历史，再删除会话外壳与已读游标。
+ *  官方渠道的离群（left_at 非空）与 OneBot 的已停用（enabled=0，OneBot 没有离群事件，
+ *  用户靠关「收件中」表达"不要了"）都可以移除；还在收的群必须先关收件再删，防手滑。 */
 export function removeQQGroupConversation(id: string, contactId: string): ClearedConversationHistory | null {
   const conv = getConversation(id);
-  if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group" || conv.left_at === null) return null;
+  if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") return null;
+  if (conv.left_at === null && conv.enabled) return null;
   const cleared = clearQQGroupHistory(id, contactId);
   if (cleared === null) return null;
   q("DELETE FROM conversations WHERE id = ?").run(id);

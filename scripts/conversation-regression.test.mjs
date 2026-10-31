@@ -160,7 +160,13 @@ assert.equal((db.prepare("SELECT COUNT(*) AS c FROM turns WHERE conversation_id 
 assert.equal((db.prepare("SELECT COUNT(*) AS c FROM memory_events WHERE scope_conversation_id = ?").get(membershipGroup.id)).c, 0, "清除后群级记忆应为空");
 const promoted = db.prepare("SELECT source_conversation_id FROM memory_events WHERE content = '提升后应保留的全局记忆'").get();
 assert.equal(promoted?.source_conversation_id, null, "全局记忆应保留，只清掉已清空会话的来源引用");
-assert.equal(clearQQGroupHistory(group.id, contact.id), null, "仍在群内的会话不能清历史");
+// 在收的群同样可清历史（清完继续收，防手滑由入口确认框负责）：返回真实清理数量，会话壳保留。
+insert.run("qq", "user", "在收群的历史消息", Date.now() + 90, contact.id, group.id);
+const clearedInGroup = clearQQGroupHistory(group.id, contact.id);
+assert.deepEqual(clearedInGroup, { messages: 1, turns: 0, memories: 0, media: 0 }, "在收群清历史应返回真实清理数量");
+assert.equal(getConversation(group.id)?.title, "测试群", "在收群清历史不能删除群会话");
+assert.equal(getConversation(group.id)?.enabled, true, "在收群清完历史应继续收");
+// 彻底移除仍要求先离群/关收件，防手滑。
 assert.equal(removeQQGroupConversation(group.id, contact.id), null, "仍在群内的会话不能从列表移除");
 const removal = removeQQGroupConversation(membershipGroup.id, contact.id);
 assert.deepEqual(removal, { messages: 0, turns: 0, memories: 0, media: 0 }, "移除空历史群应返回零计数");

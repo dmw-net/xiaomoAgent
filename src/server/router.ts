@@ -21,6 +21,7 @@ import { routes as extensionsRoutes } from "./routes/extensions.ts";
 import { routes as contentRoutes } from "./routes/content.ts";
 import { routes as modelRoutes } from "./routes/model.ts";
 import { routes as mediaRoutes } from "./routes/media.ts";
+import { routes as emotesRoutes } from "./routes/emotes.ts";
 import { routes as conversationsRoutes } from "./routes/conversations.ts";
 import { routes as chatRoutes } from "./routes/chat.ts";
 import { routes as memoryRoutes } from "./routes/memory.ts";
@@ -95,6 +96,8 @@ export const ROUTES: Route[] = [
   capabilitiesTestRoute,
   // 媒体二进制上传与语音
   ...mediaRoutes,
+  // 表情包管理（依赖媒体库的 /media 图片，紧贴媒体域；语义属能力管理）
+  ...emotesRoutes,
   settingsPreviewRoute,
   // 会话列表
   ...conversationsRoutes,
@@ -132,3 +135,54 @@ export async function dispatch(ctx: Ctx): Promise<void> {
   }
   sendJson(ctx.res, 404, { ok: false, error: `未知路径 ${ctx.method} ${ctx.path}` });
 }
+
+// ── 启动期路由自检 ─────────────────────────────────────────────
+// Route 的守卫（path/method 不匹配 → return false）只靠自觉。漏写守卫的路由会对
+// 无关请求照单全收——它排在表里的位置决定了「排在它后面的整段路由全部失联」，
+// 且它往往回一份 ok:true 的固定载荷：界面无异常、库里没落笔，极难排障
+// （qqBackendRoute 就这么吞掉了整个联系人资料页一族）。
+// 这里用一条没有任何路由该认领的探测路径把每条路由都敲一遍：谁应答，谁的守卫就漏了。
+// 代价是启动时几十次同步函数调用，换来这类回归活不过启动那一秒。
+const PROBE_PATH = "/api/__route_self_check__";
+
+function routeSelfCheck(): void {
+  // 应答探测请求的路由会拿到这个假 res：writeHead/end 都是无副作用的吞掉。
+  const fakeRes = {
+    writeHead: () => fakeRes,
+    setHeader: () => fakeRes,
+    write: () => fakeRes,
+    end: () => fakeRes,
+  } as unknown as import("node:http").ServerResponse;
+  const offenders: string[] = [];
+  for (let i = 0; i < ROUTES.length; i++) {
+    const route = ROUTES[i]!;
+    for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
+      try {
+        const claimed = route({
+          req: null as never,
+          res: fakeRes,
+          url: new URL(`http://localhost${PROBE_PATH}`),
+          path: PROBE_PATH,
+          method,
+          isLocalOperator: true,
+        });
+        // 有问题的路由多半是 async：它返回的 promise 在守卫漏掉时也会 resolve 成 true。
+        if (claimed === true) {
+          offenders.push(`#${i} (${method}) ${String(route).slice(0, 60).replace(/\s+/g, " ")}…`);
+          break;
+        }
+      } catch {
+        // 守卫齐全的路由根本不会碰 req；真应答了探测请求的路由若因假 req 抛错，
+        // 同样说明它漏了守卫——但报「抛错」不如报「应答」准确，这里选择沉默：
+        // 真正的漏网之鱼在下面 method 维度的其它探测里多半以 true 暴露。
+      }
+    }
+  }
+  if (offenders.length > 0) {
+    console.error(
+      `[startup] 路由自检失败：以下路由对探测路径 ${PROBE_PATH} 应答了（漏写 path/method 守卫，` +
+      `会吞掉路由表中排在它后面的所有路由）：\n  ${offenders.join("\n  ")}`,
+    );
+  }
+}
+routeSelfCheck();

@@ -16,26 +16,66 @@
 // 「真实号→联系人」映射用 upsertOneBotAccount 注入，不混进 QQService 面。
 
 import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
 import { config } from "./config.ts";
 import { kvGet, kvSet } from "./db.ts";
 import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
-import { asText, redact } from "./channels/delivery.ts";
-import { ensureConversation, ensureLocalConversation, getConversation, listConversations, listGroupProactiveConversations } from "./conversations.ts";
+import { mediaAbsPath } from "./media.ts";
+import { asText, chunkSegments, redact, withRaw } from "./channels/delivery.ts";
+import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, listGroupProactiveConversations } from "./conversations.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { renderEmote, type EmoteSendResult, type QqEmoteIntent } from "./qq-emote.ts";
-import type { QQService, QqMediaRef, QQBindingView, QQConversationView, QQStatus } from "./qq.ts";
+import type { QQService, QqMediaRef, MediaOutcome, QQBindingView, QQConversationView, QQStatus } from "./qq.ts";
 
 /** 一个 OneBot 端点 = 一个真实 QQ 号，绑定到一个联系人。 */
 type OneBotAccount = {
   id: string; contactId: string; qqNumber: string;
+  /** 主人的真实 QQ 号：群聊里把他从一众群成员里认出来（sender 标记「主人」）。 */
+  ownerQq: string;
   enabled: boolean; proactive: boolean;
   lastError: string; lastReceivedAt: string; lastSentAt: string; createdAt: string;
 };
 
 type OneBotSegment = Record<string, unknown>;
 const KV_OB = "qq.onebot.v1";
+
+// ── 协议端连接设置：KV 覆盖环境变量，界面里可改、热生效 ───────────────
+// 协议端在哪（HTTP 出站地址 / forward WS 入站地址 / 访问令牌）是用户的部署事实，
+// 不该逼人去改 desktop.json 再重启。KV 是界面写进去的真源；环境变量只是没配过的缺省。
+export type OneBotSettings = { httpBase: string; wsUrl: string; token: string };
+const OB_SETTINGS_KV = "qq.onebot.settings";
+const obSettingsFromEnv = (): OneBotSettings => ({
+  httpBase: config.qq.onebotHttpBase, wsUrl: config.qq.onebotWsUrl, token: config.qq.onebotToken,
+});
+let obSettings: OneBotSettings = obSettingsFromEnv();
+{
+  const raw = kvGet(OB_SETTINGS_KV);
+  if (raw !== null && raw !== "") {
+    try {
+      const parsed = JSON.parse(raw) as Partial<OneBotSettings>;
+      obSettings = {
+        httpBase: typeof parsed.httpBase === "string" && parsed.httpBase.trim() !== "" ? parsed.httpBase.trim().replace(/\/+$/, "") : obSettings.httpBase,
+        wsUrl: typeof parsed.wsUrl === "string" ? parsed.wsUrl.trim() : obSettings.wsUrl,
+        token: typeof parsed.token === "string" ? parsed.token.trim() : obSettings.token,
+      };
+    } catch { /* 坏档就按环境变量来 */ }
+  }
+}
+/** 当前生效的协议端连接设置（obAction/openWs 每次读它，改完即热生效）。 */
+export function onebotSettings(): OneBotSettings { return { ...obSettings }; }
+/** 更新协议端连接设置并落盘；返回写进去的值。进程内的热生效由调用方决定（重启 OneBot 服务）。 */
+export function applyOnebotSettings(patch: Partial<OneBotSettings>): OneBotSettings {
+  obSettings = {
+    httpBase: typeof patch.httpBase === "string" && patch.httpBase.trim() !== ""
+      ? patch.httpBase.trim().replace(/\/+$/, "") : obSettings.httpBase,
+    wsUrl: typeof patch.wsUrl === "string" ? patch.wsUrl.trim() : obSettings.wsUrl,
+    token: typeof patch.token === "string" ? patch.token.trim() : obSettings.token,
+  };
+  kvSet(OB_SETTINGS_KV, JSON.stringify(obSettings));
+  return { ...obSettings };
+}
 
 // 最小 WebSocket 面：协议端 forward ws 只需这几项，避开各 lib 的 MessageEvent 差异。
 type OBWebSocket = {
@@ -62,6 +102,7 @@ function parseOb(raw: string | null): OneBotAccount[] {
       if (contactId === "") continue;
       out.push({
         id: asText(row.id) || randomUUID().slice(0, 10), contactId, qqNumber: asText(row.qqNumber),
+        ownerQq: asText(row.ownerQq),
         enabled: row.enabled !== false, proactive: row.proactive === true,
         lastError: asText(row.lastError), lastReceivedAt: asText(row.lastReceivedAt),
         lastSentAt: asText(row.lastSentAt), createdAt: asText(row.createdAt) || new Date().toISOString(),
@@ -74,14 +115,15 @@ function hydrate(): void { if (accounts === null) accounts = parseOb(kvGet(KV_OB
 function persist(): void { if (accounts !== null) kvSet(KV_OB, JSON.stringify({ version: 1, accounts })); }
 
 /** 注入/更新一个真实 QQ 号到联系人的映射。仅 OneBot 后端有意义。 */
-export function upsertOneBotAccount(contactId: string, qqNumber: string, patch: { enabled?: boolean; proactive?: boolean } = {}): OneBotAccount {
+export function upsertOneBotAccount(contactId: string, qqNumber: string, patch: { enabled?: boolean; proactive?: boolean; ownerQq?: string } = {}): OneBotAccount {
   hydrate();
   let acc = (accounts ?? []).find((a) => a.contactId === contactId) ?? null;
   if (acc === null) {
-    acc = { id: randomUUID().slice(0, 10), contactId, qqNumber, enabled: true, proactive: false, lastError: "", lastReceivedAt: "", lastSentAt: "", createdAt: new Date().toISOString() };
+    acc = { id: randomUUID().slice(0, 10), contactId, qqNumber, ownerQq: "", enabled: true, proactive: false, lastError: "", lastReceivedAt: "", lastSentAt: "", createdAt: new Date().toISOString() };
     accounts?.push(acc);
   }
   if (qqNumber !== "") acc.qqNumber = qqNumber;
+  if (patch.ownerQq !== undefined) acc.ownerQq = patch.ownerQq.trim();
   if (patch.enabled !== undefined) acc.enabled = patch.enabled;
   if (patch.proactive !== undefined) acc.proactive = patch.proactive;
   persist();
@@ -98,9 +140,21 @@ export function removeOneBotAccount(contactId: string): boolean {
 // ── OneBot v11 消息段构造 ─────────────────────────────────────────
 function obText(text: string): OneBotSegment { return { type: "text", data: { text } }; }
 /** 本地 /media 路径交给协议端上传/下载；按扩展名挑段类型。 */
+/**
+ * OneBot v11 的 `file` 字段只认四种形态：协议端已收到的文件名、`file:///` 绝对路径、
+ * http(s) URL、`base64://`。站内相对路径 `/media/x.png` 不在其中——协议端会拿它当本地路径去解
+ * （Windows 上落到当前盘根的 `\media\x.png`），结果是「文件不存在」或者发出去一张坏图。
+ * 所以一律换成绝对 `file:///`：协议端与后端同机（桌面端 sidecar 形态），路径可直接读。
+ * 文件真不在盘上时保持原样传过去——让协议端如实报错，比我们编一个假路径静默失败好。
+ */
+function obFileValue(url: string): string {
+  const abs = mediaAbsPath(url);
+  return abs === null ? url : pathToFileURL(abs).href;
+}
+
 function obMediaSegment(ref: QqMediaRef): OneBotSegment {
   const ext = (ref.url.split(".").pop() ?? "").toLowerCase();
-  const data: Record<string, unknown> = { file: ref.url };
+  const data: Record<string, unknown> = { file: obFileValue(ref.url) };
   if (["png", "jpg", "jpeg", "webp", "gif", "bmp"].includes(ext)) return { type: "image", data };
   if (["mp3", "wav", "m4a", "ogg", "opus", "weba", "silk", "aac"].includes(ext)) return { type: "record", data };
   if (["mp4", "webm"].includes(ext)) return { type: "video", data };
@@ -119,6 +173,22 @@ function obInboundText(message: unknown): string {
     }).join("");
   }
   return "";
+}
+
+/** 群消息里是否 @ 了机器人（at 段的 qq === 协议端登录号；字符串消息认 CQ 码）。
+ *  群里的闸门：不 @ 不响应——NapCat 默认把所有群都推过来，没这道闸机器人会闯进
+ *  别人的群自说自话。 */
+function obMessageAtBot(message: unknown, botUin: string): boolean {
+  if (botUin === "") return false;
+  if (typeof message === "string") return message.includes(`[CQ:at,qq=${botUin}]`);
+  if (!Array.isArray(message)) return false;
+  return message.some((item) => {
+    if (item === null || typeof item !== "object") return false;
+    const seg = item as OneBotSegment;
+    if (seg.type !== "at") return false;
+    const data = (typeof seg.data === "object" && seg.data !== null ? seg.data : {}) as Record<string, unknown>;
+    return asText(data.qq) === botUin;
+  });
 }
 /** 入站 message 段 → 媒体 URL 列表（协议端会回填 file/url 字段）。 */
 function obInboundMedia(message: unknown): string[] {
@@ -139,18 +209,52 @@ function obInboundMedia(message: unknown): string[] {
 async function obAction(action: string, params: Record<string, unknown>): Promise<Record<string, unknown>> {
   const started = Date.now();
   const headers: Record<string, string> = { "content-type": "application/json" };
-  if (config.qq.onebotToken !== "") headers["authorization"] = `Bearer ${config.qq.onebotToken}`;
-  const response = await fetch(`${config.qq.onebotHttpBase}/${encodeURIComponent(action)}`, { method: "POST", headers, body: JSON.stringify(params) });
-  const data = await response.json().catch(() => ({})) as Record<string, unknown>;
+  if (obSettings.token !== "") headers["authorization"] = `Bearer ${obSettings.token}`;
+  const response = await fetch(`${obSettings.httpBase}/${encodeURIComponent(action)}`, { method: "POST", headers, body: JSON.stringify(params) });
+  // 先取原文再解析：失败时把协议端的原始报文留给日志（res_full），详情弹窗才有东西可看。
+  const rawBody = await response.text().catch(() => "");
+  let data: Record<string, unknown> = {};
+  try { data = rawBody === "" ? {} : JSON.parse(rawBody) as Record<string, unknown>; } catch { /* 非 JSON 报文原样进日志 */ }
   const retcode = data.retcode;
   const failed = !response.ok || Number(data.status ?? 0) === 660 || (retcode !== undefined && Number(retcode) !== 0);
   if (failed) {
     const message = asText(data.msg ?? data.message) || `HTTP ${response.status}`;
-    logModelCall({ purpose: "qq", ok: false, code: "OB_" + action, model: "onebot", url: `/${action}`, elapsedMs: Date.now() - started, message: message.slice(0, 300) });
-    throw new Error("OneBot 协议端拒绝了 " + action + "：" + message);
+    logModelCall({ purpose: "qq", ok: false, code: "OB_" + action, model: "onebot", url: `/${action}`, elapsedMs: Date.now() - started, message: message.slice(0, 300), resRaw: rawBody.slice(0, 2000) });
+    throw withRaw(new Error("OneBot 协议端拒绝了 " + action + "：" + message), rawBody.slice(0, 2000));
   }
   logModelCall({ purpose: "qq", ok: true, model: "onebot", url: `/${action}`, elapsedMs: Date.now() - started });
   return data;
+}
+
+export type OneBotLoginInfo = {
+  /** 协议端是否连得上（HTTP API 可用且应答正常）。 */
+  reachable: boolean;
+  /** 协议端当前登录的真实 QQ 号与昵称（连不上时为空串）。 */
+  userId: string;
+  nickname: string;
+  /** 连不上时的人类可读原因（给绑定入口的引导文案用）。 */
+  error: string;
+};
+
+/** 探测协议端并读出它当前登录的账号：绑定入口靠它把「手填 QQ 号」升级成「确认绑定」。
+ *  不抛错——连不上也是合法状态，error 里带原因。 */
+export async function onebotLoginInfo(): Promise<OneBotLoginInfo> {
+  try {
+    const login = await obAction("get_login_info", {});
+    return {
+      reachable: true,
+      userId: asText(login.user_id ?? login.userId),
+      nickname: asText(login.nickname),
+      error: "",
+    };
+  } catch (error) {
+    return {
+      reachable: false,
+      userId: "",
+      nickname: "",
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 /** OneBot v11 后端：出站走协议端 HTTP API，入站靠它推 forward websocket 事件。 */
@@ -161,31 +265,36 @@ export function createQQOneBotService(): QQService {
 
   const byContact = (contactId: string): OneBotAccount | null => { hydrate(); return (accounts ?? []).find((a) => a.contactId === contactId) ?? null; };
   const primaryAccount = (): OneBotAccount | null => { hydrate(); const list = accounts ?? []; return list.find((a) => a.enabled) ?? list[0] ?? null; };
-  const norm = (text: string | string[]): string => Array.isArray(text) ? text.join("\n") : String(text ?? "");
+  /** 出站的气泡序列：agent 分好的条原样逐条发，超长元素再按上限硬切——
+   *  与官方后端的 splitQqText 同一节奏（本地几颗气泡，QQ 里几条消息），不能 join 成一大段。 */
+  const obTextSegments = (text: string | string[]): string[] => chunkSegments(text, 4000);
 
-  const sendOut = async (acc: OneBotAccount, scope: "private" | "group", targetId: string, text: string, media: OneBotSegment[]): Promise<void> => {
+  /** 发一组段；返回是否真的发出去了（协议端报错时 false），供媒体回执与 send_emote 如实上报。 */
+  const sendOut = async (acc: OneBotAccount, scope: "private" | "group", targetId: string, text: string, media: OneBotSegment[]): Promise<boolean> => {
     const segments: OneBotSegment[] = [];
     if (text !== "") segments.push(obText(text));
     segments.push(...media);
-    if (segments.length === 0) return;
-    if (targetId === "" && scope === "private") { acc.lastError = "没有绑定真实 QQ 号，无法发送"; persist(); return; }
+    if (segments.length === 0) return false;
+    if (targetId === "" && scope === "private") { acc.lastError = "没有绑定真实 QQ 号，无法发送"; persist(); return false; }
     try {
       const params: Record<string, unknown> = scope === "private" ? { user_id: targetId, message: segments } : { group_id: targetId, message: segments };
       await obAction(scope === "private" ? "send_private_msg" : "send_group_msg", params);
       acc.lastSentAt = new Date().toISOString(); acc.lastError = ""; persist();
+      return true;
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
       acc.lastError = message; persist();
       console.warn(`[qq/onebot] ${scope} 投递失败（${acc.contactId}）：${message}`);
+      return false;
     }
   };
 
   const probe = async (): Promise<void> => { try { await obAction("get_status", {}); reachable = true; } catch { reachable = false; } };
 
   const openWs = (): void => {
-    if (ws !== null || config.qq.onebotWsUrl === "" || disposed) return;
+    if (ws !== null || obSettings.wsUrl === "" || disposed) return;
     try {
-      const socket = new WebSocket(config.qq.onebotWsUrl) as unknown as OBWebSocket;
+      const socket = new WebSocket(obSettings.wsUrl) as unknown as OBWebSocket;
       ws = socket;
       socket.onopen = () => { void probe(); };
       socket.onmessage = (event) => { void handleInbound(asText(event.data)); };
@@ -205,12 +314,27 @@ export function createQQOneBotService(): QQService {
     const text = obInboundText(event.message);
     if (text === "" && mediaUrls.length === 0) return;
 
-    let contactId: string; let conv;
+    let contactId: string; let conv; let ownerQq = "";
     if (isGroup) {
       const gid = asText(event.group_id);
       if (gid === "") return;
-      contactId = primaryAccount()?.contactId ?? "default";
-      conv = ensureConversation({ contactId, channel: "qq", kind: "group", externalId: gid, title: asText(event.group_name) || ("群 " + gid) });
+      const acc = primaryAccount();
+      // ① @ 闸门：群里只有 @机器人 才响应。NapCat 会把它在的所有群都推过来，
+      //    没这道闸她会在任何群里接任何话——官方渠道是 @ 才推，OneBot 必须自己把关。
+      if (!obMessageAtBot(event.message, acc?.qqNumber ?? "")) return;
+      contactId = acc?.contactId ?? "default";
+      ownerQq = acc?.ownerQq ?? "";
+      // ② 白名单闸门：已登记且开收件的群直接用；已停用/已退出的群不复活。
+      conv = listConversations(contactId)
+        .find((c) => c.channel === "qq" && c.kind === "group" && c.external_id === gid) ?? null;
+      if (conv === null) {
+      // ③ 渠道过户（双向）：官方渠道留下的群会话如果恰好一条，过户成这个群——
+      //    同一个物理群在新渠道是另一个 ID，不过户就会裂成两条会话，历史和记忆全断。
+      const adoptable = findAdoptableGroupConversation(contactId, true);
+      if (adoptable !== null) adoptGroupConversation(adoptable.id, gid);
+        // ④ 首次被 @ 的群才登记成新会话；之后没被 @ 的群消息（日常 chatter）一概不入库。
+        conv = ensureConversation({ contactId, channel: "qq", kind: "group", externalId: gid, title: asText(event.group_name) || ("群 " + gid) });
+      }
     } else {
       const acc = byContact(asText(event.user_id ?? event.qq));
       if (acc === null) return; // 未绑定到本机联系人的私聊不收
@@ -227,7 +351,10 @@ export function createQQOneBotService(): QQService {
       {
         conversationId: conv.id,
         senderId: asText(event.user_id ?? event.member_id ?? event.qq),
-        senderName: asText(sender.nickname ?? sender.card ?? sender.member_nickname) || (isGroup ? "群成员" : "QQ 用户"),
+        // 主人识别：sender 是绑定时登记的主人 QQ 就在名字上打标——群聊里一屋子人，
+        // 模型靠这行标记才知道"哪句是主人说的"，不再见谁都叫主人。
+        senderName: (asText(sender.nickname ?? sender.card ?? sender.member_nickname) || (isGroup ? "群成员" : "QQ 用户"))
+          + (ownerQq !== "" && asText(event.user_id ?? event.qq) === ownerQq ? "（主人）" : ""),
         sourceMessageId: asText(event.message_id),
         atBot: isGroup,
         attachmentMeta: mediaUrls.map((url): MessageAttachmentMeta => ({ url, kind: "image" })),
@@ -237,7 +364,7 @@ export function createQQOneBotService(): QQService {
 
   const statusOf = (): QQStatus => {
     hydrate();
-    if (config.qq.onebotHttpBase === "" || (accounts ?? []).length === 0) return "not-configured";
+    if (obSettings.httpBase === "" || (accounts ?? []).length === 0) return "not-configured";
     if (!(accounts ?? []).some((a) => a.enabled)) return "disabled";
     if (!reachable) return "attention";
     return "connected";
@@ -265,7 +392,9 @@ export function createQQOneBotService(): QQService {
     const acc = byContact(contactId);
     if (acc === null || !acc.enabled) return;
     if (opts.proactive === true && !acc.proactive) return;
-    await sendOut(acc, "private", acc.qqNumber, norm(text), []);
+    for (const segment of obTextSegments(text)) {
+      await sendOut(acc, "private", acc.qqNumber, segment, []);
+    }
   };
 
   const deliverToConversation = async (conversationId: string, text: string | string[], _opts: { triggerMessageId?: string } = {}): Promise<void> => {
@@ -273,7 +402,11 @@ export function createQQOneBotService(): QQService {
     if (conv === null || conv.channel !== "qq" || !conv.enabled) return;
     if (conv.kind === "group") {
       const acc = primaryAccount();
-      if (acc !== null) await sendOut(acc, "group", conv.external_id, norm(text), []);
+      if (acc !== null) {
+        for (const segment of obTextSegments(text)) {
+          await sendOut(acc, "group", conv.external_id, segment, []);
+        }
+      }
       return;
     }
     await deliverToContact(conv.contact_id, text);
@@ -283,22 +416,47 @@ export function createQQOneBotService(): QQService {
     const acc = primaryAccount();
     if (acc === null) return;
     for (const conv of listGroupProactiveConversations(contactId)) {
-      await sendOut(acc, "group", conv.external_id, norm(text), media.map(obMediaSegment));
+      for (const segment of obTextSegments(text)) {
+        await sendOut(acc, "group", conv.external_id, segment, []);
+      }
+      if (media.length > 0) await sendOut(acc, "group", conv.external_id, "", media.map(obMediaSegment));
     }
   };
 
-  const deliverMediaToContact = async (contactId: string, text: string, media: QqMediaRef[], opts: { proactive?: boolean } = {}): Promise<void> => {
+  const deliverMediaToContact = async (contactId: string, text: string | string[], media: QqMediaRef[], opts: { proactive?: boolean } = {}): Promise<MediaOutcome> => {
+    const outcome: MediaOutcome = { sent: 0, failed: 0, lastError: "" };
     const acc = byContact(contactId);
-    if (acc === null || !acc.enabled) return;
-    if (opts.proactive === true && !acc.proactive) return;
-    await sendOut(acc, "private", acc.qqNumber, norm(text), media.map(obMediaSegment));
+    if (acc === null || !acc.enabled) return outcome;
+    if (opts.proactive === true && !acc.proactive) return outcome;
+    for (const segment of obTextSegments(text)) {
+      const sent = await sendOut(acc, "private", acc.qqNumber, segment, []);
+      if (sent) outcome.sent += 1;
+      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+    }
+    if (media.length > 0) {
+      const sent = await sendOut(acc, "private", acc.qqNumber, "", media.map(obMediaSegment));
+      if (sent) outcome.sent += 1;
+      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+    }
+    return outcome;
   };
 
-  const deliverMediaToGroup = async (contactId: string, groupConvId: string, text: string, media: QqMediaRef[]): Promise<void> => {
+  const deliverMediaToGroup = async (contactId: string, groupConvId: string, text: string, media: QqMediaRef[]): Promise<MediaOutcome> => {
+    const outcome: MediaOutcome = { sent: 0, failed: 0, lastError: "" };
     const conv = getConversation(groupConvId);
     const acc = primaryAccount();
-    if (conv === null || conv.channel !== "qq" || conv.kind !== "group" || !conv.enabled || acc === null) return;
-    await sendOut(acc, "group", conv.external_id, norm(text), media.map(obMediaSegment));
+    if (conv === null || conv.channel !== "qq" || conv.kind !== "group" || !conv.enabled || acc === null) return outcome;
+    for (const segment of obTextSegments(text)) {
+      const sent = await sendOut(acc, "group", conv.external_id, segment, []);
+      if (sent) outcome.sent += 1;
+      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+    }
+    if (media.length > 0) {
+      const sent = await sendOut(acc, "group", conv.external_id, "", media.map(obMediaSegment));
+      if (sent) outcome.sent += 1;
+      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+    }
+    return outcome;
   };
 
   /** 按会话分派「文字 + 媒体」：私聊走联系人号，群走 primary 号的群 external_id。 */
@@ -332,11 +490,13 @@ export function createQQOneBotService(): QQService {
     if (conv.kind === "group") {
       const acc = primaryAccount();
       if (acc === null) return { ok: false, native: false, via: "skipped", detail: "没有可用的 OneBot 账号" };
-      await sendOut(acc, "group", conv.external_id, "", render.segments);
+      const sent = await sendOut(acc, "group", conv.external_id, "", render.segments);
+      if (!sent) return { ok: false, native: false, via: "skipped", detail: acc.lastError || "协议端发送失败" };
     } else {
       const acc = byContact(conv.contact_id);
       if (acc === null || !acc.enabled) return { ok: false, native: false, via: "skipped", detail: "联系人没有绑定 OneBot 账号" };
-      await sendOut(acc, "private", acc.qqNumber, "", render.segments);
+      const sent = await sendOut(acc, "private", acc.qqNumber, "", render.segments);
+      if (!sent) return { ok: false, native: false, via: "skipped", detail: acc.lastError || "协议端发送失败" };
     }
     return { ok: true, native: render.native, via: "native" };
   };

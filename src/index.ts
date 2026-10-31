@@ -26,7 +26,8 @@ import { pruneModelCalls } from "./logs.ts";
 import { purgeExpiredMediaTrash } from "./media.ts";
 import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./contacts.ts";
 import { wechat } from "./wechat.ts";
-import { qq } from "./qq.ts";
+import { qq, qqBackend } from "./qq.ts";
+import { autostartNapcatIfInstalled } from "./napcat.ts";
 import { ensureDefaultConversations } from "./conversations.ts";
 
 // 兜底日志：单机应用「带病存活 + 看得见错误」好过静默崩溃。
@@ -85,6 +86,8 @@ function beginDuty(): void {
   // QQ 通道同理：只有当家进程连网关。两个进程各连一遍，
   // 同一条用户消息会被投递两次（官方按会话推事件，不去重）。
   qq.startAll();
+  // OneBot 渠道下把托管的 NapCat 顺带拉起来（装过且已记自动登录，用户无需再点）。
+  if (qqBackend() === "onebot") autostartNapcatIfInstalled();
   if (maintenanceTimer === null) {
     maintenance();
     maintenanceTimer = setInterval(maintenance, MAINTENANCE_MS);

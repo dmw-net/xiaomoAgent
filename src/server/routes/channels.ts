@@ -5,25 +5,46 @@
 // /api/contacts/<id>/qq 当成「id=qq/xxx」吞掉回 404。router.ts 里 channels 排在
 // contacts.detailRoutes 之前，正是为这一点（见 router.ts 的分段注释）。
 
-import { qq } from "../../qq.ts";
-import { upsertOneBotAccount } from "../../qq-onebot.ts";
+import { qq, applyQQBackend, qqBackend, qqBackendSaved, saveQQBackend } from "../../qq.ts";
+import { upsertOneBotAccount, onebotLoginInfo, onebotSettings, applyOnebotSettings } from "../../qq-onebot.ts";
+import { napcatStatus, installNapcat, startNapcat } from "../../napcat.ts";
 import { config } from "../../config.ts";
 import { wechat } from "../../wechat.ts";
 import { getContact } from "../../contacts.ts";
 import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 
-/** GET /api/qq/backend：当前 QQ 后端选型（official/onebot）+ OneBot 侧配置是否就绪。
- *  前端资料页按它分流：官方模式显示扫码/凭据，OneBot 模式显示「填真实 QQ 号」。 */
-const qqBackendRoute: Route = ({ res }) => {
-  const configured = config.qq.onebotHttpBase !== "";
-  sendJson(res, 200, {
-    ok: true,
-    backend: config.qq.backend,
-    /** OneBot 侧最小可运行条件：HTTP 出站地址已配。WS 入站可缺省（只出不进也能跑）。 */
-    onebotReady: config.qq.backend === "onebot" && configured,
-  });
-  return true;
+/** GET/POST /api/qq/backend：QQ 后端选型（official/onebot）。
+ *  GET 附带 OneBot 侧配置是否就绪；POST 落库并**当场热切**（旧后端 stopAll、新后端 startAll），
+ *  重启从来不需要——restartRequired 只为兼容旧前端字段，恒为 false。 */
+const qqBackendRoute: Route = async ({ res, path, method, req }) => {
+  if (path === "/api/qq/backend" && method === "GET") {
+    const saved = qqBackendSaved();
+    const running = qqBackend();
+    sendJson(res, 200, {
+      ok: true,
+      backend: running,
+      saved,
+      /** 兼容字段：热切换落地后不再有待重启状态。 */
+      restartPending: false,
+      /** OneBot 侧最小可运行条件：HTTP 出站地址已配。WS 入站可缺省（只出不进也能跑）。 */
+      onebotReady: running === "onebot" && config.qq.onebotHttpBase !== "",
+    });
+    return true;
+  }
+  if (path === "/api/qq/backend" && method === "POST") {
+    const body = await readJson<Record<string, unknown>>(req).catch(() => ({}) as Record<string, unknown>);
+    const backend = body.backend;
+    if (backend !== "official" && backend !== "onebot") {
+      sendJson(res, 400, { ok: false, error: "backend 只能是 official 或 onebot" });
+      return true;
+    }
+    saveQQBackend(backend);
+    applyQQBackend(backend);
+    sendJson(res, 200, { ok: true, backend, restartRequired: false, applied: true });
+    return true;
+  }
+  return false;
 };
 
 /** /api/qq/credentials：GET 总览/按联系人快照；POST 必须带 contactId（凭据按联系人隔离）。 */
@@ -107,7 +128,7 @@ export const qqContactRoute: Route = async ({ req, res, path, method }) => {
   }
   if (method === "POST" && action === "/onebot-bind" && arg === "") {
     // OneBot 后端专属：把「真实 QQ 号」绑到这位联系人。官方后端下调用是无效安全态。
-    if (config.qq.backend !== "onebot") {
+    if (qqBackend() !== "onebot") {
       sendJson(res, 409, { ok: false, error: "OneBot 绑定仅在 QQ_BACKEND=onebot 时可用；当前是官方 Bot 后端" });
       return true;
     }
@@ -117,9 +138,18 @@ export const qqContactRoute: Route = async ({ req, res, path, method }) => {
       sendJson(res, 400, { ok: false, error: "请填有效的 QQ 号（5-15 位数字）" });
       return true;
     }
-    const patch: { enabled?: boolean; proactive?: boolean } = {};
+    const patch: { enabled?: boolean; proactive?: boolean; ownerQq?: string } = {};
     if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
     if (typeof body.proactive === "boolean") patch.proactive = body.proactive;
+    // 主人 QQ 号：群聊里把她从一众群成员里认出来的唯一依据；空串=清除。
+    if (typeof body.ownerQq === "string") {
+      const ownerQq = body.ownerQq.trim();
+      if (ownerQq !== "" && !/^\d{5,15}$/.test(ownerQq)) {
+        sendJson(res, 400, { ok: false, error: "主人 QQ 号应为 5-15 位数字，留空则不标记" });
+        return true;
+      }
+      patch.ownerQq = ownerQq;
+    }
     upsertOneBotAccount(contactId, qqNumber, patch);
     sendJson(res, 200, { ok: true, ...qq.snapshotFor(contactId) });
     return true;
@@ -202,8 +232,63 @@ export const wechatContactRoute: Route = async ({ req, res, path, method }) => {
   return false;
 };
 
+/** GET /api/qq/onebot/status：探测 OneBot 协议端并读出它登录的账号。
+ *  绑定入口靠它把「手填 QQ 号」升级成「看到头像昵称、确认绑定」；连不上时 error 带引导原因。 */
+const qqOneBotStatusRoute: Route = async ({ res, path, method }) => {
+  if (!(method === "GET" && path === "/api/qq/onebot/status")) return false;
+  sendJson(res, 200, { ok: true, ...(await onebotLoginInfo()) });
+  return true;
+};
+
+/** GET/POST /api/qq/onebot/settings：协议端连接设置（HTTP 出站地址 / forward WS / 令牌）。
+ *  界面里就地改、热生效——POST 后若 OneBot 正在跑，重启它的收发通道（WS 断开重连）。 */
+const qqOneBotSettingsRoute: Route = async ({ res, path, method, req }) => {
+  if (path !== "/api/qq/onebot/settings") return false;
+  if (method === "GET") {
+    const s = onebotSettings();
+    sendJson(res, 200, { ok: true, httpBase: s.httpBase, wsUrl: s.wsUrl, hasToken: s.token !== "" });
+    return true;
+  }
+  if (method === "POST") {
+    const body = await readJson<Record<string, unknown>>(req).catch(() => ({}) as Record<string, unknown>);
+    const patch: { httpBase?: string; wsUrl?: string; token?: string } = {};
+    if (typeof body.httpBase === "string") patch.httpBase = body.httpBase;
+    if (typeof body.wsUrl === "string") patch.wsUrl = body.wsUrl;
+    // 令牌传空串 = 清掉；不传 = 保持不变。
+    if (typeof body.token === "string") patch.token = body.token;
+    const saved = applyOnebotSettings(patch);
+    if (qqBackend() === "onebot") { qq.stopAll(); qq.startAll(); }
+    sendJson(res, 200, { ok: true, httpBase: saved.httpBase, wsUrl: saved.wsUrl, hasToken: saved.token !== "", applied: true });
+    return true;
+  }
+  return false;
+};
+
+/** /api/qq/napcat：小茉托管的 NapCat（本机一键安装/启动/登录）。
+ *  GET status：安装/运行/登录状态 + 二维码链接（界面 4s 轮询）。
+ *  POST install：下载解压（较慢，请求同步等待）。POST start：拉起+配置+等登录（最长约 3 分钟）。 */
+const qqNapcatRoute: Route = async ({ res, path, method, req }) => {
+  if (path !== "/api/qq/napcat") return false;
+  if (method === "GET") {
+    sendJson(res, 200, await napcatStatus().then((s) => ({ ok: true, ...s })));
+    return true;
+  }
+  if (method === "POST") {
+    const body = await readJson<Record<string, unknown>>(req).catch(() => ({}) as Record<string, unknown>);
+    const action = typeof body.action === "string" ? body.action : "";
+    if (action === "install") sendJson(res, 200, await installNapcat().then((r) => ({ ok: r.ok, error: r.error })));
+    else if (action === "start") sendJson(res, 200, await startNapcat().then((r) => ({ ok: r.ok, error: r.error, needsQr: r.needsQr })));
+    else sendJson(res, 400, { ok: false, error: "action 只能是 install 或 start" });
+    return true;
+  }
+  return false;
+};
+
 export const routes: Route[] = [
   qqBackendRoute,
+  qqOneBotStatusRoute,
+  qqOneBotSettingsRoute,
+  qqNapcatRoute,
   qqCredentialsRoute,
   qqQrRoute,
   qqQrPollRoute,

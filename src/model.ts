@@ -1445,7 +1445,7 @@ export async function transcribeAudio(dataUrl: string): Promise<string> {
     const elapsedMs = Date.now() - started;
     if (!response.ok) {
       const error = buildHttpError(response.status, text, elapsedMs, url, cap.model);
-      logModelCall({ turnId: null, purpose: "asr", ok: false, code: error.code, status: response.status, model: cap.model, url, elapsedMs, message: error.message, detail: text.slice(0, 500) });
+      logModelCall({ turnId: null, purpose: "asr", ok: false, code: error.code, status: response.status, model: cap.model, url, elapsedMs, message: error.message, detail: text.slice(0, 500), resFull: text });
       throw error;
     }
     const parsed = JSON.parse(text) as { text?: unknown };
@@ -1472,8 +1472,29 @@ export async function transcribeAudio(dataUrl: string): Promise<string> {
 }
 
 /**
- * 语音合成：文本 → mp3 dataURL。走 OpenAI 兼容的 /audio/speech。
+ * 容器魔数推断：服务商没回 Content-Type（或回了个没用的 octet-stream）时，看首字节认容器。
+ * 原则与图片侧一致（见 saveImage 的 JPEG/WebP 误标 PNG 注释）——MIME 与真实字节不符时
+ * 浏览器只是静默播放失败，排查起来比报错更难受。命中就信魔数，信不过才退回 audio/mpeg
+ * （请求体里默认就是按 mp3 问的）。
+ */
+function sniffAudioMime(buffer: Buffer): string | null {
+  const head = buffer.toString("latin1", 0, 4);
+  if (head === "RIFF") return "audio/wav";
+  if (head === "OggS") return "audio/ogg";
+  if (head === "fLaC") return "audio/flac";
+  if (buffer.length > 11 && buffer.toString("latin1", 4, 8) === "ftyp") return "audio/mp4";
+  if (buffer[0] === 0x1a && buffer[1] === 0x45 && buffer[2] === 0xdf && buffer[3] === 0xa3) return "audio/webm";
+  const b0 = buffer[0]!;
+  const b1 = buffer[1]!;
+  if (head === "ID3" || (b0 === 0xff && (b1 & 0xe0) === 0xe0)) return "audio/mpeg";
+  return null;
+}
+
+/**
+ * 语音合成：文本 → 音频 dataURL。走 OpenAI 兼容的 /audio/speech（请求默认要 mp3，
+ * 响应 MIME 按 Content-Type 自适应，头不可信时再按魔数兜底）。
  * 返回 dataURL 而不是裸字节：接口统一 JSON 包壳，失败时前端才能走同一套 ok/error 判断。
+ * 这样本地 Kokoro（默认出 wav）之类的端点不用改代码也能接上。
  */
 export async function synthesizeSpeech(input: string): Promise<{ dataUrl: string; elapsedMs: number }> {
   if (!capabilityReady("textToSpeech")) {
@@ -1501,15 +1522,24 @@ export async function synthesizeSpeech(input: string): Promise<{ dataUrl: string
     if (!response.ok) {
       const detail = await response.text();
       const error = buildHttpError(response.status, detail, elapsedMs, url, cap.model);
-      logModelCall({ turnId: null, purpose: "tts", ok: false, code: error.code, status: response.status, model: cap.model, url, elapsedMs, message: error.message, detail: detail.slice(0, 500) });
+      logModelCall({ turnId: null, purpose: "tts", ok: false, code: error.code, status: response.status, model: cap.model, url, elapsedMs, message: error.message, detail: detail.slice(0, 500), resFull: detail });
       throw error;
     }
     const buffer = Buffer.from(await response.arrayBuffer());
     if (buffer.length === 0) {
       throw new ModelError({ code: "EMPTY_RESPONSE", message: "语音合成返回了空音频", elapsedMs, url, model: cap.model });
     }
-    logModelCall({ turnId: null, purpose: "tts", ok: true, status: response.status, model: cap.model, url, elapsedMs, message: `${buffer.length} 字节` });
-    return { dataUrl: `data:audio/mpeg;base64,${buffer.toString("base64")}`, elapsedMs };
+    // 服务商不一定出 mp3（本地 Kokoro 默认 wav，有的出 ogg）：按响应的 Content-Type 拼
+    // dataURL 的 MIME，而不是跟着请求体里的 mp3 假设——MIME 和真实字节不符时，
+    // 浏览器按 mpeg 解析 wav 只会静默播放失败。缺省头才退回 audio/mpeg（大多数 OpenAI 兼容端点）。
+    // 优先信响应的 Content-Type；头缺失/不可信（缺省、octet-stream）再按魔数认容器，
+    // 都不行才退回 audio/mpeg（请求体默认就是按 mp3 问的）。
+    const rawMime = (response.headers.get("content-type") ?? "").split(";")[0]?.trim().toLowerCase() ?? "";
+    const mime = rawMime.startsWith("audio/")
+      ? rawMime
+      : (sniffAudioMime(buffer) ?? "audio/mpeg");
+    logModelCall({ turnId: null, purpose: "tts", ok: true, status: response.status, model: cap.model, url, elapsedMs, message: `${buffer.length} 字节（${mime}）` });
+    return { dataUrl: `data:${mime};base64,${buffer.toString("base64")}`, elapsedMs };
   } catch (error) {
     if (error instanceof ModelError) throw error;
     const elapsedMs = Date.now() - started;

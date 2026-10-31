@@ -168,6 +168,12 @@ export const config = Object.freeze({
     onebotWsUrl: str("QQ_ONEBOT_WS"),
     /** OneBot 访问令牌；协议端配了 access_token 才需要。 */
     onebotToken: str("QQ_ONEBOT_TOKEN"),
+    /** 表情包系统：把「他发来的图片」顺手登记进表情素材库。默认关——
+     *  他发的图是聊天内容，不等于"我要用来接梗的表情包"，不擅自入库。 */
+    emoteAutoCapture: bool("QQ_EMOTE_AUTO_CAPTURE", false),
+    /** 表情素材库的本地目录（放一批梗图文件夹，启动/手动扫描后批量入库）。
+     *  留空 = 不启用目录播种，素材库只靠单图上传与自动采集。 */
+    emoteSeedDir: str("QQ_EMOTE_SEED_DIR"),
   }),
 });
 

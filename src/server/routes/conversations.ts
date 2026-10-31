@@ -106,10 +106,6 @@ const conversationHistoryRoute: Route = ({ res, url, path, method }) => {
     sendJson(res, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
     return true;
   }
-  if (conv.left_at === null) {
-    sendJson(res, 409, { ok: false, error: "群仍在收件中，不能清除历史；请先在群列表里停用后再操作" });
-    return true;
-  }
   const cleared = clearQQGroupHistory(id, contactId);
   if (cleared === null) {
     sendJson(res, 404, { ok: false, error: "QQ 群会话不存在" });
@@ -131,7 +127,8 @@ const conversationRemoveRoute: Route = ({ res, url, path, method }) => {
     sendJson(res, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
     return true;
   }
-  if (conv.left_at === null) {
+  // 在收的群不许删（防手滑）；官方离群与 OneBot 已停用的群都可以彻底移除。
+  if (conv.left_at === null && conv.enabled) {
     sendJson(res, 409, { ok: false, error: "群仍在收件中，不能从列表移除；请先在群列表里停用后再操作" });
     return true;
   }

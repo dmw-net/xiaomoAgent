@@ -17,6 +17,7 @@
 //   工具失败应该让模型知道「没查到」并继续说话，而不是让整轮对话失败。
 
 import { describePeriod, nowText, ownerPronoun } from "./persona.ts";
+import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { capabilityReady, personaConfig } from "./settings.ts";
 import { generateImage, IMAGE_DAILY_LIMIT, imagesToday } from "./model.ts";
 import { keywords, lastUserMessageText, queryVector, recallExplained } from "./memory.ts";
@@ -27,6 +28,7 @@ import { extensionToolDefs } from "./extensions.ts";
 import { takeReminderSlot, REMINDERS_PER_TURN } from "./proactive.ts";
 import { db } from "./db.ts";
 import { getContact } from "./contacts.ts";
+import { emoteCapabilities, pickEmoteByKeyword, resolveFace, type QqEmoteIntent } from "./qq-emote.ts";
 
 export type ToolContext = {
   /** 他最后一次说话的时间戳（null = 还没说过）。 */
@@ -48,7 +50,7 @@ export type ToolContext = {
  * 由 executeTool 从工具返回值里的 `files` 字段提取，agent 循环收集后写进消息，
  * 所以工具**不需要**自己碰 messages 表。
  */
-export type ToolResult = { ok: true; result: unknown; attachments?: string[] } | { ok: false; error: string };
+export type ToolResult = { ok: true; result: unknown; attachments?: string[]; attachmentMeta?: MessageAttachmentMeta[]; /** 附件已经由工具自己发进渠道（如 send_emote 的原生表情），气泡照挂、通道投递跳过，防重复发送。 */ deliveredToChannel?: boolean } | { ok: false; error: string };
 
 export type ToolDef = {
   name: string;
@@ -235,6 +237,221 @@ const TOOLS: ToolDef[] = [
       };
     },
   },
+  {
+    name: "send_emote",
+    description:
+      "发一个表情给他（表情包）。比一段话更轻、更贴气氛，用来反应、接梗、表示态度时优先用它。" +
+      "用法优先级：①url（一张本地 /media 图片直接当表情发，两条渠道都最稳）；②face_id（QQ 内置表情编号，如 4=大笑，官方渠道会降级成 emoji）；" +
+      "③mface_id（商城动态特效表情，仅 OneBot 渠道支持，官方渠道降级成文字）；④keyword（如「笑死」「赞」「哭」，先查表情包素材库、再查内置表情）。" +
+      "表情会**立刻随这条对话发出去**，不用你再画一张图。发不出去会如实告诉你原因，别假装发成功了。",
+    parameters: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "本地 /media 图片路径，直接当表情包发（可选，优先级最高）" },
+        face_id: { type: "number", description: "QQ 内置表情编号（可选，如 4=大笑、7=大哭）" },
+        mface_id: { type: "string", description: "商城/动态特效表情 id（可选，仅 OneBot 渠道原生支持）" },
+        keyword: { type: "string", description: "表情关键词（2~6 个字），如「笑死」「赞」「哭」，命中表情包素材或内置表情" },
+        label: { type: "string", description: "表情展示名（可选）" },
+      },
+      additionalProperties: false,
+    },
+    execute: async (args, context) => {
+      const conversationId = String(context.conversationId ?? "").trim();
+      if (conversationId === "") return { ok: false, error: "没有可用的会话，发不了表情" };
+      const url = String(args.url ?? "").trim();
+      const label = String(args.label ?? "").trim();
+      const keyword = String(args.keyword ?? "").trim();
+      const faceIdRaw = args.face_id;
+      const faceId = typeof faceIdRaw === "number" ? faceIdRaw : parseInt(String(faceIdRaw ?? ""), 10);
+      const mfaceId = String(args.mface_id ?? "").trim();
+
+      // ① 直接给图片 → image 意图（两渠道都稳，优先级最高）。
+      let intent: QqEmoteIntent;
+      if (url.startsWith("/media/") || /^https?:\/\//i.test(url)) {
+        intent = { kind: "image", url, ...(label !== "" ? { label } : {}) };
+      } else if (Number.isFinite(faceId) && faceId > 0) {
+        // ② 直接给内置表情编号。
+        intent = { kind: "face", id: faceId, ...(label !== "" ? { label } : {}) };
+      } else if (mfaceId !== "") {
+        // ③ 商城动态特效表情（仅 OneBot 原生；官方渠道由 deliverEmote 降级成文字）。
+        intent = { kind: "mface", emojiId: mfaceId, ...(label !== "" ? { label } : {}) };
+      } else if (keyword !== "") {
+        // ④ 关键词：先表情包素材库（图片，最稳），命中就发图片；否则回退内置 face。
+        // 官方渠道静态图优先：官方 C2C 富媒体不认 GIF（850019），素材命中多张时先挑 png/jpg。
+        const asset = pickEmoteByKeyword(keyword, { preferStatic: emoteCapabilities().backend === "official" });
+        if (asset !== null) {
+          intent = { kind: "image", url: asset.url, label: asset.label || keyword };
+        } else {
+          const face = resolveFace(keyword);
+          if (face === null) {
+            return {
+              ok: false,
+              error: `找不到「${keyword}」对应的表情：素材库没有、内置表情也没这个词。换个词，或直接给我一张 /media 图片路径`,
+            };
+          }
+          intent = { kind: "face", id: face.id, label: face.keyword };
+        }
+      } else {
+        return { ok: false, error: "至少要给 url、face_id、mface_id 或 keyword 之一" };
+      }
+
+      // 渠道分流：QQ 会话走原生表情投递（face/mface/image 段）；
+      // 应用端（web/local 频道）没有原生 QQ 表情，图片表情走 files 挂成本条回复的气泡附件
+      // （跟 generate_image 出图同一条路），内置/商城表情降级成 emoji 文字。
+      const { getConversation } = await import("./conversations.ts");
+      const conv = getConversation(conversationId);
+      const isQq = conv !== null && conv.channel === "qq";
+
+      // 应用端：图片意图挂附件，非图片意图降级成 emoji 提示（工具没有改正文的权力，只能 hint）。
+      if (!isQq) {
+        if (intent.kind === "image") {
+          // 气泡附件只能挂本机 /media 图片；外链 http 在应用端渲染不出来，拒掉让模型改给本地素材。
+          if (!intent.url.startsWith("/media/")) {
+            return { ok: false, error: `应用端发不了外链表情「${intent.url}」，换成表情包素材里的 /media 图片（用 keyword 查或让模型给本地路径）` };
+          }
+          return {
+            files: [intent.url],
+            result: {
+              via: "app-attachment",
+              native: false,
+              note: "当前是应用端会话，表情包已作为图片附在这条回复上发出去了",
+            },
+          };
+        }
+        // face / mface 是 QQ 私有概念，应用端没有原生渲染通道。给模型一个 hint：让它在自己的回复里用 emoji 代替。
+        const { faceEmoji } = await import("./qq-emote.ts");
+        const emoji = intent.kind === "face" ? faceEmoji(intent.id) : "";
+        return {
+          via: "app-emoji-fallback",
+          native: false,
+          note:
+            emoji !== ""
+              ? `当前是应用端会话，发不了原生 QQ 表情。请在你的回复里用「${emoji}」代替，正常说话就行。`
+              : "当前是应用端会话，发不了原生 QQ 商城表情。请在你的回复里用一个合适的 emoji 代替，正常说话就行。",
+        };
+      }
+
+      // QQ 会话：原生投递（官方渠道发不了 face/mface 时 deliverEmote 内部会降级成 emoji 文字）。
+      const caps = emoteCapabilities();
+      const degradedNote =
+        ((intent.kind === "face" && !caps.face) || (intent.kind === "mface" && !caps.mface))
+          ? "（当前是官方渠道，发不了原生表情，会降级成文字/emoji）"
+          : "";
+      const { qq } = await import("./qq.ts");
+      const result = await qq.deliverEmote(conversationId, intent);
+      if (!result.ok) {
+        return { ok: false, error: `表情没发出去：${result.detail || result.via}` };
+      }
+      // 图片表情在 QQ 侧已经原生发出去了（官方 via=media / OneBot via=native）；再带 files
+      // 回来挂到气泡上，让应用端也能看见这张表情。deliveredToChannel 标记让 agent 投递时
+      // 跳过它——否则回复文字会把同一张图再发一遍 QQ。meta.label 让历史标记念得出这张图
+      // 是哪张（模型自己的图从不回放，label 就是它唯一的记忆）。降级成文字的没有图可挂。
+      if ((result.via === "media" || result.via === "native") && intent.kind === "image") {
+        return {
+          files: [intent.url],
+          deliveredToChannel: true,
+          result: {
+            via: result.via,
+            native: result.native,
+            note: "表情已经发到 QQ 了，这张图同时挂在本条回复上，应用端也看得见",
+          },
+          meta: [{ url: intent.url, kind: "image" as const, ...(label !== "" || intent.label ? { label: label || intent.label } : {}) }],
+        };
+      }
+      return {
+        via: result.via,
+        native: result.native,
+        note: result.native ? "表情已经发出去了" : degradedNote || "表情已按可用方式发出",
+      };
+    },
+  },
+  {
+    name: "send_voice",
+    description:
+      "把想说的话合成一条语音发出去（QQ 里是一条原生语音条，应用里是可播放的语音气泡）。" +
+      "文字传达不了语气的时候用它：哼一句歌、拖长音的撒娇、故意的停顿和语气词。" +
+      "text 要像说话一样口语化、简短（一两句最好，太长的语音没人听完），别写舞台提示（如「（笑）」）——那些不会被念出来。" +
+      "发不出去会如实告诉你原因，别假装发成功了。",
+    parameters: {
+      type: "object",
+      properties: {
+        text: { type: "string", description: "要说出口的话，口语化、一两句以内；它同时也是气泡上显示的转写文字" },
+      },
+      required: ["text"],
+      additionalProperties: false,
+    },
+    execute: async (args, context) => {
+      const conversationId = String(context.conversationId ?? "").trim();
+      if (conversationId === "") return { ok: false, error: "没有可用的会话，发不了语音" };
+      const text = String(args.text ?? "").trim();
+      if (text === "") return { ok: false, error: "没有要说的话：text 不能为空" };
+
+      // 合成走 设置 → 能力模型 → 语音合成 的可插拔能力档（服务商/音色都在那里配），
+      // 这里不认识任何一家服务商。没配置/超时/失败都如实回给模型。
+      const { synthesizeSpeech } = await import("./model.ts");
+      let dataUrl: string;
+      try {
+        ({ dataUrl } = await synthesizeSpeech(text));
+      } catch (error) {
+        return { ok: false, error: `语音没合成出来：${error instanceof Error ? error.message : String(error)}` };
+      }
+      const comma = dataUrl.indexOf(",");
+      if (comma < 0) return { ok: false, error: "语音合成返回了不认识的格式" };
+      let buffer: Buffer;
+      try {
+        buffer = Buffer.from(dataUrl.slice(comma + 1), "base64");
+      } catch {
+        return { ok: false, error: "语音合成返回的音频解不出来" };
+      }
+      const { saveAudio, audioDurationMs } = await import("./media.ts");
+      const saved = saveAudio(buffer);
+      const durationMs = audioDurationMs(buffer, saved.mime);
+      const meta = {
+        url: saved.url,
+        kind: "audio" as const,
+        ...(saved.mime !== "" ? { mime: saved.mime } : {}),
+        ...(durationMs !== undefined ? { durationMs } : {}),
+        transcript: text,
+        source: "synthesized" as const,
+      };
+
+      // 渠道分流：QQ 会话原生发一条语音（官方 file_type=3 / OneBot record 段），已发出的标
+      // deliveredToChannel 防止回复文字投递时再发一遍；应用端/微信会话挂成本条回复的气泡附件
+      //（应用端渲染成语音气泡，QQ 镜像链路会把它当语音发出）。
+      const { getConversation } = await import("./conversations.ts");
+      const conv = getConversation(conversationId);
+      const isQq = conv !== null && conv.channel === "qq";
+      if (!isQq) {
+        return {
+          files: [saved.url],
+          result: {
+            via: "app-attachment",
+            native: false,
+            note: "当前不是 QQ 会话，语音已作为语音气泡附在这条回复上发出去了",
+          },
+          meta: [meta],
+        };
+      }
+      const { qq } = await import("./qq.ts");
+      const media = [{ url: saved.url }];
+      const outcome = conv.kind === "group"
+        ? await qq.deliverMediaToGroup(conv.contact_id, conversationId, "", media)
+        : await qq.deliverMediaToContact(conv.contact_id, "", media);
+      if (outcome.sent === 0) {
+        return { ok: false, error: `语音没发出去：${outcome.lastError || "QQ 投递失败"}` };
+      }
+      return {
+        files: [saved.url],
+        deliveredToChannel: true,
+        result: {
+          via: "native",
+          native: true,
+          note: "语音已经发到 QQ 了，同时挂在本条回复上，应用端也看得见",
+        },
+        meta: [meta],
+      };
+    },
+  },
 ];
 
 /**
@@ -276,6 +493,10 @@ function visibleTools(contactId?: string, permissionOverride?: AssistantPermissi
   if (features?.memorySearch === false) off.add("search_memory");
   if (features?.reminders !== true) off.add("schedule_reminder");
   if (features?.imageGen !== true || !capabilityReady("imageGeneration")) off.add("generate_image");
+  // 表情包：默认关（QQ 通道能力 + 性格开关），只有这位联系人明确开了才声明 send_emote。
+  if (features?.emotes !== true) off.add("send_emote");
+  // 发语音：默认关（TTS 秒级外部调用 + 性格开关），且语音合成的能力档没配好时自动消失。
+  if (features?.voice !== true || !capabilityReady("textToSpeech")) off.add("send_voice");
   if (features?.web !== true) { off.add("web_search"); off.add("web_fetch"); }
   // 联网那一组不在 TOOLS 里（它默认整组不声明，只有开关打开才进来），所以候选池要显式并上它。
   // 少并一次的结果是 off.add 在过滤一个池子里根本不存在的名字——开关怎么开都拿不到工具，
@@ -313,11 +534,16 @@ export async function executeTool(name: string, argsJson: string, context: ToolC
     // 返回带 files 的工具 = 有产物要挂到本轮回复上。模型只看到 result（它拿不到地址也无所谓，
     // 助手自己的图从不回放），文件本体由 agent 循环写进 messages.attachments。
     if (raw !== null && typeof raw === "object" && Array.isArray((raw as { files?: unknown }).files)) {
-      const produced = raw as { files: unknown[]; result: unknown };
+      const produced = raw as { files: unknown[]; result: unknown; deliveredToChannel?: unknown; meta?: unknown };
       const urls = produced.files.filter((f): f is string => typeof f === "string" && f.startsWith("/media/"));
-      return urls.length > 0
-        ? { ok: true, result: produced.result, attachments: urls }
-        : { ok: true, result: produced.result };
+      if (urls.length === 0) return { ok: true, result: produced.result };
+      const metas = Array.isArray(produced.meta)
+        ? (produced.meta as MessageAttachmentMeta[]).filter((m): m is MessageAttachmentMeta =>
+            m !== null && typeof m === "object" && typeof (m as { url?: unknown }).url === "string")
+        : undefined;
+      return produced.deliveredToChannel === true
+        ? { ok: true, result: produced.result, attachments: urls, ...(metas !== undefined && metas.length > 0 ? { attachmentMeta: metas } : {}), deliveredToChannel: true }
+        : { ok: true, result: produced.result, attachments: urls, ...(metas !== undefined && metas.length > 0 ? { attachmentMeta: metas } : {}) };
     }
     return { ok: true, result: raw };
   } catch (error) {

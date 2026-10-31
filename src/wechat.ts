@@ -26,6 +26,7 @@ import {
   redact,
   SeenKeys,
   SingleFlight,
+  withRaw,
 } from "./channels/delivery.ts";
 
 const KV_LINKS = "wechat.links";
@@ -323,11 +324,13 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
     signal.addEventListener("abort", onAbort, { once: true });
   });
 
-/** iLink 的业务码在 ret 里：非零一律当失败，且必须把 errmsg 带出来。 */
+/** iLink 的业务码在 ret 里：非零一律当失败，且必须把 errmsg 带出来。
+ *  原始应答整体挂在 error.raw 上：状态页详情弹窗的「服务商返回」靠它展示完整报文。 */
   const requireOk = (reply: Record<string, unknown>, what: string): void => {
     const code = Number(reply.ret ?? 0);
     if (code === 0) return;
-    throw new Error(`${what}：${asText(reply.errmsg) || "ret=" + String(code)}`);
+    const raw = JSON.stringify(reply);
+    throw withRaw(new Error(`${what}：${asText(reply.errmsg) || "ret=" + String(code)}`), raw.slice(0, 2000));
   };
   /** 发一条 item。上下文过期时重读库里的新 token 再试一次，然后才认输。 */
   const postItem = async (
@@ -512,7 +515,7 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
         links.save();
         console.warn(`[wechat] 投递失败（${contactId}）：${message}`);
       },
-      log: (ok, message, elapsedMs) => logModelCall({
+      log: (ok, message, elapsedMs, raw) => logModelCall({
         purpose: "wechat",
         ok,
         ...(ok ? {} : { code: "WECHAT_DELIVER" }),
@@ -520,6 +523,7 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
         url: link.baseUrl,
         elapsedMs,
         ...(message === "" ? {} : { message }),
+        ...(raw ? { resRaw: raw } : {}),
         contactId,
       }),
     });

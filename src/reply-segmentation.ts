@@ -5,7 +5,7 @@
 //   1. 带 Markdown 结构的内容（列表/表格/代码块/链接/加粗…）整条发——
 //      把列表或代码块拆进几个气泡是灾难性阅读体验；
 //   2. 其余文本按「句末标点 + 收尾引号/括号」切，一行之内多句也照切；
-//   3. 条数有上限（默认 5），超出的句子并进最后一条——连发十几条气泡同样灾难。
+//   3. 条数有上限（默认 8），超出的句子并进最后一条——连发十几条气泡同样灾难。
 
 /** Markdown 结构信号（行首列表/标题/引用/表格、代码围栏、行内格式、链接、裸 URL）。 */
 const MARKDOWN_HINT =
@@ -44,7 +44,7 @@ function splitSentences(text: string): string[] {
  * 把回复切成气泡序列；空白输入回落为单条（调用方按普通消息处理）。
  * max 为气泡数上限，超出部分合并成最后一条。
  */
-export function segmentReply(value: string, max = 5): string[] {
+export function segmentReply(value: string, max = 8): string[] {
   const text = String(value ?? "").replace(/\r\n?/g, "\n");
   if (MARKDOWN_HINT.test(text)) {
     const whole = text.trim();

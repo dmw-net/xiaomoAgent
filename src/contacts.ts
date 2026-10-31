@@ -76,6 +76,18 @@ export type CompanionFeatures = {
    */
   imageGen: boolean;
   /**
+   * 表情包：注册 send_emote 工具，她可以随手甩一个表情（图片表情包 / 内置表情 / 商城动态表情）。
+   * 默认关——它是 QQ 通道能力，没挂 QQ 账号的联系人（微信 / 纯 web）发不出去；
+   * 且是否"爱发表情"是这位联系人的性格，不该由应用替用户默认开启。开了才声明工具。
+   */
+  emotes: boolean;
+  /**
+   * 发语音：注册 send_voice 工具，她可以把想说的话合成一条语音发出去（QQ 里是原生语音条，
+   * 应用里是可播放的语音气泡）。默认关——TTS 是秒级外部调用，且"爱不爱发语音"是这位联系人
+   * 的性格；语音合成走 设置 → 能力模型 → 语音合成 的可插拔能力档，没配好时工具自动消失。
+   */
+  voice: boolean;
+  /**
    * 联网：注册 web_search / web_fetch，她可以查当下的事、为用户找一张图。
    * 默认关——这是本项目里唯一会**主动向外发请求**的能力开关，另外两个面都比它小：
    * ① 抓回来的正文会进她的上下文，等于把不可信文本喂进提示词（结果里已强制标注"只当资料"，
@@ -146,6 +158,8 @@ export const FEATURE_DEFAULTS: CompanionFeatures = {
   consolidate: false,
   reminders: false,
   imageGen: false,
+  emotes: false,
+  voice: false,
   web: false,
   bond: false,
   splitReply: true,
@@ -176,7 +190,7 @@ export function sanitizeFeatures(input: unknown): CompanionFeatures {
   const out: CompanionFeatures = { ...FEATURE_DEFAULTS };
   if (input === null || typeof input !== "object" || Array.isArray(input)) return out;
   const src = input as Record<string, unknown>;
-  for (const key of ["memoryExtract", "tools", "clock", "memorySearch", "lifeline", "recap", "consolidate", "reminders", "imageGen", "web", "bond", "splitReply", "showThinking", "showTools"] as const) {
+  for (const key of ["memoryExtract", "tools", "clock", "memorySearch", "lifeline", "recap", "consolidate", "reminders", "imageGen", "emotes", "voice", "web", "bond", "splitReply", "showThinking", "showTools"] as const) {
     if (src[key] === true) out[key] = true;
     else if (src[key] === false) out[key] = false;
   }

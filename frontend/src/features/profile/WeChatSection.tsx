@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { MessageCircle } from "lucide-react";
 // qrcode 只在「生成绑定二维码」这一步用得到，不该进首屏 chunk。
 import { wechatApi, type WeChatLink } from "../../api";
 import Modal from "../../components/Modal";
+import { ChannelBadge, ChannelNote, type ChannelTone } from "./ChannelKit";
 
 type QrModal = {
   attemptId: string;
@@ -135,9 +137,17 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
     }
   };
 
+  /** 徽章语义：connected 在跑、attention 要人处理、paused/disabled 是停用（灰）。 */
+  const badgeTone: ChannelTone =
+    link === null ? "muted"
+      : link.status === "connected" ? "ok"
+        : link.status === "attention" ? "warn" : "muted";
+  const badgeLabel = link === null ? "未连接" : wechatApi.WECHAT_STATUS_LABEL[link.status];
+
   return (
     <div className="card card-pad pf-model-card wx-card">
       <div className="wx-head">
+        <span className="ch-channel-icon ch-channel-wx" aria-hidden="true"><MessageCircle size={17} strokeWidth={1.8} /></span>
         <div>
           <div className="pf-set-title">微信连接</div>
           <div className="pf-model-hint">
@@ -145,24 +155,33 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
             从微信发来的消息也会进入这段对话。
           </div>
         </div>
-        {link && <span className={"wx-badge wx-badge-" + link.status}>{wechatApi.WECHAT_STATUS_LABEL[link.status]}</span>}
+        <ChannelBadge tone={badgeTone} label={badgeLabel}
+          title={link?.status === "attention" && link.lastError !== "" ? link.lastError : undefined} />
       </div>
 
       {!link && (
-        <div className="wx-actions">
-          <button type="button" className="pf-ghost" disabled={busy} onClick={() => { void startBind(); }}>
-            {busy ? "正在生成…" : "生成微信二维码"}
-          </button>
+        /* 未连接空态：从前只有一枚孤零零的按钮，先讲清楚绑定能得到什么，再给唯一的下一步。 */
+        <div className="ch-empty">
+          <div className="ch-empty-points">
+            <span>{who}说的话会同步到这个联系人的微信</span>
+            <span>微信里回的消息也会进入这段对话，上下文共用</span>
+            <span>要不要让{who}主动发微信，绑完后随时可开关</span>
+          </div>
+          <div className="wx-actions">
+            <button type="button" className="primary sm" disabled={busy} onClick={() => { void startBind(); }}>
+              {busy ? "正在生成…" : "扫码绑定微信"}
+            </button>
+          </div>
         </div>
       )}
 
       {link && !link.hasContext && (
-        <div className="wx-note">还没有微信会话：请先在微信里给{who}发一条消息，建立会话后{who}才能回复。</div>
+        <ChannelNote tone="info">还没有微信会话：请先在微信里给{who}发一条消息，建立会话后{who}才能回复。</ChannelNote>
       )}
       {link && link.status === "attention" && link.lastError !== "" && (
-        <div className="wx-error">{link.lastError}</div>
+        <ChannelNote tone="error">{link.lastError}</ChannelNote>
       )}
-      {bindHint !== "" && <div className="wx-note">{bindHint}</div>}
+      {bindHint !== "" && <ChannelNote tone="success">{bindHint}</ChannelNote>}
 
       {link && (
         <div className="wx-controls">
@@ -184,12 +203,19 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
             />
             允许主动触达
           </label>
+        </div>
+      )}
+      {err !== "" && <ChannelNote tone="error">{err}</ChannelNote>}
+
+      {/* 危险操作单独分层：停用开关是日常操作，解绑是不可逆动作，不该和开关挤在同一行。 */}
+      {link && (
+        <div className="ch-danger-row">
           <button type="button" className="pf-ghost wx-danger" disabled={busy} onClick={() => setConfirmOff(true)}>
             解除绑定
           </button>
+          <span className="ch-danger-hint">解绑后微信不再收发消息，对话记录保留，可重新扫码绑定。</span>
         </div>
       )}
-      {err !== "" && <div className="wx-error">{err}</div>}
 
       {qr && (
         <Modal onClose={closeModal} label="微信扫码绑定" className="wx-modal"
@@ -197,15 +223,15 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
             {qr.status === "waiting" || qr.status === "scanned" ? (
               <>
                 <img className="wx-qr" src={qr.dataUrl} alt="微信登录二维码" />
-                <div className="wx-note">
+                <ChannelNote tone="info">
                   {qr.status === "scanned"
                     ? "已扫码，请在手机上确认登录。"
                     : "用微信「扫一扫」扫描下方二维码。二维码 8 分钟内有效。"}
-                </div>
+                </ChannelNote>
               </>
             ) : (
               <>
-                <div className="wx-error">{qr.error}</div>
+                <ChannelNote tone="error">{qr.error}</ChannelNote>
                 <div className="add-row">
                   <button type="button" className="primary" onClick={() => { void startBind(); }}>重新生成二维码</button>
                 </div>

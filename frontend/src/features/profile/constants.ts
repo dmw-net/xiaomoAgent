@@ -24,7 +24,7 @@ export const PERSONA_TOTAL_MAX = 30_000;
 
 export type ProfileMode = "create" | "edit";
 
-/** 资料页顶部分区：人格设定 / 对话设置 是编辑表单；记忆 / 主动性 / 内容库 是内嵌的运行视图面板。 */
+/** 资料页顶部分区：人格设定 / 对话设置 是编辑表单；记忆 / 主动性 / 媒体 是内嵌的运行视图面板。 */
 export type ProfilePage = "persona" | "settings" | "memory" | "proactive" | "gallery";
 
 export type Draft = PersonaDraft;

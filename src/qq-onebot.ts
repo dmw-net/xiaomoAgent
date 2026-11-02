@@ -16,17 +16,21 @@
 // 「真实号→联系人」映射用 upsertOneBotAccount 注入，不混进 QQService 面。
 
 import { randomUUID } from "node:crypto";
-import { pathToFileURL } from "node:url";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { config } from "./config.ts";
 import { kvGet, kvSet } from "./db.ts";
 import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
-import { mediaAbsPath } from "./media.ts";
+import {
+  MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, mediaAbsPath,
+  saveAudio, saveImage, saveVideo, sniffAudioMime, sniffImageMime, sniffVideoMime,
+} from "./media.ts";
 import { asText, chunkSegments, redact, withRaw } from "./channels/delivery.ts";
-import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, listGroupProactiveConversations } from "./conversations.ts";
-import type { MessageAttachmentMeta } from "../shared/api.ts";
-import { renderEmote, type EmoteSendResult, type QqEmoteIntent } from "./qq-emote.ts";
+import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations } from "./conversations.ts";
+import type { MessageAttachmentKind, MessageAttachmentMeta } from "../shared/api.ts";
+import { captureInboundEmote, renderEmote, type EmoteSendResult, type QqEmoteIntent } from "./qq-emote.ts";
 import type { QQService, QqMediaRef, MediaOutcome, QQBindingView, QQConversationView, QQStatus } from "./qq.ts";
 
 /** 一个 OneBot 端点 = 一个真实 QQ 号，绑定到一个联系人。 */
@@ -160,16 +164,21 @@ function obMediaSegment(ref: QqMediaRef): OneBotSegment {
   if (["mp4", "webm"].includes(ext)) return { type: "video", data };
   return { type: "file", data };
 }
-/** 入站 message 段 → 纯文本。 */
-function obInboundText(message: unknown): string {
-  if (typeof message === "string") return message;
+/** 入站 message 段 → 纯文本。face/mface 换成「[表情]」占位——
+ *  纯表情甩脸是 QQ 日常，整条消息没有文字段时不能让它在闸门处蒸发：
+ *  模型至少看得见「对方发了个表情」，界面也留得住这条消息。
+ *  （导出只为回归测试直接喂段，运行期消费者仍只有本文件的 handleInbound。） */
+export function obInboundText(message: unknown): string {
+  if (typeof message === "string") return message.replace(/\[CQ:(?:face|mface)[^\]]*\]/gi, "[表情]");
   if (Array.isArray(message)) {
     return message.map((item) => {
       if (item === null || typeof item !== "object") return "";
       const seg = item as OneBotSegment;
-      if (seg.type !== "text") return "";
       const data = (typeof seg.data === "object" && seg.data !== null ? seg.data : {}) as Record<string, unknown>;
-      return asText(data.text);
+      const t = asText(seg.type);
+      if (t === "text") return asText(data.text);
+      if (t === "face" || t === "mface") return "[表情]";
+      return "";
     }).join("");
   }
   return "";
@@ -190,17 +199,56 @@ function obMessageAtBot(message: unknown, botUin: string): boolean {
     return asText(data.qq) === botUin;
   });
 }
-/** 入站 message 段 → 媒体 URL 列表（协议端会回填 file/url 字段）。 */
-function obInboundMedia(message: unknown): string[] {
+/**
+ * 入站媒体段的原始引用。各家协议端回填的字段形态不一（NapCat 给 url+path+file，
+ * go-cqhttp 老形态可能只给裸文件名），这里先把三种可能收齐，取字节时再按便宜排序。
+ */
+export type ObInboundMediaRef = {
+  kind: "image" | "record" | "video" | "file";
+  /** 文件名 / file_id：裸名换不到字节时要拿它找协议端 get_image 换地址。 */
+  file: string;
+  /** 协议端回填的 http(s) 地址（CDN 签名链接，会过期，所以必须尽快落盘）。 */
+  url: string;
+  /** 协议端同机落盘的绝对路径（NapCat 开 path 回填时最省）。 */
+  path: string;
+};
+
+const OB_MEDIA_TYPES = ["image", "record", "video", "file"] as const;
+
+/** file:// 形态转本地路径；坏串返回空，让上一级逻辑继续按裸名处理。 */
+function obFileUrlToPath(value: string): string {
+  try { return fileURLToPath(value); } catch { return ""; }
+}
+
+/** 入站 message 段 → 媒体引用列表（不取字节，只把地址形态归好）。 */
+export function obInboundSegments(message: unknown): ObInboundMediaRef[] {
   if (!Array.isArray(message)) return [];
-  const out: string[] = [];
+  const out: ObInboundMediaRef[] = [];
   for (const item of message) {
     if (item === null || typeof item !== "object") continue;
     const seg = item as OneBotSegment;
-    if (!["image", "record", "video", "file"].includes(asText(seg.type))) continue;
+    const t = asText(seg.type);
     const data = (typeof seg.data === "object" && seg.data !== null ? seg.data : {}) as Record<string, unknown>;
-    const url = asText(data.file ?? data.url);
-    if (url !== "") out.push(url);
+    const text = (...keys: string[]): string => {
+      for (const key of keys) { const v = asText(data[key]); if (v !== "") return v; }
+      return "";
+    };
+    if (t === "mface") {
+      // 动态小表情：有原图地址就按图片收（表情包素材的重要来路），没有就只剩文本里的占位。
+      const origin = text("origin_url", "picture_url", "url");
+      if (/^https?:\/\//i.test(origin)) out.push({ kind: "image", file: "", url: origin, path: "" });
+      continue;
+    }
+    if (!(OB_MEDIA_TYPES as readonly string[]).includes(t)) continue;
+    const kind = t as ObInboundMediaRef["kind"];
+    const file = text("file"); const url = text("url"); const localPath = text("path");
+    // 完整地址有时整个塞在 file 字段里（老形态）；裸文件名留给 get_image 那条路。
+    const httpUrl = /^https?:\/\//i.test(url) ? url : (/^https?:\/\//i.test(file) ? file : "");
+    const local = localPath !== "" ? localPath
+      : (/^file:\/\/\//i.test(file) ? obFileUrlToPath(file)
+        : (/^[a-zA-Z]:[\\/]/.test(file) || file.startsWith("/") ? file : ""));
+    if (httpUrl === "" && local === "" && file === "") continue;
+    out.push({ kind, file, url: httpUrl, path: local });
   }
   return out;
 }
@@ -226,6 +274,109 @@ async function obAction(action: string, params: Record<string, unknown>): Promis
   return data;
 }
 
+// ── 入站媒体落盘 ────────────────────────────────────────────────
+// CSP 把 img-src 钉死在 'self' data: blob:，协议端给的远程地址（CDN、带过期签名）
+// 在前端根本渲染不出来——收进来就必须当场抓成本地 /media，留到看时再抓等于没存。
+// 一条坏附件只跳过它自己（记 OB_MEDIA 日志），不吞整条消息；与官方后端的
+// saveInboundMedia 同一纪律。
+
+const OB_MEDIA_LIMIT: Record<ObInboundMediaRef["kind"], number> = {
+  image: MAX_IMAGE_BYTES, record: MAX_AUDIO_BYTES, video: MAX_VIDEO_BYTES, file: MAX_VIDEO_BYTES,
+};
+
+function obOverLimitError(limit: number, size: number): Error {
+  return new Error(`附件 ${Math.round(size / (1024 * 1024))}MB 超过 ${Math.round(limit / (1024 * 1024))}MB 上限，已跳过`);
+}
+
+function obReadLocalCapped(file: string, limit: number): Buffer {
+  const size = statSync(file).size;
+  if (size > limit) throw obOverLimitError(limit, size);
+  const body = readFileSync(file);
+  if (body.length === 0) throw new Error("附件内容为空");
+  return body;
+}
+
+async function obFetchCapped(target: string, limit: number): Promise<Buffer> {
+  const response = await fetch(target, { signal: AbortSignal.timeout(60_000) });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  const length = Number(response.headers.get("content-length") ?? 0);
+  if (Number.isFinite(length) && length > limit) throw obOverLimitError(limit, length);
+  const body = Buffer.from(await response.arrayBuffer());
+  if (body.length === 0) throw new Error("附件内容为空");
+  if (body.length > limit) throw obOverLimitError(limit, body.length);
+  return body;
+}
+
+/**
+ * 媒体引用 → 字节。三条路按便宜排序：同机文件直读 → http 地址直取 →
+ * 裸文件名/file_id 找协议端 get_image 换地址（NapCat 的 file 字段经常只是个哈希名）。
+ */
+async function obFetchBody(ref: ObInboundMediaRef): Promise<Buffer> {
+  const limit = OB_MEDIA_LIMIT[ref.kind];
+  if (ref.path !== "" && existsSync(ref.path)) return obReadLocalCapped(ref.path, limit);
+  if (ref.url !== "") return await obFetchCapped(ref.url, limit);
+  if (/^https?:\/\//i.test(ref.file)) return await obFetchCapped(ref.file, limit);
+  if (/^file:\/\/\//i.test(ref.file)) {
+    const local = obFileUrlToPath(ref.file);
+    if (local !== "" && existsSync(local)) return obReadLocalCapped(local, limit);
+  }
+  if (ref.file !== "") {
+    const envelope = await obAction("get_image", { file_id: ref.file });
+    const payload = (envelope.data !== null && typeof envelope.data === "object"
+      ? envelope.data : envelope) as Record<string, unknown>;
+    const swapped = asText(payload.url ?? payload.file);
+    if (/^https?:\/\//i.test(swapped)) return await obFetchCapped(swapped, limit);
+    if (swapped !== "" && existsSync(swapped)) return obReadLocalCapped(swapped, limit);
+    // 协议端也可能不转存、直接把字节还回来（go-cqhttp 形态是裸 base64，NapCat 带 base64:// 前缀）。
+    const base64 = asText(payload.file_base64 ?? payload.base64);
+    const stripped = base64.startsWith("base64://") ? base64.slice("base64://".length) : base64;
+    if (stripped !== "") {
+      const body = Buffer.from(stripped, "base64");
+      if (body.length === 0) throw new Error("协议端回的空字节");
+      if (body.length > limit) throw obOverLimitError(limit, body.length);
+      return body;
+    }
+  }
+  throw new Error("协议端没给出可读的附件地址");
+}
+
+/**
+ * 入站 message → 已落盘的本地媒体。落盘后按真实字节归型（不是按段声明——file 段
+ * 里装着图片很常见），图片顺手走表情自动采集（开关关着是 no-op，重复内容按哈希挡）。
+ */
+export async function obMaterializeMedia(message: unknown): Promise<{ urls: string[]; meta: MessageAttachmentMeta[] }> {
+  const urls: string[] = [];
+  const meta: MessageAttachmentMeta[] = [];
+  for (const ref of obInboundSegments(message)) {
+    const started = Date.now();
+    try {
+      const body = await obFetchBody(ref);
+      const imageMime = sniffImageMime(body);
+      let url = ""; let kind: MessageAttachmentKind; let mime = "";
+      if (ref.kind === "image" || (ref.kind === "file" && imageMime !== "")) {
+        if (imageMime === "") throw new Error("图片魔数无法识别");
+        url = saveImage(body, imageMime).url; mime = imageMime; kind = "image";
+        captureInboundEmote(url);
+      } else if (ref.kind === "record" || (ref.kind === "file" && imageMime === "" && sniffAudioMime(body) !== "")) {
+        const saved = saveAudio(body); url = saved.url; mime = saved.mime; kind = "audio";
+      } else if (ref.kind === "video" || (ref.kind === "file" && sniffVideoMime(body) !== "")) {
+        const saved = saveVideo(body); url = saved.url; mime = saved.mime; kind = "video";
+      } else {
+        throw new Error("文档类附件暂不落库");
+      }
+      urls.push(url);
+      meta.push({ url, kind, mime });
+    } catch (error) {
+      logModelCall({
+        purpose: "qq", ok: false, code: "OB_MEDIA", model: "onebot", url: "/inbound-" + ref.kind,
+        elapsedMs: Date.now() - started,
+        message: (error instanceof Error ? error.message : String(error)).slice(0, 300),
+      });
+    }
+  }
+  return { urls, meta };
+}
+
 export type OneBotLoginInfo = {
   /** 协议端是否连得上（HTTP API 可用且应答正常）。 */
   reachable: boolean;
@@ -237,10 +388,14 @@ export type OneBotLoginInfo = {
 };
 
 /** 探测协议端并读出它当前登录的账号：绑定入口靠它把「手填 QQ 号」升级成「确认绑定」。
- *  不抛错——连不上也是合法状态，error 里带原因。 */
+ *  不抛错——连不上也是合法状态，error 里带原因。
+ *  obAction 回的是完整信封（{status,retcode,data,echo}），账号字段在 data 里；
+ *  从前直接在信封上读 user_id，永远读出空号——HTTP 通着也判成「没连上」。 */
 export async function onebotLoginInfo(): Promise<OneBotLoginInfo> {
   try {
-    const login = await obAction("get_login_info", {});
+    const envelope = await obAction("get_login_info", {});
+    const login = (envelope.data !== null && typeof envelope.data === "object"
+      ? envelope.data : envelope) as Record<string, unknown>;
     return {
       reachable: true,
       userId: asText(login.user_id ?? login.userId),
@@ -262,6 +417,7 @@ export function createQQOneBotService(): QQService {
   let ws: OBWebSocket | null = null;
   let disposed = false;
   let reachable = false;
+  let inboundTail: Promise<void> = Promise.resolve();
 
   const byContact = (contactId: string): OneBotAccount | null => { hydrate(); return (accounts ?? []).find((a) => a.contactId === contactId) ?? null; };
   const primaryAccount = (): OneBotAccount | null => { hydrate(); const list = accounts ?? []; return list.find((a) => a.enabled) ?? list[0] ?? null; };
@@ -297,7 +453,12 @@ export function createQQOneBotService(): QQService {
       const socket = new WebSocket(obSettings.wsUrl) as unknown as OBWebSocket;
       ws = socket;
       socket.onopen = () => { void probe(); };
-      socket.onmessage = (event) => { void handleInbound(asText(event.data)); };
+      // 入站串行：媒体落盘是异步的，并发处理会让慢消息插到快消息后面——
+      // 聊天记录的时间顺序必须在入库顺序里成立。
+      socket.onmessage = (event) => {
+        const raw = asText(event.data);
+        inboundTail = inboundTail.then(() => handleInbound(raw)).catch(() => { /* handleInbound 自己吞错，这里只保队列不断 */ });
+      };
       socket.onclose = () => { reachable = false; ws = null; if (!disposed) setTimeout(openWs, 5000); };
       socket.onerror = () => { /* onclose 跟进来重连 */ };
     } catch { ws = null; }
@@ -310,9 +471,9 @@ export function createQQOneBotService(): QQService {
     try { event = JSON.parse(raw) as Record<string, unknown>; } catch { return; }
     if (asText(event.post_type) !== "message") return;
     const isGroup = asText(event.message_type) === "group";
-    const mediaUrls = obInboundMedia(event.message);
     const text = obInboundText(event.message);
-    if (text === "" && mediaUrls.length === 0) return;
+    const segments = obInboundSegments(event.message);
+    if (text === "" && segments.length === 0) return;
 
     let contactId: string; let conv; let ownerQq = "";
     if (isGroup) {
@@ -343,11 +504,14 @@ export function createQQOneBotService(): QQService {
       acc.lastReceivedAt = new Date().toISOString(); acc.lastError = ""; persist();
     }
     if (conv.left_at !== null || !conv.enabled) return;
+    // 过了所有闸门才取字节：未绑定的号、没开收到的群，一条都不该落盘。
+    const media = await obMaterializeMedia(event.message);
+    if (text === "" && media.urls.length === 0) return;
     const sender = (event.sender ?? {}) as Record<string, unknown>;
     const channel = getChannel("web");
     if (channel === undefined) return;
     channel.receive(
-      text, contactId, mediaUrls.length > 0 ? mediaUrls : undefined, "qq", undefined,
+      text, contactId, media.urls.length > 0 ? media.urls : undefined, "qq", undefined,
       {
         conversationId: conv.id,
         senderId: asText(event.user_id ?? event.member_id ?? event.qq),
@@ -357,7 +521,7 @@ export function createQQOneBotService(): QQService {
           + (ownerQq !== "" && asText(event.user_id ?? event.qq) === ownerQq ? "（主人）" : ""),
         sourceMessageId: asText(event.message_id),
         atBot: isGroup,
-        attachmentMeta: mediaUrls.map((url): MessageAttachmentMeta => ({ url, kind: "image" })),
+        attachmentMeta: media.meta,
       },
     );
   };
@@ -410,17 +574,6 @@ export function createQQOneBotService(): QQService {
       return;
     }
     await deliverToContact(conv.contact_id, text);
-  };
-
-  const deliverProactiveToGroup = async (contactId: string, text: string, media: QqMediaRef[] = []): Promise<void> => {
-    const acc = primaryAccount();
-    if (acc === null) return;
-    for (const conv of listGroupProactiveConversations(contactId)) {
-      for (const segment of obTextSegments(text)) {
-        await sendOut(acc, "group", conv.external_id, segment, []);
-      }
-      if (media.length > 0) await sendOut(acc, "group", conv.external_id, "", media.map(obMediaSegment));
-    }
   };
 
   const deliverMediaToContact = async (contactId: string, text: string | string[], media: QqMediaRef[], opts: { proactive?: boolean } = {}): Promise<MediaOutcome> => {
@@ -507,7 +660,6 @@ export function createQQOneBotService(): QQService {
   return {
     deliverToContact,
     deliverToConversation,
-    deliverProactiveToGroup,
     deliverMediaToContact,
     deliverMediaToGroup,
     deliverMediaToConversation,

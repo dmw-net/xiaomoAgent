@@ -1,7 +1,9 @@
 // ── QQ 表情系统（渠道无关的表情意图层 + 素材库 + 采集/播种）────────
 //
 // 为什么单独一层：官方 Bot API 与 OneBot v11 协议端对"表情"的支持完全不对称——
-//   - 图片表情包（png/gif/长图）：两条链路都能发（官方走富媒体上传，OneBot 走 image 段）。
+//   - 图片表情包（png/jpg/webp）：两条链路都能发（官方走富媒体上传，OneBot 走 image 段）。
+//     GIF 只有 OneBot 收——官方富媒体会回 850019，所以官方渠道发的是它的派生静帧
+//     （见 renditions.ts：落盘的原图不动，发送时按渠道能力挑形态）。
 //   - QQ 内置表情 face / 商城动态表情 mface：只有 OneBot（NapCat / LLOneBot）能发，
 //     官方渠道根本没有这个概念，硬发就是乱来。
 // 调用方（send_emote 工具 / agent）不该关心"现在挂的是哪条渠道"，只描述"想发哪种表情"，
@@ -26,7 +28,16 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { config } from "./config.ts";
 import { kvGet, kvSet } from "./db.ts";
-import { MAX_IMAGE_BYTES, mediaAbsPath, saveImage, sniffImageMime } from "./media.ts";
+import {
+  applyEmoteSemantics, claimAsset, contentHash, findEmoteAssetByHash, getAssetByUrl, isHumanName,
+  listEmoteAssets as listMarkedEmotes, migrateEmoteSemantics, markEmote,
+  registerAsset, unmarkEmote, type AssetSource, type EmoteSemantics,
+} from "./assets.ts";
+import {
+  MAX_IMAGE_BYTES, mediaAbsPath, mediaFileInfo, mediaTypeOfUrl, readMedia, saveImage, sniffImageMime,
+} from "./media.ts";
+import { dirFor } from "./media-layout.ts";
+import { scheduleCaptureNaming } from "./emote-naming.ts";
 import { qqBackend, type QqMediaRef } from "./qq.ts";
 
 /** 表情意图：只描述"想发什么"，不描述"渠道怎么说"。 */
@@ -120,16 +131,16 @@ export function overrideFaces(defs: FaceDef[]): void { faceOverrides = defs; }
 const faceTable = (): FaceDef[] => faceOverrides ?? FACES;
 
 /** 关键词 → 内置表情。未命中返回 null（调用方继续回退到素材库 / 直接给 face id）。
- *  匹配策略：精确查 FACES 表 + 同义词扩展（EMOTE_SYNONYMS 里的候选逐个查 FACES）。 */
+ *  匹配策略：精确查 FACES 表 + 口语叫法扩展（FACE_SYNONYMS 的候选逐个查 FACES）。 */
 export function resolveFace(keyword: string): FaceDef | null {
   const key = keyword.trim();
   if (key === "") return null;
   const table = faceTable();
   for (const def of table) if (def.keyword === key) return def;
-  // 同义词扩展：候选逐个查 FACES 表。
-  const cands = EMOTE_SYNONYMS[key] ?? [];
+  // 口语扩展：候选逐个查 FACES 表。
+  const cands = FACE_SYNONYMS[key] ?? [];
   for (const c of cands) {
-    for (const def of table) if (def.keyword === c || c === def.keyword) return def;
+    for (const def of table) if (def.keyword === c) return def;
   }
   return null;
 }
@@ -187,10 +198,11 @@ export function renderEmote(intent: QqEmoteIntent): EmoteRender {
 }
 
 // ── 表情包素材库（图片类，最稳、两渠道都能发）─────────────────────────
-// 把本地 /media 图片登记成带关键词的表情包，命中就随机发一张。
-// 持久化到 KV，跨重启保留；上限有界，防它一个长到天上去（与 SeenKeys 同款纪律）。
+// 素材就是 assets 表上打了 usable_as_emote 标记的行，语义字段见 assets.ts 的「表情语义」。
+// 这一层只负责**进出登记**（谁把一张图变成表情）；**怎么选**在 emote-search.ts，两件事不混在一起。
+// 持久化：文件在落盘时已登记，标记只是资产上的属性——所以「删了表情登记、文件失踪」
+// 「同一张图在两个库里各有一个名字」这类裂缝从结构上就不成立了。
 
-export type EmoteAsset = { url: string; label: string; tags: string[] };
 const KV = "qq.emote.v1";
 const ASSET_CAP = 0; // 0 = 不设上限：素材库随导入增长，不再挤掉最早入的素材。
 
@@ -210,7 +222,9 @@ export function isMachineName(value: string): boolean {
 
 /** 清洗后的名字：机器名一律当「没有名字」处理，交给标签兜底显示。 */
 function cleanLabel(value: string): string {
-  const trimmed = value.trim();
+  // 引号/反斜杠要一起去掉：批次名要进 JSON 数组按整词筛选（assets.ts 的 emote_pack LIKE），
+  // 名字里带引号会把那个匹配条件破掉；顺带也不会出现「名字里带转义符」这种界面上看不懂的标签。
+  const trimmed = value.replace(/["\\]/g, "").trim();
   return isMachineName(trimmed) ? "" : trimmed;
 }
 function cleanTags(tags: string[]): string[] {
@@ -223,15 +237,16 @@ function cleanTags(tags: string[]): string[] {
   return out;
 }
 
-type EmoteStore = { assets: EmoteAsset[] };
+/** 老格式（kv 里一整块 JSON）的一行——只服务于一次性迁移。 */
+type LegacyEmoteRow = { url: string; label: string; tags: string[] };
 /** 读路径就是清洗点：库里存什么样，出去的都保证没有机器名。 */
-function loadStore(): EmoteAsset[] {
+function readKvBlob(): LegacyEmoteRow[] {
   const raw = kvGet(KV);
   if (raw === null || raw === "") return [];
   try {
-    const parsed = JSON.parse(raw) as Partial<EmoteStore>;
+    const parsed = JSON.parse(raw) as { assets?: unknown };
     const list = Array.isArray(parsed.assets) ? parsed.assets : [];
-    const out: EmoteAsset[] = [];
+    const out: LegacyEmoteRow[] = [];
     for (const item of list) {
       if (item === null || typeof item !== "object") continue;
       const row = item as Record<string, unknown>;
@@ -244,166 +259,111 @@ function loadStore(): EmoteAsset[] {
     return out;
   } catch { return []; }
 }
-function saveStore(assets: EmoteAsset[]): void { kvSet(KV, JSON.stringify({ version: 1, assets })); }
 
 /**
- * 存量清洗：早期版本把哈希文件名当过 label / 标签写进库（界面上就是一排 `bb35665c…`）。
- * 读路径已经洗过了，这里把结果落回 KV，让库本身也干净一次；本来就干净就不写。
- * 只清名字，不删任何一张素材。
+ * 素材行必须存在才能打标记。文件不在盘上就拒绝登记——指向一张空气的表情，
+ * 到了发送那一刻只会变成一句「本地媒体文件读不到」，不如在这里就不让它进来。
+ */
+function ensureAssetRow(url: string): boolean {
+  if (getAssetByUrl(url) !== null) return true;
+  const info = mediaFileInfo(url);
+  if (info === null) return false;
+  const media = readMedia(url);
+  registerAsset({
+    id: url.slice("/media/".length).replace(/\.[^.]+$/, ""),
+    url,
+    kind: mediaTypeOfUrl(url),
+    mime: info.mime,
+    bytes: info.size,
+    hash: media === null ? "" : contentHash(media.buffer),
+    source: "imported",
+  });
+  return getAssetByUrl(url) !== null;
+}
+
+/**
+ * 一次性迁移：老 blob 搬进 assets 表。
+ * 「blob 空了」本身就是已迁移的信号，所以不需要额外的完成标记，也不留第二份真相——
+ * 表是唯一出处，重启第二次跑就是 no-op。文件已经不在盘上的那几张会掉（它们本来也发不出去）。
+ *
+ * 这里**原样**写 label/tags，不做语义拆分：拆句柄的规则只在 assets.ts 里写了一份，
+ * 由紧随其后的 migrateEmoteSemantics() 统一执行。两条迁移串在一个地方，不会出现
+ * 「新导的走一套拆法、老数据走另一套」。
  */
 export function migrateEmoteStore(): boolean {
-  const before = kvGet(KV);
-  if (before === null || before === "") return false;
-  const after = JSON.stringify({ version: 1, assets: loadStore() });
-  if (after === before) return false;
-  kvSet(KV, after);
-  return true;
+  const blob = readKvBlob();
+  if (blob.length === 0) return false;
+  const moved = blob.filter((item) => registerEmoteAsset(item.url, { label: item.label, tags: item.tags }, "imported")).length;
+  kvSet(KV, "");
+  return moved > 0;
 }
 
-// 模块加载即清洗存量：任何消费者（路由 / 工具 / 媒体引用扫描）拿到的都是清洗后的库。
+// 模块加载即迁移：任何消费者（路由 / 工具 / 媒体引用扫描）拿到的都已经是表里的数据，
+// 而且语义列已经拆好——检索层不需要知道 kv 时代曾经存在过。
 migrateEmoteStore();
-
-/** 登记一张本地图片进表情包素材库（url 应为 /media 路径）。同 url 覆盖，带上限。 */
-export function registerEmoteAsset(url: string, label: string, tags: string[] = []): boolean {
-  if (url === "") return false;
-  let assets = loadStore();
-  const next = assets.filter((a) => a.url !== url);
-  next.push({ url, label: cleanLabel(label ?? ""), tags: cleanTags(tags ?? []) });
-  if (ASSET_CAP > 0 && next.length > ASSET_CAP) next.splice(0, next.length - ASSET_CAP); // 0 = 不设上限
-  saveStore(next);
-  return true;
-}
-export function removeEmoteAsset(url: string): boolean {
-  const before = loadStore().filter((a) => a.url === url).length;
-  saveStore(loadStore().filter((a) => a.url !== url));
-  return before > 0;
-}
-export function listEmoteAssets(): EmoteAsset[] { return loadStore(); }
-/** 素材库统计：总数 + 上限（界面概览条用）。 */
-export function emoteStats(): { total: number; cap: number } { return { total: loadStore().length, cap: ASSET_CAP }; }
+migrateEmoteSemantics();
 
 /**
- * 情绪同义词表：把中文口语词展开成候选 label 集合，让"困"能命中"sleepy"、
- * "笑死"能命中"haha"、"摸鱼"能命中"lurk"。素材库的 label 基本是英文（文件名去扩展名），
- * 没有这一层映射的话，模型传中文关键词永远查不到英文素材。
- * 查不到候选时只匹配原词本身（includes），不会漏掉精确匹配。
+ * 登记一张本地图片进表情包素材库（url 应为 /media 路径）。同 url 重复登记就是覆盖它的语义字段。
+ * source 是这条素材的来路——不给就不改（迁移老数据时宁可留「还没归类」，也不编一个来路）。
  */
-const EMOTE_SYNONYMS: Record<string, string[]> = {
-  // 困 / 睡
-  "困": ["sleepy", "good-night", "deepsleep", "困"],
-  "困困": ["sleepy", "good-night", "deepsleep", "困"],
-  "打哈欠": ["sleepy", "good-night", "deepsleep"],
-  "瞌睡": ["sleepy", "good-night", "deepsleep"],
-  "犯困": ["sleepy", "good-night", "deepsleep"],
-  "困了": ["sleepy", "good-night", "deepsleep"],
-  "睡了": ["good-night", "sleepy"],
-  "晚安": ["good-night"],
-  "早安": ["good-morning", "hello"],
-  "早": ["good-morning", "hello"],
-  // 笑
-  "笑": ["haha", "hehe", "笑"],
-  "笑死": ["haha", "hehe", "wuhu"],
-  "哈哈哈": ["haha", "hehe"],
-  "哈": ["haha", "hehe", "wuhu"],
-  "嘿嘿": ["hehe"],
-  // 哭
-  "哭": ["cry", "bawl", "tears", "大哭"],
-  "哭哭": ["cry", "bawl", "tears"],
-  "呜呜": ["tears", "cry", "bawl"],
-  "委屈": ["cry", "tears", "委屈"],
-  // 生气
-  "生气": ["angry", "rage", "生气"],
-  "火大": ["angry", "rage", "cracked"],
-  "气": ["angry", "rage"],
-  "怒": ["angry", "rage"],
-  // 赞 / 好
-  "赞": ["like", "liked-it", "yyds", "nice"],
-  "牛": ["yyds", "like", "gg"],
-  "牛啊": ["yyds", "like"],
-  "好": ["nice", "like"],
-  "好的": ["nice", "like"],
-  "ok": ["nice", "ok-fine", "like"],
-  "可以": ["nice", "like", "ok-fine"],
-  "行": ["like", "ok-fine", "yes"],
-  "耶": ["yeah-yeah", "wuhu", "upup"],
-  // 摸鱼 / 躺平
-  "摸鱼": ["lurk", "lie-flat", "watching"],
-  "躺平": ["lie-flat"],
-  "躺": ["lie-flat"],
-  // 上班 / 下班 / 加班
-  "下班": ["offwork", "overtime", "weekend"],
-  "加班": ["overtime", "offwork"],
-  "上班": ["overtime"],
-  "周末": ["weekend"],
-  // 思考
-  "思考": ["thinking"],
-  "想": ["thinking"],
-  "想一下": ["thinking"],
-  // 爱 / 喜欢
-  "爱": ["heart-hands", "sweet", "like"],
-  "喜欢": ["heart-hands", "like"],
-  "亲": ["kiss"],
-  "抱抱": ["hug"],
-  "抱": ["hug"],
-  // 害羞
-  "害羞": ["shy"],
-  "羞": ["shy"],
-  // 惊讶
-  "惊": ["shock", "surprise"],
-  "哇": ["shock", "wuhu"],
-  "天哪": ["shock"],
-  // 饿 / 吃
-  "饿": ["rice", "eat", "eat-fish", "fish"],
-  "吃": ["rice", "eat", "eat-fish", "fish"],
-  "干饭": ["rice", "eat", "eat-fish"],
-  "奶茶": ["milk-tea"],
-  "咖啡": ["coffee"],
-  // 钱 / 工资
-  "钱": ["coin", "pay"],
-  "工资": ["coin"],
-  // 完蛋
-  "完蛋": ["broken", "rot", "cracked"],
-  "死了": ["rot", "broken"],
-  // 再见 / 拜拜
-  "再见": ["wave", "good-night"],
-  "拜拜": ["wave"],
-  // 鱼 / 鲸鱼（兜底全库鲸鱼）
-  "鱼": ["fish", "eat-fish", "whale-spout", "whale-fall"],
-  "鲸鱼": ["whale-spout", "whale-fall", "fish"],
+export function registerEmoteAsset(url: string, patch: EmoteSemantics = {}, source?: AssetSource): boolean {
+  if (url === "" || !ensureAssetRow(url)) return false;
+  if (source !== undefined) claimAsset(url, { source });
+  return markEmote(url, {
+    ...(patch.label !== undefined ? { label: cleanLabel(patch.label) } : {}),
+    ...(patch.tags !== undefined ? { tags: cleanTags(patch.tags) } : {}),
+    ...(patch.caption !== undefined ? { caption: cleanLabel(patch.caption) } : {}),
+    ...(patch.alias !== undefined ? { alias: cleanTags(patch.alias) } : {}),
+    ...(patch.pack !== undefined ? { pack: cleanTags(patch.pack) } : {}),
+    ...(patch.namedAt !== undefined ? { namedAt: patch.namedAt } : {}),
+  });
+}
+
+/**
+ * 认图作业回填语义。清洗口径和登记时同一条（机器名、引号都在 cleanLabel 里挡），
+ * 所以模型给出的名字和用户上传时给的名字，进库前过的是同一道门。
+ * 只写语义三个字段，不碰 alias/pack——那是用户的归类，作业无权覆盖。
+ */
+export function applyEmoteNaming(url: string, named: { name: string; caption: string; tags: string[] }, at: number): boolean {
+  return applyEmoteSemantics(url, {
+    label: cleanLabel(named.name),
+    caption: cleanLabel(named.caption),
+    tags: cleanTags(named.tags),
+    namedAt: at,
+    namedBy: "auto",
+  });
+}
+
+/** 摘掉一个素材标记。文件本体不动——它还被别的引用用着，或者根本就该由清理通道收口。 */
+export function removeEmoteAsset(url: string): boolean { return unmarkEmote(url); }
+
+/** 素材库统计：总数 + 上限（界面概览条用）。cap 恒为 0＝不设上限，素材库按导入增长、不淘汰老素材。 */
+export function emoteStats(): { total: number; cap: number } {
+  return { total: listMarkedEmotes().length, cap: ASSET_CAP };
+}
+
+/**
+ * 内置表情的口语叫法 → FACES 表的关键词。
+ *
+ * 这张表**只服务内置 face 那一层**，不再管素材库。内置表情是一套固定的词，静态映射才是它正确的
+ * 形态；素材库的中文名字是数据——每个用户自己导进来的东西各有各的叫法，一张写死在源码里的表
+ * 永远追不上（实测 200 张素材里只有 34 张经由那张 65 条的手写表可达，剩下 166 张模型怎么猜都猜不到）。
+ * 表里没有对应内置表情的那些词（困/晚安/咖啡）就是没有，不硬编一个假表情顶上。
+ */
+const FACE_SYNONYMS: Record<string, string[]> = {
+  "笑": ["大笑", "偷笑", "开心"], "笑死": ["大笑", "开心"], "哈哈哈": ["大笑"], "哈": ["大笑"],
+  "哭": ["大哭", "伤心"], "哭哭": ["大哭"], "呜呜": ["大哭", "伤心"], "委屈": ["委屈", "伤心"],
+  "生气": ["生气"], "火大": ["火大", "生气"], "气": ["生气"], "怒": ["生气"],
+  "赞": ["赞", "强"], "好": ["赞", "强"], "牛": ["强"], "厉": ["强"], "顶": ["赞"],
+  "惊": ["惊讶", "吃惊"], "哇": ["惊讶"], "天哪": ["惊讶"],
+  "羞": ["害羞", "脸红"], "亲亲": ["亲亲"], "亲": ["亲亲"],
+  "爱心": ["爱心"], "喜欢": ["喜欢"], "比心": ["比心"], "爱": ["爱心", "喜欢"],
+  "想": ["思考"], "嗯": ["嗯"], "酷": ["酷"], "晕": ["晕"], "微笑": ["微笑"],
 };
 
-/**
- * 按关键词挑一张表情包素材：先走同义词扩展（中文口语 → 英文 label 候选），
- * 再 includes 匹配 label / tags（大小写不敏感），命中多张随机取一张。
- * preferStatic=true（官方渠道传）：静态图优先——官方 C2C 富媒体只认 png/jpg，
- * GIF 会被 850019「富媒体文件格式不支持」拒掉；库里全是动图时仍回退动图（让投递层如实失败/降级）。
- * 空关键词 = 全库随机；素材库空则返回 null，调用方继续回退到内置 face。
- */
-export function pickEmoteByKeyword(keyword: string, options: { preferStatic?: boolean } = {}): EmoteAsset | null {
-  const all = loadStore();
-  if (all.length === 0) return null;
-  const key = keyword.trim();
-  if (key === "") return all[Math.floor(Math.random() * all.length)] ?? null;
-
-  // 候选词集合：原词 + 同义词展开（全转小写做 includes）。
-  const cands = [key.toLowerCase(), ...(EMOTE_SYNONYMS[key] ?? []).map((s) => s.toLowerCase())];
-  const pool = all.filter((a) => {
-    for (const cand of cands) {
-      if (cand === "") continue;
-      if (a.label !== "" && a.label.toLowerCase().includes(cand)) return true;
-      if (a.tags.some((tag) => tag !== "" && tag.toLowerCase().includes(cand))) return true;
-    }
-    return false;
-  });
-  if (pool.length === 0) return null;
-  let finalPool = pool;
-  if (options.preferStatic === true) {
-    const isGif = (a: EmoteAsset): boolean => (a.url.split(".").pop() ?? "").toLowerCase() === "gif";
-    const staticPool = pool.filter((a) => !isGif(a));
-    if (staticPool.length > 0) finalPool = staticPool;
-  }
-  return finalPool[Math.floor(Math.random() * finalPool.length)] ?? null;
-}
+// 素材库「怎么选」整段搬到 emote-search.ts：分层打分 + 中文 n-gram，批次名不参与匹配。
+// 这一层只留内置 face 的兜底——库里没有够贴的图，才退到 QQ 自带表情那几个词。
 
 // ── 种子/目录批量导入（按内容 md5 去重，重扫不会重复入库）────────────
 // 把本地某个文件夹里的图片文件夹播进素材库。每个源文件算一次内容指纹，
@@ -414,14 +374,18 @@ const IMPORT_KV_PREFIX = "qq.emote.import.";
 type ImportRecord = { added: number; skipped: number; total: number };
 function contentMd5(buffer: Buffer): string { return createHash("md5").update(buffer).digest("hex"); }
 
-export type EmoteDirImportOptions = { tag?: string };
+/** 文件夹名＝路径最后一段（去掉盘符/尾斜杠）。导入的归属文件夹就是它，没有第二个名字来源。 */
+export function folderNameOf(dir: string): string {
+  return dir.trim().split(/[\\/]/).filter(Boolean).pop() ?? "";
+}
 
 /**
  * 扫描一个目录（**不递归子目录**，一层即可）把图片导入素材库。
  * 每张图先复制进媒体库（`/media` 统一路径，两条渠道都能发），再登记成 asset。
+ * 归属文件夹＝源文件夹名：文件夹层是来源事实，导入时不再接受手填的别名。
  * 返回本次实际新增 / 跳过的张数，方便界面回执"导入了 N 张"。
  */
-export function importEmoteDir(dir: string, options: EmoteDirImportOptions = {}): ImportRecord | { error: string } {
+export function importEmoteDir(dir: string): ImportRecord | { error: string } {
   const abs = dir.trim();
   if (abs === "") return { error: "没有给目录" };
   let entries: string[];
@@ -431,7 +395,7 @@ export function importEmoteDir(dir: string, options: EmoteDirImportOptions = {})
   } catch (error) {
     return { error: "读目录失败：" + (error instanceof Error ? error.message : String(error)) };
   }
-  const tag = (options.tag ?? "").trim();
+  const packName = folderNameOf(abs);
   const manifestKey = IMPORT_KV_PREFIX + createHash("md5").update(abs.split(/[\\/]/).filter(Boolean).join("/")).digest("hex").slice(0, 16);
   const rawManifest = kvGet(manifestKey);
   const seen: Set<string> = new Set(rawManifest ? (JSON.parse(rawManifest) as string[]) : []);
@@ -449,14 +413,20 @@ export function importEmoteDir(dir: string, options: EmoteDirImportOptions = {})
     if (mime === "" || buffer.length > MAX_IMAGE_BYTES) continue;
     const md5 = contentMd5(buffer);
     if (seen.has(md5)) { skipped += 1; continue; }
-    const saved = saveImage(buffer, mime);
-    // 纯哈希/UUID 文件名（GitHub 归档、协议端落盘那种）没有人类可读名，不当 label——
-    // 留空，只挂 tag。UI 层对空 label 兜底显标签，避免网格里躺一排 0f2ea3fa… 这种。
+    // 直接落进 表情包/<源文件夹名>/：磁盘位置和库里的归属同一步写就，不存在中间态。
+    const saved = saveImage(buffer, mime, dirFor({ emote: true, folder: packName, kind: "image" }));
+    // 纯哈希/UUID 文件名（GitHub 归档、协议端落盘那种）没有人类可读名，什么都不当——
+    // 留给认图作业。英文句柄（heart-hands）当**别名**：按原名还找得到，但它不是「这张在说什么」。
+    // 中文文件名直接当名字，省一次识别。
     const raw = name.replace(/\.[^.]+$/, "");
-    const baseLabel = isMachineName(raw) ? "" : raw;
-    const tags = [tag].filter((t) => t !== "");
-    if (baseLabel !== "") tags.unshift(baseLabel);
-    registerEmoteAsset(saved.url, baseLabel, tags);
+    const baseName = isMachineName(raw) ? "" : raw;
+    const pack = packName === "" ? [] : [packName];
+    const patch: EmoteSemantics = baseName === ""
+      ? { pack }
+      : isHumanName(baseName)
+        ? { label: baseName, tags: [baseName], pack, namedAt: Date.now() }
+        : { alias: [baseName], pack };
+    registerEmoteAsset(saved.url, patch, "imported");
     seen.add(md5);
     added += 1;
   }
@@ -481,11 +451,18 @@ export function setEmoteAutoCapture(on: boolean): void {
 
 /**
  * 入站媒体钩子：他发来一张图片，开关开着就顺手入库，成为以后可接的表情素材。
- * url 应是已落盘的 /media 路径；label 空就落空，tags 留空（采集来的不强加标签）。
+ * url 应是已落盘的 /media 路径。采集时不猜名字——语义交给认图作业，猜出来的名字是错的还改不掉。
  * 关掉开关时是纯 no-op（不入库、不报错）。
+ * 去重按内容哈希：同一张梗图被反复转发时每次落盘都是新文件名，按 URL 挡不住，
+ * 只有指纹认得出「这还是那张」；重复入库会让检索抽奖、界面刷屏。
+ * 收进一张就排一次延时补名（防抖）——没名字的采集件在检索里等于不存在。
  */
-export function captureInboundEmote(url: string, label = "", tags: string[] = []): boolean {
+export function captureInboundEmote(url: string): boolean {
   if (url === "" || !url.startsWith("/media/")) return false;
   if (!emoteAutoCapture()) return false;
-  return registerEmoteAsset(url, label, tags);
+  const media = readMedia(url);
+  if (media !== null && findEmoteAssetByHash(contentHash(media.buffer), url) !== null) return false;
+  if (!registerEmoteAsset(url, {}, "captured")) return false;
+  scheduleCaptureNaming();
+  return true;
 }

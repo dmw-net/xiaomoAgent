@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { CircleMinus, PencilLine, Search, Trash2, UsersRound, X } from "lucide-react";
+import { Bot, Check, CircleMinus, Copy, PencilLine, Search, Trash2, UsersRound, X } from "lucide-react";
 import { avatarApi, qqApi, type QQBindingView, type QQConversationView, type QQStatus } from "../../api";
 import Modal from "../../components/Modal";
+import EmoteCapability from "./EmoteCapability";
+import { ChannelBadge, ChannelNote, ChannelSteps, type ChannelStep, type ChannelTone } from "./ChannelKit";
 
 const GROUP_TITLE_MAX = 40;
 
@@ -69,6 +71,8 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   const [removeBusy, setRemoveBusy] = useState(false);
   const [groupQuery, setGroupQuery] = useState("");
   const [toggleProactiveBusyId, setToggleProactiveBusyId] = useState("");
+  /** 绑定口令复制成功的瞬时反馈；两秒后自己落回复制图标。 */
+  const [copied, setCopied] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const qrTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const alive = useRef(true);
@@ -178,31 +182,56 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   }, [napcatQr]);
 
   /** 协议端连接面板（离线态共用，绑定与否都在这修）：
+   *  setup = 这位联系人还没绑（首次安装引导）；repair = 已经绑过、协议端临时掉线（恢复语境）。
+   *  两种语境必须不同：绑定态再给「绑定这位联系人」的步骤，人会以为绑定丢了。
    *  主路径是小茉托管的一键安装/启动/扫码——用户全程只点按钮、扫一次码；
    *  自备 NapCat 的手动地址连接收进兜底，别让两条路长得一样重要。 */
-  const obConnectPanel = (): JSX.Element => {
+  const obConnectPanel = (mode: "setup" | "repair" = "setup"): JSX.Element => {
     const nc = napcat;
+    const repair = mode === "repair";
+    /** 一键托管流的步骤：装 → 启动登录 → 绑号/恢复。前两步的进度从托管状态实时读出来。 */
+    const obSteps: ChannelStep[] = [
+      { label: "安装 NapCat", state: nc !== null && nc.installed ? "done" : "current", hint: "小茉自动下载（约 20MB），装进数据目录" },
+      {
+        label: "启动并扫码登录",
+        state: nc !== null && nc.loggedIn ? "done" : nc !== null && nc.installed && (nc.running || napcatBusy === "start") ? "current" : "todo",
+        hint: nc !== null && nc.loggedIn ? `已登录：${nc.nickname}（${nc.uin}）` : "手机 QQ 扫一次码，之后自动登录",
+      },
+      repair
+        ? { label: "恢复收发通道", state: nc !== null && nc.loggedIn ? "current" : "todo", hint: "通道一恢复，这位联系人的 QQ 消息自动接上" }
+        : { label: "绑定这位联系人", state: nc !== null && nc.loggedIn ? "current" : "todo" },
+    ];
     return (
       <div className="ob-connect">
         <div className="ob-connect-head">
-          <span className="ob-connect-title">一键连接 NapCat</span>
-          <span className="hint">小茉帮你装好、起好、配好，你只需点按钮、扫一次码</span>
+          <span className="ob-connect-title">{repair ? "重新连接 NapCat" : "一键连接 NapCat"}</span>
+          <span className="hint">{repair ? "这位联系人已绑定，协议端临时没连上；修好即恢复收发" : "小茉帮你装好、起好、配好，你只需点按钮、扫一次码"}</span>
         </div>
         {nc === null ? (
           <div className="hint">正在检查本机 NapCat…</div>
         ) : nc.loggedIn && nc.uin !== "" ? (
-          <div className="hint">
-            NapCat 已就绪：{nc.nickname}（{nc.uin}）已登录，收发通道都开着。绑定入口在下面。
-          </div>
+          <>
+            <ChannelSteps steps={obSteps} label="NapCat 连接步骤" />
+            {repair ? (
+              <ChannelNote tone="warn">
+                NapCat 显示已登录：{nc.nickname}（{nc.uin}），但小茉暂时连不上它的 HTTP 接口，收发不通。
+                检查下面手动地址里的端口和 NapCat 网络配置是否对得上，或重启 NapCat。
+              </ChannelNote>
+            ) : (
+              <ChannelNote tone="success">
+                NapCat 已就绪：{nc.nickname}（{nc.uin}）已登录，收发通道都开着。绑定入口在下面。
+              </ChannelNote>
+            )}
+          </>
         ) : (
           <>
+            <ChannelSteps steps={obSteps} label="NapCat 连接步骤" />
             {!nc.installed ? (
               <div className="wx-actions">
                 <button type="button" className="primary sm" disabled={napcatBusy !== null}
                   onClick={() => { void runNapcat("install"); }}>
-                  {napcatBusy === "install" ? "正在下载安装…" : "① 安装 NapCat"}
+                  {napcatBusy === "install" ? "正在下载安装…" : "安装 NapCat"}
                 </button>
-                <span className="hint">从官方 release 下载（约 20MB），装进小茉的数据目录</span>
               </div>
             ) : napcatBusy === "start" || (!nc.running && napcatBusy === null && napcatNote === "") ? (
               <div className="wx-actions">
@@ -212,7 +241,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
             {nc.installed && !nc.running && napcatBusy === null && (
               <div className="wx-actions">
                 <button type="button" className="primary sm" onClick={() => { void runNapcat("start"); }}>
-                  ② 启动 NapCat
+                  启动 NapCat
                 </button>
               </div>
             )}
@@ -260,18 +289,34 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
     );
   };
 
-  /** OneBot 渠道下探测协议端：读出它登录的账号（头像+昵称）供一键绑定；连不上给引导文案。
-   *  绑定态也要探——「需要处理」徽章背后必须有一个能就地处理的入口，不能只亮红灯。
-   *  顺带把协议端地址的现值带回来，连接面板就地可改。 */
+  /** 换渠道时清掉上一个渠道的探测残留；探测过程中的旧值保留到新值回来，
+   *  面板不闪烁（从前每轮绑定轮询都会把探测态清空重测，卡每 5 秒闪一次）。 */
+  useEffect(() => {
+    setObStatus(null); setObAvatar("");
+  }, [backend]);
+
+  /** 协议端地址的现值只在进卡（换渠道）时回填一次；探测重试不回填，
+   *  否则用户正在手动地址框里打字，5 秒后被探测流程悄悄覆盖掉。 */
   useEffect(() => {
     if (backend !== "onebot") return;
     let cancelled = false;
-    setObStatus(null); setObAvatar("");
     qqApi.fetchOneBotSettings().then((s) => {
       if (cancelled) return;
       setObAddr(s.httpBase);
       setObWsAddr(s.wsUrl);
     }).catch(() => { /* 拿不到就空着，面板里可填 */ });
+    return () => { cancelled = true; };
+  }, [backend]);
+
+  /** OneBot 渠道下探测协议端：读出它登录的账号（头像+昵称）供一键绑定；连不上给引导文案。
+   *  绑定态也要探——「需要处理」徽章背后必须有一个能就地处理的入口，不能只亮红灯。
+   *  依赖里用「绑没绑」而不是 binding 对象：5 秒轮询每次都生成新对象，按对象比较会让
+   *  这条 effect 每轮重启、探测态先清空再重取——这就是卡面闪烁的来源。 */
+  const boundNow = binding !== null;
+  useEffect(() => {
+    if (backend !== "onebot") return;
+    let cancelled = false;
+    setObAvatar("");
     qqApi.fetchOneBotStatus().then(async (info) => {
       if (cancelled) return;
       setObStatus(info);
@@ -285,7 +330,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
       if (!cancelled) setObStatus({ reachable: false, userId: "", nickname: "", error: "探测请求失败" });
     });
     return () => { cancelled = true; };
-  }, [backend, obProbeTick, binding]);
+  }, [backend, obProbeTick, boundNow]);
 
   const refresh = async (): Promise<void> => {
     if (busyRef.current) return;   // 上一发没回来就不叠加（慢网下轮询会自己叠自己）
@@ -589,6 +634,47 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   const listeningGroups = groupConversations.filter((conv) => conv.enabled && conv.leftAt === null).length;
   const leftGroups = groupConversations.filter((conv) => conv.leftAt !== null).length;
 
+  /** 头部徽章的语义色：在跑=绿、要人处理=琥珀、连接中=呼吸蓝、其余=灰。 */
+  const badgeTone: ChannelTone = binding === null
+    ? "muted"
+    : binding.status === "connected" ? "ok"
+      : binding.status === "attention" ? "warn"
+        : binding.status === "connecting" ? "busy" : "muted";
+  const badgeLabel = binding !== null ? qqApi.QQ_STATUS_LABEL[binding.status] : configured ? "未绑定" : "未配置";
+
+  /** 绑定口令的复制：口令固定两个字，但要让人确信「复制到了」。 */
+  const copyKeyword = (): void => {
+    if (attempt === null) return;
+    void navigator.clipboard?.writeText(attempt.keyword).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => { /* 剪贴板拿不到就让人手选，code 本来 user-select:all */ });
+  };
+
+  /**
+   * 官方渠道的三步流程图：凭据 → 绑定 → 激活会话。
+   * 从前这三步是散在各处的条件渲染块，人不知道整体走到哪了；步骤条把终局画出来。
+   */
+  const officialSteps: ChannelStep[] = [
+    {
+      label: "创建机器人凭据",
+      state: configured ? "done" : "current",
+      hint: configured ? "凭据已就绪" : "扫码自动建号，或手填已有 AppID",
+    },
+    {
+      label: "绑定这位联系人",
+      state: binding?.hasUserOpenId === true ? "done"
+        : configured ? "current" : "todo",
+      hint: binding?.hasUserOpenId === true ? "已认领到对方的 openid" : undefined,
+    },
+    {
+      label: "发消息激活会话",
+      state: binding?.hasReplyWindow === true ? "done"
+        : binding !== null ? "current" : "todo",
+      hint: binding?.hasReplyWindow === true ? undefined : "由对方先发一条消息，进入一小时被动回复窗口",
+    },
+  ];
+
   const disconnect = async (): Promise<void> => {
     if (busy) return;
     setBusy(true); setErr("");
@@ -605,24 +691,17 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   return (
     <div className="card card-pad pf-model-card wx-card qq-card">
       <div className="wx-head">
+        <span className="ch-channel-icon ch-channel-qq" aria-hidden="true"><Bot size={17} strokeWidth={1.8} /></span>
         <div>
           <div className="pf-set-title">QQ 连接</div>
           <div className="pf-model-hint">
             {backend === "onebot"
-              ? "走 OneBot 协议端（NapCat / go-cqhttp 等）。真实 QQ 号在协议端登录，可主动发消息、收发图/语音/视频/文件。"
-              : "接官方 QQ 机器人（开放平台）。QQ 私聊会并入联系人主私聊，和应用、微信保持同一段上下文；"}
-            {backend === "onebot"
-              ? "每个 QQ 群单独隔离。"
-              : "每个 QQ 群则单独隔离。画好的图与文件会直接发出去。"}
+              ? "真实 QQ 号在协议端（NapCat 等）登录收发：可主动发消息，图、语音、视频、文件与表情都原生支持；每个 QQ 群单独隔离。"
+              : "接官方 QQ 开放平台机器人：私聊并入联系人主私聊、与应用和微信共用同一段上下文，画好的图与文件直接发出；每个 QQ 群单独隔离。"}
           </div>
         </div>
-        {binding && <span className={"wx-badge wx-badge-" + binding.status}>{qqApi.QQ_STATUS_LABEL[binding.status]}</span>}
-        {/* 没绑定时只看这位自己的账号状态，不借别的联系人的网关绿灯。 */}
-        {!binding && (
-          <span className={"wx-badge " + (configured ? "wx-badge-unbound" : "wx-badge-not-configured")}>
-            {configured ? "未绑定" : "未配置"}
-          </span>
-        )}
+        <ChannelBadge tone={badgeTone} label={badgeLabel}
+          title={binding?.status === "attention" && binding.lastError !== "" ? binding.lastError : undefined} />
       </div>
 
       {/* 接入渠道：全局一份（进程级），放在这张卡上因为 QQ 配置的家在这里。
@@ -653,6 +732,15 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
           </div>
         )}
       </div>
+
+      {/* 表情能力跟着渠道选择器走：换 official / OneBot 时，「她能发哪种表情」正是这一刻要看的。 */}
+      <EmoteCapability />
+
+      {/* 官方渠道的三步流程图：三步全走完（已绑定 + 窗口已激活）就收起——
+          已连接的人不需要每天看一遍流程，状态徽章已经说明一切。 */}
+      {backend === "official" && !(binding !== null && binding.hasUserOpenId && binding.hasReplyWindow) && (
+        <ChannelSteps steps={officialSteps} label="QQ 官方连接步骤" />
+      )}
 
       {/* ① 凭据：每位联系人一份，拿到一次就收起。扫码是官方推荐路径，手填留作兜底。
           官方后端专属；OneBot 后端在协议端登录真实号，下面走另一个表单。 */}
@@ -727,7 +815,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
               )}
             </>
           ) : (
-            obConnectPanel()
+            obConnectPanel("setup")
           )}
           {(obManual || (obStatus !== null && !obStatus.reachable)) && (
             <>
@@ -772,7 +860,8 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
               </div>
             </div>
           ) : (
-            obConnectPanel()
+            /* 绑定态走到这里 = 已绑但协议端探测不通：恢复语境，别再念「绑定」的流程。 */
+            obConnectPanel("repair")
           )}
         </div>
       )}
@@ -814,26 +903,33 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
       )}
 
       {attempt && (
-        <div className="qq-code-row">
-          <span className="hint">在 QQ 里发这两个字</span>
-          <code className="qq-code" id="qq-bind-code">{attempt.keyword}</code>
-          <button type="button" className="pf-ghost" onClick={() => { stopPoll(); setAttempt(null); }}>取消</button>
+        /* 绑定口令是这一步唯一要做的事：大字号 + 复制按钮 + 呼吸点说明「正在等」，不再是一行小字。 */
+        <div className="qq-bind-try">
+          <div className="qq-bind-try-main">
+            <span className="qq-bind-try-label">让{who}在 QQ 里给机器人发这个词（10 分钟内有效）</span>
+            <div className="qq-bind-try-row">
+              <code className="qq-code" id="qq-bind-code">{attempt.keyword}</code>
+              <button type="button" className="pf-ghost" onClick={copyKeyword} aria-label="复制绑定口令">
+                {copied ? <Check size={13} strokeWidth={2.2} /> : <Copy size={13} strokeWidth={1.9} />}
+                {copied ? "已复制" : "复制"}
+              </button>
+              <button type="button" className="pf-ghost" onClick={() => { stopPoll(); setAttempt(null); }}>取消</button>
+            </div>
+          </div>
+          <div className="ch-waiting"><span className="ch-waiting-dot" aria-hidden="true" />正在等这条消息，发完这页自己就会认出来，不用刷新。</div>
         </div>
-      )}
-      {attempt && (
-        <div className="wx-note">正在等你发过去。发完这页自己就会认出来，不用刷新。</div>
       )}
 
-      {note !== "" && <div className="wx-note">{note}</div>}
+      {note !== "" && <ChannelNote tone="success">{note}</ChannelNote>}
       {/* 回复窗口是官方渠道的概念（msg_id 一小时被动窗口）；OneBot 真实号没有这个限制，别把官方的规矩念给 OneBot 用户听。 */}
       {binding && backend === "official" && !binding.hasReplyWindow && (
-        <div className="wx-note">
+        <ChannelNote tone="info">
           还没有可回复的窗口：请先在 QQ 里给{who}发一条消息。官方只允许在收到消息后的一小时内被动回复，
           超窗的句子要靠「消息能力」权限，没申请到就发不出去（发不出去会显示在下面）。
-        </div>
+        </ChannelNote>
       )}
       {binding && binding.status === "attention" && binding.lastError !== "" && (
-        <div className="wx-error">{binding.lastError}</div>
+        <ChannelNote tone="error">{binding.lastError}</ChannelNote>
       )}
 
       {binding && groupConversations.length > 0 && (
@@ -958,12 +1054,19 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
               onChange={(e) => { void patchFlags({ proactive: e.target.checked }); }} />
             允许主动触达
           </label>
+        </div>
+      )}
+      {err !== "" && <ChannelNote tone="error">{err}</ChannelNote>}
+
+      {/* 危险操作单独分层：与微信卡同一套结构，解绑的后果就地写明。 */}
+      {binding && (
+        <div className="ch-danger-row">
           <button type="button" className="pf-ghost wx-danger" disabled={busy} onClick={() => setConfirmOff(true)}>
             解除绑定
           </button>
+          <span className="ch-danger-hint">解绑后这位联系人不再收发 QQ 消息，对话记录保留，重新绑定即可接回。</span>
         </div>
       )}
-      {err !== "" && <div className="wx-error">{err}</div>}
 
       {clearTarget !== null && (
         <Modal onClose={() => { if (!clearBusy) setClearTarget(null); }} label="清除群聊历史"
@@ -1011,11 +1114,11 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
           {qr.status === "waiting" ? (
             <>
               <img className="wx-qr" src={qr.dataUrl} alt="用手机 QQ 扫描的二维码" />
-              <div className="wx-note">手机 QQ 扫这个码。扫完自动接着往下走，不用回来填什么。</div>
+              <ChannelNote tone="info">手机 QQ 扫这个码。扫完自动接着往下走，不用回来填什么。</ChannelNote>
             </>
           ) : (
             <>
-              <div className="wx-error">{qr.error}</div>
+              <ChannelNote tone="error">{qr.error}</ChannelNote>
               <div className="add-row">
                 <button type="button" className="primary" onClick={() => { void startQr(); }}>重新生成二维码</button>
               </div>

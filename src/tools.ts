@@ -28,17 +28,59 @@ import { extensionToolDefs } from "./extensions.ts";
 import { takeReminderSlot, REMINDERS_PER_TURN } from "./proactive.ts";
 import { db } from "./db.ts";
 import { getContact } from "./contacts.ts";
-import { emoteCapabilities, pickEmoteByKeyword, resolveFace, type QqEmoteIntent } from "./qq-emote.ts";
+import { emoteCapabilities, resolveFace, type QqEmoteIntent } from "./qq-emote.ts";
+import { emoteLibraryStatus, pickEmoteByKeyword, sampleEmotes, searchEmotes } from "./emote-search.ts";
+import { bumpEmoteUse, getAssetById, type AssetRow } from "./assets.ts";
+
+/** 这张表情在界面上、在她接下来的记忆里被叫作什么：中文名优先，其次文件句柄，最后才是「表情」。 */
+function emoteDisplayName(asset: AssetRow): string {
+  if (asset.emoteLabel !== "") return asset.emoteLabel;
+  return asset.emoteAlias[0] ?? "表情";
+}
+
+/**
+ * keyword 没打中时给模型的实话。
+ * 旧版那句「换个词」是有害的：它把一次结构性的数据缺口（库里根本没有中文名）
+ * 说成模型的用词问题，于是她连换三个词、每轮都撞在同一面墙上。
+ * 现在报的是库的真实规模与下一步能走的路。
+ */
+function emoteMissMessage(keyword: string): string {
+  const { total, named } = emoteLibraryStatus();
+  if (total === 0) {
+    return `表情包库里还没有图（0 张）。「${keyword}」也退不到内置表情。可以用 url 直接给一张 /media 图片，或提示用户去 设置 → 媒体与表情 导入表情包`;
+  }
+  const namedHint = named === 0
+    ? `库里 ${total} 张表情全部未命名，所以按中文说法几乎查不到——需要用户在 设置 → 媒体与表情 点「智能识别」`
+    : named < total
+      ? `库里 ${total} 张、已命名 ${named} 张；未命名的那些按中文说法查不到`
+      : `库里 ${total} 张都已命名`;
+  return `「${keyword}」在库里 ${total} 张表情中没有一个够贴（不是没搜到相近的，是分数够不上直接发出去那条线）。${namedHint}。`
+    + "下一步：用 emote_search 换个说法查候选（用你想表达的那个反应，别堆关键词），或按候选里的 id 发，或用 url 给一张 /media 图，或就正常说话";
+}
+
+/**
+ * 每轮只许检索一次：
+ * 检索本身不发东西，模型反复换词试等于把一轮回复烧成四次工具往返，而且最后仍是在猜库里的词。
+ * 第二次调用不再查库，而是把第一次的候选原样交回去，让它拿着这批做完决定。
+ */
+const SEARCH_PER_TURN = 64;
+const searchedTurns = new Map<string, unknown>();
+
+function rememberSearch(turnId: string, payload: unknown): void {
+  searchedTurns.set(turnId, payload);
+  if (searchedTurns.size > SEARCH_PER_TURN) {
+    const oldest = searchedTurns.keys().next().value;
+    if (oldest !== undefined) searchedTurns.delete(oldest);
+  }
+}
 
 export type ToolContext = {
   /** 他最后一次说话的时间戳（null = 还没说过）。 */
   lastUserAt: number | null;
   /** 当前对话的联系人——记忆完全隔离，检索只在此联系人的记忆里。 */
   contactId: string;
-  /** 当前会话：群聊记忆只召回本群/当前成员/全局三类。 */
+  /** 当前会话：群聊记忆只召回本群与全局两类。 */
   conversationId?: string;
-  /** 群发言成员 openid；私聊为空。 */
-  memberId?: string;
   /** 本轮处理单 id：出图这类要落调用记录的动作用它，好和这一轮对上。 */
   turnId: string | null;
   /** 设置助手这一轮启动时的权限快照；中途在界面切档不改变本轮行为。 */
@@ -108,7 +150,7 @@ const TOOLS: ToolDef[] = [
       if (query === "") return { events: [], note: "没有可用的检索词" };
       // 查询向量在兜底词确定后再算，两条查询共用一个向量（端点只打一次）。
       const vector = await queryVector(query);
-      const scope = { conversationId: context.conversationId, memberId: context.memberId };
+      const scope = { conversationId: context.conversationId };
       let explained = recallExplained(context.contactId, query, 8, { markUsed: true, vector, scope });
       // 一击未中再扩一次：把他的原话并进查询再筛。≤2 个关键词时第一轮已经并过（见
       // memory.ts 的 expandQuery），所以只在关键词够多时补这一手；向量沿用（两句话并查语义不变）。
@@ -177,11 +219,13 @@ const TOOLS: ToolDef[] = [
       if (due > Date.now() + 365 * 86_400_000) {
         return { ok: false, error: "提醒最远只能立到一年后" };
       }
+      // 记下是哪个会话立的：到点提醒就在那个会话兑现（群里立的群里说，私聊立的私聊说）。
+      // 不记的话主动性检查只能按最近动静猜目标，拿不准时不该替他决定发进哪个群。
       const inserted = db
         .prepare(
-          `INSERT INTO proactive_tasks (contact_id, focus, due_at, kind, created_at) VALUES (?, ?, ?, 'reminder', ?)`,
+          `INSERT INTO proactive_tasks (contact_id, focus, due_at, kind, conversation_id, created_at) VALUES (?, ?, ?, 'reminder', ?, ?)`,
         )
-        .run(context.contactId, text, due, Date.now());
+        .run(context.contactId, text, due, context.conversationId ?? null, Date.now());
       return { ok: true, id: Number(inserted.lastInsertRowid), due_at: new Date(due).toISOString(), text };
     },
   },
@@ -238,19 +282,73 @@ const TOOLS: ToolDef[] = [
     },
   },
   {
-    name: "send_emote",
+    name: "emote_search",
     description:
-      "发一个表情给他（表情包）。比一段话更轻、更贴气氛，用来反应、接梗、表示态度时优先用它。" +
-      "用法优先级：①url（一张本地 /media 图片直接当表情发，两条渠道都最稳）；②face_id（QQ 内置表情编号，如 4=大笑，官方渠道会降级成 emoji）；" +
-      "③mface_id（商城动态特效表情，仅 OneBot 渠道支持，官方渠道降级成文字）；④keyword（如「笑死」「赞」「哭」，先查表情包素材库、再查内置表情）。" +
-      "表情会**立刻随这条对话发出去**，不用你再画一张图。发不出去会如实告诉你原因，别假装发成功了。",
+      "在表情包素材库里按你想表达的反应检索候选，返回最贴的几张：id、名字、一句用法、别名、所属文件夹。" +
+      "发表情是对话里的常规高频动作：反应、接梗、表态往往一张图比一段文字到位，需要时就查。" +
+      "查询写反应本身，中文口语 2~8 字（例：惊讶里带戒备、躺平摆烂、被夸了害羞），不要带「表情」这类关键词前缀，不要填整句。" +
+      "本工具**不发送**任何东西：要发出去，用选中候选的 emote_id 调 send_emote。" +
+      "一轮最多查一次，重复调用只会返回同一批候选；都不合适就不发，不要硬凑。" +
+      "候选的名字与用法是内部选图资料，不进入回复正文：不要向对方罗列候选，也不要解释选择理由。",
     parameters: {
       type: "object",
       properties: {
-        url: { type: "string", description: "本地 /media 图片路径，直接当表情包发（可选，优先级最高）" },
+        query: { type: "string", description: "想表达的那个反应，中文口语 2~8 个字（不给就是从库里随机给几张）" },
+        top_k: { type: "number", description: "返回几张，默认 3，最多 6" },
+      },
+      additionalProperties: false,
+    },
+    execute: async (args, context) => {
+      const turnKey = context.turnId ?? context.conversationId ?? "";
+      const previous = turnKey !== "" ? searchedTurns.get(turnKey) : undefined;
+      if (previous !== undefined) {
+        return {
+          candidates: previous,
+          note: "本轮已经查过一次了，候选就是上面这些。用其中一张的 id 调 send_emote，或者正常回话——别再换词查。",
+        };
+      }
+      const query = String(args.query ?? "").trim();
+      const rawK = args.top_k;
+      const topK = Math.min(6, Math.max(1, typeof rawK === "number" ? Math.round(rawK) : 3));
+      const hits = query === "" ? [] : searchEmotes(query, topK);
+      const candidates = query === ""
+        ? sampleEmotes(topK).map((asset) => ({
+            emote_id: asset.id, name: emoteDisplayName(asset), usage: asset.emoteCaption,
+            packs: asset.emotePack, note: "没给说法，这是库里随机给的几张",
+          }))
+        : hits.map((hit) => ({
+            emote_id: hit.asset.id, name: emoteDisplayName(hit.asset), usage: hit.asset.emoteCaption,
+            tags: hit.asset.emoteTags.slice(0, 6), aliases: hit.asset.emoteAlias.slice(0, 3),
+            packs: hit.asset.emotePack, score: Number(hit.score.toFixed(2)), matched_on: hit.matchedOn,
+          }));
+      if (candidates.length === 0) {
+        const miss = emoteMissMessage(query === "" ? "（没给说法）" : query);
+        rememberSearch(turnKey, candidates);
+        return { candidates: [], note: miss };
+      }
+      rememberSearch(turnKey, candidates);
+      return { candidates, note: "选一张用 send_emote({emote_id}) 发出去；都不合适就正常说话，别硬发。" };
+    },
+  },
+  {
+    name: "send_emote",
+    description:
+      "向对话对方发送一个表情。这是对话中的常规表达方式，使用频繁：接梗、回应、调侃、安抚、收尾——一张表情能说清的，不必再堆文字；" +
+      "单独发一张表情本身就是完整的回复。" +
+      "主路径：确定这张图要替你表达的意思 → 调 emote_search 查候选 → 用它的 emote_id 发送。" +
+      "降级顺序：①emote_id（emote_search 给的候选，最准）；②url（一张本地 /media 图片直接当表情发，两条 QQ 渠道都最稳）；" +
+      "③keyword（2~6 个字的中文说法，库里刚好有一个够贴的就直接发，够贴的没有会如实返回原因）；" +
+      "④face_id（QQ 内置表情编号，如 4=大笑，官方渠道会降级成 emoji）；⑤mface_id（商城动态特效表情，仅 OneBot 渠道支持）。" +
+      "不要凭印象编造名字或 id，也不要假设「库里有个表情叫×」——库里的内容只有 emote_search 查得到。" +
+      "表情会**立刻随这条对话发出去**，不需要再附带其他图；发送失败会如实返回原因，不要误报成功。",
+    parameters: {
+      type: "object",
+      properties: {
+        emote_id: { type: "string", description: "emote_search 返回的候选 id（可选，优先级最高）" },
+        url: { type: "string", description: "本地 /media 图片路径，直接当表情包发（可选）" },
         face_id: { type: "number", description: "QQ 内置表情编号（可选，如 4=大笑、7=大哭）" },
         mface_id: { type: "string", description: "商城/动态特效表情 id（可选，仅 OneBot 渠道原生支持）" },
-        keyword: { type: "string", description: "表情关键词（2~6 个字），如「笑死」「赞」「哭」，命中表情包素材或内置表情" },
+        keyword: { type: "string", description: "中文说法（2~6 个字），如「笑死」「比心」「躺平」，够贴就直接发" },
         label: { type: "string", description: "表情展示名（可选）" },
       },
       additionalProperties: false,
@@ -261,38 +359,54 @@ const TOOLS: ToolDef[] = [
       const url = String(args.url ?? "").trim();
       const label = String(args.label ?? "").trim();
       const keyword = String(args.keyword ?? "").trim();
+      const emoteId = String(args.emote_id ?? "").trim();
       const faceIdRaw = args.face_id;
       const faceId = typeof faceIdRaw === "number" ? faceIdRaw : parseInt(String(faceIdRaw ?? ""), 10);
       const mfaceId = String(args.mface_id ?? "").trim();
 
-      // ① 直接给图片 → image 意图（两渠道都稳，优先级最高）。
+      // 表情意图：①②③④⑤ 按上面的降级顺序落成一个 intent。
+      // emoteAssetId 记住「这张是库里的哪一张」，发送成功后要给它的使用计数加一笔。
       let intent: QqEmoteIntent;
-      if (url.startsWith("/media/") || /^https?:\/\//i.test(url)) {
+      let emoteAssetId = "";
+      if (emoteId !== "") {
+        // ① 按 id 发：服务端查库，不接受模型自己拼的地址——它只能发到确实存在、且确实被她标成表情的那些。
+        const asset = getAssetById(emoteId);
+        if (asset === null) {
+          return { ok: false, error: `没有 id 为「${emoteId}」的资产（可能已被清理）。重新用 emote_search 查一次，别自己编 id` };
+        }
+        if (!asset.usableAsEmote) {
+          return { ok: false, error: `「${asset.id}」不是表情包素材（只是普通媒体）。用 emote_search 查表情库里的候选` };
+        }
+        if (asset.missing) {
+          return { ok: false, error: `「${emoteDisplayName(asset)}」的原图不在磁盘上（这张已失效）。把文件放回它的文件夹会自动恢复；放回前别硬发` };
+        }
+        emoteAssetId = asset.id;
+        intent = { kind: "image", url: asset.url, ...(label !== "" ? { label } : { label: emoteDisplayName(asset) }) };
+      } else if (url.startsWith("/media/") || /^https?:\/\//i.test(url)) {
+        // ② 直接给图片。
         intent = { kind: "image", url, ...(label !== "" ? { label } : {}) };
       } else if (Number.isFinite(faceId) && faceId > 0) {
-        // ② 直接给内置表情编号。
+        // ③ 直接给内置表情编号。
         intent = { kind: "face", id: faceId, ...(label !== "" ? { label } : {}) };
       } else if (mfaceId !== "") {
-        // ③ 商城动态特效表情（仅 OneBot 原生；官方渠道由 deliverEmote 降级成文字）。
+        // ④ 商城动态特效表情（仅 OneBot 原生；官方渠道由 deliverEmote 降级成文字）。
         intent = { kind: "mface", emojiId: mfaceId, ...(label !== "" ? { label } : {}) };
       } else if (keyword !== "") {
-        // ④ 关键词：先表情包素材库（图片，最稳），命中就发图片；否则回退内置 face。
-        // 官方渠道静态图优先：官方 C2C 富媒体不认 GIF（850019），素材命中多张时先挑 png/jpg。
-        const asset = pickEmoteByKeyword(keyword, { preferStatic: emoteCapabilities().backend === "official" });
-        if (asset !== null) {
-          intent = { kind: "image", url: asset.url, label: asset.label || keyword };
+        // ⑤ 中文说法：先查她的表情库（打分够贴才发），再退内置 face。
+        // 不按格式挑：官方渠道发 GIF 由发送层换成派生静帧，挑的时候躲动图只会让素材永远露不了面。
+        const hit = pickEmoteByKeyword(keyword);
+        if (hit !== null) {
+          emoteAssetId = hit.asset.id;
+          intent = { kind: "image", url: hit.asset.url, label: label !== "" ? label : emoteDisplayName(hit.asset) };
         } else {
           const face = resolveFace(keyword);
           if (face === null) {
-            return {
-              ok: false,
-              error: `找不到「${keyword}」对应的表情：素材库没有、内置表情也没这个词。换个词，或直接给我一张 /media 图片路径`,
-            };
+            return { ok: false, error: emoteMissMessage(keyword) };
           }
           intent = { kind: "face", id: face.id, label: face.keyword };
         }
       } else {
-        return { ok: false, error: "至少要给 url、face_id、mface_id 或 keyword 之一" };
+        return { ok: false, error: "至少要给 emote_id、url、face_id、mface_id 或 keyword 之一" };
       }
 
       // 渠道分流：QQ 会话走原生表情投递（face/mface/image 段）；
@@ -307,8 +421,9 @@ const TOOLS: ToolDef[] = [
         if (intent.kind === "image") {
           // 气泡附件只能挂本机 /media 图片；外链 http 在应用端渲染不出来，拒掉让模型改给本地素材。
           if (!intent.url.startsWith("/media/")) {
-            return { ok: false, error: `应用端发不了外链表情「${intent.url}」，换成表情包素材里的 /media 图片（用 keyword 查或让模型给本地路径）` };
+            return { ok: false, error: `应用端发不了外链表情「${intent.url}」，换成表情包素材里的 /media 图片（用 emote_search 查）` };
           }
+          if (emoteAssetId !== "") bumpEmoteUse(emoteAssetId);
           return {
             files: [intent.url],
             result: {
@@ -347,6 +462,7 @@ const TOOLS: ToolDef[] = [
       // 跳过它——否则回复文字会把同一张图再发一遍 QQ。meta.label 让历史标记念得出这张图
       // 是哪张（模型自己的图从不回放，label 就是它唯一的记忆）。降级成文字的没有图可挂。
       if ((result.via === "media" || result.via === "native") && intent.kind === "image") {
+        if (emoteAssetId !== "") bumpEmoteUse(emoteAssetId);
         return {
           files: [intent.url],
           deliveredToChannel: true,
@@ -493,8 +609,9 @@ function visibleTools(contactId?: string, permissionOverride?: AssistantPermissi
   if (features?.memorySearch === false) off.add("search_memory");
   if (features?.reminders !== true) off.add("schedule_reminder");
   if (features?.imageGen !== true || !capabilityReady("imageGeneration")) off.add("generate_image");
-  // 表情包：默认关（QQ 通道能力 + 性格开关），只有这位联系人明确开了才声明 send_emote。
-  if (features?.emotes !== true) off.add("send_emote");
+  // 表情包：默认关（QQ 通道能力 + 性格开关），只有这位联系人明确开了才声明。
+  // 检索工具和发送工具是一对：只开一个等于让她「能查不能发」或「能发只能猜」，所以同开同关。
+  if (features?.emotes !== true) { off.add("send_emote"); off.add("emote_search"); }
   // 发语音：默认关（TTS 秒级外部调用 + 性格开关），且语音合成的能力档没配好时自动消失。
   if (features?.voice !== true || !capabilityReady("textToSpeech")) off.add("send_voice");
   if (features?.web !== true) { off.add("web_search"); off.add("web_fetch"); }

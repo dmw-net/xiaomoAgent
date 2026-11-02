@@ -18,6 +18,7 @@ import { routes as pagesRoutes } from "./routes/pages.ts";
 import { routes as diagnosticsRoutes } from "./routes/diagnostics.ts";
 import { routes as skillsRoutes } from "./routes/skills.ts";
 import { routes as extensionsRoutes } from "./routes/extensions.ts";
+import { routes as assetsRoutes } from "./routes/assets.ts";
 import { routes as contentRoutes } from "./routes/content.ts";
 import { routes as modelRoutes } from "./routes/model.ts";
 import { routes as mediaRoutes } from "./routes/media.ts";
@@ -87,6 +88,8 @@ export const ROUTES: Route[] = [
   // 用户自定义技能 / 扩展（保留字顺序在表内已固定）
   ...skillsRoutes,
   ...extensionsRoutes,
+  // 资产：一个页面要的全部（视角是参数）
+  ...assetsRoutes,
   // 她的画 + 内容库
   ...contentRoutes,
   // 上下文用量

@@ -172,7 +172,17 @@ function dataCheck(): void {
   if (!existsSync(mediaDir)) {
     console.log(`  ${OK} 媒体目录还不存在（还没发过图，正常）`);
   } else {
-    const files = readdirSync(mediaDir);
+    // 布局是 表情包/<文件夹>/ 与类型目录的树，平铺 readdir 会漏数——递归取文件名集合。
+    const files: string[] = [];
+    const walk = (d: string, depth: number): void => {
+      if (depth > 3) return;
+      for (const ent of readdirSync(d, { withFileTypes: true })) {
+        if (ent.name.startsWith(".")) continue;
+        if (ent.isDirectory()) walk(join(d, ent.name), depth + 1);
+        else files.push(ent.name);
+      }
+    };
+    walk(mediaDir, 0);
     const refs = new Set<string>();
     const collect = (raw: unknown): void => {
       if (typeof raw !== "string") return;

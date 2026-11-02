@@ -1,4 +1,4 @@
-// 她的画（生成产物台账）与内容库（作品台账 + 聊天媒体附件聚合视图）。只读，动作走各自原有接口。
+// 她的画：生成产物台账。内容库的读视图已经并到 /api/assets（src/server/routes/assets.ts）。
 
 import {
   deleteArtifact,
@@ -6,7 +6,6 @@ import {
   listArtifacts,
   setArtifactStarred,
 } from "../../artifacts.ts";
-import { listContent, type ContentFilter, type ContentMediaFilter } from "../../content.ts";
 import { updateContact } from "../../contacts.ts";
 import {
   clampInt,
@@ -18,23 +17,6 @@ import {
 import { strictContactId } from "../context.ts";
 import type { Route } from "../types.ts";
 
-const contentRoute: Route = ({ res, url, path, method }) => {
-  // 内容库：作品台账 + 聊天媒体附件聚合视图。只读。
-  if (!(method === "GET" && path === "/api/content")) return false;
-  const contactId = strictContactId(url, res);
-  if (contactId === null) return true;
-  const rawFilter = url.searchParams.get("filter") || "all";
-  const allowed: ContentFilter[] = ["all", "artifacts", "chat", "starred", "reference"];
-  const filter = (allowed as string[]).includes(rawFilter) ? rawFilter as ContentFilter : "all";
-  const rawMedia = url.searchParams.get("media") || "all";
-  const allowedMedia: ContentMediaFilter[] = ["all", "image", "video", "audio", "file"];
-  const media = (allowedMedia as string[]).includes(rawMedia) ? rawMedia as ContentMediaFilter : "all";
-  const limit = clampInt(url.searchParams.get("limit"), LIST_LIMIT_DEFAULT, 1, LIST_LIMIT_MAX);
-  const offset = clampInt(url.searchParams.get("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
-  const data = listContent(contactId, filter, media, limit, offset);
-  sendJson(res, 200, { ok: true, filter, media, limit, offset, ...data });
-  return true;
-};
 
 const artifactsListRoute: Route = ({ res, url, path, method }) => {
   // 她的画：生成产物台账。按联系人隔离，翻页口径与调用记录/记忆清单一致。
@@ -90,4 +72,4 @@ const artifactsActionRoute: Route = async ({ req, res, path, method }) => {
   return true;
 };
 
-export const routes: Route[] = [contentRoute, artifactsListRoute, artifactsActionRoute];
+export const routes: Route[] = [artifactsListRoute, artifactsActionRoute];

@@ -92,11 +92,37 @@ const MODEL_ONLY_SQL = `purpose NOT IN (${CHANNEL_SQL})`;
  * 调试要看的是提示词与消息结构，不是一串 base64——而现在一次调用最多能带 1.5MB 图，
  * 原样落盘等于每条日志几 MB，几次就把库撑到没法备份。长度留着，好判断体积。
  */
-function stripInlineDataUrls(json: string): string {
-  return json.replace(
-    /data:(?:image|audio)\/[a-z0-9.+-]+;base64,[A-Za-z0-9+/=]{512,}/g,
-    (match) => match.slice(0, match.indexOf(";base64,") + ";base64,".length) + `<${match.length} 字符已省略>`,
-  );
+/**
+ * 把内联的 base64 图/音频换成占位，避免几 MB 的原文落进调用记录。
+ *
+ * ⚠️ 这里**不能用正则**。旧实现是 /data:(?:image|audio)\/…;base64,[A-Za-z0-9+/=]{512,}/g，
+ * V8 的正则引擎对这种超长贪婪重复会吃 C 栈：一张 5.2MB 的 PNG（base64 后 6.9MB）
+ * 直接抛 "Maximum call stack size exceeded"，于是整次识别被记成失败——
+ * 而模型那边其实早就答完了。这是应用侧的日志脱敏把一次成功的调用弄失败的典型案例。
+ * 线性 indexOf + 字符码扫描是 O(n) 且不碰栈，多大的 body 都安全。
+ */
+export function stripInlineDataUrls(json: string): string {
+  const MARK = ";base64,";
+  const isBase64Char = (code: number): boolean =>
+    (code >= 65 && code <= 90) || (code >= 97 && code <= 122) || (code >= 48 && code <= 57)
+    || code === 43 || code === 47 || code === 61; // A-Z a-z 0-9 + / =
+  let out = "";
+  let i = 0;
+  for (;;) {
+    const at = json.indexOf("data:", i);
+    if (at < 0) { out += json.slice(i); break; }
+    const isMedia = json.startsWith("data:image/", at) || json.startsWith("data:audio/", at);
+    const semi = isMedia ? json.indexOf(MARK, at + 5) : -1;
+    // mime 段不会超过几十字符；隔得太远说明这个 data: 不是我们要的那种内联形态。
+    if (!isMedia || semi < 0 || semi - at > 64) { out += json.slice(i, at + 5); i = at + 5; continue; }
+    const start = semi + MARK.length;
+    let end = start;
+    while (end < json.length && isBase64Char(json.charCodeAt(end))) end += 1;
+    if (end - start < 512) { out += json.slice(i, end); i = end; continue; }
+    out += json.slice(i, start) + `<${end - start} 字符已省略>`;
+    i = end;
+  }
+  return out;
 }
 
 /**

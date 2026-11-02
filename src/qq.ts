@@ -10,8 +10,9 @@ import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
 import { asText, chunkSegments, CredentialCache, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight, withRaw } from "./channels/delivery.ts";
-import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, listGroupProactiveConversations, setConversationMembership, type Conversation } from "./conversations.ts";
+import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, setConversationMembership, type Conversation } from "./conversations.ts";
 import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, readMedia, saveAudio, saveImage, saveVideo, sniffImageMime } from "./media.ts";
+import { needsStaticVariant, staticFrameOf } from "./renditions.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { config } from "./config.ts";
 import { createQQOneBotService } from "./qq-onebot.ts";
@@ -598,10 +599,14 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     // 官方富媒体接口挂在 /v2 下（/v2/users/{openid}/upload_prepare|files）——
     // 少了这段前缀平台会回 11001「不支持的调用」，与文字消息的 /v2/users/.../messages 同一版式。
     const prefix = target === "private" ? "v2/users" : "v2/groups";
-    const file = readMedia(ref.url);
-    if (file === null) throw new Error("本地媒体文件读不到，无法上传到 QQ：" + ref.url);
+    // 官方富媒体只认 png/jpg，GIF 会吃 850019。这里把动图换成它的派生静帧再上传——
+    // 不是在选素材时躲动图：库里全是动图也必须发得出去。派生不出来就按原样发，
+    // 让平台的错误如实浮出来，而不是我们静默换一张别的图。
+    const sendUrl = needsStaticVariant(ref.url) ? (await staticFrameOf(ref.url) ?? ref.url) : ref.url;
+    const file = readMedia(sendUrl);
+    if (file === null) throw new Error("本地媒体文件读不到，无法上传到 QQ：" + sendUrl);
     const { buffer, mime } = file;
-    const ext = ref.url.split(".").pop()?.toLowerCase() ?? "";
+    const ext = sendUrl.split(".").pop()?.toLowerCase() ?? "";
     const fileType = mediaTypeOfExt(ext);
     const nameWithExt = mediaFileNameOf(ref, ext);
     const wholeMd5 = createHash("md5").update(buffer).digest("hex");
@@ -849,69 +854,6 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
       onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 群投递失败（${conv.id}）：${message}`); },
       log: (ok, message, elapsedMs, raw) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), ...(raw ? { resRaw: raw } : {}), contactId: account.contactId }),
     });
-  };
-
-  /**
-   * 群主动消息：遍历该联系人下已勾选"允许主动群消息"的群会话并投递。
-   * 不走 replyWindow，直接走 sendGroup（群消息无需 msg_id 引用）。
-   * 调用方（proactive.ts）负责检查 quiet hours 与每日配额，这里只管"能不能发"。
-   */
-  /**
-   * 群主动消息：遍历该联系人下已勾选"允许主动群消息"的群会话并投递。
-   * 不走 replyWindow，直接走 sendGroup/sendMedia（群消息无需 msg_id 引用）。
-   * 调用方（proactive.ts）负责检查 quiet hours 与每日配额，这里只管"能不能发"。
-   * media 可选：配图/文件随每个群一起发（逐群上传，file_info 不能跨群复用）。
-   */
-  const deliverProactiveToGroup = async (
-    contactId: string,
-    text: string,
-    media: QqMediaRef[] = [],
-  ): Promise<void> => {
-    const groupConvs = listGroupProactiveConversations(contactId);
-    if (groupConvs.length === 0) return;
-    const segments = splitQqText(text);
-    for (const conv of groupConvs) {
-      const account = byId(conv.account_id) ?? byContact(contactId);
-      if (account === null || !configured(account)) continue;
-      if (segments.length > 0) {
-        const startedAt = clock();
-        await deliverOutbound({
-          segments,
-          send: (segment) => sendGroup(account, conv.external_id, segment, ""),
-          elapsed: () => clock() - startedAt,
-          onDelivered: () => {
-            account.lastSentAt = new Date(clock()).toISOString();
-            account.lastError = "";
-            persist();
-          },
-          onFailed: (message) => {
-            account.lastError = message;
-            persist();
-            console.warn(`[qq] 群主动投递失败（${conv.id}）：${message}`);
-          },
-          log: (ok, message, elapsedMs, raw) => logModelCall({
-            purpose: "qq", ok, model: "qqbot",
-            url: "/v2/groups/{group_openid}/messages",
-            elapsedMs, ...(message === "" ? {} : { message }),
-            ...(raw ? { resRaw: raw } : {}),
-            contactId: account.contactId,
-          }),
-        });
-      }
-      for (const ref of media) {
-        try {
-          await sendMedia(account, "group", conv.external_id, ref, "");
-          account.lastSentAt = new Date(clock()).toISOString();
-          account.lastError = "";
-          persist();
-        } catch (error) {
-          const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
-          account.lastError = message;
-          persist();
-          console.warn(`[qq] 群媒体投递失败（${conv.id}）：${message}`);
-        }
-      }
-    }
   };
 
   const expireWindows = (): void => { for (const [id, window] of windows) if (window.expiresAt <= clock()) windows.delete(id); };
@@ -1180,7 +1122,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   const clearAll = (): void => { for (const worker of workers.values()) { worker.gateway.close(); worker.gateway.forget(); worker.token.invalidate(); } workers.clear(); windows.clear(); replyCounters.clear(); qrTasks.clear(); credentialFaults.clear(); accounts = []; hydrated = true; problem = ""; persist(); };
 
   return {
-    deliverToContact, deliverToConversation, deliverProactiveToGroup,
+    deliverToContact, deliverToConversation,
     deliverMediaToContact, deliverMediaToGroup, deliverMediaToConversation,
     deliverEmote, beginBind, pollBind, snapshotFor, summary,
     setCredentials, beginCredentialQr, pollCredentialQr, setFlags, setFlagsByContact, disconnect,

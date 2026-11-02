@@ -15,10 +15,9 @@ import QqAvatarButton from "../../components/QqAvatarButton";
 import PickList from "../../components/PickList";
 import { WeChatSection } from "./WeChatSection";
 import { QQSection } from "./QQSection";
-import MemoryPanel from "../memory/MemoryPanel";
+import MemoryWorkspace from "../memory/MemoryWorkspace";
 import ProactivePanel from "../tasks/ProactivePanel";
-import ContentLibraryPanel from "./ContentLibraryPanel";
-import RecallSection from "../status/RecallSection";
+import MediaLibrary from "../../components/MediaLibrary";
 import { getProfilePage, setProfilePage, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
 import { useTabSelect } from "../../hooks/useTabSelect";
 import { useDismiss } from "../../hooks/useDismiss";
@@ -76,7 +75,7 @@ const TOOL_ITEMS: ToolRow[] = [
   { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。" },
   { kind: "toggle", key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
   { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。自拍参考图在「人格设定 → 角色形象」。` },
-  { kind: "toggle", key: "emotes", label: "表情包", hint: () => "随手甩个表情（图片表情包 / 内置表情 / 商城动态表情）。是 QQ 通道的能力，没挂 QQ 号的联系人发不出去；素材库在 设置 → 表情 里维护。默认关，开了才声明工具。" },
+  { kind: "toggle", key: "emotes", label: "表情包", hint: () => "随手甩个表情（图片表情包 / 内置表情 / 商城动态表情）。是 QQ 通道的能力，没挂 QQ 号的联系人发不出去；素材在 设置 → 媒体与表情 里管，能发哪几种看这位的 QQ 连接卡。默认关，开了才声明工具。" },
   { kind: "toggle", key: "voice", label: "发语音", hint: (p) => `${p}可以把想说的话合成一条语音发出去：QQ 里是原生语音条，应用里是可播放的语音气泡。要先在 设置 → 能力模型 → 语音合成 配好 TTS。默认关，开了才声明工具。` },
   { kind: "pointer", label: "技能", hint: "把自定义技能当成一份做法说明书；有可用技能时自动挂载，内容与开关在 设置 → 技能。" },
 ];
@@ -709,7 +708,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 <button type="button" role="tab" id="pf-page-tab-gallery" aria-selected={page === "gallery"}
                   tabIndex={page === "gallery" ? 0 : -1}
                   className={page === "gallery" ? "on" : ""} onClick={() => setPage("gallery")}>
-                  <LibraryBig size={12} strokeWidth={1.9} />内容库
+                  <LibraryBig size={12} strokeWidth={1.9} />媒体
                 </button>
               </>
             )}
@@ -1317,11 +1316,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
 
       {mode === "edit" && (visitedPages.has("memory") || page === "memory") && (
         <TabPanel active={page === "memory"} aria={pagePanelFor("memory")}>
-          <div className="pf-memory-stack">
-            <RecallSection embedded contactId={contactId} contactName={who} contactAvatar=""
-              onSwitchContact={() => undefined} onOpenContacts={() => undefined} panel={{}} />
-            <MemoryPanel panel={{}} active={page === "memory"} contactId={contactId} who={who} />
-          </div>
+          <MemoryWorkspace active={page === "memory"} contactId={contactId} who={who} />
         </TabPanel>
       )}
       {mode === "edit" && (visitedPages.has("proactive") || page === "proactive") && (
@@ -1331,7 +1326,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       )}
       {mode === "edit" && (visitedPages.has("gallery") || page === "gallery") && (
         <TabPanel active={page === "gallery"} aria={pagePanelFor("gallery")}>
-        <ContentLibraryPanel panel={{}} active={page === "gallery"} contactId={contactId} who={who} faceRef={faceRef}
+        <MediaLibrary panel={{}} active={page === "gallery"} contactId={contactId} who={who} faceRef={faceRef}
+          title="媒体"
           onFaceRefChanged={(url) => {
             // 服务端已经落库了，所以只同步显示、不标脏：标了脏会让底部出现"有未保存的修改"，
             // 而 formPayload 本来就不带 faceRef（未 dirty），基线对不上反而更误导。

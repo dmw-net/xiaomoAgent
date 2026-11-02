@@ -9,15 +9,18 @@
 // 都拖着大体积数据，也会把「一个文件就是全部设置」的 kv 表撑成杂物间。
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { config } from "./config.ts";
+import { contentHash, getAssetByUrl, registerAsset, syncAssetRefs, type AssetKind, type AssetRef } from "./assets.ts";
 import { db } from "./db.ts";
+import {
+  DEFAULT_FOLDER, EMOTE_ROOT, KIND_DIR, MEDIA_DIR, currentFileOf, dirFor, emoteFolderOfDir, ensureDir,
+  hashFile, idForName, layoutMigrated, nameOfUrl, nativePath, relocate, walkMediaTree, writeReconcileReport,
+} from "./media-layout.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 
-const MEDIA_DIR = config.mediaDir === ""
-  ? resolve(dirname(resolve(config.dbPath)), "media")
-  : resolve(config.mediaDir);
+export { MEDIA_DIR };
 
 /** 图片上传上限：5MB 足够手机直出的 JPEG/HEIC 转码结果，再大就该客户端先压缩。 */
 export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -80,19 +83,20 @@ const EXT_MIME: Record<string, string> = {
   weba: "audio/webm",
 };
 
-/** /media/<id>.<ext> 的合法形状；路径穿越在解析文件名这一步就被挡掉。 */
-const MEDIA_URL_RE = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))$/;
+/**
+ * /media 站内地址的形状：/media/<文件名>。文件名是身份、目录是分类——URL 里永远不带目录，
+ * 所以挪文件夹不用动任何历史引用（解析时经 assets.rel_path 找真身）。
+ */
+const MEDIA_URL_RE = /^\/media\/([A-Za-z0-9\u3400-\u9fff._-]{3,120})$/;
 
 /**
- * 壁纸文件的形状：wp 前缀 + 16 位随机 id。前缀就是它的「引用在 localStorage、不在库里」
- * 的身份证明——sweepOrphanMedia 只认无前缀形状，壁纸因此天然免于被当孤儿清掉；
- * 释放改由「换壁纸时删旧文件」与出厂重置负责。
+ * 文本里的 /media 引用。名字段放宽到「非引号非空白」——用户直接丢进表情包目录的文件
+ * 名字五花八门（老板英明.gif），只认 16 位哈希会把它们的引用扫漏，扫漏=清理时敢删还在用的图。
  */
-const WALLPAPER_URL_RE = /^\/media\/(wp[a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm))$/;
+const MEDIA_REF_RE = /\/media\/([A-Za-z0-9\u3400-\u9fff._-]{3,120})/g;
 
-/** 落盘文件名的合法形状；回收/清理时只认这个，目录里别的东西一律不碰。 */
-const MEDIA_FILE_RE = /^[a-z0-9]{16}\.(png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba)$/;
-const MEDIA_REF_RE = /\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))/g;
+/** 应用自己生成的文件名形状（回收站等用户动作只认这个形状，别的东西不碰）。 */
+const MEDIA_FILE_RE = /^[a-z0-9]{16,18}\.(png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba)$/;
 
 /** 刚上传但还没发出去的文件先留 24 小时，避免把用户正拿在手里的图清掉。 */
 const MEDIA_ORPHAN_GRACE_MS = 24 * 3_600_000;
@@ -106,23 +110,53 @@ export function mediaDir(): string {
   return MEDIA_DIR;
 }
 
-/** 壁纸文件也用 /media/ 前缀下发：读取与存在性判断认两种形状。 */
-function anyMediaFileName(url: string): string | null {
-  const name = MEDIA_URL_RE.exec(url)?.[1] ?? WALLPAPER_URL_RE.exec(url)?.[1];
-  if (!name) return null;
-  const file = resolve(MEDIA_DIR, name);
-  return file.startsWith(MEDIA_DIR) ? name : null;
+/** 壁纸身份就是 wp 前缀（引用存在设备 localStorage、不在库里，所以靠形状自证）。 */
+function isWallpaperUrl(url: string): boolean {
+  return /^\/media\/wp[a-z0-9]{16}\.[a-z]+$/.test(url);
 }
 
-/** 存一张图，返回可直接回给前端的 /media URL。mime 不在白名单时抛错。 */
-export function saveImage(buffer: Buffer, mime: string): { url: string; id: string } {
+/**
+ * 站内地址 → 盘上真身：先按库里的 rel_path，再兜遗留平铺位置；都不在返回 null。
+ * 所有读文件的入口（服务、发送、dataURL、存在性）都从这里过，别处不再自己拼路径。
+ */
+function resolveMediaFile(url: string): { file: string; relPath: string } | null {
+  if (!MEDIA_URL_RE.test(url)) return null;
+  return currentFileOf(url);
+}
+
+/**
+ * 落盘即登记：四个 save 函数都走这里，所以「文件在盘上但库里没记录」这个状态从构造上不存在。
+ * 2026-09-28 那两张已经画成的自拍就是这么丢的——画成功和消息落地是两个时刻，中间断一次，
+ * 文件就成了没人认领的东西，下一轮清理直接删。artifacts 表当时补的是那条路，这里是总闸。
+ * source 一律先记 unclaimed：调用方才知道它是什么，由 claimAsset 与对账再补，
+ * 但**存在性已经保证了**，认领漏掉的代价只是元数据缺口，不再是数据丢失。
+ */
+function registerMedia(id: string, ext: string, kind: AssetKind, mime: string, buffer: Buffer, relPath: string, source: "unclaimed" | "wallpaper" = "unclaimed"): void {
+  registerAsset({
+    id,
+    url: `/media/${id}.${ext}`,
+    kind,
+    mime,
+    bytes: buffer.length,
+    hash: contentHash(buffer),
+    relPath,
+    source,
+  });
+}
+
+/** 存一张图，返回可直接回给前端的 /media URL。mime 不在白名单时抛错。
+ *  dir 给「表情包/<文件夹>」就落进表情目录（导入/打标链路），默认落 图片/。 */
+export function saveImage(buffer: Buffer, mime: string, dir?: string): { url: string; id: string } {
   const ext = IMAGE_EXT[mime];
   if (!ext) throw new Error("图片格式不支持（仅 png / jpg / webp / gif）");
   if (buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES) {
     throw new Error(`图片大小需在 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB 以内`);
   }
   const id = randomBytes(8).toString("hex");
-  writeFileSync(join(mediaDir(), `${id}.${ext}`), buffer);
+  const relDir = dir ?? KIND_DIR.image;
+  const relPath = `${relDir}/${id}.${ext}`;
+  writeFileSync(join(ensureDir(relDir), `${id}.${ext}`), buffer);
+  registerMedia(id, ext, "image", mime, buffer, relPath);
   return { url: `/media/${id}.${ext}`, id };
 }
 
@@ -153,7 +187,9 @@ export function saveAudio(buffer: Buffer): { url: string; id: string; mime: stri
   const ext = AUDIO_EXT[mime];
   if (!ext) throw new Error("语音格式不支持（仅 mp3 / wav / m4a / ogg / opus / webm）");
   const id = randomBytes(8).toString("hex");
-  writeFileSync(join(mediaDir(), `${id}.${ext}`), buffer);
+  const relDir = KIND_DIR.audio;
+  writeFileSync(join(ensureDir(relDir), `${id}.${ext}`), buffer);
+  registerMedia(id, ext, "audio", mime, buffer, `${relDir}/${id}.${ext}`);
   return { url: `/media/${id}.${ext}`, id, mime };
 }
 
@@ -229,7 +265,9 @@ export function saveVideo(buffer: Buffer): { url: string; id: string; mime: stri
   const ext = VIDEO_EXT[mime];
   if (!ext) throw new Error("视频格式不支持（仅 mp4 / webm）");
   const id = randomBytes(8).toString("hex");
-  writeFileSync(join(mediaDir(), `${id}.${ext}`), buffer);
+  const relDir = KIND_DIR.video;
+  writeFileSync(join(ensureDir(relDir), `${id}.${ext}`), buffer);
+  registerMedia(id, ext, "video", mime, buffer, `${relDir}/${id}.${ext}`);
   return { url: `/media/${id}.${ext}`, id, mime };
 }
 
@@ -263,49 +301,42 @@ export function saveWallpaper(buffer: Buffer, mime: string): { url: string; id: 
   }
   const id = `wp${randomBytes(8).toString("hex")}`;
   const ext = (kind === "image" ? IMAGE_EXT[imageMime] : VIDEO_EXT[videoMime]) as string;
-  writeFileSync(join(mediaDir(), `${id}.${ext}`), buffer);
+  const relDir = kind === "image" ? KIND_DIR.image : KIND_DIR.video;
+  writeFileSync(join(ensureDir(relDir), `${id}.${ext}`), buffer);
+  // 壁纸的来源不用等对账：wp 前缀本身就说明了它是干什么的。
+  registerMedia(id, ext, kind as AssetKind, kind === "image" ? imageMime : videoMime, buffer, `${relDir}/${id}.${ext}`, "wallpaper");
   return { url: `/media/${id}.${ext}`, id };
 }
 
 /** 删一个壁纸文件：形状必须是 wp 前缀（普通聊天图片有自己的回收通道，别走到这）。 */
 export function deleteWallpaper(url: string): void {
-  const match = WALLPAPER_URL_RE.exec(url);
-  const name = match?.[1];
-  if (!name) return;
-  const file = resolve(MEDIA_DIR, name);
-  if (!file.startsWith(MEDIA_DIR)) return;
+  if (!isWallpaperUrl(url)) return;
+  const file = resolveMediaFile(url);
+  if (file === null) return;
   try {
-    rmSync(file, { force: true });
+    rmSync(file.file, { force: true });
   } catch { /* 删不掉就算了，留给出厂重置 */ }
 }
 
 /** 媒体文件元信息：/media/ 路由给视频与语音做 Range 流式播放，不把整个文件读进内存。 */
 export function mediaFileInfo(url: string): { file: string; mime: string; size: number } | null {
-  const name = anyMediaFileName(url);
-  if (!name) return null;
-  const file = resolve(MEDIA_DIR, name);
-  if (!file.startsWith(MEDIA_DIR) || !existsSync(file)) return null;
-  const ext = file.slice(file.lastIndexOf(".") + 1);
-  return { file, mime: EXT_MIME[ext] ?? "application/octet-stream", size: statSync(file).size };
+  const found = resolveMediaFile(url);
+  if (found === null) return null;
+  const ext = found.file.slice(found.file.lastIndexOf(".") + 1);
+  return { file: found.file, mime: EXT_MIME[ext] ?? "application/octet-stream", size: statSync(found.file).size };
 }
 
-/** 媒体目录里的全部 /media 路径（出厂重置用：库清空后这些文件都没人认领了）。
- *  只认两个 URL 形状（聊天图片 / 壁纸）——目录里若有别人放的文件，不去动它。 */
+/** 媒体目录里的全部 /media 地址（出厂重置用：库清空后这些文件都没人认领了）。递归整棵树。 */
 export function listMediaUrls(): string[] {
-  if (!existsSync(MEDIA_DIR)) return [];
-  return readdirSync(MEDIA_DIR)
-    .filter((name) => MEDIA_URL_RE.test("/media/" + name) || WALLPAPER_URL_RE.test("/media/" + name))
-    .map((name) => "/media/" + name);
+  return walkMediaTree().map((entry) => "/media/" + entry.name);
 }
 
 /** 按 /media URL 读回文件内容；不存在或形状不对返回 null。 */
 export function readMedia(url: string): { buffer: Buffer; mime: string } | null {
-  const name = anyMediaFileName(url);
-  if (!name) return null;
-  const file = resolve(mediaDir(), name);
-  if (!existsSync(file)) return null;
-  const ext = file.slice(file.lastIndexOf(".") + 1);
-  return { buffer: readFileSync(file), mime: EXT_MIME[ext] ?? "application/octet-stream" };
+  const found = resolveMediaFile(url);
+  if (found === null) return null;
+  const ext = found.file.slice(found.file.lastIndexOf(".") + 1);
+  return { buffer: readFileSync(found.file), mime: EXT_MIME[ext] ?? "application/octet-stream" };
 }
 
 /**
@@ -314,20 +345,12 @@ export function readMedia(url: string): { buffer: Buffer; mime: string } | null 
  * 绝对路径 / file:/// / http URL / base64，站内相对路径它解不出来。
  */
 export function mediaAbsPath(url: string): string | null {
-  const name = anyMediaFileName(url);
-  if (name === null) return null;
-  const file = resolve(mediaDir(), name);
-  return existsSync(file) ? file : null;
+  return resolveMediaFile(url)?.file ?? null;
 }
 
 export function mediaUrlExists(url: string): boolean {
   // 只判断存在，不把整张图读进内存（readMedia 是给真要内容的人用的）
-  const name = anyMediaFileName(url);
-  return name !== null && existsSync(join(MEDIA_DIR, name));
-}
-
-function mediaFileName(url: string): string | null {
-  return anyMediaFileName(url);
+  return resolveMediaFile(url) !== null;
 }
 
 /**
@@ -356,14 +379,14 @@ export function releaseMediaFiles(urls: string[]): void {
             EXISTS(SELECT 1 FROM kv         WHERE v          LIKE ?) AS in_kv`,
   );
   for (const url of urls) {
-    const name = mediaFileName(url);
-    if (!name) continue;
-    const like = `%${name}%`;
+    const found = resolveMediaFile(url);
+    if (found === null) continue;
+    const like = `%${nameOfUrl(url)}%`;
     const ref = probe.get(like, like, like, like, like, like, like) as
       { in_messages: number; in_turns: number; in_avatar: number; in_face_ref: number; in_artifact: number; in_tool_detail: number; in_kv: number };
     if (ref.in_messages || ref.in_turns || ref.in_avatar || ref.in_face_ref || ref.in_artifact || ref.in_tool_detail || ref.in_kv) continue;
     try {
-      rmSync(join(MEDIA_DIR, name), { force: true });
+      rmSync(found.file, { force: true });
     } catch { /* 删不掉就算了，留给下次 */ }
   }
 }
@@ -382,19 +405,19 @@ export function mediaDataUrl(url: string): string | null {
  * 40 是 `data:image/jpeg;base64,` 头加 JSON 的引号与键名的余量。
  */
 export function dataUrlBytes(url: string): number | null {
-  const name = mediaFileName(url);
-  if (!name) return null;
-  const file = join(MEDIA_DIR, name);
-  if (!existsSync(file)) return null;
-  return Math.ceil(statSync(file).size / 3) * 4 + 40;
+  const found = resolveMediaFile(url);
+  if (found === null) return null;
+  return Math.ceil(statSync(found.file).size / 3) * 4 + 40;
 }
 
-export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "voice" | "turn" | "artifact" | "tool" | "setting" | "wallpaper" | "none" | "trash";
+export type MediaSourceKind = "avatar" | "face_ref" | "chat" | "voice" | "turn" | "artifact" | "tool" | "setting" | "emote" | "favorite" | "wallpaper" | "none" | "trash";
 
 export type MediaSource = {
   kind: MediaSourceKind;
   label: string;
   detail?: string;
+  /** 引用方的归属联系人 id。资产注册表靠它把「这张图是谁的」落进表里——detail 是给人看的名字，不能拿来筛。 */
+  contactId?: string;
   /** 只有聊天消息来源带；媒体页可直接发起“删除这条语音消息”。 */
   messageId?: number;
   durationMs?: number;
@@ -501,19 +524,20 @@ function collectMediaSources(): Map<string, MediaSource[]> {
         addName(name, {
           kind: "voice", label: "语音消息",
           detail: [contactDetail(row.contact_id), seconds > 0 ? seconds + " 秒" : ""].filter(Boolean).join(" · "),
+          contactId: String(row.contact_id ?? ""),
           messageId: row.id,
           durationMs: typeof voice.durationMs === "number" ? voice.durationMs : undefined,
           transcript: typeof voice.transcript === "string" ? voice.transcript : undefined,
         });
       } else {
-        addName(name, { kind: "chat", label: "聊天", detail: contactDetail(row.contact_id) || undefined, messageId: row.id });
+        addName(name, { kind: "chat", label: "聊天", detail: contactDetail(row.contact_id) || undefined, contactId: String(row.contact_id ?? ""), messageId: row.id });
       }
     }
   }
   for (const row of db.prepare(
     "SELECT contact_id, tool_detail FROM messages WHERE tool_detail LIKE '%/media/%'",
   ).all() as Array<{ contact_id: string | null; tool_detail: string }>) {
-    add(row.tool_detail, { kind: "tool", label: "工具记录", detail: contactDetail(row.contact_id) || undefined });
+    add(row.tool_detail, { kind: "tool", label: "工具记录", detail: contactDetail(row.contact_id) || undefined, contactId: String(row.contact_id ?? "") });
   }
   for (const row of db.prepare(
     "SELECT contact_id, attachments, attachment_meta FROM turns WHERE attachments LIKE '%/media/%'",
@@ -523,21 +547,31 @@ function collectMediaSources(): Map<string, MediaSource[]> {
       const name = match[1];
       if (!name) continue;
       const voice = meta.get("/media/" + name);
+      const contactId = String(row.contact_id ?? "");
       addName(name, voice
-        ? { kind: "voice", label: "语音消息", detail: contactDetail(row.contact_id) || undefined }
-        : { kind: "turn", label: "回复任务", detail: contactDetail(row.contact_id) || undefined });
+        ? { kind: "voice", label: "语音消息", detail: contactDetail(row.contact_id) || undefined, contactId }
+        : { kind: "turn", label: "回复任务", detail: contactDetail(row.contact_id) || undefined, contactId });
     }
   }
   for (const row of db.prepare(
     "SELECT id, name, avatar, face_ref FROM contacts WHERE avatar LIKE '%/media/%' OR face_ref LIKE '%/media/%'",
   ).all() as Array<{ id: string; name: string; avatar: string; face_ref: string }>) {
-    add(row.avatar, { kind: "avatar", label: "头像", detail: row.name });
-    add(row.face_ref, { kind: "face_ref", label: "长相参考", detail: row.name });
+    add(row.avatar, { kind: "avatar", label: "头像", detail: row.name, contactId: row.id });
+    add(row.face_ref, { kind: "face_ref", label: "长相参考", detail: row.name, contactId: row.id });
   }
   for (const row of db.prepare(
     "SELECT contact_id, url FROM artifacts WHERE url LIKE '%/media/%'",
   ).all() as Array<{ contact_id: string; url: string }>) {
-    add(row.url, { kind: "artifact", label: "作品", detail: contactDetail(row.contact_id) || undefined });
+    add(row.url, { kind: "artifact", label: "作品", detail: contactDetail(row.contact_id) || undefined, contactId: row.contact_id });
+  }
+  // 用户明确认领过的资产（表情包素材、收藏）本身就是引用。
+  // 少了这一条，「只被表情库认领、没进过任何对话」的梗图会被判成未引用而被清理掉——
+  // 表情标记从前住在 kv 的 blob 里、由下面的 kv 扫描顺带认到；搬进 assets 表后那条扫描就看不见它了。
+  for (const row of db.prepare(
+    "SELECT url, usable_as_emote, starred FROM assets WHERE usable_as_emote = 1 OR starred = 1",
+  ).all() as Array<{ url: string; usable_as_emote: number; starred: number }>) {
+    if (row.usable_as_emote === 1) add(row.url, { kind: "emote", label: "表情包素材" });
+    if (row.starred === 1) add(row.url, { kind: "favorite", label: "收藏" });
   }
   for (const row of db.prepare("SELECT v FROM kv WHERE v LIKE '%/media/%'").all() as Array<{ v: string }>) {
     add(row.v, { kind: "setting", label: "本地设置" });
@@ -567,9 +601,173 @@ type MediaScan = {
   all: MediaMaintenanceItem[];
 };
 
-/** 扫描媒体目录中的全部文件；items 只包含已经可以安全清理的那部分。 */
+/**
+ * 资产对账 v2：盘和库互为镜像的收敛点，也是「用户在资源管理器里自己动手」的兜底。
+ *
+ *   盘上有库里没有 → 按位置登记；躺在 表情包/<X>/ 下的直接认领成表情、文件夹=X
+ *   库里有但 rel_path 上没文件 → 按名字/哈希全树找：找到=用户挪过或改名，改地址；找不到=标失效
+ *   失效行再见文件 → 复活；表情行**永远不静默删**（消息还引用着它，行在历史就在）
+ *   哈希撞上已有行 → 不登记，计入报告（重复文件，用户拷贝出来的）
+ *
+ * 回执落 kv（设置里的媒体对账读它）。正常路径 save* 在落盘那刻就登记了，这里只兜外部动作。
+ * 大文件（>20MB）不回补内容哈希：哈希是去重与渠道凭证的优化键，为它把 100MB 视频读进内存不值得。
+ */
+export function reconcileAssets(): {
+  registered: number; pruned: number; updated: number;
+  moved: number; adopted: number; markedMissing: number; revived: number; dupIgnored: number;
+} {
+  const entries = walkMediaTree();
+  const rowUrl = (name: string): string => "/media/" + name;
+  const rows = db.prepare(
+    "SELECT id, url, kind, hash, rel_path, usable_as_emote, emote_pack, missing FROM assets",
+  ).all() as Array<{ id: string; url: string; kind: string; hash: string; rel_path: string; usable_as_emote: number; emote_pack: string; missing: number }>;
+  const rowByName = new Map(rows.map((r) => [nameOfUrl(r.url), r]));
+  const knownHashes = new Set(rows.map((r) => r.hash).filter((h) => h !== ""));
+  // 同名多份（用户拷贝/撞名）：第一份按身份认领，其余计入重复，绝不互相打架。
+  const seenNames = new Set<string>();
+  const freeEntries: typeof entries = [];
+  for (const e of entries) {
+    if (seenNames.has(e.name)) { continue; }
+    seenNames.add(e.name);
+    freeEntries.push(e);
+  }
+
+  let registered = 0, moved = 0, adopted = 0, dupIgnored = 0;
+  // 哈希撞上已有行而名字对不上的文件：多半是用户改了名。留着当「改地址」的候选，
+  // 而不是登记成第二张重复表情。
+  const renameRescue = new Map<string, (typeof entries)[number]>();
+  for (const e of freeEntries) {
+    const row = rowByName.get(e.name);
+    // 散放在 表情包/ 根下的图＝默认文件夹：先挪进 表情包/默认/，再按文件夹规则认领。
+    // 根目录不是某个文件夹，但它显然是用户想当表情放的东西——兜到默认是唯一说得通的读法。
+    if (e.dir === EMOTE_ROOT) {
+      const to = `${EMOTE_ROOT}/${DEFAULT_FOLDER}`;
+      ensureDir(to);
+      const target = nativePath(`${to}/${e.name}`);
+      const src = nativePath(e.relPath);
+      if (target !== "" && !existsSync(target)) {
+        try {
+          renameSync(src, target);
+          e.relPath = `${to}/${e.name}`;
+          e.dir = to;
+        } catch { /* 挪不动就按原位处理 */ }
+      } else if (existsSync(target)) {
+        dupIgnored += 1;
+        continue;
+      }
+    }
+    if (row === undefined) {
+      const file = nativePath(e.relPath);
+      const hash = e.size > 20 * 1024 * 1024 ? "" : hashFile(file);
+      if (hash !== "" && knownHashes.has(hash)) { dupIgnored += 1; renameRescue.set(hash, e); continue; }
+      const { id, ext } = idForName(e.name);
+      const folder = emoteFolderOfDir(e.dir);
+      registerAsset({
+        id, url: rowUrl(e.name), kind: mediaTypeOfUrl(rowUrl(e.name)),
+        mime: EXT_MIME[ext === "jpeg" ? "jpg" : ext] ?? "application/octet-stream",
+        bytes: e.size, hash, relPath: e.relPath,
+        // wp 前缀就是壁纸的身份证明（引用在设备 localStorage、不在库里），不用等认领。
+        source: /^wp[a-z0-9]{16}\./.test(e.name) ? "wallpaper" : "unclaimed",
+        usableAsEmote: folder !== null, emotePack: folder !== null ? [folder] : undefined,
+      });
+      registered += 1;
+      if (folder !== null) adopted += 1;
+      continue;
+    }
+    if (row.rel_path !== "" && row.rel_path !== e.relPath) {
+      db.prepare("UPDATE assets SET rel_path = ?, missing = 0 WHERE url = ?").run(e.relPath, row.url);
+      row.rel_path = e.relPath;
+      moved += 1;
+    }
+    const folder = emoteFolderOfDir(e.dir);
+    if (folder !== null) {
+      const pack = parsePack(row.emote_pack);
+      if (Number(row.usable_as_emote) !== 1) {
+        db.prepare("UPDATE assets SET usable_as_emote = 1, missing = 0, emote_pack = ?, updated_at = ? WHERE url = ?")
+          .run(JSON.stringify([folder]), Date.now(), row.url);
+        adopted += 1;
+      } else if (pack[0] !== folder) {
+        // 目录和库归属不一致：用户在盘上动了手，盘是最新动作，库跟盘。
+        db.prepare("UPDATE assets SET emote_pack = ? WHERE url = ?").run(JSON.stringify([folder]), row.url);
+        moved += 1;
+      }
+    }
+  }
+  // 同名但位置对不上的条目（用户挪动过、或遗留平铺行已归位）：按哈希确认身份后当改地址候选。
+  const hashRescue = new Map<string, (typeof entries)[number]>();
+  for (const e of freeEntries) {
+    const row = rowByName.get(e.name);
+    if (row === undefined || row.hash === "") continue;
+    const file = nativePath(e.relPath);
+    if (!existsSync(file)) continue;
+    if (row.rel_path === e.relPath && Number(row.missing) === 0) continue;
+    const hash = hashFile(file);
+    if (hash !== "" && hash === row.hash) hashRescue.set(row.hash, e);
+  }
+
+  let pruned = 0, markedMissing = 0, revived = 0;
+  const drop = db.prepare("DELETE FROM assets WHERE id = ?");
+  for (const row of rows) {
+    const cur = nativePath(row.rel_path !== "" ? row.rel_path : nameOfUrl(row.url));
+    if (cur !== "" && existsSync(cur)) {
+      if (Number(row.missing) === 1) {
+        db.prepare("UPDATE assets SET missing = 0 WHERE id = ?").run(row.id);
+        revived += 1;
+      }
+      continue;
+    }
+    // 记的位置没有文件 → 按哈希找真身：同名候选（挪动）优先，改名候选其次。
+    const rescue = row.hash !== "" ? (hashRescue.get(row.hash) ?? renameRescue.get(row.hash)) : undefined;
+    if (rescue !== undefined) {
+      db.prepare("UPDATE assets SET rel_path = ?, missing = 0 WHERE id = ?").run(rescue.relPath, row.id);
+      hashRescue.delete(row.hash); renameRescue.delete(row.hash);
+      row.rel_path = rescue.relPath;
+      moved += 1; revived += 1;
+      continue;
+    }
+    if (Number(row.usable_as_emote) === 1) {
+      if (Number(row.missing) !== 1) {
+        db.prepare("UPDATE assets SET missing = 1 WHERE id = ?").run(row.id);
+        markedMissing += 1;
+      }
+      continue;
+    }
+    // 非表情行且盘上确实没有：和旧行为一致，销账。回收站里的文件不在扫描树内，正是靠这条路收掉行。
+    drop.run(row.id);
+    pruned += 1;
+  }
+  // 父资产没了，它的派生形态（动图静帧这类）就是垃圾文件：连文件带行一起收掉。
+  const orphans = db.prepare(
+    "SELECT id, url FROM assets WHERE parent_id IS NOT NULL AND parent_id NOT IN (SELECT id FROM assets)",
+  ).all() as Array<{ id: string; url: string }>;
+  for (const child of orphans) {
+    const file = resolveMediaFile(child.url);
+    if (file !== null) { try { rmSync(file.file, { force: true }); } catch { /* 删不掉留给下一轮 */ } }
+    drop.run(child.id);
+    pruned += 1;
+  }
+
+  const counts = { registered, pruned, moved, adopted, markedMissing, revived, dupIgnored };
+  writeReconcileReport(counts);
+  const refs = new Map<string, AssetRef[]>();
+  for (const [name, sources] of collectMediaSources()) {
+    refs.set("/media/" + name, sources.map((s) => ({
+      kind: s.kind, contactId: s.contactId, durationMs: s.durationMs, messageId: s.messageId,
+    })));
+  }
+  return { ...counts, ...syncAssetRefs(refs) };
+}
+
+function parsePack(raw: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(raw || "[]");
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch { return []; }
+}
+
+/** 递归扫描媒体树中的全部文件；items 只包含已经可以安全清理的那部分。 */
 export function scanOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): MediaScan {
-  if (!existsSync(MEDIA_DIR)) return { files: 0, referenced: 0, pending: 0, items: [], all: [] };
+  const entries = walkMediaTree();
   const sourceMap = collectMediaSources();
   const now = Date.now();
   let files = 0;
@@ -577,12 +775,11 @@ export function scanOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): MediaScan {
   let pending = 0;
   const items: MediaMaintenanceItem[] = [];
   const all: MediaMaintenanceItem[] = [];
-  for (const entry of readdirSync(MEDIA_DIR, { withFileTypes: true })) {
-    if (!entry.isFile()) continue;
+  for (const entry of entries) {
     const url = `/media/${entry.name}`;
-    const wallpaper = WALLPAPER_URL_RE.test(url);
-    if (!wallpaper && !MEDIA_FILE_RE.test(entry.name)) continue;
-    const file = join(MEDIA_DIR, entry.name);
+    const wallpaper = /^wp[a-z0-9]{16}\./.test(entry.name);
+    const file = nativePath(entry.relPath);
+    if (file === "" || !existsSync(file)) continue;
     try {
       const stat = statSync(file);
       files += 1;
@@ -706,6 +903,8 @@ function listMediaTrash(): MediaTrashItem[] {
 
 /** 给运行检查和媒体管理共用的完整快照。 */
 export function mediaMaintenanceSnapshot(): MediaMaintenanceSnapshot {
+  // 巡检前先把资产表与盘面对齐：用户在界面上看到的「几个文件、哪些没人引用」必须是真的。
+  reconcileAssets();
   const scan = scanOrphanMedia();
   const trash = listMediaTrash();
   const byType: MediaMaintenanceSnapshot["byType"] = {
@@ -779,9 +978,10 @@ export function trashMediaFiles(names: string[]): MediaMutationResult {
       skipped += 1;
       continue;
     }
-    const from = join(MEDIA_DIR, name);
+    const found = resolveMediaFile(item.url);
+    const from = found?.file ?? "";
     const to = trashPath(name);
-    if (!existsSync(from) || existsSync(to)) {
+    if (from === "" || !existsSync(from) || existsSync(to)) {
       skipped += 1;
       continue;
     }
@@ -810,22 +1010,25 @@ export function restoreMediaFiles(names: string[]): MediaMutationResult {
   let skipped = 0;
   let bytes = 0;
   for (const name of wanted) {
-    const row = db.prepare("SELECT size FROM media_trash WHERE name = ?").get(name) as { size: number } | undefined;
-    if (!row) {
+    const trashed = db.prepare("SELECT size FROM media_trash WHERE name = ?").get(name) as { size: number } | undefined;
+    if (!trashed) {
       skipped += 1;
       continue;
     }
     const from = trashPath(name);
-    const to = join(MEDIA_DIR, name);
+    // 回到库记得的位置（表情回收站场景行不会被销，rel_path 还在）；没有行就回平铺，对账会再归位。
+    const assetRow = db.prepare("SELECT rel_path FROM assets WHERE url = ?").get(`/media/${name}`) as { rel_path: string } | undefined;
+    const to = (assetRow !== undefined && assetRow.rel_path !== "" ? nativePath(assetRow.rel_path) : "") || join(MEDIA_DIR, name);
     if (!existsSync(from) || existsSync(to)) {
       skipped += 1;
       continue;
     }
     try {
+      if (assetRow !== undefined && assetRow.rel_path.includes("/")) ensureDir(assetRow.rel_path.slice(0, assetRow.rel_path.lastIndexOf("/")));
       renameSync(from, to);
       db.prepare("DELETE FROM media_trash WHERE name = ?").run(name);
       changed += 1;
-      bytes += row.size;
+      bytes += trashed.size;
     } catch {
       skipped += 1;
     }
@@ -882,8 +1085,10 @@ export function sweepOrphanMedia(minAgeMs = MEDIA_ORPHAN_GRACE_MS): { removed: n
   let removed = 0;
   let bytes = 0;
   for (const item of scan.items) {
+    const found = resolveMediaFile(item.url);
+    if (found === null) continue;
     try {
-      rmSync(join(MEDIA_DIR, item.name), { force: true });
+      rmSync(found.file, { force: true });
       removed += 1;
       bytes += item.size;
     } catch { /* 读不到/删不掉就跳过，下次再试 */ }

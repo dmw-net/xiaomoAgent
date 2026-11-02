@@ -28,8 +28,9 @@
 
 import { createRequire } from "node:module";
 import { createHash } from "node:crypto";
-import { existsSync, rmSync, statSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, rmSync, statSync, writeFileSync, readFileSync, cpSync, mkdirSync, readdirSync } from "node:fs";
 import { join } from "node:path";
+import { tmpdir } from "node:os";
 import { spawnSync } from "node:child_process";
 import { encodeCjk, planCjkEncoding, totalCjk, remainingCjkRuns, DEFAULT_MIN_CJK } from "./cjk-encode.mjs";
 
@@ -61,6 +62,12 @@ const common = {
   sourcemap: false,
   logLevel: "warning",
   write: false,
+  // sharp 必须留在外面：它的 JS 内联进单文件后，运行时仍要 require 平台原生包
+  // （@img/sharp-win32-x64 里那个 .node 与 libvips 的 dll），而那些东西没法内联。
+  // 半内联是最坏组合——模块看着在、实际取不到。留成 external，由 stageSharpDeps()
+  // 把真正的 node_modules 放进安装目录的 backend/node_modules，让 ESM 从 server.mjs
+  // 往上找得到它。
+  external: ["sharp"],
 };
 
 // 1) 捆包 + 压缩（先不编码：注释在 minify 后已不存在，扫描器面对的是最简形态）。
@@ -146,6 +153,108 @@ for (const profile of ["debug", "release"]) {
 }
 
   writeFileSync(out, final, "utf8");
+
+/**
+ * sharp 的运行期依赖闭包。
+ *
+ * 不能手写清单：sharp 还要 detect-libc，手列的第一版就漏了它，装到模拟目录里才炸出来。
+ * 顺着 package.json 的 dependencies 递归收；optionalDependencies 里那些按平台分的原生包
+ * 只留本机这一个（npm 也只会装对本平台有效的那个，但仓库里可能残留别平台的目录，
+ * 比如 sharp-wasm32 有 9MB，塞进安装包纯属浪费）。
+ */
+const FOREIGN_PLATFORM = /-(darwin|linux|win32|freebsd|android|openbsd|sunos)-(x64|arm64|arm|ia32|wasm32|loong64|ppc64|riscv64|mips)$/;
+function sharpClosure() {
+  const seen = new Set();
+  const queue = ["sharp"];
+  while (queue.length > 0) {
+    const name = queue.shift();
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const dir = join(root, "node_modules", name);
+    if (!existsSync(dir)) continue;
+    let pkg;
+    try { pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf8")); } catch { continue; }
+    for (const dep of Object.keys(pkg.dependencies ?? {})) queue.push(dep);
+    for (const dep of Object.keys(pkg.optionalDependencies ?? {})) {
+      if (FOREIGN_PLATFORM.test(dep) && !dep.endsWith(`${process.platform}-${process.arch}`)) continue;
+      queue.push(dep);
+    }
+  }
+  return [...seen];
+}
+
+/**
+ * 把 sharp 的运行期依赖 stage 到 dist-desktop/backend-deps/node_modules。
+ * tauri.conf 的 resources 把这个目录映射到安装后的 backend/node_modules，
+ * 于是 backend/src/server.mjs 里的 import("sharp") 能顺着 node_modules 往上找得到。
+ */
+function stageSharpDeps() {
+  const dest = join(root, "dist-desktop", "backend-deps", "node_modules");
+  rmSync(dest, { recursive: true, force: true });
+  if (!existsSync(join(root, "node_modules", "sharp"))) return { staged: [], bytes: 0, reason: "node_modules/sharp 不存在" };
+  const staged = [];
+  let bytes = 0;
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const file = join(dir, entry.name);
+      if (entry.isDirectory()) { walk(file); continue; }
+      bytes += statSync(file).size;
+    }
+  };
+  for (const name of sharpClosure()) {
+    const from = join(root, "node_modules", name);
+    if (!existsSync(from)) continue;
+    const to = join(dest, name);
+    mkdirSync(join(to, ".."), { recursive: true });
+    cpSync(from, to, { recursive: true });
+    walk(to);
+    staged.push(name);
+  }
+  return { staged, bytes };
+}
+
+/**
+ * 安装后目录里真的能派生吗？在仓库外搭一个和安装包同形状的目录跑一次。
+ * 这条不能省：开发机上 node_modules 就在 bundle 旁边，怎么试都成功，
+ * 只有把 server.mjs 挪到「backend/src + backend/node_modules」这个形状里才看得出缺什么。
+ */
+function verifyStagedInstall() {
+  // 必须建在仓库外：留在 dist-desktop 里的话，ESM 找不到 staged 依赖时会一路向上
+  // 摸到仓库自己的 node_modules 而侥幸成功，这条门就永远打不红（实测过：
+  // 把依赖闭包砍成只剩 sharp、故意漏掉 detect-libc，仓库内的模拟照样通过）。
+  const sim = join(tmpdir(), "xiaomo-install-sim-" + process.pid);
+  rmSync(sim, { recursive: true, force: true });
+  mkdirSync(join(sim, "backend", "src"), { recursive: true });
+  cpSync(out, join(sim, "backend", "src", "server.mjs"));
+  const deps = join(root, "dist-desktop", "backend-deps", "node_modules");
+  if (!existsSync(deps)) return "没有 backend-deps/node_modules";
+  cpSync(deps, join(sim, "backend", "node_modules"), { recursive: true });
+  const probe = join(sim, "backend", "src", "probe.mjs");
+  writeFileSync(probe, `
+    const gif = Buffer.from("47494638376101000100800000FFFFFF00000021F90401000000002C00000000010001000002024401003B", "hex");
+    const m = await import("sharp");
+    const sharp = m.default ?? m;
+    const png = await sharp(gif).png().toBuffer();
+    const meta = await sharp(png).metadata();
+    if ((meta.pages ?? 1) > 1) { console.error("多帧"); process.exit(1); }
+    console.log("ok " + meta.width + "x" + meta.height);
+  `, "utf8");
+  const r = spawnSync(process.execPath, [probe], { encoding: "utf8", timeout: 60_000 });
+  rmSync(sim, { recursive: true, force: true });
+  if (r.status !== 0) {
+    // 挑得出人话的那一行，而不是 stderr 首行（首行往往是 node 的内部栈顶，读不出缺什么包）
+    const text = `${r.stderr ?? ""}\n${r.stdout ?? ""}`;
+    const line = text.split("\n").find((l) => /Cannot find|Cannot require|Error:|派生/.test(l))
+      ?? text.split("\n").find((l) => l.trim() !== "")
+      ?? "探针退出码 " + r.status;
+    return line.trim();
+  }
+  return null;
+}
+
+const sharpDeps = stageSharpDeps();
+const installProblem = sharpDeps.staged.length === 0 ? "没 stage 任何包" : verifyStagedInstall();
+
 writeFileSync(
   join(root, "dist-desktop", "bundle-report.json"),
   JSON.stringify({
@@ -159,6 +268,10 @@ writeFileSync(
     sweptBackendDirs: swept,
     assetKeyBytes: assetKey.length,
     assetKeyFingerprint: createHash("sha256").update(assetKey).digest("hex").slice(0, 12),
+    sharpStaged: sharpDeps.staged,
+    sharpStagedBytes: sharpDeps.bytes,
+    installProbeOk: installProblem === null,
+    installProbeError: installProblem ?? "",
   }, null, 2),
   "utf8",
 );
@@ -184,6 +297,21 @@ if (survived.length > 0) {
 const residual = remainingCjkRuns(final, DEFAULT_MIN_CJK);
 if (residual.length > 0) {
   fails.push(`门 E：按段口径仍有 ${residual.length} 段成中文未被编码，例如：\n  ${residual.slice(0, 3).join("\n  ")}`);
+}
+
+// F：sharp 是源码里的运行期依赖，产物必须把它留成外部依赖、并且 stage 到位。
+//    这条门专门防「开发机上看着一切正常、装到用户机器上 GIF 就静默发不出去」：
+//    开发机上 node_modules 就在 bundle 旁边，解析永远成功，看不出 stage 有没有生效。
+if (/@img\/sharp-/.test(String(final))) {
+  fails.push("门 F：sharp 的 JS 被内联进产物了（产物里能看到 @img/sharp-* 包名表）——原生 .node 取不到，检查 esbuild 的 external");
+}
+if (sharpDeps.staged.length === 0) {
+  fails.push(`门 F：没有 stage 任何 sharp 运行期包（${sharpDeps.reason ?? `缺 ${process.platform}-${process.arch} 的原生包`}），打包版派生动图静帧会不可用`);
+}
+// G：光 stage 了不算，得在「和安装包同形状的目录」里真跑一次派生。
+//    上一版手写清单漏了 detect-libc，就是这条门该拦下来而当时没有的东西。
+if (installProblem !== null) {
+  fails.push(`门 G：模拟安装目录里派生不出来 —— ${installProblem}`);
 }
 
 if (fails.length > 0) {

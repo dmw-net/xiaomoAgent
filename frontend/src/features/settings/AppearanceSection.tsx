@@ -252,8 +252,9 @@ export default function AppearanceSection({
   const chooseFolder = (): void => {
     setStoreNote("");
     void pickDirectory().then((r) => {
-      if (r.ok) setStoreTarget(r.path);
-      else setStoreNote(r.error);
+      if (r.ok) { setStoreTarget(r.path); return; }
+      // 取消选择器是正常操作：静默回来就行，不写提示。
+      if ("error" in r) setStoreNote(r.error);
     });
   };
   const doMigrate = (): void => {

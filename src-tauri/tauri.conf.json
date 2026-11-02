@@ -39,6 +39,7 @@
     "resources": {
       "../src-tauri/dist/loading.html": "loading.html",
       "../dist-desktop/server.mjs": "backend/src/server.mjs",
+      "../dist-desktop/backend-deps/node_modules": "backend/node_modules",
       "../dist-desktop/manifest.json": "backend/manifest.json",
       "../dist-desktop/manifest.json.sig": "backend/manifest.json.sig",
       "../frontend/dist": "backend/frontend/dist"

@@ -23,7 +23,8 @@ import { isChatModelId, listModels, pingChat } from "./model.ts";
 import { writeRuntimeHandshake, clearRuntimeHandshake } from "./runtime.ts";
 import { claimPrimary, isPrimary, leaseIsFreeOrOurs, primaryPid, releasePrimary, startLeaseLoop } from "./instance.ts";
 import { pruneModelCalls } from "./logs.ts";
-import { purgeExpiredMediaTrash } from "./media.ts";
+import { purgeExpiredMediaTrash, reconcileAssets } from "./media.ts";
+import { migrateMediaLayout } from "./media-layout.ts";
 import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./contacts.ts";
 import { wechat } from "./wechat.ts";
 import { qq, qqBackend } from "./qq.ts";
@@ -117,6 +118,24 @@ if (pruned.orphans + pruned.deduped > 0) {
 // 存量数据迁移（幂等，kv 标记防重跑）：工具调用能力从「元数据」升格为「硬闸」的这一版，
 // 把老数据里从未勾选过的 false 翻正，否则联系人设置里的工具开关全部失效。
 if (weHoldLease) migrateCapsToolsDefault();
+// 媒体目录布局迁移（一次性，kv 标记防重跑）：平铺文件按「表情包/<文件夹>、图片、视频…」归位，
+// 先 VACUUM INTO 一份库备份再动文件。必须排在资产对账**之前**——对账的销账逻辑假设布局已定。
+if (weHoldLease) {
+  const layout = migrateMediaLayout();
+  if (layout.moved > 0) {
+    console.log(`[startup] 媒体布局迁移：归位 ${layout.moved} 个文件（迁移前备份：${layout.backup}）`);
+  }
+}
+// 资产对账：把「盘上的文件」和「库里的资产」对齐一次。正常路径下 save* 在落盘那一刻就登记了，
+// 这一遍兜的是外部动作：丢进 表情包/<文件夹> 的文件按位置认领、被挪走的按哈希改地址、
+// 找不到的标失效（表情行永不静默删）。回执进 kv，设置里的媒体对账读它。
+if (weHoldLease) {
+  const assets = reconcileAssets();
+  if (assets.registered > 0 || assets.pruned > 0 || assets.moved > 0 || assets.markedMissing > 0 || assets.revived > 0) {
+    console.log(`[startup] 资产对账：补登记 ${assets.registered}、归位/改地址 ${assets.moved}、认领表情 ${assets.adopted}、`
+      + `标失效 ${assets.markedMissing}、复活 ${assets.revived}、销账 ${assets.pruned}、忽略重复 ${assets.dupIgnored}`);
+  }
+}
 // 启动补一遍向量化：能力档配好的情况下，导入/迁移来的旧记忆在这里获得向量。
 // 异步跑不挡启动；失败等 6 小时后的 maintenance 兜底。
 if (weHoldLease) {
@@ -269,6 +288,8 @@ function maintenance(): void {
     pruneModelCalls();
     const tasks = pruneFinishedTasks();
     const media = purgeExpiredMediaTrash();
+    // 回收站过期真删之后对账一次：文件从盘上消失，资产行也该跟着销账。
+    reconcileAssets();
     if (tasks > 0 || media.removed > 0) {
       console.log(`[maintenance] 清理：主动性历史 ${tasks} 条、回收站过期媒体 ${media.removed} 个（${(media.bytes / 1024 / 1024).toFixed(1)}MB）`);
     }

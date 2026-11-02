@@ -2,17 +2,18 @@
 // 照 open-external.ts 的守卫写法：__TAURI_INTERNALS__ 由 Tauri 在 webview 里注入，浏览器里没有。
 
 import { invoke } from "@tauri-apps/api/core";
-export type PickResult = { ok: true; path: string } | { ok: false; error: string };
+/** 取消不算失败：canceled 与 error 分开，调用点对取消应当静默返回，不弹红条。 */
+export type PickResult = { ok: true; path: string } | { ok: false; canceled: true } | { ok: false; error: string };
 
 /** 选一个文件夹，返回绝对路径。仅桌面端可用（设置 → 界面 → 数据存储位置）。 */
 export async function pickDirectory(): Promise<PickResult> {
   if (!("__TAURI_INTERNALS__" in window)) {
-    return { ok: false, error: "选文件夹只在桌面端可用；浏览器里请手动敲一个路径" };
+    return { ok: false, error: "选文件夹只在桌面端可用" };
   }
   try {
     const { open } = await import("@tauri-apps/plugin-dialog");
     const picked = await open({ directory: true });
-    if (typeof picked !== "string") return { ok: false, error: "没选目录" };
+    if (typeof picked !== "string") return { ok: false, canceled: true };
     return { ok: true, path: picked };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

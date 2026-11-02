@@ -233,6 +233,17 @@ CREATE TABLE IF NOT EXISTS media_trash (
   trashed_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_media_trash_time ON media_trash (trashed_at);
+
+-- 图片理解描述缓存：按图片内容 hash、视觉端点和提示词版本复用；与聊天原文分开存。
+CREATE TABLE IF NOT EXISTS image_descriptions (
+  asset_hash     TEXT NOT NULL,
+  vision_scope   TEXT NOT NULL,
+  prompt_version TEXT NOT NULL,
+  model          TEXT NOT NULL,
+  description    TEXT NOT NULL,
+  created_at     INTEGER NOT NULL,
+  PRIMARY KEY (asset_hash, vision_scope, prompt_version)
+);
 `);
 
 export function kvGet(key: string): string | null {

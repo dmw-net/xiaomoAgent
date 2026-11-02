@@ -29,6 +29,7 @@ import { contactModelSettings } from "../model.ts";
 import { ensureLocalConversation, getConversation } from "../conversations.ts";
 import { SettingsBodyError, sendJson } from "./http.ts";
 import type { MessageAttachmentMeta } from "../../shared/api.ts";
+import { MAX_CHAT_IMAGES } from "../../shared/limits.ts";
 import { mediaTypeOfUrl } from "../media.ts";
 
 /** 从 query 取联系人：不存在或没传一律回落默认联系人（无状态 API，前端负责记住当前选中）。
@@ -138,7 +139,7 @@ export function normalizeAttachmentMeta(raw: unknown, attachments: string[]): Me
   if (!Array.isArray(raw) || attachments.length === 0) return [];
   const allowed = new Set(attachments);
   const out: MessageAttachmentMeta[] = [];
-  for (const item of raw.slice(0, 3)) {
+  for (const item of raw.slice(0, MAX_CHAT_IMAGES)) {
     if (item === null || typeof item !== "object") continue;
     const v = item as Record<string, unknown>;
     const url = typeof v.url === "string" ? v.url : "";

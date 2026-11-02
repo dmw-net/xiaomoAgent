@@ -59,7 +59,7 @@ export const CAPABILITY_GROUPS: CapabilityPresetGroup[] = [
   {
     name: "imageVision",
     title: "图片理解",
-    desc: "聊天收到的图片交给这个模型识别；不单独配就跟随主模型（那档需勾了「图片输入」）。",
+    desc: "兜底识图模型：主聊天模型自己不能看图时，先用这里识别再把描述交给聊天模型；主模型支持图片输入时，聊天不调用这里。",
     endpoint: "/chat/completions",
     modelHint: "如 qwen-vl-plus / glm-4v-plus / gpt-4o-mini",
     followsMain: true,

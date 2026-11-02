@@ -47,6 +47,7 @@ import { contactModelSettings } from "../../model.ts";
 import { modelConfig, modelReadyNow, onboardingDone } from "../../settings.ts";
 import { defaultPersonaIsDefault } from "../../contacts.ts";
 import type { Route } from "../types.ts";
+import { MAX_CHAT_IMAGES } from "../../../shared/limits.ts";
 
 /** 消息四道写入口（/edit、PUT /text、/retract、DELETE）共用的户主校验。
  *  为什么必须有：这些路由原来只认数字 id，而消息 id 是自增整数——看着 A 的界面
@@ -75,7 +76,7 @@ const sayRoute: Route = async ({ req, res, url, path, method }) => {
   // 图片先传 /api/media 落盘，这里只带 URL 引用；逐个校验文件真实存在
   const rawAttachments = Array.isArray(body.attachments) ? body.attachments : [];
   const attachments: string[] = [];
-  for (const item of rawAttachments.slice(0, 3)) {
+  for (const item of rawAttachments.slice(0, MAX_CHAT_IMAGES)) {
     if (typeof item === "string" && item.startsWith("/media/") && mediaUrlExists(item)) attachments.push(item);
   }
   const attachmentMeta = normalizeAttachmentMeta(body.attachmentMeta, attachments);
@@ -303,7 +304,7 @@ const messageEditRoute: Route = async ({ req, res, url, path, method }) => {
   if (body.attachments !== undefined) {
     attachments = [];
     const rawArr = Array.isArray(body.attachments) ? body.attachments : [];
-    for (const item of rawArr.slice(0, 3)) {
+    for (const item of rawArr.slice(0, MAX_CHAT_IMAGES)) {
       if (typeof item === "string" && item.startsWith("/media/") && mediaUrlExists(item)) attachments.push(item);
     }
   }

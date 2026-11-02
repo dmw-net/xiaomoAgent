@@ -214,13 +214,16 @@ function effCapability(options: CallOptions): CapabilityName | undefined {
   return options.capability;
 }
 
-/** 这次调用该用哪份配置：能力自己的（视觉/语音）> 联系人绑定档 > 全局主力模型。快照语义同 modelConfig()。
+/** 这次调用该用哪份配置：显式能力档（视觉/语音）> 联系人绑定档 > 全局主力模型。
+ *  未显式绑能力的调用本质仍是聊天档：必须整份继承端点、caps、思考、extraBody 等，
+ *  否则「这轮带图」会悄悄把主档的 reasoning_effort 清掉（视觉卡只该在显式绑定时
+ *  产生一份独立配置）。快照语义同 modelConfig()。
  *  导出只为让冒烟能钉住"能力通道继承 token 上限"这条——它出错时界面完全看不出来。 */
 export function callSettings(options: CallOptions): ModelSettings {
   const capability = effCapability(options);
-  if (!capability) return boundProfileSettings(options) ?? modelConfig();
+  const chat = boundProfileSettings(options) ?? modelConfig();
+  if (!capability || !capabilityExplicit(capability)) return chat;
   const cap = capabilityConfig(capability);
-  const main = modelConfig();
   return {
     mode: "openai",
     baseUrl: cap.baseUrl,
@@ -235,12 +238,12 @@ export function callSettings(options: CallOptions): ModelSettings {
     thinkingParam: "effort",
     thinkingMode: "",
     // 能力卡只有模型/地址/密钥/超时，没有 token 上限这一维（与 capabilityConfig 里
-    // baseUrl/apiKey 回落主力档同一套语义），所以沿用主力档的值。
+    // baseUrl/apiKey 回落主力档同一套语义），所以沿用聊天档的值。
     // 从前这里硬写 0 → resolveMaxTokens 兜底成 1024，于是**那一轮只要带了图，
     // 她的回复就被截到 1024 token**，档上设的 65536 对带图对话完全不生效，
     // 而界面上看不出任何区别。
-    maxInputTokens: main.maxInputTokens,
-    maxOutputTokens: main.maxOutputTokens,
+    maxInputTokens: chat.maxInputTokens,
+    maxOutputTokens: chat.maxOutputTokens,
   };
 }
 

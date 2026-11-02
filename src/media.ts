@@ -400,8 +400,7 @@ export function mediaDataUrl(url: string): string | null {
 
 /**
  * 这张图内联成 dataURL 后在请求体里占多少字节。
- * 图片的真约束是**字节不是 token**（实测 1280x960 只算 974 token，却要重传 130-530KB），
- * 所以重放预算按这个数算。只 stat 不读内容——量体积不该把图整个拉进内存。
+ * 只用于诊断和体积展示，不参与“能不能看这张图”的选图决策——聊天已改为按张数封顶。
  * 40 是 `data:image/jpeg;base64,` 头加 JSON 的引号与键名的余量。
  */
 export function dataUrlBytes(url: string): number | null {

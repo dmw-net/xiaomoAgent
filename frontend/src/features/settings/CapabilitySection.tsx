@@ -331,7 +331,7 @@ export default function CapabilitySection({ form }: { form: SettingsForm }): JSX
     <div className="section capability-section" id="settings-capabilities">
       <h2>能力模型</h2>
       <div className="desc">
-        聊天、看图、听音、说话、画图可以各配一个模型；没单独配置的能力会跟随主模型。
+        聊天、听音、说话、画图可以各配一个模型；图片理解卡只在主聊天模型不能看图时作为兜底，主模型自带视觉时不会被聊天调用。
       </div>
       <div className="settings-overview-strip">
         <span><b>{readyCount}</b> / {CAPABILITY_GROUPS.length} 项能力已就绪</span>

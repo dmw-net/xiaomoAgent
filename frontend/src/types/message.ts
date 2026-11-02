@@ -42,6 +42,10 @@ export type Notice = {
 
 /** 上下文占用（/api/context/usage）：token 为估算值，仅用于展示占比。 */
 export type ContextUsage = {
+  /** 当前会话的图片处理方式：主模型内联 / 视觉卡识别注入 / 看不到。 */
+  visionMode?: "inline" | "describe" | "none";
+  /** 本次上下文里纳入的用户图片张数。 */
+  imageCount?: number;
   model: string;
   limit: number;
   /** limit 来自「输入上限未填」时的保守估算，不是模型真实窗口——提示必须说破。 */

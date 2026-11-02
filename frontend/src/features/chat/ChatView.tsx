@@ -33,6 +33,7 @@ import ChatMap, { type ChatMapNode } from "./ChatMap";
 import ConversationSwitcher from "./ConversationSwitcher";
 import { PENDING_TTL_MS, PROACTIVE_GAP_MS, PULL_IDLE_STEPS, PULL_INTERVAL_MS, TURN_WATCH_MAX_TRIES, WATCH_PULL_EVERY } from "./constants";
 import { THINKING_LEVEL_LABELS, type ContactConversationItem, type ContextUsage, type MessageAttachmentMeta, type MessageRow, type ThinkingControl, type ThinkingQuickChoice } from "../../types";
+import { MAX_CHAT_IMAGES } from "../../../../shared/limits";
 
 type Pending = { text: string; at: number; imgs: string[]; localId: string; turnId?: string; failed?: boolean; queued?: boolean; outbox?: boolean; voice?: MessageAttachmentMeta };
 type ModelOption = { value: string; label: string; detail: string; provider: string };
@@ -65,7 +66,7 @@ const CTX_PART_LABEL: Record<string, string> = {
   memory: "想起来的往事",
   tools: "联系人的工具",
   history: "最近对话",
-  images: "带上的图",
+  images: "图片处理",
 };
 function rememberMsgs(key: string, rows: MessageRow[]): void {
   msgsSeed.delete(key);
@@ -324,7 +325,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     void chatApi.fetchContextUsage(cid, conversationId)
       .then((d) => { setCtx(d); setCtxErr(""); })
       .catch((e: Error) => { setCtx(null); setCtxErr(e.message); });
-  }, [cid]);
+  }, [cid, conversationId]);
 
   // ── 思考强度：收进模型选择浮层做二级区（不再是并排的独立按钮）──
   const [thinking, setThinking] = useState<ThinkingControl | null>(null);
@@ -524,6 +525,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [uploading, setUploading] = useState(false);
   /** 语音/视觉入口按能力就绪状态显隐；还没拉到过就保守地全不显示。 */
   const [caps, setCaps] = useState<Caps>(() => cachedCaps() ?? CAPS_OFF);
+  // 图片入口必须按当前联系人实际分流的 visionMode 判断；ctx 还没回来时才退回全局能力值。
+  const canModelSeeImages = ctx?.visionMode !== undefined ? ctx.visionMode !== "none" : caps.imageVision;
   const [recSec, setRecSec] = useState<number | null>(null);
   const [transcribing, setTranscribing] = useState(false);
   const [voiceBusy, setVoiceBusy] = useState(false);
@@ -2072,11 +2075,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     loadCaps().then(setCaps).catch(() => {});
   }, []);
 
-  /** 图片入附件条：选择器与剪贴板粘贴共用。最多 3 张，超出的静默丢弃并提示。 */
+  /** 图片入附件条：选择器与剪贴板粘贴共用。最多 6 张，超出的静默丢弃并提示。 */
   const uploadFiles = (files: File[]): void => {
-    const room = 3 - imgsRef.current.length;
+    const room = MAX_CHAT_IMAGES - imgsRef.current.length;
     if (files.length === 0) return;
-    if (room <= 0) { addNotice("一条消息最多 3 张图片", { info: true }); return; }
+    if (!canModelSeeImages) {
+      addNotice("当前模型看不到图片内容；图片仍会保存在聊天记录里", { info: true });
+    }
+    if (room <= 0) { addNotice(`一条消息最多 ${MAX_CHAT_IMAGES} 张图片`, { info: true }); return; }
     setUploading(true);
     void Promise.all(files.slice(0, room).map(async (file) => {
       const blob = await fileToImageBlob(file);
@@ -2084,7 +2090,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       return url;
     }))
       .then((urls) => {
-        imgsRef.current = [...imgsRef.current, ...urls].slice(0, 3);
+        imgsRef.current = [...imgsRef.current, ...urls].slice(0, MAX_CHAT_IMAGES);
         setImgs([...imgsRef.current]);
       })
       .catch(() => addNotice("图片没传上去，稍后再试", { info: true }))
@@ -2100,18 +2106,17 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   /** 编辑态里换图：与发送前的附件同一套上传流程，只是落到 editImgs。 */
   const uploadEditFiles = (files: File[]): void => {
     if (files.length === 0) return;
-    if (!caps.imageVision) {
-      addNotice("还看不懂图片，去 设置 → 能力模型 打开看图", { info: true });
-      return;
+    if (!canModelSeeImages) {
+      addNotice("当前模型看不到图片内容；图片仍会保存在聊天记录里", { info: true });
     }
-    const room = 3 - editImgs.length;
-    if (room <= 0) { addNotice("一条消息最多 3 张图片", { info: true }); return; }
+    const room = MAX_CHAT_IMAGES - editImgs.length;
+    if (room <= 0) { addNotice(`一条消息最多 ${MAX_CHAT_IMAGES} 张图片`, { info: true }); return; }
     void Promise.all(files.slice(0, room).map(async (file) => {
       const blob = await fileToImageBlob(file);
       const { url } = await chatApi.uploadImage(blob);
       return url;
     }))
-      .then((urls) => setEditImgs((prev) => [...prev, ...urls].slice(0, 3)))
+      .then((urls) => setEditImgs((prev) => [...prev, ...urls].slice(0, MAX_CHAT_IMAGES)))
       .catch(() => addNotice("图片没传上去，稍后再试", { info: true }));
   };
 
@@ -2865,7 +2870,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             <div className="composer-tools">
               <input ref={fileInputRef} type="file" accept="image/*" multiple hidden onChange={onPickFiles} />
               <button type="button" className="tool-btn" title="发送图片" aria-label="发送图片"
-                disabled={uploading || imgs.length >= 3} onClick={() => fileInputRef.current?.click()}>
+                disabled={uploading || imgs.length >= MAX_CHAT_IMAGES} onClick={() => fileInputRef.current?.click()}>
                 {uploading ? <Loader2 size={17} className="spin" /> : <ImagePlus size={17} />}
               </button>
               {typeof MediaRecorder !== "undefined" && (
@@ -3083,6 +3088,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                     <div className="ctx-pop-turns">
                       一共聊了 {c.totalTurns ?? "—"} 轮 · 带上最近 {c.turns ?? "—"} 轮
                     </div>
+                    {(c.visionMode !== undefined || (c.imageCount ?? 0) > 0) && (
+                      <div className="ctx-pop-turns">
+                        图片：
+                        {c.visionMode === "inline" ? "主模型直接看图"
+                          : c.visionMode === "describe" ? "视觉卡识别后注入描述"
+                          : c.visionMode === "none" ? "当前模型看不到内容"
+                          : "未知"}
+                        {(c.imageCount ?? 0) > 0 ? ` · 本轮 ${c.imageCount} 张` : ""}
+                      </div>
+                    )}
                     <div className="ctx-bar">
                       {c.parts.map((p) => (
                         <i key={p.key} data-k={p.key} style={{ width: (p.tokens / c.limit) * 100 + "%" }} title={p.label} />

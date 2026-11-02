@@ -663,7 +663,7 @@ export function factoryReset(): { contacts: number; mediaRemoved: number } {
   for (const u of listMediaUrls()) urls.add(u);
 
   withTx(() => {
-    for (const table of ["messages", "turns", "memory_events", "proactive_tasks", "conversations", "model_calls", "artifacts", "contacts"]) {
+    for (const table of ["messages", "turns", "memory_events", "proactive_tasks", "conversations", "model_calls", "artifacts", "image_descriptions", "contacts"]) {
       db.prepare(`DELETE FROM ${table}`).run();
     }
     db.prepare(`DELETE FROM kv WHERE k <> 'schema_version'`).run();

@@ -7,7 +7,9 @@ import { q, withTx } from "./db.ts";
 import { config } from "./config.ts";
 import { extractMemories, likePattern, recallExplained, recallSmart, recordExtractFailure } from "./memory.ts";
 import { buildSystemPrompt, toChatMessages } from "./persona.ts";
-import { capabilityExplicit, capabilityReady, effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolRounds } from "./settings.ts";import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "./model.ts";
+import { effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolRounds } from "./settings.ts";
+import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "./model.ts";
+import { appendImageDescriptions, describeChatImages, visionHandlingFor } from "./image-understanding.ts";
 import { executeTool, toolDefsForApi, type ToolContext, type ToolResult } from "./tools.ts";
 import { trimDraftBeforeToolCall } from "./text-tool-calls.ts";
 import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
@@ -15,11 +17,11 @@ import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getC
 import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssistantToActiveProfile, type AssistantPermission } from "./assistant.ts";
 import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "./reply-segmentation.ts";
-import { dataUrlBytes, mediaDataUrl, mediaTypeOfUrl, releaseMediaFiles } from "./media.ts";
+import { mediaDataUrl, mediaTypeOfUrl, releaseMediaFiles } from "./media.ts";
 import { emitMessage, emitTurn, emitActivity } from "./events.ts";
-import type { CapabilityName } from "./settings.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { getConversation, localConversationId, touchConversation, type Conversation } from "./conversations.ts";
+import { MAX_CHAT_IMAGES } from "../shared/limits.ts";
 
 export type TurnRow = {
   id: string;
@@ -581,6 +583,8 @@ export function estimateTokens(text: string): number {
 
 /** 一张图按 1000 token 估。服务商不给精确数，量级对就够判断占比了。 */
 const IMAGE_TOKENS = 1000;
+/** 视觉卡兜底时每张图最多注入 700 字描述，按 700 token 保守估算。 */
+const DESCRIPTION_TOKENS = 700;
 
 /**
  * 「输入上限」没填时的保守估算。往低了估是故意的：估低了只是少带几轮历史（她说话照样
@@ -592,60 +596,56 @@ const FALLBACK_INPUT_LIMIT = 32_000;
 /** 预算留 8% 余量：token 数是粗估（CJK 1:1、工具往返未计），别贴着上限发。 */
 const BUDGET_HEADROOM = 0.92;
 
-/** 一轮最多重放几张图。超出的图不进请求，占用估算也必须按同一个数算。 */
-export const MAX_TURN_IMAGES = 3;
-
 /**
- * 历史图片重放的字节天花板。
+ * 一次聊天请求最多直接内联 6 张用户原图。
  *
- * 为什么按**字节**而不是按 token 或轮数：一张长边 1280 的图 base64 后 130-530KB，
- * 留在上下文里就是每轮整份重传（手机走隧道时是秒级上传）；而 token 侧实测只算 974，
- * 512K 窗口塞得下几百张。轮数用户本来就能调（RECENT_TURNS_IN_CONTEXT / 联系人
- * recent_turns，最多 30），但轮数管不住字节——6 轮 × 3 张最坏就是 9MB 一个请求。
- *
- * 所以分工是：轮数决定"哪些消息进上下文"，这个天花板决定"其中的图有几张还真给她看"，
- * 装不下的她就是看不见（由 IMAGE_MARK_* 如实告诉她）。1.5MB ≈ 5 张，覆盖"刚发完就追问"的场景。
- */
-export const HISTORY_IMAGE_BYTE_BUDGET = 1.5 * 1024 * 1024;
-
-/**
- * 挑出这次请求里以真图（base64）发出的图片；没挑中的由 imageProxiedHistory 换成一行文字说明。
- *
- * 他**这轮刚发**的图无条件重放——那是本轮要回答的东西，不给她看等于让她瞎着答。
- * **最新的那张历史图也无条件重放**：追问几乎总在紧接着的下一轮，而单张就可能超过整个
- * 天花板（上传上限 5MB → base64 6.7MB），不给这条保证"刚发完就追问"恰恰会瞎。
- * 再往老的从新到旧填剩余预算，第一张装不下就停——不按"跳过大的继续找小的"贪心填充，
- * 那会出现"老的小图看得见、新的大图看不见"这种反直觉结果。
+ * 不按字节限制：图片体积只作为请求体大小的事实记录，不再决定“能看几张”。
+ * 选择顺序固定为：本轮新图 → 最新历史图 → 更老的历史图，填满 6 张即停；
+ * 其余图片不丢弃，由 `describeChatImages` 生成 alt 描述后注入。
  */
 export function selectReplayImages(
   rows: Array<{ role: string; attachments: string | null }>,
   currentUrls: string[] = [],
-  byteBudget: number = HISTORY_IMAGE_BYTE_BUDGET,
+  maxImages: number = MAX_CHAT_IMAGES,
 ): Set<string> {
   const picked = new Set<string>();
-  let used = 0;
-  for (const url of currentUrls.slice(0, MAX_TURN_IMAGES)) {
-    used += dataUrlBytes(url) ?? 0;
+  const limit = Math.max(0, Math.trunc(maxImages));
+  const add = (url: string): boolean => {
+    if (picked.size >= limit) return false;
     picked.add(url);
+    return true;
+  };
+  for (const url of currentUrls) {
+    if (!add(url)) return picked;
   }
-  let guaranteed = false; // 最新那张历史图是否已无条件带上
   for (let i = rows.length - 1; i >= 0; i -= 1) {
     const row = rows[i];
     if (!row || row.role !== "user") continue;
-    for (const url of parseImageAttachments(row.attachments).slice(0, MAX_TURN_IMAGES).reverse()) {
+    // 同一条消息里后发的图更新，倒序处理，保证新的先占名额。
+    for (const url of parseImageAttachments(row.attachments).reverse()) {
       if (picked.has(url)) continue;
-      const cost = dataUrlBytes(url);
-      if (cost === null) continue; // 文件已不在，交给标记那侧如实说
-      if (guaranteed && used + cost > byteBudget) return picked;
-      used += cost;
-      picked.add(url);
-      guaranteed = true;
+      if (!add(url)) return picked;
     }
   }
   return picked;
 }
 
-/** 这批行里有几张图是真发出去的。裁剪决策与圆环展示必须用同一个数。 */
+/** 这批行里出现的所有用户图片（去重，保持从新到旧的语义由调用方决定）。 */
+export function userImageUrls(rows: Array<{ role: string; attachments: string | null }>): string[] {
+  const urls: string[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    if (row.role !== "user") continue;
+    for (const url of parseImageAttachments(row.attachments)) {
+      if (seen.has(url)) continue;
+      seen.add(url);
+      urls.push(url);
+    }
+  }
+  return urls;
+}
+
+/** 这批行里有几张图会进入模型上下文。裁剪决策与圆环展示必须用同一个数。 */
 export function countReplayedImages(
   rows: Array<{ role: string; attachments: string | null }>,
   replay: ReadonlySet<string>,
@@ -653,7 +653,7 @@ export function countReplayedImages(
   let n = 0;
   for (const row of rows) {
     if (row.role !== "user") continue;
-    for (const url of parseImageAttachments(row.attachments).slice(0, MAX_TURN_IMAGES)) {
+    for (const url of parseImageAttachments(row.attachments)) {
       if (replay.has(url)) n += 1;
     }
   }
@@ -692,6 +692,9 @@ export function contextParts(input: {
   toolsJson: string;
   history: Array<{ text: string }>;
   imageCount: number;
+  visionMode?: "inline" | "describe" | "none";
+  /** 显式总图片 token；给定时优先于 imageCount × 单张估算。 */
+  imageTokens?: number;
 }): ContextParts {
   let historyTokens = 0;
   for (const row of input.history) historyTokens += estimateTokens(row.text) + 2;
@@ -701,7 +704,7 @@ export function contextParts(input: {
     memory: Math.max(0, estimateTokens(input.systemFull) - bareTokens),
     tools: estimateTokens(input.toolsJson),
     history: historyTokens,
-    images: input.imageCount * IMAGE_TOKENS,
+    images: input.imageTokens ?? input.imageCount * (input.visionMode === "describe" ? DESCRIPTION_TOKENS : IMAGE_TOKENS),
   };
 }
 
@@ -744,6 +747,10 @@ export function trimHistoryToBudget<T extends { role: string }>(
 
 export type ContextUsage = {
   model: string;
+  /** 图片处理方式：主模型内联 / 视觉卡识别注入 / 完全看不到。 */
+  visionMode: "inline" | "describe" | "none";
+  /** 本次纳入上下文的用户图片张数。 */
+  imageCount: number;
   limit: number;
   /** limit 来自保守估算而非模型真实窗口——界面必须说破，否则用户以为那是天花板。 */
   limitIsFallback: boolean;
@@ -795,36 +802,39 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
     { character: card, lastUserAt: lastAt, companion, includeNow },
   );
   // 量的是真会发出去的那份工具定义：可见性按联系人不同，不带 cid 会算错。
-  // 门控判据与 runAgentLoop / respondToTurn 同源（见 model.ts 的 toolCapsSettings）：
-  // 带图会走视觉通道时，显式绑档=不带工具、未显式绑档=按聊天档意图。
+  // 图片处理分两档：主模型能看图时最多 6 张原图内联；其余图片统一生成 alt 描述注入。
+  // 主模型不能看图时，所有图片都走视觉卡 alt；两者都没有才放“看不到”标记。
   const settings = contactModelSettings(cid) ?? modelConfig();
-  // 圆环量的是"下一次发消息会带什么"：那时他还没发新图，所以当前轮按 0 张算，
-  // 只估历史图里有几张挤得进字节天花板。选图、标记、裁剪全部与 respondToTurn **同一套算法**，
-  // 两边不可能给出不一致的数（这正是 contextParts 存在的理由）。
-  const visionOn = !isAssistant(cid) && capabilityReady("imageVision");
-  const replay = visionOn ? selectReplayImages(history, []) : new Set<string>();
-  const toolsOn = visionOn && replay.size > 0
-    ? !capabilityExplicit("imageVision") && settings.caps.tools === true
-    : settings.caps.tools === true;
+  const visionMode = visionHandlingFor(cid);
+  const directReplay = visionMode === "inline" ? selectReplayImages(history, []) : new Set<string>();
+  const allImages = userImageUrls(history);
+  const described = visionMode === "none"
+    ? new Set<string>()
+    : new Set(allImages.filter((url) => !directReplay.has(url)));
+  // 聊天轮永远走聊天档，带不带图都不再改变工具门控。
+  const toolsOn = settings.caps.tools === true;
   const toolsJson = toolsOn ? JSON.stringify(toolDefsForApi(cid)) : "[]";
-  const proxied = imageProxiedHistory(history, replay, visionOn);
+  const proxied = imageProxiedHistory(history, directReplay, visionMode !== "none");
   const budget = inputBudget(settings);
   // 与 respondToTurn 同一套：历史占比上限也要在圆环这边生效，否则"设置里限了、圆环不认"。
   const histCap = historyTokenCapFor(cid, settings);
   // 与 respondToTurn 同一套：估算按合并气泡后的形状算，圆环才不会和真实请求对不上。
+  const imageTokensOf = (rows: typeof proxied): number =>
+    countReplayedImages(rows, directReplay) * IMAGE_TOKENS
+    + countReplayedImages(rows, described) * DESCRIPTION_TOKENS;
   const measureParts = (rows: typeof proxied) =>
-    contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(rows)), imageCount: countReplayedImages(rows, replay) });
+    contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(rows)), imageCount: countReplayedImages(rows, directReplay), visionMode, imageTokens: imageTokensOf(rows) });
   const { kept, droppedTurns } = trimHistoryToBudget(proxied, (rows) => {
     const q = measureParts(rows);
     return contextTotal(q) <= budget.room && q.history <= histCap;
   });
-  const p = contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(kept)), imageCount: countReplayedImages(kept, replay) });
+  const p = contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(kept)), imageCount: countReplayedImages(kept, directReplay), visionMode, imageTokens: imageTokensOf(kept) });
   const parts = [
     { key: "system", label: "系统提示词", tokens: p.system },
     { key: "memory", label: "记忆召回", tokens: p.memory },
     { key: "tools", label: "工具定义", tokens: p.tools },
     { key: "history", label: "对话历史", tokens: p.history },
-    { key: "images", label: "重放图片", tokens: p.images },
+    { key: "images", label: "图片处理", tokens: p.images },
   ].filter((part) => part.tokens > 0);
   // 截断可见化（纪律 #3）：最近 N 轮之外的消息不会进上下文，用户必须看得见。
   // 轮数以 user 消息为边界；开头自发/主动消息不单独计轮。
@@ -841,6 +851,8 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
     limitIsFallback: budget.isFallback,
     used: contextTotal(p),
     parts,
+    visionMode,
+    imageCount: countReplayedImages(kept, directReplay) + countReplayedImages(kept, described),
     turns: kept.filter((m) => m.role === "user").length,
     totalTurns: liveTurns,
     fullHistory: { turns: liveTurns, tokens: fullHistoryTokens },
@@ -1088,7 +1100,6 @@ async function runAgentLoop(
   turn: TurnRow,
   system: string,
   history: ChatMessage[],
-  capability?: CapabilityName,
   signal?: AbortSignal,
   /** 思考内容终态出口（多轮工具调用可能各带一段）：只给界面折叠用，绝不回灌进对话。 */
   onReasoning?: (text: string, tokens: number) => void,
@@ -1133,7 +1144,6 @@ async function runAgentLoop(
     turnId: turn.id,
     contactId: turn.contact_id ?? DEFAULT_CONTACT_ID,
     ...(temp >= 0 ? { temperature: temp } : {}),
-    ...(capability ? { capability } : {}),
     ...(signal ? { signal } : {}),
     ...(onReasoning || onReasoningDraft ? {
       onReasoning: (text: string, tokens: number): void => {
@@ -1367,8 +1377,7 @@ function parseImageAttachments(raw: string | null | undefined): string[] {
 
 /** 图片理解能力没配好：她连他这轮刚发的图都看不见。别和"太久了"混为一谈——那是两句不同的实话。 */
 const NO_VISION_REASON = "图片理解能力没配置，你看不到内容——直接告诉他你看不了，别猜也别编";
-/** 配好了，但这张已滑出重放窗口：同样看不到。 */
-const OUT_OF_WINDOW_REASON = "太久了，已滑出回放窗口，你看不到内容了——直说记不清，别猜也别编";
+
 /** 她自己发出的图（画的图/表情包）从不回放：不是太久，是设计如此。标记必须说对原因，
  *  否则她会对着刚发一分钟的图纳闷"这明明刚刚才发"。 */
 const OWN_IMAGE_REASON = "这是你自己发出的图，原图不回放给你——记住你当时发了什么就行，别装作看得见图里细节";
@@ -1379,6 +1388,7 @@ function imageMark(reason: string, count: number): string {
 
 /**
  * 看不见的图换成一行文字说明；replay 里的图以 base64 真图发出，一个字都不用附。
+ * 用户图在 visionOn=true 时先原样保留，由调用方统一生成 alt 描述；绝不写“看不到”占位。
  *
  * 「别猜也别编」不是废话：实测给她一句图片摘要，她会**凭摘要推断出摘要里没有的细节**，
  * 还说成「从图上看」（问「水槽里有没有泡着的碗」，摘要没写，她答「似乎有，还有洗洁精的泡沫」）。
@@ -1404,7 +1414,8 @@ export function imageProxiedHistory<T extends { role?: string; text: string; att
       const mark = imageMark(reason, hidden.length);
       return { ...row, text: row.text === "" ? mark : `${row.text}\n${mark}` };
     }
-    const mark = imageMark(visionOn ? OUT_OF_WINDOW_REASON : NO_VISION_REASON, hidden.length);
+    if (visionOn) return row;
+    const mark = imageMark(NO_VISION_REASON, hidden.length);
     return { ...row, text: row.text === "" ? mark : `${row.text}\n${mark}` };
   });
 }
@@ -1614,73 +1625,94 @@ export async function respondToTurn(
         });
     // 预算裁剪（软防线）：装不下就从最旧一轮开始丢，本轮永不丢。
     // 估算有误差，所以真值兜底留在 runAgentLoop——服务商回 context-length 400 时再丢一轮重试。
-    const visionOn = !assistant && capabilityReady("imageVision");
-    // 他这轮刚发的图无条件重放；历史图按字节天花板从新到旧填，装不下的降级成文字摘要。
-    // 视觉能力没配好就一张都不重放，全部走摘要——图不丢，但她看不到原图。
-    const replay = visionOn ? selectReplayImages(rawRows, imageAttachments) : new Set<string>();
-    const historyRows = imageProxiedHistory(rawRows, replay, visionOn);
+    // 图片分流：主聊天档永远负责对话。主模型能看图时最多 6 张原图内联；
+    // 超过 6 张的图片，以及主模型不能看图时的全部图片，都生成 alt 描述注入。
+    const visionMode = visionHandlingFor(contactId);
+    const directReplay = visionMode === "inline" ? selectReplayImages(rawRows, imageAttachments) : new Set<string>();
+    const allImages = userImageUrls(rawRows);
+    const described = visionMode === "none"
+      ? new Set<string>()
+      : new Set(allImages.filter((url) => !directReplay.has(url)));
+    if (directReplay.size > 0 || described.size > 0) {
+      console.log(`[agent] 图片模式=${visionMode}，原图内联 ${directReplay.size} 张，alt ${described.size} 张`);
+    }
+    const historyRows = imageProxiedHistory(rawRows, directReplay, visionMode !== "none");
     const modelSettings = contactModelSettings(contactId) ?? modelConfig();
     const budget = inputBudget(modelSettings);
     // 历史占比上限（联系人级）：轮数管形状，这条管钱包，两条同时生效。
     const histCap = historyTokenCapFor(contactId, modelSettings);
-    // 与 runAgentLoop 的门控同一套判据（见 model.ts 的 toolCapsSettings）：这轮真要带图
-    // 走视觉通道时，显式绑档=不带工具、未显式绑档=按聊天档意图；纯文本轮就按聊天档。
-    // 估算与实际请求必须同源，否则圆环和裁剪都跟真实请求对不上。
-    const visionCall = visionOn && replay.size > 0;
-    const toolsOn = visionCall
-      ? !capabilityExplicit("imageVision") && modelSettings.caps.tools === true
-      : modelSettings.caps.tools === true;
+    // 聊天轮永远走聊天档，图片通过内联或文字注入，不再改变工具门控。
+    const toolsOn = modelSettings.caps.tools === true;
     const toolsJson = toolsOn ? JSON.stringify(toolDefsForApi(contactId, assistantPermissionSnapshot)) : "[]";
+    const imageTokensOf = (rows: typeof historyRows): number =>
+      countReplayedImages(rows, directReplay) * IMAGE_TOKENS
+      + countReplayedImages(rows, described) * DESCRIPTION_TOKENS;
     const { kept: keptRows } = trimHistoryToBudget(historyRows, (rows) => {
       const p = contextParts({
         systemBare: system, systemFull: system, toolsJson,
-        // 估算按「合并气泡后」的形状算：真发出去的就是一轮一条 assistant，
-        // 按拆开的行数算会虚高，圆环和裁剪就会和真实请求对不上。
         history: textsOf(toChatMessages(rows)),
-        imageCount: countReplayedImages(rows, replay),
+        imageCount: countReplayedImages(rows, directReplay),
+        visionMode,
+        imageTokens: imageTokensOf(rows),
       });
       return contextTotal(p) <= budget.room && p.history <= histCap;
     });
-    const history = toChatMessages(keptRows);
 
-    // 重放的真图就地变成多模态 parts——不止当前这轮，预算内的历史图一样发原图。
-    let visionCapability: CapabilityName | undefined;
-    if (visionOn && replay.size > 0) {
-      // keptRows 与 history 的 user 行同序（recentMessages 已排除 tool 行，角色只有 user/assistant），
-      // 所以按「第 n 条 user 消息」配对，不依赖两个数组下标相等。
-      const userRows = keptRows.filter((row) => row.role === "user");
+    // 所有未被原图内联的图片都生成 alt；主模型自带视觉时由主模型生成，否则由显式视觉卡生成。
+    let requestRows = keptRows;
+    const describedUrls = [...new Set(keptRows.flatMap((row) =>
+      row.role === "user"
+        ? parseImageAttachments(row.attachments).filter((url) => described.has(url))
+        : [],
+    ))];
+    if (describedUrls.length > 0) {
+      if (cancelIfAborted()) return "";
+      const descriptions = await describeChatImages(describedUrls, {
+        turnId: turn.id,
+        contactId,
+        signal: controller.signal,
+        source: visionMode === "describe" ? "imageVision" : "chat",
+      });
+      if (cancelIfAborted()) return "";
+      requestRows = appendImageDescriptions(keptRows, described, descriptions);
+      console.log(`[agent] alt 描述已注入 ${describedUrls.length} 张图片`);
+    }
+    const history = toChatMessages(requestRows);
+
+    // 主模型自身支持视觉：最多 6 张预算内的图就地变成多模态 parts。
+    if (visionMode === "inline" && directReplay.size > 0) {
+      const userRows = requestRows.filter((row) => row.role === "user");
       let nth = 0;
-      let sentAny = false;
+      let inlineCount = 0;
       let inlineBytes = 0;
       for (const msg of history) {
         if (msg.role !== "user") continue;
         const row = userRows[nth];
         nth += 1;
         if (!row) continue;
-        const urls = parseImageAttachments(row.attachments).filter((url) => replay.has(url)).slice(0, MAX_TURN_IMAGES);
+        const urls = parseImageAttachments(row.attachments).filter((url) => directReplay.has(url)).slice(0, MAX_CHAT_IMAGES);
         if (urls.length === 0) continue;
-        const parts: MessageContentPart[] = [];
-        // row.text 已经含"看不见的图"的摘要行（imageProxiedHistory 写的），一起发正好：
-        // 同一条消息里可以是「真图 + 另几张图的摘要」。
-        if (row.text !== "") parts.push({ type: "text", text: row.text });
+        const text = typeof msg.content === "string" ? msg.content : "";
+        const parts: MessageContentPart[] = text === "" ? [] : [{ type: "text", text }];
+        let missing = 0;
         for (const url of urls) {
           const dataUrl = mediaDataUrl(url);
           if (dataUrl) {
             parts.push({ type: "image_url", image_url: { url: dataUrl } });
             inlineBytes += dataUrl.length;
+            inlineCount += 1;
+          } else {
+            missing += 1;
           }
         }
-        if (parts.length > 0) {
-          msg.content = parts;
-          sentAny = true;
+        if (missing > 0) {
+          const mark = `[图片${missing > 1 ? ` ×${missing}` : ""}：文件已不在媒体目录里，你看不到内容，别猜也别编]`;
+          parts.push({ type: "text", text: mark });
         }
+        if (parts.length > 0) msg.content = parts;
       }
-      // 请求体体积是图片这条路的真约束（token 侧才 974/张），所以内联了多少字节必须可见。
-      console.log(`[agent] 重放真图 ${replay.size} 张，实际内联 ${(inlineBytes / 1024).toFixed(0)}KB`);
-      // 一张都没真发出去（比如文件都没了）就别把纯文本请求绕到视觉模型上。
-      if (sentAny) visionCapability = "imageVision";
+      console.log(`[agent] 主模型内联真图 ${inlineCount} 张，${(inlineBytes / 1024).toFixed(0)}KB`);
     }
-
     // 禁用词：把约束追加到最后一条 user 消息尾部（口径与代价写在 banned-words.ts 顶上）。
     // 只改这份请求用的 history，不落库也不回灌——下一轮按当时的词表重新拼，改完立刻生效。
     // 排在预算裁剪之后：那句约束固定几十字节，超了有 runAgentLoop 的 context-length 兜底。
@@ -1711,7 +1743,7 @@ export async function respondToTurn(
     const producedMeta: MessageAttachmentMeta[] = [];
     const channelDeliveredFiles: string[] = [];
     const channelDeliveredMeta: MessageAttachmentMeta[] = [];
-    const reply = await runAgentLoop(turn, system, history, visionCapability, controller.signal,
+    const reply = await runAgentLoop(turn, system, history, controller.signal,
       (text) => { if (text.trim() !== "") reasoningParts.push(text.trim()); },
       reasoningDraftWriter(turn.id),
       (urls, metas) => {

@@ -65,7 +65,9 @@ import {
   lastUserMessageAt,
   recentMessages,
   selectReplayImages,
+  userImageUrls,
 } from "../../agent.ts";
+import { appendImageDescriptions, visionHandlingFor } from "../../image-understanding.ts";
 import { recallExplained } from "../../memory.ts";
 import { activeProfileId } from "../../settings.ts";
 import {
@@ -560,9 +562,20 @@ export const settingsPreviewRoute: Route = async ({ req, res, path, method }) =>
   // 与 respondToTurn 同口径：真图/看不见的图走同一套选图与标记函数，
   // 不再在这里自写一个 "[发过图片]"——那和真实发出去的文案是两句话。
   const rawRows = recentMessages(cid);
-  const visionOn = capabilityReady("imageVision");
-  const replay = visionOn ? selectReplayImages(rawRows, []) : new Set<string>();
-  const rows = imageProxiedHistory(rawRows, replay, visionOn);
+  const visionMode = visionHandlingFor(cid);
+  const directReplay = visionMode === "inline" ? selectReplayImages(rawRows, []) : new Set<string>();
+  const allImages = userImageUrls(rawRows);
+  const described = visionMode === "none"
+    ? new Set<string>()
+    : new Set(allImages.filter((url) => !directReplay.has(url)));
+  let rows = imageProxiedHistory(rawRows, directReplay, visionMode !== "none");
+  if (described.size > 0) {
+    rows = appendImageDescriptions(
+      rows,
+      described,
+      new Map([...described].map((url) => [url, "正式发送时会先由图片理解模型生成 alt 描述，这里不发起识别请求"])),
+    );
+  }
   const lastUser = [...rows].reverse().find((r) => r.role === "user");
   // 预览是观测：走 recallExplained，不推进 last_used_at（同 /api/context/usage）。
   // 带主私聊的空间：上面回放的历史就是那段私聊的（recentMessages 默认它），
@@ -581,10 +594,17 @@ export const settingsPreviewRoute: Route = async ({ req, res, path, method }) =>
     }),
     history: rows.map((r) => ({ role: r.role, text: r.text })),
     memoryEvents: memories.map((m) => ({ id: m.id, kind: m.kind, subject: m.subject, content: m.content })),
+    visionMode,
+    imageCount: directReplay.size + described.size,
     memoryNote: lastUser
       ? `[记忆] 按你最后一句话召回：「${String(lastUser.text).slice(0, 30)}」`
       : "[记忆] 还没有可召回的对话，这里展示的是最近的记忆",
-    historyNote: `历史按生效轮数原样带全，不含真实发送时的预算裁剪；本轮若装不下会从最旧一轮开始丢。`,
+    historyNote: [
+      "历史按生效轮数原样带全，不含真实发送时的预算裁剪；本轮若装不下会从最旧一轮开始丢。",
+      visionMode === "inline" ? "最多 6 张原图会直接内联给当前聊天模型；超出的图片会生成 alt 描述。" : "",
+      visionMode === "describe" ? "图片会先由图片理解模型生成 alt 描述，再注入当前聊天模型；预览不发起识图请求。" : "",
+      visionMode === "none" ? "当前聊天模型看不到图片，请求里只会出现“看不到”的标记。" : "",
+    ].filter((line) => line !== "").join(" "),
   });
   return true;
 };

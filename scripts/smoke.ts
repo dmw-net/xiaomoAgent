@@ -1914,37 +1914,46 @@ try {
   check("媒体页删除语音会回到聊天语义，而不是留下坏消息", voiceDelete.ok === true && voiceDelete.changed === 1);
   check("删除语音消息后文件同步释放", !existsForVoice(`${MEDIA}/${voiceName}`), voiceName);
 
-  // ── 重放窗口：轮数决定哪些消息进上下文，字节天花板决定其中的图有几张还真给她看 ──
-  // 为什么按字节：一张长边 1280 的图 base64 后 130-530KB，每轮整份重传；token 侧实测才 974。
+  // ── 重放窗口：轮数决定哪些消息进上下文，图片数硬上限决定其中最多看几张 ──
   const { selectReplayImages, countReplayedImages, imageProxiedHistory } = await import("../src/agent.ts");
-  const { dataUrlBytes, releaseMediaFiles, sweepOrphanMedia } = await import("../src/media.ts");
+  const { releaseMediaFiles, sweepOrphanMedia } = await import("../src/media.ts");
   const { existsSync } = await import("node:fs");
   const up2 = ((await (await fetch(`${BASE}/api/media`, { method: "POST", headers: { "content-type": "image/png" }, body: png })).json()).url) as string;
-  const oneCost = dataUrlBytes(up2)!;
-  check("dataUrlBytes 量出 base64 体积（4/3 倍原文件 + 头部余量）", oneCost >= Math.ceil(png.length / 3) * 4 && oneCost < png.length * 2, String(oneCost));
   const replayRows = [
     { role: "user", text: "老图", attachments: JSON.stringify([up.url]) },
     { role: "assistant", text: "嗯", attachments: null },
     { role: "user", text: "新图", attachments: JSON.stringify([up2]) },
   ];
-  const pick1 = selectReplayImages(replayRows, [], oneCost);
-  check("预算只够一张 → 重放最新那张，老的看不见", pick1.has(up2) && !pick1.has(up.url), [...pick1].join(","));
-  const pick2 = selectReplayImages(replayRows, [], oneCost * 2);
-  check("预算够两张 → 都重放", pick2.has(up2) && pick2.has(up.url));
-  check("他这轮刚发的图无条件重放（预算 0 也带上，否则她瞎着答本轮）", selectReplayImages(replayRows, [up.url], 0).has(up.url));
-  const pick0 = selectReplayImages(replayRows, [], 0);
-  check("预算 0 也保证最新那张历史图重放（单张 5MB 上限就能超掉整个天花板，而追问总在下一轮）", pick0.has(up2) && !pick0.has(up.url), [...pick0].join(","));
+  const pick1 = selectReplayImages(replayRows, [], 1);
+  check("上限 1 张 → 重放最新那张，老的看不见", pick1.has(up2) && !pick1.has(up.url), [...pick1].join(","));
+  const pick2 = selectReplayImages(replayRows, [], 2);
+  check("上限 2 张 → 都重放", pick2.has(up2) && pick2.has(up.url));
+  check("他这轮刚发的图优先占名额", selectReplayImages(replayRows, [up.url], 1).has(up.url));
   check("重放张数统计与选出的集合一致", countReplayedImages(replayRows, pick1) === 1 && countReplayedImages(replayRows, pick2) === 2);
   check("assistant 行不计入重放", countReplayedImages([{ role: "assistant", text: "x", attachments: JSON.stringify([up2]) }], pick2) === 0);
+  const manyRows = Array.from({ length: 8 }, (_, i) => ({
+    role: "user",
+    text: `图 ${i}`,
+    attachments: JSON.stringify([`/media/${String(i).padStart(16, "a")}.png`]),
+  }));
+  const capped = selectReplayImages(manyRows, []);
+  check("全局硬上限统一为 6 张，且从最新往旧选",
+    capped.size === 6 && capped.has(manyRows[7]!.attachments.slice(2, -2)) && !capped.has(manyRows[0]!.attachments.slice(2, -2)),
+    [...capped].join(","));
 
   // 看不见的图必须留一行**如实**的说明。两种"看不见"是两句不同的实话，混了就是骗她。
   const noVision = imageProxiedHistory([{ text: "", attachments: JSON.stringify([up.url]) }], new Set<string>(), false);
   check("能力没配 → 说「图片理解能力没配置」，不是「太久了」", noVision[0]!.text.includes("图片理解能力没配置") && !noVision[0]!.text.includes("回放窗口"), noVision[0]!.text);
-  const outOfWindow = imageProxiedHistory([{ text: "", attachments: JSON.stringify([up.url]) }], new Set<string>(), true);
-  check("滑出窗口 → 说「太久了」", outOfWindow[0]!.text.includes("滑出回放窗口"), outOfWindow[0]!.text);
-  check("两种标记都带「别猜也别编」", noVision[0]!.text.includes("别猜也别编") && outOfWindow[0]!.text.includes("别猜也别编"));
-  const bothKept = imageProxiedHistory([{ text: "你看这个", attachments: JSON.stringify([up.url]) }], new Set<string>(), true);
-  check("文字 + 图 → 两样都留（此前图会被静默丢掉，她既看不见也不知道有图）", bothKept[0]!.text.startsWith("你看这个\n[图片"), bothKept[0]!.text);
+  const pendingAlt = imageProxiedHistory([{ text: "", attachments: JSON.stringify([up.url]) }], new Set<string>(), true);
+  check("超过 6 张、但会生成 alt 的图片不写“看不到”占位", pendingAlt[0]!.text === "", pendingAlt[0]!.text);
+  check("真正看不到时仍带「别猜也别编」", noVision[0]!.text.includes("别猜也别编"));
+  const { appendImageDescriptions } = await import("../src/image-understanding.ts");
+  const bothKept = appendImageDescriptions(
+    imageProxiedHistory([{ role: "user", text: "你看这个", attachments: JSON.stringify([up.url]) }], new Set<string>(), true),
+    new Set([up.url]),
+    new Map([[up.url, "一张示意图"]]),
+  );
+  check("文字 + 图 → 文字保留且图片换成 alt 描述", bothKept[0]!.text === "你看这个\n[图片：一张示意图]", bothKept[0]!.text);
   check("重放的真图一个字都不附（她已经看得见）", imageProxiedHistory([{ text: "看这个", attachments: JSON.stringify([up2]) }], new Set([up2]), true)[0]!.text === "看这个");
   check("无图消息原样不动", imageProxiedHistory([{ text: "纯文字", attachments: null }], new Set<string>(), true)[0]!.text === "纯文字");
 

@@ -70,6 +70,8 @@ export function testCapability(payload: Record<string, unknown>): Promise<Record
 /** 全局预览只回 prompt；带 contactId 的预览另回回放历史与召回口径说明。 */
 export function previewPrompt(payload: Record<string, unknown>): Promise<{
   prompt: string;
+  visionMode?: "inline" | "describe" | "none";
+  imageCount?: number;
   history?: Array<{ role: string; text: string }>;
   memoryEvents?: Array<{ id: number; kind: string; subject: string; content: string }>;
   memoryNote?: string;

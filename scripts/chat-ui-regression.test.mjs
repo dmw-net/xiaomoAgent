@@ -13,7 +13,7 @@
  * 4. 报错 toast 不能永久挂在屏幕上，但也要给足阅读和点重试的时间。
  * 5. 设置助手里的上下文浮层必须压在弹窗之上，否则点击后看似没有反应。
  */
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { strict as assert } from "node:assert";
 
 const rowSource = readFileSync("frontend/src/features/chat/MessageRow.tsx", "utf8");
@@ -71,7 +71,11 @@ assert(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.think-live-dots i\s*\
 const voiceSource = readFileSync("frontend/src/components/VoiceMessageBubble.tsx", "utf8");
 const mediaSource = readFileSync("src/media.ts", "utf8");
 const mediaDialogSource = readFileSync("frontend/src/components/MediaMaintenanceDialog.tsx", "utf8");
-const contentLibrarySource = readFileSync("frontend/src/features/profile/ContentLibraryPanel.tsx", "utf8");
+const mediaLibrarySource = readFileSync("frontend/src/components/MediaLibrary.tsx", "utf8");
+const profileViewSource = readFileSync("frontend/src/features/profile/ProfileView.tsx", "utf8");
+const mediaSectionSource = readFileSync("frontend/src/features/settings/MediaSection.tsx", "utf8");
+const settingsViewSource = readFileSync("frontend/src/features/settings/SettingsView.tsx", "utf8");
+const qqSectionSource = readFileSync("frontend/src/features/profile/QQSection.tsx", "utf8");
 const outboxSource = readFileSync("frontend/src/lib/outbox.ts", "utf8");
 assert(/VoiceMessageBubble/.test(rowSource) && /kind === "audio"/.test(rowSource), "语音消息必须走专用气泡，而不是当图片或普通文字渲染");
 assert(/voice-wave/.test(voiceSource) && /voice-duration/.test(voiceSource) && /aria-label=\{playing \? "暂停语音消息"/.test(voiceSource), "语音气泡应包含波形、时长和可访问的播放/暂停状态");
@@ -82,10 +86,32 @@ assert(/attachment_meta/.test(mediaSource) && /saveAudio/.test(mediaSource) && /
 assert(/media-type-filter/.test(mediaDialogSource) && /语音/.test(mediaDialogSource), "媒体管理必须提供图片/视频/语音分类");
 assert(/delete-message/.test(mediaDialogSource) && /删除语音消息/.test(mediaDialogSource), "媒体页删除语音必须使用明确确认，而不是绕过消息删文件");
 assert(/attachmentMeta/.test(outboxSource), "离线发件箱必须保留语音元信息，重发后仍能渲染成语音气泡");
-assert(/content-kind-filters/.test(contentLibrarySource) && /kindCounts/.test(contentLibrarySource), "联系人内容库必须同时支持来源与媒体类型筛选");
-assert(/<video className="content-video"/.test(contentLibrarySource), "联系人内容库里的视频应可直接预览");
-assert(/<VoiceMessageBubble compact/.test(contentLibrarySource), "联系人内容库里的语音应可直接播放，而不是显示成普通文件");
-assert(/transcript=\{a\.transcript\}/.test(contentLibrarySource), "联系人内容库里的语音应保留可展开的转写");
+assert(/content-kind-filters/.test(mediaLibrarySource) && /kindCounts/.test(mediaLibrarySource), "媒体库必须同时支持视角与类型筛选");
+assert(/<video className="content-video"/.test(mediaLibrarySource), "媒体库里的视频应可直接预览");
+assert(/<VoiceMessageBubble compact/.test(mediaLibrarySource), "媒体库里的语音应可直接播放，而不是显示成普通文件");
+assert(/transcript=\{a\.detail\.transcript \|\| undefined\}/.test(mediaLibrarySource), "媒体库里的语音应保留可展开的转写");
+// 收敛的护栏：这一页只该有一个组件。两处界面各写一遍网格，就是「同一个删除在三处含义不同」的起点。
+assert(
+  !existsSync("frontend/src/features/profile/ContentLibraryPanel.tsx"),
+  "旧的 ContentLibraryPanel 必须已删除——媒体清单只允许 MediaLibrary 一份实现",
+);
+assert(/<MediaLibrary/.test(profileViewSource), "联系人页的媒体面板应复用 MediaLibrary");
+// 「表情」不再是一个入口：它是全局库上的一个标记，入口只有 设置 → 媒体与表情 一处。
+assert(
+  !existsSync("frontend/src/features/settings/EmoteSection.tsx"),
+  "设置→表情 分区必须已删除——它和全局媒体库是同一批东西，不该有两个入口",
+);
+assert(/<MediaLibrary active=\{active\}/.test(mediaSectionSource), "「媒体与表情」分区应复用 MediaLibrary 作为全局库");
+assert(/key: "media"/.test(settingsViewSource) && /groupPanel\("media"/.test(settingsViewSource), "媒体库必须是设置里的一级分区，不是模型下的一个子页签");
+assert(!/"emote"/.test(settingsViewSource.match(/type ModelTab =[^;]+;/)?.[0] ?? ""), "模型分区的页签里不该再有「表情」");
+assert(/<EmoteCapability/.test(qqSectionSource), "渠道表情能力与内置表情词表应挂在 QQ 连接卡上");
+assert(!/设置 → 表情/.test(profileViewSource), "联系人功能开关的说明不该再把人指向已删除的 设置→表情");
+// 命名一致性：两处是同一个库，名字必须成对改。曾经一个叫「她的东西」、一个叫「内容库」，
+// 用户会以为是两个地方。
+assert(/label: "媒体与表情"/.test(settingsViewSource), "设置一级分区应叫「媒体与表情」");
+assert(/title="媒体"/.test(profileViewSource), "联系人页那个视角的标题应与设置侧同源（媒体）");
+assert(!/她的东西|内容库/.test(mediaSectionSource + (settingsViewSource.match(/const GROUPS[^;]+;/)?.[0] ?? "")), "旧的临时命名不该还留在界面上");
+assert(/markEmote/.test(mediaLibrarySource), "媒体库里要能直接把一张图设为表情包素材");
 
 assert(
   /<Modal\s+label="操作确认"[\s\S]*?placement="center"/.test(chatSource),
@@ -166,5 +192,184 @@ assert(
   /const dirty = loaded && snapshot\(\) !== baseline;/.test(profileSource),
   "脏值判定必须继续以 snapshot 与基线比对为准（保存条只在有改动时出现）",
 );
+
+// ── 表情语义层（批次四~七）：一处数据、一处检索、一处界面 ──────────────
+const emoteSearchSource = readFileSync("src/emote-search.ts", "utf8");
+const qqEmoteSource = readFileSync("src/qq-emote.ts", "utf8");
+const assetsTableSource = readFileSync("src/assets.ts", "utf8");
+const namingSource = readFileSync("src/emote-naming.ts", "utf8");
+const emoteModalSource = readFileSync("frontend/src/components/EmoteSemanticsModal.tsx", "utf8");
+
+// 1) 那张 65 条的手写同义词表必须死透：叫法属于数据，不属于源码。
+assert(
+  !/EMOTE_SYNONYMS/.test(qqEmoteSource),
+  "源码里不该再有 EMOTE_SYNONYMS——素材库的中文叫法是每张图自己的数据，写死在源码里永远追不上用户导入的东西",
+);
+assert(/FACE_SYNONYMS/.test(qqEmoteSource), "内置 face 那一层保留一张小词表是对的（那 29 个词是固定的）");
+
+// 2) 选图只有一个出处：qq-emote 只管进出登记，怎么选在 emote-search。
+assert(!/function pickEmoteByKeyword/.test(qqEmoteSource), "选图逻辑不该留在 qq-emote.ts");
+assert(/export function pickEmoteByKeyword/.test(emoteSearchSource), "选图在 emote-search.ts 一处");
+assert(/export function searchEmotes/.test(emoteSearchSource), "检索与选图同源（工具与 keyword 快路走同一套打分）");
+
+// 3) 文件夹名不许撑大命中面：只命中文件夹名的那一档必须被阈值挡在自动发之外。
+assert(/WEIGHT\.pack/.test(emoteSearchSource) && /matchedOn === "pack"/.test(emoteSearchSource),
+  "文件夹名要有独立权重，并且单独判「这只命中了文件夹」");
+assert(/AUTO_PICK_MIN_SCORE/.test(emoteSearchSource), "自动发要有分数线，不能命中就甩");
+
+// 4) 语义列只在 assets.ts 定义一次。
+for (const column of ["emote_caption", "emote_alias", "emote_pack", "emote_named_at", "emote_use_count"]) {
+  assert(new RegExp(column + "\\s+").test(assetsTableSource), "语义列 " + column + " 要在资产表里");
+}
+assert((assetsTableSource.match(/CREATE TABLE IF NOT EXISTS assets/g) ?? []).length === 1,
+  "assets 表只能建一次");
+
+// 5) 表情这一对工具同开同关：只开一个等于让她能查不能发、或能发只能猜。
+assert(/off\.add\("send_emote"\); off\.add\("emote_search"\)/.test(toolsSource),
+  "send_emote 与 emote_search 必须挂在同一个开关上");
+assert(/name: "emote_search"/.test(toolsSource), "emote_search 要在工具表里");
+assert(/emote_id/.test(toolsSource) && /getAssetById\(emoteId\)/.test(toolsSource),
+  "按 id 发要服务端查库，不接受模型自己拼的地址");
+assert(/每轮最多查一次|已经查过一次/.test(toolsSource), "一轮一次的约束要写进工具描述或返回体");
+
+// 6) 认图作业只写语义三字段，且失败带人话原因。
+assert(/applyEmoteNaming/.test(namingSource), "认图写回走同一条清洗入口");
+assert(/retryable/.test(namingSource) && /RATE_LIMIT/.test(namingSource),
+  "限流要单独判可重试——实测免费档第 7 张就 429，一律不重试等于半库判死");
+assert(/needsStaticVariant\(asset\.url\)/.test(namingSource), "动图要采帧认，只看首帧会把动作描述成姿势");
+
+// 7) 界面只有一处管表情语义：认图 CTA、文件夹筛选、改名弹窗都在媒体库里，没有第二个入口。
+assert(/runNaming/.test(mediaLibrarySource), "「智能识别」在媒体库这一页");
+assert(/EmoteSemanticsModal/.test(mediaLibrarySource), "改名弹窗由媒体库唤起");
+for (const file of [
+  "frontend/src/features/settings/MediaSection.tsx",
+  "frontend/src/features/profile/ProfileView.tsx",
+  "frontend/src/features/profile/QQSection.tsx",
+]) assert(!/EmoteSemanticsModal/.test(readFileSync(file, "utf8")), "语义卡不该在 " + file + " 里再开一份");
+assert(/未命名/.test(mediaLibrarySource), "没认过名的卡要直说缺什么，而不是摊一个英文句柄给用户");
+assert(/未命名/.test(mediaLibrarySource) && /智能识别/.test(mediaLibrarySource),
+  "CTA 要把「为什么值得点一次」讲清楚（找不到，而不是「体验更好」）");
+assert(!/onBlur=\{\(\) => (set|save)/.test(emoteModalSource), "弹窗里的字段要受控，不能靠失焦提交");
+assert(!/重新识别/.test(emoteModalSource) && /智能识别/.test(emoteModalSource),
+  "弹窗那颗按钮首次也叫「智能识别」——没有『先重新后首次』的两套名");
+assert(/识别中…/.test(emoteModalSource) && /esem-spin/.test(experienceCss),
+  "单张识别要有进行态（转圈+文案），不能只剩一个置灰按钮");
+assert(/识别完成，写了名称/.test(emoteModalSource) && !/setEdit\(null\)/.test(mediaLibrarySource.split("renameOne")[1]?.slice(0, 700) ?? ""),
+  "识别完弹窗不关：结果回填字段并行内说明");
+assert(/esem-folder-select/.test(emoteModalSource) && /DEFAULT_FOLDER, \.\.\.folders/.test(emoteModalSource),
+  "文件夹是下拉单选，「默认」排第一");
+// 8) JSX 里用到的新类名必须在 CSS 里有定义——「类名写错」在页面上表现为挤成一团，最难自己发现。
+const cssAll = componentsCss + "\n" + experienceCss;
+for (const cls of ["ml-naming", "ml-naming-copy", "ml-naming-progress", "content-sub", "content-search-row", "row2", "esem", "esem-shot", "esem-fields", "esem-chips"]) {
+  assert(new RegExp("\\." + cls + "[\\s,{:.]").test(cssAll), "样式类 ." + cls + " 必须在 CSS 里有定义");
+}
+assert(/\.content-badge\.unnamed/.test(componentsCss), "「没名字」角标要有自己的位置，别和别的角标叠在一起");
+assert(/\.esem\s*\{[\s\S]{0,200}grid-template-columns:\s*minmax\([^)]*\)\s+minmax\(0,\s*1fr\)/.test(cssAll),
+  "语义卡是图 + 字段两栏（右栏必须能收缩，否则字段被挤成一条缝）");
+assert(/@media \(max-width: 560px\)[\s\S]*?\.esem \{ grid-template-columns: 1fr/.test(experienceCss),
+  "窄屏收成单栏（面板宽度在这台机上不是固定值）");
+
+// 9) 识别详情：机器做过的事必须能被查、能被改（逐张结果 / 只重试失败项 / 文件夹能开真目录 / 名字来源可见）。
+assert(/识别详情/.test(mediaLibrarySource), "概览条上要有进入识别详情的入口");
+assert(/ml-results/.test(mediaLibrarySource), "逐张识别结果要有列表");
+assert(/retryFailed/.test(mediaLibrarySource) && /只重试失败的/.test(mediaLibrarySource),
+  "失败的那几张要能单独重试，不能每次都从头再认一遍");
+assert(!/movePack|退回/.test(mediaLibrarySource),
+  "「退回」整条链已退役：文件夹是真目录，整批调整走资源管理器");
+assert(/rowOpenButtons|openFolderNamed/.test(mediaLibrarySource), "文件夹下拉每行都要有「在文件管理器中打开」");
+assert(/openFolderNamed/.test(mediaLibrarySource) && /清除筛选/.test(mediaLibrarySource) && /scopeCounts/.test(mediaLibrarySource),
+  "筛选计数跟随文件夹；条件叠加为空要报出具体条件并给「清除筛选」，不能谎称库是空的");
+// 跑完之后启动文案必须消失：概览条已经写着上一轮结果，留着「已开始识别」会让人以为还在跑。
+assert(/if \(!d\.job\.running\) \{[\s\S]{0,220}?setNotice\(""\)/.test(mediaLibrarySource),
+  "轮询到作业结束时要清掉启动提示");
+assert(/createPortal/.test(mediaLibrarySource) && /toast-layer/.test(mediaLibrarySource)
+  && !/pf-comp-note/.test(mediaLibrarySource) && !/\{err !== ""/.test(mediaLibrarySource),
+  "操作回执走轻提示浮层（自动消失、不占排版），不再是一条顶开布局的横 bar");
+assert(/tone === "warn" \? 6000 : 4000/.test(mediaLibrarySource) && /toast\.tone === "warn" \? " warn"/.test(mediaLibrarySource),
+  "失败与成功共用底部浮层：失败红色那一档、多停 2 秒；页面里不再内联红框");
+
+// 12) 真目录布局：文件名是身份、目录是分类；表情包/<文件夹> 就是磁盘上的真目录。
+const layoutSource = readFileSync("src/media-layout.ts", "utf8");
+assert(/EMOTE_ROOT = "表情包"/.test(layoutSource) && /image: "图片"/.test(layoutSource),
+  "目录词表（表情包/图片/视频/语音/文件）只在 media-layout.ts 定义一次");
+assert(/rel_path/.test(assetsTableSource) && /missing/.test(assetsTableSource),
+  "资产表要有落点列与失效列");
+assert(/migrateMediaLayout\(\)/.test(readFileSync("src/index.ts", "utf8")),
+  "启动要先跑布局迁移再对账（迁移排前，销账逻辑假设布局已定）");
+assert(/renameRescue/.test(readFileSync("src/media.ts", "utf8")),
+  "用户改名的文件要按哈希救回身份，不能标失效再登记成重复");
+assert(/在文件管理器中打开/.test(mediaLibrarySource) && /openFolderNamed/.test(mediaLibrarySource),
+  "文件夹下拉每行都有行内打开键，直接开对应的真目录");
+assert(/a\.relPath/.test(mediaLibrarySource), "在文件管理器中显示走 rel_path 指到真身");
+assert(/已失效/.test(mediaLibrarySource) && /content-badge\.broken/.test(componentsCss),
+  "失效行要有角标，界面不能装作那张图还在");
+assert(/job\?\.results \?\? \[\]/.test(mediaLibrarySource),
+  "results 是可选字段，读不到要当空数组，不能把整页渲染崩掉");
+assert(/content-name-src/.test(mediaLibrarySource), "每张卡要看得出名字是机器起的还是人写的");
+assert(/emote_name_source/.test(assetsTableSource) && /namedBy/.test(assetsTableSource), "命名来源要有列，且写入点区分 auto/manual");
+assert(/emoteNamedAt === 0/.test(assetsTableSource),
+  "语义迁移只许作用在没识别过的行上——识别过的名字与标签是权威数据");
+assert(!/moveEmoteWord|movePackWord/.test(readFileSync("src/server/routes/assets.ts", "utf8"))
+  && !/moveEmoteWord/.test(assetsTableSource),
+  "退回接口整条退役：没有 UI 入口的全库写口子不能留着当暗道");
+for (const cls of ["ml-results", "ml-results-list", "ml-toolbar", "ml-pack-pop", "ml-pack-row", "ml-naming-acts", "ml-naming-toggle"]) {
+  assert(new RegExp("\\." + cls + "[\\s,{:.]").test(cssAll), "样式类 ." + cls + " 必须在 CSS 里有定义");
+}
+// 信息架构：表情包视角不许再摊三排 chips。类型行在这个视角是噪声（全是图片），
+// 文件夹有几十个值必须收进下拉，而不是和命名状态混成一面墙。
+assert(/\{view !== "emote" && \(\s*<div className="content-filters content-kind-filters"/.test(mediaLibrarySource),
+  "类型筛选行在表情包视角必须隐藏");
+assert(/ml-pack-pop/.test(mediaLibrarySource) && /aria-haspopup="listbox"/.test(mediaLibrarySource),
+  "文件夹筛选要收进一个带 listbox 语义的下拉控件");
+assert(!/aria-label="文件夹">\s*\{packs\.map/.test(mediaLibrarySource),
+  "文件夹不该再是一整排平铺的 chips");
+assert(/全部文件夹/.test(mediaLibrarySource), "下拉的默认档叫「全部文件夹」");
+assert(/\.ml-pack-pop\.up/.test(experienceCss) && /togglePack/.test(mediaLibrarySource),
+  "文件夹下拉贴近视口底时要向上翻，不能整块落在折叠线外");
+
+// 导入只走原生选文件夹；入口收在表情包视角的工具行里（页头顶不再压一张「添加」大卡片）。
+const mediaSectionSource2 = readFileSync("frontend/src/features/settings/MediaSection.tsx", "utf8");
+assert(!/pickDirectory\(|onImportDir|onPickFile|自动收录聊天中收到的图片/.test(mediaSectionSource2),
+  "MediaSection 只剩标题+媒体库：添加动作已并入表情包视角");
+assert(/pickDirectory/.test(mediaLibrarySource) && /导入文件夹/.test(mediaLibrarySource) && /上传图片/.test(mediaLibrarySource),
+  "上传/导入在 MediaLibrary 的表情包工具行里，选中即导入");
+assert(!/本地文件夹路径/.test(mediaLibrarySource) && !/tagTouched/.test(mediaLibrarySource),
+  "手敲路径与改名输入已退役——文件夹名只有源文件夹名一个来源");
+assert(/folderNameOf/.test(readFileSync("src/qq-emote.ts", "utf8")), "归属文件夹＝源文件夹名，前后端同口径");
+assert(/canceled: true/.test(readFileSync("frontend/src/lib/native-dialog.ts", "utf8"))
+  && /"error" in picked/.test(mediaLibrarySource),
+  "取消文件夹选择器是正常操作：静默返回，不弹红条（真失败才有 error）");
+assert(!/ml-pack-note|打开表情包目录/.test(mediaLibrarySource),
+  "下拉不留解释性长文和底部大按钮——默认置顶＋行内打开键已经说明一切");
+assert(/a\.pack === DEFAULT_EMOTE_FOLDER \? -1/.test(assetsTableSource),
+  "文件夹清单「默认」恒排第一");
+assert(/e\.dir === EMOTE_ROOT/.test(readFileSync("src/media.ts", "utf8")),
+  "散放在 表情包/ 根下的图自动挪进 默认 文件夹并认领");
+
+// 10) 文件夹层：单一归属是写出来的不变量，不是界面上的约定。
+assert(/DEFAULT_EMOTE_FOLDER/.test(assetsTableSource) && /export function oneFolder/.test(assetsTableSource),
+  "默认文件夹与归一函数只在 assets.ts 定义一次");
+assert(/backfillEmoteFolder\(\);/.test(assetsTableSource), "启动时收敛存量的空归属/多归属");
+assert(!/share\.get\(tag\)/.test(assetsTableSource),
+  "词频猜文件夹的规则必须退役——真库上它把 47 个语义词啃进了不参与检索的 pack");
+assert(/esem-folder-select/.test(emoteModalSource) && /pack: \[folder\]/.test(emoteModalSource),
+  "弹窗里文件夹是下拉单选，保存时恒为单元素");
+assert(/folders=\{packs\.map/.test(mediaLibrarySource), "弹窗的文件夹选项来自全库清单");
+assert(/\.esem-folder/.test(experienceCss), "文件夹单选 chip 要有选中态样式");
+assert(/export function setEmoteMark[\s\S]{0,700}?DEFAULT_EMOTE_FOLDER/.test(assetsTableSource),
+  "聊天里随手标的图要有默认归属，不能散在「全部」里");
+
+// 11) 文件管理器入口：单张表情定位原图、文件夹下拉打开媒体目录——只在桌面端出现。
+assert(/mediaDir: mediaDir\(\)/.test(readFileSync("src/server/routes/assets.ts", "utf8")),
+  "列表接口要带媒体目录绝对路径，桌面端才拼得出原图位置");
+assert(/const DESKTOP = "__TAURI_INTERNALS__" in window/.test(mediaLibrarySource)
+  && /revealInFolder/.test(mediaLibrarySource)
+  && /DESKTOP && !a\.missing/.test(mediaLibrarySource),
+  "「在文件管理器中显示」对所有类型的媒体卡片开放（失效行除外），浏览器端整条入口不出现");
+assert(/清理此项/.test(mediaLibrarySource) && /"dropMissing"/.test(mediaLibrarySource)
+  && /dropMissingAsset/.test(assetsTableSource),
+  "失效行给「清理此项」：删死账的口子只对 missing=1 开，文件还在的删不动");
+assert(/"probeMissing"/.test(mediaLibrarySource) && /markMissingIfGone/.test(assetsTableSource),
+  "打开文件夹失败就地验真标失效——会话中删的文件不用等下一轮对账，清理按钮当场出现");
 
 console.log("聊天与助手权限 UI 回归测试：全部通过");

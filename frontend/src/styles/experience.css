@@ -1213,85 +1213,10 @@ button.tool-btn {
 }
 
 /* ── 表情分区：素材库网格 + 单张表情卡。图片按比例自适应，不裁脸不裁图。 ── */
-.emote-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
-  gap: 10px;
-  padding: 14px;
-}
-
-.emote-item {
-  position: relative;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: var(--bg-sunken);
-  overflow: hidden;
-}
-
-.emote-item img {
-  display: block;
-  width: 100%;
-  aspect-ratio: 1;
-  object-fit: contain;
-  background: transparent;
-}
-
-.emote-item-cap {
-  position: absolute;
-  inset: auto 0 0 0;
-  padding: 4px 6px;
-  background: color-mix(in srgb, var(--bg-sunken) 88%, transparent);
-  backdrop-filter: blur(2px);
-}
-
-.emote-item-label {
-  display: block;
-  font-size: 11px;
-  line-height: 1.3;
-  color: var(--text);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.emote-item-tags {
-  display: block;
-  font-size: 10px;
-  line-height: 1.3;
-  color: var(--text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.emote-item-del {
-  position: absolute;
-  top: 4px;
-  right: 4px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 7px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--bg-elevated) 82%, transparent);
-  color: var(--text-muted);
-  cursor: pointer;
-}
-
-.emote-item-del:hover:not(:disabled) { color: var(--danger, #d33); border-color: var(--danger, #d33); }
-.emote-item-del:disabled { opacity: 0.5; cursor: default; }
-
 .emote-foot { margin: 12px 2px 0; }
 
-.emote-upload,
-.emote-import,
-.emote-capture { box-shadow: none; }
 
 /* 搜索框 */
-.emote-toolbar { margin: 14px 0 0; }
-
 .emote-search {
   display: flex;
   align-items: center;
@@ -1329,36 +1254,6 @@ button.tool-btn {
 .emote-search-clear:hover { color: var(--text); }
 
 /* 标签筛选 chips */
-.emote-tag-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-
-.emote-tag-chips .chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: var(--bg-sunken);
-  color: var(--text);
-  font-size: var(--text-sm);
-  cursor: pointer;
-  transition: border-color .15s, background .15s;
-}
-
-.emote-tag-chips .chip:hover { border-color: var(--text-muted); }
-.emote-tag-chips .chip.on {
-  background: color-mix(in srgb, var(--accent, #4a7cff) 14%, var(--bg-sunken));
-  border-color: var(--accent, #4a7cff);
-  color: var(--accent, #4a7cff);
-  font-weight: 600;
-}
-
-.emote-tag-chips .chip small { opacity: 0.6; font-size: 10px; }
-
 /* 内置表情词表 chips */
 .emote-face-chips {
   display: flex;
@@ -1389,13 +1284,6 @@ button.tool-btn {
 .emote-face-chip span { font-weight: 500; }
 
 /* 网格卡片标签多行截断 */
-.emote-item-tags {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
-}
-
 /* ── 设置页：有界列表与紧凑条目 ─────────────────────────────── */
 
 .settings-list-scroll {
@@ -4604,3 +4492,337 @@ a.btn:hover {
   #callsBody tr.row-live { border-color: color-mix(in srgb, var(--accent) 24%, var(--border)); background: var(--accent-soft); }
   #callsBody tr.row-live td { background: transparent !important; }
 }
+
+/* ── 媒体与表情：全局媒体库；QQ 卡上的表情能力块 ─────────────────── */
+.media-library { margin-top: 14px; }
+
+/* ── 表情视角：认图那一条 + 卡片副标题 ─────────────────────────────
+   认图是这一页唯一的「等待型」动作（几百次视觉调用），所以进度要就地显示，
+   不能让人以为点了没反应；也不要因为它挡住浏览——它只在「她会甩的」视角出现。 */
+.ml-naming {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  margin: 10px 0 4px;
+  padding: 9px 11px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-sunken);
+}
+
+.ml-naming-copy {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  min-width: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.ml-naming-copy b { color: var(--text); font-weight: 600; }
+.ml-naming-copy svg { flex-shrink: 0; color: var(--accent); }
+
+.ml-naming-progress {
+  font-size: 11.5px;
+  color: var(--text-subtle);
+  font-variant-numeric: tabular-nums;
+}
+
+.ml-naming-acts { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.ml-naming-copy b.warn { color: var(--danger, #b3261e); }
+
+/* 上一轮结果是个可点的控件，不是一行带下划线的文字——
+   下划线在中文小字号下看起来像删除线，会被读成「这条结果作废了」。 */
+.ml-naming-toggle {
+  border: 1px solid var(--border); background: var(--bg-elevated);
+  padding: 3px 9px; border-radius: 999px; cursor: pointer;
+  font: inherit; font-size: 11.5px; color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+.ml-naming-toggle:hover { color: var(--text); border-color: var(--text-subtle); }
+
+/* 识别详情：逐张结果 + 文件夹归类。这一块的目的是「机器做过的事能被查、能被改」。 */
+.ml-results {
+  margin: 8px 0 4px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-sunken);
+}
+
+.ml-results-head {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  font-size: 12.5px; color: var(--text-muted); margin-bottom: 8px;
+}
+
+.ml-results-list {
+  list-style: none; margin: 0; padding: 0;
+  max-height: 220px; overflow-y: auto;
+  display: flex; flex-direction: column; gap: 4px;
+}
+.ml-results-list li {
+  display: flex; align-items: baseline; gap: 8px;
+  font-size: 12px; color: var(--text);
+}
+.ml-results-list li.bad { color: var(--text-muted); }
+.ml-results-list code {
+  flex: 0 0 auto; max-width: 190px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  font-size: 11px; color: var(--text-subtle);
+}
+.ml-result-name { font-weight: 600; }
+.ml-result-reason { font-size: 11.5px; color: var(--text-muted); }
+
+/* 表情包视角的筛选行：命名状态 chips + 一个文件夹下拉。
+   文件夹有几十个值，摊成 chips 墙会和状态、类型混成一片；收进一个控件，打开才展开。 */
+.ml-toolbar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-top: var(--space-2);
+}
+.ml-toolbar-chips { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+
+.ml-pack-picker { position: relative; }
+.ml-pack-btn { display: inline-flex; align-items: center; gap: 5px; max-width: 240px; }
+.ml-pack-btn .ml-pack-name, .ml-pack-btn { overflow: hidden; }
+.ml-pack-caret { transition: transform .15s ease; flex-shrink: 0; }
+.ml-pack-caret.on { transform: rotate(180deg); }
+
+.ml-pack-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  width: min(320px, calc(100vw - 32px));
+  padding: 10px; border: 1px solid var(--edge-float); border-radius: 12px;
+  background: var(--bg-elevated); box-shadow: var(--shadow-modal);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.ml-pack-pop > input {
+  width: 100%; box-sizing: border-box; font: inherit; font-size: 12.5px;
+  padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-sunken); color: var(--text);
+}
+.ml-pack-list { max-height: 260px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+/* 按钮贴近视口底时向下展开会整块落在折叠线外：翻到按钮上方打开。 */
+.ml-pack-pop.up { top: auto; bottom: calc(100% + 6px); }
+.ml-pack-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.ml-pack-opt {
+  flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px;
+  border: 0; background: none; padding: 5px 7px; border-radius: 7px; cursor: pointer;
+  font: inherit; font-size: 12.5px; color: var(--text); text-align: left;
+}
+.ml-pack-opt:hover { background: var(--bg-sunken); }
+.ml-pack-opt.on { background: var(--bg-sunken); font-weight: 600; }
+.ml-pack-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ml-pack-back { flex-shrink: 0; }
+/* 行内「在文件管理器中打开」：小图标按钮，不参与选中态。 */
+.ml-pack-open { flex-shrink: 0; }
+/* 表情包视角的「自动收录」勾选：工具行下面一行小字，不抢主操作的视线。 */
+.ml-capture { display: flex; align-items: center; gap: 6px; margin: 8px 2px 0; font-size: 12.5px; color: var(--text-muted); }
+
+/* 窄屏时筛选行会换行、文件夹按钮落到左侧：此时下拉若仍右对齐会伸出屏幕左缘
+   （实测 420px 下 pop 的 x=-129）。改成左对齐，宽度仍受视口约束。 */
+@media (max-width: 700px) {
+  .ml-pack-pop { left: 0; right: auto; }
+}
+
+/* 名字来源标记：机器起的要抽查，人写的别再被覆盖——所以这个区别必须看得见。 */
+.content-name-src {
+  margin-left: 5px; padding: 0 4px; border-radius: 4px;
+  font-size: 10px; font-weight: 600; letter-spacing: .02em;
+  color: var(--text-subtle); border: 1px solid var(--border); vertical-align: middle;
+}
+
+.content-title.muted { color: var(--text-subtle); }
+
+.content-sub {
+  display: block;
+  color: var(--text-muted);
+  font-size: var(--text-cap);
+  line-height: 1.4;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── 一张表情的语义卡：左边真图，右边三个字段 ─────────────────────
+   图按原比例显示，不裁——梗图的笑点常在边角，裁掉就认不出来了。 */
+.esem {
+  display: grid;
+  grid-template-columns: minmax(140px, 220px) minmax(0, 1fr);
+  align-items: start; /* 左栏跟着图的高度走，不跟着右栏拉长——否则图会浮在一大片空白中间 */
+  gap: 14px;
+}
+
+.esem-shot {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  align-self: start;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg-sunken);
+  padding: 8px;
+  min-height: 120px;
+  max-height: 320px;
+}
+
+.esem-shot img {
+  display: block;
+  max-width: 100%;
+  max-height: 304px;
+  height: auto;
+  object-fit: contain;
+}
+
+.esem-gif {
+  position: absolute;
+  right: 6px;
+  top: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 11px;
+  background: rgba(17, 17, 16, .7);
+  color: #fff;
+}
+
+.esem-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.esem-row { display: flex; flex-direction: column; gap: 4px; }
+.esem-key { font-size: 12px; color: var(--text-muted); }
+
+/* 选择器要压过 .modal-card input:not([type=checkbox]) 那条通用规则（它给每个输入框
+   铺 100% 宽 + 大 padding + 底部间距），所以这里带上 .modal-card 凑够权重。 */
+.modal-card .esem-row input {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  padding: 7px 9px;
+  margin-bottom: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+}
+
+.esem-row textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 7px 9px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+  color: var(--text);
+  resize: vertical;
+}
+
+.esem-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elevated);
+}
+
+.esem-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 4px 2px 8px;
+  border-radius: 999px;
+  font-size: 12px;
+  background: var(--bg-sunken);
+  border: 1px solid var(--border);
+  color: var(--text);
+}
+
+.esem-chip button {
+  display: inline-flex;
+  align-items: center;
+  border: 0;
+  background: none;
+  padding: 2px;
+  cursor: pointer;
+  color: var(--text-subtle);
+}
+
+.esem-chip button:hover { color: var(--text); }
+
+/* 文件夹下拉：与弹窗输入框同一套皮；宽度收在半行，别撑成整块。 */
+.esem-folder-select {
+  width: 220px; max-width: 100%;
+  padding: 6px 9px; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-elevated); color: var(--text); font: inherit; font-size: var(--text-sm);
+}
+.esem-folder-select:focus { border-color: color-mix(in srgb, var(--accent) 40%, var(--border)); outline: none; }
+/* 单张识别进行中的星芒：慢转圈，替代「按钮置灰但不知道在干嘛」。 */
+.esem-spin { animation: esemSpin 1.1s linear infinite; }
+@keyframes esemSpin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .esem-spin { animation: none; } }
+
+/* 文件夹单选 chip：没有删除键，内边距对称；选中态与全站 chip.on 同一套视觉。 */
+.esem-chip.esem-folder {
+  padding: 3px 10px;
+  cursor: pointer;
+  font: inherit;
+  transition: border-color var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast);
+}
+.esem-chip.esem-folder:hover { border-color: var(--border-strong); }
+.esem-chip.esem-folder.on {
+  border-color: var(--accent-ink); color: var(--accent-ink);
+  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
+}
+
+.modal-card .esem-chips input {
+  flex: 1 1 110px;
+  min-width: 90px;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 12.5px;
+  padding: 3px 4px;
+  margin-bottom: 0;
+  color: var(--text);
+}
+
+.esem-origin { display: flex; flex-direction: column; gap: 2px; }
+
+@media (max-width: 560px) {
+  .esem { grid-template-columns: 1fr; }
+  .esem-shot { min-height: 120px; }
+}
+
+.qq-emote-cap { margin-top: 10px; border-top: 1px solid var(--border); padding-top: 10px; }
+.qq-emote-cap-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text);
+}
+.qq-emote-cap-caret { transition: transform 0.15s ease; }
+.qq-emote-cap-caret.on { transform: rotate(90deg); }
+
+/* 搜索框和类型 chips 在同一条 flex 行里：不给基准宽度，窄屏会被挤成只剩图标（实测 24px）。 */
+.media-search { flex: 1 1 220px; min-width: 0; margin-bottom: 0; }
+/* 搜索框自己一行（不参与窄屏那条横向滚动带），所以它占满就行。 */
+.content-search-row { display: flex; margin-top: var(--space-2); }

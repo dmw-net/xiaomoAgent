@@ -35,6 +35,12 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   animation: cardIn var(--dur-slow) var(--ease-out);
 }
 .modal-title { font-size: var(--text-xl); font-weight: 600; color: var(--text); }
+/* 弹窗底部那一排动作。之前两处（表情语义卡、删作品确认）都写了 .row2 却没人定义它，
+   于是三个按钮竖着一摞——看起来像没排好版，而这是最容易自己看不见的那类破相。 */
+.row2 { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: var(--space-3); }
+.row2 .primary { margin-left: 0; }
+/* 语义卡要放得下一张看得清的图 + 三个字段，裸 340px 会把字段挤成一条缝。 */
+.modal-card.esem-card { width: min(560px, calc(100vw - 24px)); }
 .modal-sub {
   font-size: var(--text-aux); color: var(--text-muted);
   margin: var(--space-2) 0 var(--space-6); line-height: 1.7;
@@ -1044,6 +1050,14 @@ button.prov-row.on { border-color: var(--border-strong); background: var(--bg-su
   font-size: var(--text-cap); background: rgba(17, 17, 16, .68); color: #fff;
 }
 .content-badge.face { top: auto; right: 7px; bottom: 7px; background: var(--accent); }
+/* 表情视角的两枚角标。没名字的卡用虚线框——它表达的是「这里缺一块」，不是「这是一种类型」。 */
+.content-badge.unnamed {
+  left: 7px; right: auto; top: auto; bottom: 7px;
+  background: rgba(17, 17, 16, .78); border: 1px dashed rgba(255, 255, 255, .58);
+}
+.content-badge.use { top: 30px; right: 7px; background: color-mix(in srgb, var(--accent) 72%, #000); }
+/* 失效：原图不在盘上了。占右上角，和「已发 N 次」上下错开；红色实底是状态告警，不是类型。 */
+.content-badge.broken { left: auto; top: 7px; right: 7px; background: color-mix(in srgb, var(--danger) 84%, #000); }
 .content-file {
   width: 100%; height: 100%; padding: var(--space-5); box-sizing: border-box;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-3);
@@ -1118,19 +1132,11 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 /* 联系人编辑页：微信连接卡 */
 .wx-card { display: block; }
 .wx-head { display: flex; align-items: flex-start; gap: var(--space-5); }
-.wx-head > div:first-child { flex: 1; min-width: 200px; }
-.wx-badge {
-  flex: none; font-size: var(--text-sm); padding: 3px var(--space-4); border-radius: var(--radius-full);
-  border: 1px solid var(--border); color: var(--text-subtle);
-}
-.wx-badge-connected { color: var(--success); border-color: currentColor; background: color-mix(in srgb, var(--success) 10%, transparent); }
-.wx-badge-attention { color: var(--warn-text); border-color: currentColor; background: color-mix(in srgb, var(--warn-text) 10%, transparent); }
+.wx-head > .ch-channel-icon + div { flex: 1; min-width: 200px; }
 .wx-actions { margin-top: var(--space-5); display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
 .wx-controls { display: flex; align-items: center; gap: var(--space-8); flex-wrap: wrap; margin-top: var(--space-5); }
 .wx-check { display: inline-flex; align-items: center; gap: var(--space-3); font-size: var(--text-base); color: var(--text); cursor: pointer; }
 .wx-danger { color: var(--danger); }
-.wx-note { font-size: var(--text-aux); color: var(--text-subtle); margin-top: var(--space-4); line-height: 1.6; }
-.wx-error { font-size: var(--text-aux); color: var(--danger); margin-top: var(--space-4); line-height: 1.6; }
 .wx-modal { width: min(320px, calc(100vw - 24px)); display: flex; flex-direction: column; align-items: center; gap: var(--space-5); }
 .wx-modal .modal-title-row { width: 100%; }
 .wx-modal .modal-sub { text-align: left; }
@@ -1138,8 +1144,6 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .wx-close { background: none; border: none; color: var(--text-subtle); font-size: var(--text-note); cursor: pointer; }
 
 /* QQ 连接卡：复用上面微信卡的那套皮，只补三样它独有的东西 */
-.wx-badge-connecting, .wx-badge-disabled, .wx-badge-unbound { color: var(--text-subtle); }
-.wx-badge-not-configured { color: var(--text-subtle); border-style: dashed; }
 .qq-creds { margin-top: var(--space-5); display: flex; flex-direction: column; gap: var(--space-4); }
 /* 接入渠道切换（QQ 连接卡顶部）：分段控件 + 说明 + 待重启提示条。 */
 .qq-backend { margin-top: var(--space-5); display: flex; flex-direction: column; gap: var(--space-3); }
@@ -1176,16 +1180,113 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .ob-manual label > input { display: block; width: 100%; margin-top: var(--space-2); }
 .qq-creds label { display: block; font-size: var(--text-note); color: var(--text-muted); }
 .qq-creds label > input { display: block; width: 100%; margin-top: var(--space-2); }
-/* 绑定码要能整串选中、能复制：等宽 + 可选，别让它跟着行高被截断 */
-.qq-code-row { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; margin-top: var(--space-5); }
+/* 绑定码要能整串选中、能复制：等宽 + 可选，别让它跟着行高被截断。
+   在「正在绑定」强调框里它是要盯着的两个字，比从前的行内小字大一号、居中。 */
 .qq-code {
-  flex: 1; min-width: 180px; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
-  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text);
-  font-family: var(--font-mono); font-size: var(--text-base);
-  letter-spacing: .06em; user-select: all; word-break: break-all;
+  flex: 0 1 auto; min-width: 96px; padding: 10px 20px; border-radius: var(--radius-md);
+  background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text);
+  font-family: var(--font-mono); font-size: var(--text-lg); font-weight: 650;
+  letter-spacing: .28em; text-indent: .28em; text-align: center;
+  user-select: all; word-break: break-all;
 }
+.qq-bind-try {
+  margin-top: var(--space-5); padding: var(--space-4) var(--space-5);
+  border-radius: var(--radius-lg);
+  border: 1px solid color-mix(in srgb, var(--accent) 38%, transparent);
+  background: color-mix(in srgb, var(--accent) 7%, transparent);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.qq-bind-try-label { font-size: var(--text-note); color: var(--text-secondary); line-height: 1.6; }
+.qq-bind-try-row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
+.ch-waiting { display: flex; align-items: center; gap: 8px; font-size: var(--text-aux); color: var(--text-muted); line-height: 1.5; }
+.ch-waiting-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: ch-pulse 1.4s ease-in-out infinite; }
 .wx-close:hover { color: var(--text); }
 .wx-qr { width: 224px; height: 224px; border-radius: var(--radius-lg); background: var(--bg-elevated); padding: var(--space-2); }
+
+/* ── 连接卡共享件（ChannelKit）：微信 / QQ 两张卡同一套状态语言 ───────────── */
+
+/* 渠道图标：卡头左侧一枚圆底图标，给「这是哪条通道」一个不用读字的锚点 */
+.ch-channel-icon {
+  flex: none; width: 36px; height: 36px; border-radius: 10px;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-secondary);
+}
+.ch-channel-wx { color: #3d9a5f; border-color: color-mix(in srgb, #3d9a5f 38%, transparent); background: color-mix(in srgb, #3d9a5f 11%, transparent); }
+.ch-channel-qq { color: #5b83d6; border-color: color-mix(in srgb, #5b83d6 38%, transparent); background: color-mix(in srgb, #5b83d6 11%, transparent); }
+
+/* 状态胶囊：语义色圆点 + 文案。busy 态圆点呼吸，说明「在过渡、别走开」 */
+.ch-badge {
+  flex: none; display: inline-flex; align-items: center; gap: 6px;
+  font-size: var(--text-sm); font-weight: 550; padding: 4px 12px;
+  border-radius: var(--radius-full); border: 1px solid var(--border);
+  color: var(--text-secondary); background: var(--bg-sunken);
+}
+.ch-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .85; }
+.ch-badge-ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 42%, transparent); background: color-mix(in srgb, var(--success) 10%, transparent); }
+.ch-badge-warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn-text) 42%, transparent); background: color-mix(in srgb, var(--warn-text) 10%, transparent); }
+.ch-badge-busy { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, transparent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
+.ch-badge-muted { color: var(--text-subtle); border-style: solid; }
+.ch-badge-busy .ch-badge-dot { animation: ch-pulse 1.6s ease-in-out infinite; }
+@keyframes ch-pulse {
+  0%, 100% { opacity: .3; }
+  50% { opacity: 1; }
+}
+
+/* 提示条：info/success/warn/error 四态。正文保持可读色，图标与边框扛语义 */
+.ch-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  margin-top: var(--space-4); padding: 9px 12px;
+  border-radius: var(--radius-md); border: 1px solid var(--border);
+  font-size: var(--text-aux); line-height: 1.6; color: var(--text-secondary);
+  background: var(--bg-sunken);
+}
+.ch-note svg { flex: none; margin-top: 2px; opacity: .9; }
+.ch-note-info > svg { color: var(--accent); }
+.ch-note-success { border-color: color-mix(in srgb, var(--success) 32%, transparent); background: color-mix(in srgb, var(--success) 7%, transparent); }
+.ch-note-success > svg { color: var(--success); }
+.ch-note-warn { border-color: color-mix(in srgb, var(--warn-text) 36%, transparent); background: color-mix(in srgb, var(--warn-text) 8%, transparent); }
+.ch-note-warn > svg { color: var(--warn-text); }
+.ch-note-error { border-color: color-mix(in srgb, var(--danger) 38%, transparent); background: color-mix(in srgb, var(--danger) 7%, transparent); color: var(--danger); }
+.ch-note-error > svg { color: var(--danger); }
+
+/* 步骤条：done 打勾、current 实心呼吸点、todo 空心圈；rail 连线把「还差几步」画出来 */
+.ch-steps { list-style: none; margin: var(--space-5) 0 0; padding: 0; display: flex; flex-direction: column; }
+.ch-step { display: flex; gap: 10px; }
+.ch-step-rail { flex: none; display: flex; flex-direction: column; align-items: center; }
+.ch-step-marker {
+  flex: none; width: 18px; height: 18px; border-radius: 50%;
+  display: inline-flex; align-items: center; justify-content: center;
+  border: 1.5px solid var(--border); background: transparent; color: var(--success-soft);
+}
+.ch-step-done .ch-step-marker { background: var(--success); border-color: var(--success); }
+.ch-step-current .ch-step-marker { border-color: var(--accent); }
+.ch-step-core { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: ch-pulse 1.6s ease-in-out infinite; }
+.ch-step-line { flex: 1; width: 1.5px; min-height: 14px; margin: 2px 0; background: var(--border); }
+.ch-step-done .ch-step-line { background: color-mix(in srgb, var(--success) 55%, var(--border)); }
+.ch-step-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-bottom: 12px; }
+.ch-step:last-child .ch-step-copy { padding-bottom: 2px; }
+.ch-step-copy b { font-size: var(--text-base); font-weight: 550; color: var(--text); line-height: 1.5; }
+.ch-step-current .ch-step-copy b { color: var(--accent); }
+.ch-step-todo .ch-step-copy b { color: var(--text-muted); font-weight: 500; }
+.ch-step-copy small { font-size: var(--text-aux); color: var(--text-muted); line-height: 1.5; }
+
+/* 未连接空态：先讲清绑定能得到什么，再给唯一的下一步 */
+.ch-empty {
+  margin-top: var(--space-5); padding: var(--space-5);
+  border: 1px dashed var(--border); border-radius: var(--radius-lg); background: var(--bg-sunken);
+}
+.ch-empty-points { display: flex; flex-direction: column; gap: 8px; font-size: var(--text-aux); color: var(--text-secondary); line-height: 1.6; }
+.ch-empty-points > span::before {
+  content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--accent); opacity: .65; margin-right: 8px; vertical-align: 3px;
+}
+
+/* 危险区分层：解绑与日常开关隔开一条虚线，后果就地写明 */
+.ch-danger-row {
+  margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px dashed var(--border);
+  display: flex; align-items: baseline; gap: var(--space-4); flex-wrap: wrap;
+}
+.ch-danger-hint { font-size: var(--text-aux); color: var(--text-subtle); line-height: 1.5; }
 
 .ml-test {
   font-size: var(--text-sm); margin-top: 3px;

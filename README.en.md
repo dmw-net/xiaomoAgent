@@ -34,12 +34,14 @@ Xiaomo speaks through your model, but it **remembers what happened between you t
 
 | | |
 |---|---|
-| 🧠 **Long-term memory** | Things you mention in passing become “relationship events”. You said your stomach is weak, that you dislike suspense films, that you agreed to a Sunday movie — it can pick the thread up next time |
+| 🧠 **Long-term memory** | Things you mention in passing become “relationship events”, kept separately for private chats and each group. Say your stomach is weak, that you dislike suspense films, or that you agreed to a Sunday movie — it can pick the thread up in the right conversation |
+| 🧩 **Memory spaces** | Private chat and every QQ group have their own memory space, switchable from the contact profile with recall probes and visible boundaries |
+| 😄 **Emotes & media** | Images, videos, voice, files and emotes share one media library; emotes can be imported by folder, named automatically, searched by meaning and sent through QQ |
 | 💬 **Reaches out first** | Not random pings: when it speaks and what it says are planned items you can inspect and cancel. Quiet at night, with a daily cap |
 | 🕰️ **Timed reminders** | “Remind me to take my medicine at nine tomorrow” arrives as-is, on time |
 | 🎭 **Each contact is different** | Every contact has its own persona, relationship settings, memory and tone; they don't bleed into each other |
 | 🗣️ **Listens and speaks** | Voice messages, speech-to-text, reply read-aloud, image understanding (with the matching capability models configured) |
-| 🎨 **Draws** | Pictures mid-conversation; everything it draws lands in the contact's “Content library” |
+| 🎨 **Draws** | Pictures mid-conversation; everything it draws lands in the contact's and Settings' “Media library” |
 | 📱 **Works on your phone** | Open it in a phone browser on the same Wi-Fi; for access from outside, set up your own tunnel (see “Phone and remote access”) |
 | 🔒 **Your data, your machine** | Chats, memories and media stay local; only the content needed for a model call is sent to the provider you chose |
 
@@ -65,7 +67,7 @@ One glance at how things are running: whether the model connects, which capabili
 
 ### Settings
 
-Five groups: My profile / Models & capabilities / Experience & reminders / System & data / About. The main chat model and each capability (image understanding, image generation, speech-to-text, text-to-speech, memory extraction) can each use its own model. A contact's profile page lets you inspect memory recall and preview the persona, memories and recent conversation the next turn will use; the content library gathers images, videos and voice from works and chats, filterable by source and media type. The system group states exactly where your data is stored, what gets sent to the model, and when the last backup was taken, with an always-present “Media & storage” entry.
+Six groups: My profile / Models & capabilities / Media & emotes / Experience & reminders / System & data / About. The main chat model and each capability (image understanding, image generation, speech-to-text, text-to-speech, memory extraction, embeddings) can each use its own model. A contact's profile page lets you switch memory spaces, inspect recall and preview the persona, memories and recent conversation the next turn will use; the media library unifies generated works, chat media and emotes with folder, source, type, naming-status and semantic filters. The system group states exactly where your data is stored, what gets sent to the model, and when the last backup was taken, with an always-present “Media & storage” entry.
 
 <p align="center">
   <img src="docs/screenshots/settings-model.png" alt="Models & capabilities" />

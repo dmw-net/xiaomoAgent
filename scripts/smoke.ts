@@ -1900,14 +1900,14 @@ try {
   const voiceMaintenance = await (await fetch(`${BASE}/api/media/maintenance`)).json() as { all?: Array<{ url: string; mediaType?: string; sources?: Array<{ kind: string; messageId?: number }> }> };
   const voiceRow = voiceMaintenance.all?.find((m) => m.url === voiceUrl);
   check("媒体页把语音识别为语音消息并保留来源", voiceRow?.mediaType === "audio" && (voiceRow.sources ?? []).some((s) => s.kind === "voice" && s.messageId === voiceMsg?.id), JSON.stringify(voiceRow));
-  const contentAudioRes = await fetch(`${BASE}/api/content?contactId=default&filter=chat&media=audio&limit=100`);
+  const contentAudioRes = await fetch(`${BASE}/api/assets?contactId=default&view=chat&kind=audio&limit=100`);
   const contentAudio = await contentAudioRes.json() as {
-    assets?: Array<{ url: string; kind: string; durationMs?: number; transcript?: string; waveform?: number[] }>;
+    items?: Array<{ url: string; kind: string; durationMs?: number; detail?: { transcript?: string; waveform?: number[] } }>;
     kindCounts?: Record<string, number>;
   };
-  const contentVoice = contentAudio.assets?.find((a) => a.url === voiceUrl);
-  check("联系人内容库把语音作为可播放媒体返回", contentAudioRes.status === 200 && contentVoice?.kind === "audio"
-    && contentVoice.durationMs === 1200 && contentVoice.transcript === "今天有点累" && Array.isArray(contentVoice.waveform)
+  const contentVoice = contentAudio.items?.find((a) => a.url === voiceUrl);
+  check("媒体库把语音作为可播放媒体返回（转写与波形联表现取）", contentAudioRes.status === 200 && contentVoice?.kind === "audio"
+    && contentVoice.durationMs === 1200 && contentVoice.detail?.transcript === "今天有点累" && Array.isArray(contentVoice.detail?.waveform)
     && (contentAudio.kindCounts?.audio ?? 0) >= 1, JSON.stringify(contentVoice));
   const voiceName = voiceUrl.slice("/media/".length);
   const voiceDelete = await (await jsonPost("/api/media/maintenance", { op: "delete-message", names: [voiceName] })).json() as { ok?: boolean; changed?: number };
@@ -2652,6 +2652,59 @@ try {
     const remTask = db.prepare(`SELECT status, result FROM proactive_tasks WHERE id = ?`).get(remRow!.id) as { status: string; result: string };
     check("提醒执行留痕", remTask.status === "done" && remTask.result.includes("到点提醒"));
 
+    // 目标会话：一条主动消息只说给一个地方听。
+    // 从前是「一次生成、到处群发」，群记忆还会漏进主动召回——这里把目标选择与召回收窄一起钉住。
+    {
+      const { ensureConversation, setConversationEnabled, setConversationGroupProactive, localConversationId } =
+        await import("../src/conversations.ts");
+      const { insertMessage, lastUserMessageAtAnyConversation } = await import("../src/agent.ts");
+      const pro = await import("../src/proactive.ts");
+      const { addMemoryEvent, recall } = await import("../src/memory.ts");
+      type Task = Parameters<typeof pro.resolveProactiveTarget>[1];
+      const taskOf = (kind: "care" | "reminder", conversationId: string | null): Task =>
+        ({ id: 0, contact_id: c5, focus: "", kind, due_at: 0, status: "pending", postpone_count: 0, result: null, error: null, created_at: 0, finished_at: null, conversation_id: conversationId }) as unknown as Task;
+
+      const groupConv = ensureConversation({
+        contactId: c5, channel: "qq", kind: "group", externalId: "smoke-target-group",
+        accountId: "smoke-account", title: "目标群",
+      });
+      setConversationGroupProactive(groupConv.id, true);
+      const localId = localConversationId(c5);
+      // 造动静：私聊一句（旧）、群里一句（新）——care 的动态目标该跟着最近的走。
+      insertMessage({ channel: "web", role: "user", text: "本地旧的一句", contactId: c5, conversationId: localId });
+      insertMessage({ channel: "qq", role: "user", text: "群里冒个泡", contactId: c5, conversationId: groupConv.id, senderId: "member-x", senderName: "某成员" });
+
+      const careTarget = pro.resolveProactiveTarget(c5, taskOf("care", null));
+      check("care 按最近动静选目标（群比私聊新 → 选群）",
+        careTarget.conversationId === groupConv.id && careTarget.kind === "group", JSON.stringify(careTarget));
+      const remInGroup = pro.resolveProactiveTarget(c5, taskOf("reminder", groupConv.id));
+      check("reminder 在哪个会话立的就在哪个会话兑现", remInGroup.conversationId === groupConv.id);
+      const remNoConv = pro.resolveProactiveTarget(c5, taskOf("reminder", null));
+      check("没记会话的 reminder 落回主私聊", remNoConv.conversationId === localId && remNoConv.kind === "private");
+      // 任务记的会话已停收：不能硬投，落回动态选择（群被排除后只剩主私聊）。
+      setConversationEnabled(groupConv.id, false);
+      const staleConv = pro.resolveProactiveTarget(c5, taskOf("care", groupConv.id));
+      check("记着的会话不可用时落回动态选择", staleConv.conversationId === localId, JSON.stringify(staleConv));
+      setConversationEnabled(groupConv.id, true);
+
+      // 静默时长是全渠道口径：群里一分钟前刚说话，就不该按本机会话算成"三天没聊"。
+      const anyAt = lastUserMessageAtAnyConversation(c5);
+      check("静默时长按全渠道最近一次发言", anyAt !== null && anyAt >= Date.now() - 60_000);
+
+      // 记忆召回按目标会话收窄：群记忆不出群，私聊也看不见群里记下的事。
+      const gid = addMemoryEvent({
+        kind: "plan", content: "目标群约好周五一起开黑", subject: "我们", contactId: c5,
+        scopeKind: "conversation", scopeConversationId: groupConv.id, sourceConversationId: groupConv.id,
+      });
+      const inGroup = recall(c5, "周五 开黑", 8, null, { conversationId: groupConv.id });
+      const inPrivate = recall(c5, "周五 开黑", 8, null, { conversationId: localId });
+      check("群会话记忆只在目标群可见", inGroup.some((m) => m.id === gid) && !inPrivate.some((m) => m.id === gid));
+
+      check("主动判断提示词：群场合点明场合与分寸",
+        pro.buildDecideSystem("他", false, { conversationId: groupConv.id, kind: "group", title: "目标群" }).includes("目标群"));
+      check("主动判断提示词：未给目标时不点群", !pro.buildDecideSystem("他", false).includes("QQ 群「"));
+    }
+
     // 每日上限按联系人（上限 2：此刻 echo 主动说过 0 次也应可说）
     const gates5 = await (await fetch(`${BASE}/api/proactive/status?contactId=${encodeURIComponent(c5)}`)).json();
     check("状态页闸门显示联系人级上限", gates5.gates.daily.detail.includes("上限 2"), gates5.gates.daily.detail);
@@ -2673,9 +2726,9 @@ try {
       `卡=${s0.capabilitiesReady?.memoryExtract} 主力=${s0.modelReady}`);
     // 顺序是界面秩序的唯一来源：后端这张表动了，前端 CAPABILITY_GROUPS 与状态页总览必须同序，
     // 否则同一个能力在两个页面上位置不一样（图像生成就曾经孤零零挂在末尾）。
-    check("能力顺序：记忆提取 → 图片理解 → 图像生成 → 语音识别 → 语音合成 → 向量化记忆",
+    check("能力顺序：记忆提取 → 向量化记忆 → 图片理解 → 图像生成 → 语音识别 → 语音合成",
       Object.keys(s0.capabilities).join(",")
-      === "memoryExtract,imageVision,imageGeneration,speechToText,textToSpeech,embedding",
+      === "memoryExtract,embedding,imageVision,imageGeneration,speechToText,textToSpeech",
       Object.keys(s0.capabilities).join(","));
     // 记忆提取这张卡的候选就是「主对话模型」那批档：它不存端点档，只指一份过去。
     const memProf = await jsonPost("/api/settings/profiles", {
@@ -3811,14 +3864,10 @@ try {
         const { addMemoryEvent, recallExplained, promoteMemoryEvent } = await import("../src/memory.ts");
         const aSecretId = addMemoryEvent({ kind: "fact", content: "A群暗号是山楂", contactId: qqCid, scopeKind: "conversation", scopeConversationId: groupA.id, sourceConversationId: groupA.id });
         addMemoryEvent({ kind: "fact", content: "B群暗号是橘子", contactId: qqCid, scopeKind: "conversation", scopeConversationId: groupB.id, sourceConversationId: groupB.id });
-        addMemoryEvent({ kind: "preference", content: "张三只喝无糖茶", subject: "张三", contactId: qqCid, scopeKind: "member", scopeConversationId: groupA.id, subjectId: "M-1", subjectName: "张三", sourceConversationId: groupA.id });
-        addMemoryEvent({ kind: "preference", content: "李四只喝甜茶", subject: "李四", contactId: qqCid, scopeKind: "member", scopeConversationId: groupA.id, subjectId: "M-2", subjectName: "李四", sourceConversationId: groupA.id });
         const inA = recallExplained(qqCid, "暗号 山楂 橘子", 20, { scope: { conversationId: groupA.id } }).events.map((e) => e.content);
         const inB = recallExplained(qqCid, "暗号 山楂 橘子", 20, { scope: { conversationId: groupB.id } }).events.map((e) => e.content);
-        const memberA = recallExplained(qqCid, "茶", 20, { scope: { conversationId: groupA.id, memberId: "M-1" } }).events.map((e) => e.content);
         check("会话级记忆只在所属群召回", inA.includes("A群暗号是山楂") && !inA.includes("B群暗号是橘子")
           && inB.includes("B群暗号是橘子") && !inB.includes("A群暗号是山楂"), JSON.stringify({ inA, inB }));
-        check("成员级记忆只给当前群成员", memberA.includes("张三只喝无糖茶") && !memberA.includes("李四只喝甜茶"), JSON.stringify(memberA));
         promoteMemoryEvent(aSecretId, qqCid);
         const inBAfterPromote = recallExplained(qqCid, "山楂", 20, { scope: { conversationId: groupB.id } }).events.map((e) => e.content);
         check("手动提升后会话记忆变为联系人全局记忆", inBAfterPromote.includes("A群暗号是山楂"), JSON.stringify(inBAfterPromote));
@@ -3853,11 +3902,16 @@ try {
         ).get(groupA?.id ?? "") as { c: number }).c) === historyBeforeLeave,
         JSON.stringify(rejoinedA));
 
+      // 清除历史的口径（2026-10 改）：在收的群同样允许清历史（清完继续收），
+      // 防手滑由界面二次确认负责——不再按 left_at 拦（见 conversations.ts clearQQGroupHistory）。
       const activeClear = await fetch(
         `${BASE}/api/conversations/${encodeURIComponent(groupA?.id ?? "")}/history?contactId=${encodeURIComponent(qqCid)}`,
         { method: "DELETE" },
       );
-      check("仍在群内时不能清除历史", activeClear.status === 409, `status=${activeClear.status}`);
+      const activeClearBody = await activeClear.json();
+      check("在群内也可以手动清除历史（清完继续收）",
+        activeClear.status === 200 && activeClearBody.messages === historyBeforeLeave,
+        JSON.stringify(activeClearBody));
       sock.emit({ op: 0, t: "GROUP_DEL_ROBOT", s: 11, d: { group_openid: "GROUP-A", group_name: "测试群 A" } });
       await qqNap(80);
       const clearRes = await fetch(
@@ -3868,8 +3922,8 @@ try {
       const afterClearCount = Number((db.prepare(
         "SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?",
       ).get(groupA?.id ?? "") as { c: number }).c);
-      check("已离群群可以手动清除历史",
-        clearRes.status === 200 && clearBody.messages === historyBeforeLeave && afterClearCount === 0,
+      check("已清空的群再清一次是幂等空操作",
+        clearRes.status === 200 && clearBody.messages === 0 && afterClearCount === 0,
         JSON.stringify(clearBody));
       const clearedSnapshot = qq.snapshotFor(qqCid).conversations.find((c) => c.id === groupA?.id);
       check("清除历史保留群会话外壳并显示 0 条",

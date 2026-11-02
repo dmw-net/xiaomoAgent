@@ -25,6 +25,7 @@ import { spawnSync } from "node:child_process";
 const root = join(import.meta.dirname, "..");
 const distDir = join(root, "frontend", "dist");
 const serverMjs = join(root, "dist-desktop", "server.mjs");
+const backendDepsDir = join(root, "dist-desktop", "backend-deps", "node_modules");
 const unsigned = process.argv.includes("--unsigned");
 
 const fail = (msg) => {
@@ -49,6 +50,12 @@ if (!existsSync(distDir)) fail(`找不到 ${distDir}——先跑 npm --prefix fr
 // resource_dir 里那份副本没人读，校验它抓不到任何篡改。
 const targets = [
   ["backend/src/server.mjs", serverMjs],
+  // Sharp 的原生 .node/DLL 无法内联进单文件；它们会被复制到安装包的 backend/node_modules，
+  // 因此也必须逐文件进入签名清单，否则 verify-staged 会把它们视为未校验资源。
+  ...(existsSync(backendDepsDir) ? walk(backendDepsDir).map((f) => [
+    "backend/node_modules/" + relative(backendDepsDir, f).split(sep).join("/"),
+    f,
+  ]) : []),
   ...walk(distDir).map((f) => [
     "backend/frontend/dist/" + relative(distDir, f).split(sep).join("/"),
     f,

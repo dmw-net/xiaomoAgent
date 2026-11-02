@@ -11,9 +11,11 @@
   &nbsp;·&nbsp;
   <a href="https://github.com/dmw-net/xiaomoAgent/releases">All releases</a>
   &nbsp;·&nbsp;
+  <a href="README.md"><b>🌐 中文</b></a>
+  &nbsp;·&nbsp;
   <a href="LICENSE">Apache-2.0</a>
   <br />
-  <sub>Windows 10 / 11 (64-bit) · Chats and API keys stay on your own machine · <a href="README.md">中文</a></sub>
+  <sub>Windows 10 / 11 (64-bit) · Chats and API keys stay on your own machine</sub>
 </p>
 
 <p align="center">

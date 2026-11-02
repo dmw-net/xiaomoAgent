@@ -11,9 +11,11 @@
   &nbsp;·&nbsp;
   <a href="https://github.com/dmw-net/xiaomoAgent/releases">所有版本</a>
   &nbsp;·&nbsp;
+  <a href="README.en.md"><b>🌐 English</b></a>
+  &nbsp;·&nbsp;
   <a href="LICENSE">Apache-2.0</a>
   <br />
-  <sub>Windows 10 / 11（64 位）· 聊天记录与密钥都留在你自己机器上 · <a href="README.en.md">English</a></sub>
+  <sub>Windows 10 / 11（64 位）· 聊天记录与密钥都留在你自己机器上</sub>
 </p>
 
 <p align="center">

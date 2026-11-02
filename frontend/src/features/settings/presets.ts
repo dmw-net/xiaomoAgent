@@ -29,6 +29,7 @@ export type CapabilityPresetGroup = {
 
 /**
  * 顺序与后端 CAPABILITY_NAMES 严格一致：记忆提取排第一（它最常配、也最容易配错），
+ * 向量化记忆排第二（和记忆提取同属记忆链路，紧挨着好理解），
  * 然后按「看得见的」两张（图片理解、图像生成）再「听得到的」两张（语音识别、语音合成）——
  * 从前图像生成孤零零挂在末尾，夹在两个语音中间看着像语音的子项。
  */
@@ -41,6 +42,19 @@ export const CAPABILITY_GROUPS: CapabilityPresetGroup[] = [
     modelHint: "如 deepseek-chat / doubao-1-5-lite-32k",
     followsMain: true,
     presets: CHAT_PRESETS,
+  },
+  {
+    name: "embedding",
+    title: "向量化记忆",
+    desc: "记忆召回的语义半边：配上之后，说话和记忆按含义匹配，不再只靠字面重合（「发张自拍」也能想起「照片」）。本地跑 Ollama 也行；不配则退回纯关键词召回，一切照旧。",
+    endpoint: "/embeddings",
+    modelHint: "如 bge-m3 / text-embedding-3-small",
+    followsMain: false,
+    presets: [
+      { label: "本地 Ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "bge-m3" },
+      { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "text-embedding-3-small" },
+      { label: "硅基流动", baseUrl: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3" },
+    ],
   },
   {
     name: "imageVision",
@@ -95,19 +109,6 @@ export const CAPABILITY_GROUPS: CapabilityPresetGroup[] = [
     presets: [
       { label: "OpenAI TTS", baseUrl: "https://api.openai.com/v1", model: "tts-1", voice: "alloy" },
       { label: "硅基流动 CosyVoice", baseUrl: "https://api.siliconflow.cn/v1", model: "FunAudioLLM/CosyVoice2-0.5B" },
-    ],
-  },
-  {
-    name: "embedding",
-    title: "向量化记忆",
-    desc: "记忆召回的语义半边：配上之后，说话和记忆按含义匹配，不再只靠字面重合（「发张自拍」也能想起「照片」）。本地跑 Ollama 也行；不配则退回纯关键词召回，一切照旧。",
-    endpoint: "/embeddings",
-    modelHint: "如 bge-m3 / text-embedding-3-small",
-    followsMain: false,
-    presets: [
-      { label: "本地 Ollama", baseUrl: "http://127.0.0.1:11434/v1", model: "bge-m3" },
-      { label: "OpenAI", baseUrl: "https://api.openai.com/v1", model: "text-embedding-3-small" },
-      { label: "硅基流动", baseUrl: "https://api.siliconflow.cn/v1", model: "BAAI/bge-m3" },
     ],
   },
 ];

@@ -7,8 +7,8 @@ export type MemoryEvent = {
   content: string;
   created_at: number;
   last_used_at: number | null;
-  /** global=联系人全局；conversation=当前会话；member=当前群成员。 */
-  scope_kind?: "global" | "conversation" | "member";
+  /** global=跨所有对话；conversation=只属于某一段会话（主私聊或某个群）。 */
+  scope_kind?: "global" | "conversation";
   scope_conversation_id?: string | null;
   subject_id?: string | null;
   subject_name?: string | null;
@@ -36,4 +36,28 @@ export type RecallResult = {
   scores?: Record<string, number>;
   matched?: Record<string, string[]>;
   err?: string;
+};
+
+/**
+ * 记忆空间：一条记忆归属的对话范围，只有两层——跨所有对话的全局，或某一段会话
+ * （主私聊 / 某个群）。清单按**归属分区**切（一条只落在一个空间里），与召回的
+ * 可见范围不同：全局记忆在任何会话都能被想起，但它在清单里只出现在「全局」那一栏。
+ */
+export type MemorySpaceSelection =
+  | { kind: "all" }
+  | { kind: "global" }
+  | { kind: "conversation"; conversationId: string };
+
+export type MemorySpaceGroupCount = {
+  conversationId: string;
+  title: string;
+  count: number;
+  left: boolean;
+};
+
+/** GET /api/memory/spaces 的返回：这位联系人的记忆按空间盘一遍。 */
+export type MemorySpaceInventory = {
+  global: number;
+  private: { conversationId: string; title: string; count: number };
+  groups: MemorySpaceGroupCount[];
 };

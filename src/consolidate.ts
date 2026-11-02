@@ -27,9 +27,27 @@ import {
   listEventsForConsolidation,
   setMemoryValidUntil,
   updateMemoryEvent,
+  type MemoryEvent,
 } from "./memory.ts";
+import { listConversations } from "./conversations.ts";
 import { memoryAgeLabel, ownerPronoun } from "./persona.ts";
 import type { ChatMessage } from "./model.ts";
+
+/**
+ * 这条记忆属于哪个空间——整理必须知道，否则它会拿「全局」的条目去合并某个群的事：
+ * 合并只保留 keep 那条的归属，被 drop 的那条连同它的边界一起消失，
+ * 于是群里的事被升成全局记忆、在私聊里说出来；反方向（全局被并进某个群）就是私聊里失忆。
+ */
+function spaceTag(e: MemoryEvent, titles: Map<string, string>): string {
+  if (e.scope_kind === "conversation") return `【${titles.get(e.scope_conversation_id ?? "") ?? "某个会话"}】`;
+  return "【全局】";
+}
+
+/** 归属完全一致才算同一个空间：作用域与会话两者都要相同。 */
+export function sameMemorySpace(a: MemoryEvent, b: MemoryEvent): boolean {
+  return a.scope_kind === b.scope_kind
+    && (a.scope_conversation_id ?? "") === (b.scope_conversation_id ?? "");
+}
 
 /** 距上次整理新增这么多条关系事件就提前整理一次，别等满一周让重复条目占满召回预算。 */
 const CONSOLIDATE_BACKLOG = 20;
@@ -66,6 +84,8 @@ export function buildConsolidateSystem(pron: string, ownerPron: string): string 
  "bond":{"stage":"熟悉","warmth":62,"mood":"平静"} 或 null}
 
 规则：
+- 每条前面标了归属空间（【全局】/【群名】/【群名 · 某人】）。**只有同一个空间的才能合并**，
+  跨空间的即使说的是同一件事也别并——合并会抹掉被并那条的归属，把某个人的私事变成全局记忆。
 - merges：同一件事记了多遍、或一条被另一条完全取代时合并。keep 保留最重要的 id，
   content 是合并后 ≤40 字的独立事实（涉及日期必须写成绝对日期）。拿不准就不合并。
 - expire：明显已经翻篇的事（结束的项目、过去的临时状态）列 id 即可，不删内容、只标过期。
@@ -105,10 +125,11 @@ async function runConsolidation(
 ): Promise<ConsolidationResult> {
   const events = listEventsForConsolidation(contactId, 150);
   const now = Date.now();
+  const titles = new Map(listConversations(contactId).map((c) => [c.id, c.title === "" ? "QQ 群" : c.title]));
   const listText = events
     .map((e) => {
       const expired = e.valid_until !== null && e.valid_until <= now ? "（已过期）" : "";
-      return `- id=${e.id} ${e.kind}（${memoryAgeLabel(e.created_at, now)}）${expired}${e.content}`;
+      return `- id=${e.id} ${e.kind}（${memoryAgeLabel(e.created_at, now)}）${spaceTag(e, titles)}${expired}${e.content}`;
     })
     .join("\n");
   const bondText = currentBond.stage === "" ? "（还没建立）" : JSON.stringify(currentBond);
@@ -132,6 +153,8 @@ async function runConsolidation(
   });
 
   const validIds = new Set(events.map((e) => e.id));
+  const byId = new Map(events.map((e) => [e.id, e]));
+  let crossSpaceRejected = 0;
   const merged = withTx(() => {
     let mergedCount = 0;
     let expiredCount = 0;
@@ -141,8 +164,14 @@ async function runConsolidation(
       const content = typeof m?.content === "string" ? m.content.trim() : "";
       const drop = Array.isArray(m?.drop) ? m.drop.map(Number).filter((n) => validIds.has(n)) : [];
       if (!validIds.has(keep) || droppedInRun.has(keep) || content === "" || content.length > 60 || drop.length === 0) continue;
+      // 跨空间的一律不并（清单里每条都标了归属）：模型看不出「这条是某个人的私事」，
+      // 而合并会把被并方的归属抹掉。宁可留着重复，也不能把边界抹平。
+      const keepRow = byId.get(keep)!;
+      const sameSpaceDrop = drop.filter((id) => sameMemorySpace(keepRow, byId.get(id)!));
+      crossSpaceRejected += drop.length - sameSpaceDrop.length;
+      if (sameSpaceDrop.length === 0) continue;
       if (!updateMemoryEvent(keep, contactId, { content })) continue;
-      for (const id of drop) {
+      for (const id of sameSpaceDrop) {
         if (id === keep) continue;
         deleteMemoryEvent(id, contactId);
         droppedInRun.add(id);
@@ -188,6 +217,7 @@ async function runConsolidation(
   applyConsolidation(contactId, output);
 
   const note = `整理完成：合并 ${merged.mergedCount} 组、标过期 ${merged.expiredCount} 条`
+    + (crossSpaceRejected > 0 ? `、按空间边界拒并 ${crossSpaceRejected} 条` : "")
     + `、生活线${lifelineUpdated ? "已刷新" : "未动"}、温度计${bondUpdated ? "已更新" : "未动"}`;
   console.log(`[consolidate] ${contactId} ${note}`);
   return {

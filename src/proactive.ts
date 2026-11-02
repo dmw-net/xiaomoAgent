@@ -23,7 +23,16 @@ import { qq } from "./qq.ts";
 import { capabilityReady, modelConfig, modelReadyNow, personaConfig } from "./settings.ts";
 import { db, kvGet, kvSet } from "./db.ts";
 import { callModelJson, contactModelSettings, generateImage, IMAGE_DAILY_LIMIT, imagesToday } from "./model.ts";
-import { estimateTokens, historyTokenCapFor, inputBudget, lastUserMessageAt, recentMessages, trimHistoryToBudget } from "./agent.ts";
+import {
+  estimateTokens,
+  historyTokenCapFor,
+  inputBudget,
+  insertMessage,
+  lastUserMessageAt,
+  lastUserMessageAtAnyConversation,
+  recentMessages,
+  trimHistoryToBudget,
+} from "./agent.ts";
 import { recall } from "./memory.ts";
 import { buildSystemPrompt, ownerPronoun } from "./persona.ts";
 import { companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getContact, listContacts } from "./contacts.ts";
@@ -31,6 +40,7 @@ import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
 import { isAssistant } from "./assistant.ts";
 import { maybeRunConsolidation } from "./consolidate.ts";
 import { getChannel } from "./channels/types.ts";
+import { getConversation, listProactiveCandidates, localConversationId } from "./conversations.ts";
 import type { ChatMessage } from "./model.ts";
 
 export type ProactiveDecision = {
@@ -104,9 +114,12 @@ export type ProactiveTask = {
   error: string | null;
   created_at: number;
   finished_at: number | null;
+  /** 这条打算指向的会话：reminder 在哪个会话立的就在哪个会话兑现；NULL = 到点再按最近动静选。 */
+  conversation_id: string | null;
 };
 
-const TASK_COLUMNS = "id, contact_id, focus, kind, due_at, status, postpone_count, result, error, created_at, finished_at";
+const TASK_COLUMNS =
+  "id, contact_id, focus, kind, due_at, status, postpone_count, result, error, created_at, finished_at, conversation_id";
 
 /** 面板的两个页签各自查自己的那一堆：待执行 / 已执行（含失败、跳过、取消）。 */
 export type TaskState = "pending" | "history";
@@ -181,11 +194,17 @@ export function pendingSoonByContact(now = Date.now()): Map<string, PendingSoonT
   return out;
 }
 
-function insertTask(contactId: string, focus: string, dueAt: number, kind: ProactiveTask["kind"] = "care"): ProactiveTask {
+function insertTask(
+  contactId: string,
+  focus: string,
+  dueAt: number,
+  kind: ProactiveTask["kind"] = "care",
+  conversationId: string | null = null,
+): ProactiveTask {
   const createdAt = Date.now();
   const result = db.prepare(
-    `INSERT INTO proactive_tasks (contact_id, focus, due_at, kind, created_at) VALUES (?, ?, ?, ?, ?)`,
-  ).run(contactId, focus, dueAt, kind, createdAt);
+    `INSERT INTO proactive_tasks (contact_id, focus, due_at, kind, conversation_id, created_at) VALUES (?, ?, ?, ?, ?, ?)`,
+  ).run(contactId, focus, dueAt, kind, conversationId, createdAt);
   return {
     id: Number(result.lastInsertRowid),
     contact_id: contactId, focus, kind, due_at: dueAt, status: "pending",
@@ -193,6 +212,7 @@ function insertTask(contactId: string, focus: string, dueAt: number, kind: Proac
     // 回读也要给真实的建立时刻：从前这里返回 dueAt，于是「刚立的一条」在界面上
     // 显示成建在未来（立一个明晚的提醒，创建时间就是明晚）。
     created_at: createdAt, finished_at: null,
+    conversation_id: conversationId,
   };
 }
 
@@ -275,8 +295,12 @@ export function restoreProactiveTask(id: number, contactId?: string): boolean {
 
 /** 主动性判断指令：ownerPron = 用户的代词（owner.gender），全文一致。
  *  imageGenOn 决定要不要向模型声明 with_image 这个字段——没开就不声明，
- *  和工具侧「不声明的工具模型调不到」同一套口径。 */
-export function buildDecideSystem(ownerPron: string, imageGenOn = false): string {
+ *  和工具侧「不声明的工具模型调不到」同一套口径。
+ *  target 告诉模型这条话会发到哪：群场合要说得像群场合（不引用私聊里的内容）。 */
+export function buildDecideSystem(ownerPron: string, imageGenOn = false, target?: ProactiveTarget): string {
+  const venue = target?.kind === "group"
+    ? `\n\n这次的开场会发到 QQ 群「${target.title || "未命名群"}」里，其他群成员看得到：像在群里说话，不要引用你们私聊里聊过的内容，也不要提某位成员私下说过的事。`
+    : "";
   return `你要判断：现在该不该主动给${ownerPron}发一条消息，并顺便想好下次要关注什么。
 先简要评估关键证据；如果出现新证据，可以修正判断。证据足够后就定下来，不要在已经确认的信息上反复绕圈，随后输出 JSON。
 
@@ -287,7 +311,7 @@ export function buildDecideSystem(ownerPron: string, imageGenOn = false): string
 - should/text：现在是否开口、说什么。该主动联系的情形：${ownerPron}提过的事有了后续、约定的时间到了、${ownerPron}明显情绪低落、太久没联系了。不该联系的情形：没有新内容可说、上次是你主动且没过多久、只是想说什么"在吗"之类的空话。宁可不发也不要发空话，text 控制在 40 字以内。
 - focus：**必填**。下次检查时想关注的一件具体事（比如「${ownerPron}答应周五给答复，到时候问问」「${ownerPron}最近加班很凶，看看这周缓过来没有」）。给不出就写「常规关心：看看你最近的状态」。
 - nextCheckHours：下次检查放在几小时后（1 到 24 的整数）。接近约定时间就设小一点，没有明确节点就 6-12。${imageGenOn ? `
-- with_image / image_prompt：这一条值不值得配一张图（画一张约 8 秒、有每日张数上限，所以只在真的想给他看点什么的时候才 true）。image_prompt 用中文写画面：主体 / 场景 / 风格 / 光线。` : ""}`;
+- with_image / image_prompt：这一条值不值得配一张图（画一张约 8 秒、有每日张数上限，所以只在真的想给他看点什么的时候才 true）。image_prompt 用中文写画面：主体 / 场景 / 风格 / 光线。` : ""}${venue}`;
 }
 
 export async function runProactiveCheck(
@@ -329,19 +353,17 @@ async function runProactiveCheckInner(
   let task = dueTask(contactId);
 
   // 到点提醒（reminder）：不询问模型、不吃每日配额——立下的承诺必须兑现，
-  // 免打扰时段已经在上面的硬闸门里顺延过了。
+  // 免打扰时段已经在上面的硬闸门里顺延过了。在哪个会话立的，就在哪个会话兑现；
+  // 没记会话的旧数据落回主私聊（提醒是对一个人的承诺，不替他决定发进哪个群）。
   if (task?.kind === "reminder") {
-    const channel = getChannel("web");
-    if (!channel) {
+    const reminderTarget = resolveProactiveTarget(contactId, task);
+    if (reminderTarget.kind === "private" && !getChannel("web")) {
       finishTask(task.id, "failed", "没有可用通道", "channel missing");
       return { spoken: false, reason: "提醒送达失败：没有可用通道" };
     }
-    await channel.deliver({ text: task.focus, kind: "proactive", contactId });
-    void wechat.deliverToContact(contactId, task.focus, { proactive: true });
-    void qq.deliverToContact(contactId, task.focus, { proactive: true });
-    void qq.deliverProactiveToGroup(contactId, task.focus);
-    finishTask(task.id, "done", `到点提醒已送达：${task.focus.slice(0, 40)}`);
-    console.log(`[proactive] 到点提醒送达（${trigger}）：${task.focus.slice(0, 40)}`);
+    await deliverProactiveToTarget(contactId, reminderTarget, task.focus, []);
+    finishTask(task.id, "done", `到点提醒已送达${reminderTarget.kind === "group" ? `（群「${reminderTarget.title || "未命名群"}」）` : ""}：${task.focus.slice(0, 40)}`);
+    console.log(`[proactive] 到点提醒送达（${trigger} → ${reminderTarget.kind === "group" ? reminderTarget.title || "群" : "私聊"}）：${task.focus.slice(0, 40)}`);
     return { spoken: true, reason: "到点提醒", text: task.focus };
   }
 
@@ -357,13 +379,15 @@ async function runProactiveCheckInner(
   const spokenToday = spokenCountToday(contactId);
   const dailyLimit = effectiveDailyLimit(contactId);
   const quotaLeft = spokenToday < dailyLimit;
+  // 目标会话在这里就定下来：判断的上下文（历史、记忆）与稍后的投递用的是同一个。
+  const target = resolveProactiveTarget(contactId, task);
 
   let decision: DecisionOutput;
   try {
     // 联系人维度就绪判定：全局 echo 但本联系人绑了可用档时，也要真判，不能回落 echo。
     const effective = contactModelSettings(contactId) ?? modelConfig();
     decision = modelReadyNow(effective)
-      ? await decideWithModel(contactId, task.focus, task.due_at, idleMinutes, spokenToday, dailyLimit)
+      ? await decideWithModel(contactId, task.focus, task.due_at, idleMinutes, spokenToday, dailyLimit, target)
       : echoDecision(idleMinutes, quotaLeft, spokenToday, dailyLimit);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -377,8 +401,7 @@ async function runProactiveCheckInner(
   const cleanText = decision.text?.trim() ?? "";
 
   if (decision.should && cleanText !== "" && quotaLeft) {
-    const channel = getChannel("web");
-    if (!channel) {
+    if (target.kind === "private" && !getChannel("web")) {
       finishTask(task.id, "failed", "没有可用通道", "channel missing");
       return { spoken: false, reason: "没有可用通道" };
     }
@@ -395,28 +418,12 @@ async function runProactiveCheckInner(
         console.warn(`[proactive] 想配图但没画成，这句只发文字：${error instanceof Error ? error.message : String(error)}`);
       }
     }
-    await channel.deliver({
-      text: cleanText, kind: "proactive", contactId,
-      ...(images.length > 0 ? { attachments: images } : {}),
-    });
-    // 绑定过微信的联系人，同一句投到微信。微信这条链路仍发不出媒体，
-    // 带图就在文字里说破，免得那张画凭空消失。QQ 现在能真正发图了，不再需要这句兜底。
-    void wechat.deliverToContact(
-      contactId,
-      images.length > 0 ? `${cleanText}\n（画了一张图，微信发不出去，在这个应用里看）` : cleanText,
-      { proactive: true },
-    );
-    const qqMedia = images.map((url) => ({ url }));
-    if (qqMedia.length > 0) {
-      void qq.deliverMediaToContact(contactId, cleanText, qqMedia, { proactive: true });
-    } else {
-      void qq.deliverToContact(contactId, cleanText, { proactive: true });
-    }
-    void qq.deliverProactiveToGroup(contactId, cleanText, qqMedia);
+    await deliverProactiveToTarget(contactId, target, cleanText, images);
     markSpokenToday(contactId);
-    finishTask(task.id, "done", `已发送：${cleanText.slice(0, 40)}（${decision.reason}）`);
+    const where = target.kind === "group" ? `群「${target.title || "未命名群"}」` : "私聊";
+    finishTask(task.id, "done", `已发送 → ${where}：${cleanText.slice(0, 40)}（${decision.reason}）`);
     scheduleNext(contactId, decision.focus, decision.nextCheckHours);
-    console.log(`[proactive] 主动说了一句（${trigger}）：${decision.reason}`);
+    console.log(`[proactive] 主动说了一句（${trigger} → ${where}）：${decision.reason}`);
     return { spoken: true, reason: decision.reason, text: cleanText };
   }
 
@@ -458,7 +465,9 @@ function dueTask(contactId: string): ProactiveTask | null {
 }
 
 function idleMinutesNow(contactId: string): number {
-  const lastUserAt = lastUserMessageAt(contactId);
+  // 判断「他多久没说话」用跨会话口径：他在 QQ 私聊/群里刚说过话，
+  // 就不该按本机会话算成"三天没聊"——那会直接进主动判断的提示词。
+  const lastUserAt = lastUserMessageAtAnyConversation(contactId);
   return lastUserAt === null ? Number.POSITIVE_INFINITY : Math.floor((Date.now() - lastUserAt) / 60_000);
 }
 
@@ -555,6 +564,87 @@ export function formatDue(dueAt: number, now = Date.now()): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${week} ${pad(d.getHours())}:${pad(d.getMinutes())}（已到期 ${mins} 分钟）`;
 }
 
+// ── 目标会话：一条主动消息只说给一个地方听 ──────────────────────────
+//
+// 从前的做法是「一次生成、到处群发」：同一句文案同时进本机私聊、微信、QQ 私聊，
+// 还原样发进每一个勾选了主动权限的群——私聊里才合适的话进了群，A 群里某位成员的
+// 记忆可能被写进发到 B 群的话里。现在先确定「说给谁听」，再决定用什么上下文：
+// 判断（该不该说）看的是全渠道元信息（静默时长、配额）——那是对"这个人"的判断；
+// 生成（说什么）与投递只对目标会话，记忆召回的 scope 也按它收窄。
+
+export type ProactiveTarget = {
+  conversationId: string;
+  kind: "private" | "group";
+  title: string;
+};
+
+/**
+ * 为一条任务选定目标会话。
+ * 1) 任务自己记着会话（reminder 在哪个会话立的，就在哪个会话兑现）——
+ *    但会话已退群/停用/被删时不能硬投，落回下面的动态选择；
+ * 2) care 按最近动静选：主私聊与开了主动权限的群里，挑最近有动静的那段
+ *    （listProactiveCandidates 已按 activeAt 排好序）；都没聊过就回主私聊。
+ * reminder 没记会话时偏向主私聊：提醒是对一个人的承诺（"提醒我吃药"），
+ * 拿不准就发私聊，不该替他决定发进哪个群。
+ * （导出仅供 smoke 回归直接验证目标选择规则。）
+ */
+export function resolveProactiveTarget(contactId: string, task: ProactiveTask): ProactiveTarget {
+  const remembered = task.conversation_id !== null ? getConversation(task.conversation_id) : null;
+  if (remembered && remembered.contact_id === contactId && remembered.enabled && remembered.left_at === null) {
+    return { conversationId: remembered.id, kind: remembered.kind, title: remembered.title };
+  }
+  const localId = localConversationId(contactId);
+  if (task.kind === "reminder") {
+    return { conversationId: localId, kind: "private", title: getConversation(localId)?.title ?? "" };
+  }
+  const best = listProactiveCandidates(contactId)[0];
+  if (best) return { conversationId: best.id, kind: best.kind, title: best.title };
+  return { conversationId: localId, kind: "private", title: "" };
+}
+
+/**
+ * 把一条主动消息投进目标会话：落库 + 通道发送。
+ * 私聊目标：本机写库（应用内可见），微信与 QQ 私聊各投一份——三处共用同一段主会话，
+ * 与正常回复的镜像投递同一条路。群目标：只进这个群，绝不镜像回私聊
+ * （与 respondToTurn 的群回复同一纪律）；带图就随群发，画砸了只少一张图。
+ */
+async function deliverProactiveToTarget(
+  contactId: string,
+  target: ProactiveTarget,
+  text: string,
+  images: string[],
+): Promise<void> {
+  if (target.kind === "group") {
+    insertMessage({
+      channel: "qq", role: "assistant", text, kind: "proactive", contactId,
+      conversationId: target.conversationId,
+      ...(images.length > 0 ? { attachments: images } : {}),
+    });
+    await qq.deliverToConversation(target.conversationId, text);
+    if (images.length > 0) {
+      await qq.deliverMediaToGroup(contactId, target.conversationId, "", images.map((url) => ({ url })));
+    }
+    return;
+  }
+  const channel = getChannel("web");
+  if (!channel) throw new Error("没有可用通道");
+  await channel.deliver({
+    text, kind: "proactive", contactId,
+    ...(images.length > 0 ? { attachments: images } : {}),
+  });
+  // 微信这条链路发不出媒体：带图就在文字里说破，免得那张画凭空消失。
+  void wechat.deliverToContact(
+    contactId,
+    images.length > 0 ? `${text}\n（画了一张图，微信发不出去，在这个应用里看）` : text,
+    { proactive: true },
+  );
+  if (images.length > 0) {
+    void qq.deliverMediaToContact(contactId, text, images.map((url) => ({ url })), { proactive: true });
+  } else {
+    void qq.deliverToContact(contactId, text, { proactive: true });
+  }
+}
+
 /**
  * 主动判断不是短问答：开启思考时，模型要先权衡沉默时长、历史互动和上次追问是否已打扰，
  * 最后才写一小段 JSON。400 tokens 连思考都不够（真机曾 400/400 全花在 reasoning 上），
@@ -569,25 +659,29 @@ async function decideWithModel(
   idleMinutes: number,
   spokenToday: number,
   dailyLimit: number,
+  target: ProactiveTarget,
 ): Promise<DecisionOutput> {
-  const historyRows = recentMessages(contactId, 6);
+  // 历史与记忆都按目标会话取：这条话要说给谁听，就只用那段时间的上下文。
+  // 群目标只带 conversationId，于是能想起的就是「全局 + 这个群」两类——
+  // 主动开口不该把别处的事端过来。
+  const historyRows = recentMessages(contactId, 6, undefined, target.conversationId);
   // 指用户的代词跟 owner.gender 走（与提示词其余部分同一口径）；写死「他」时，
   // 女性用户会在她自己的主动关心判断里被叫成"他"。
   const ownerPron = ownerPronoun(personaConfig().owner.gender);
   // 主动消息把历史摊平成一段文本塞进一条 user 消息，所以按摊平后的长度算预算，丢的仍是整轮。
   const saidBy = (rows: Array<{ role: string; text: string }>) =>
     rows.map((row) => `${row.role === "user" ? ownerPron : "我"}：${row.text}`).join("\n");
-  const memories = recall(contactId, saidBy(historyRows) || "最近", 5);
+  const memories = recall(contactId, saidBy(historyRows) || "最近", 5, null, { conversationId: target.conversationId });
   // 主动性能不能带图 = 这个联系人开了 imageGen 且图像生成能力真配置好了。
   // 两个条件缺一不可：只开开关没配模型，她会期待一张永远画不出来的图。
   const imageGenOn = getContact(contactId)?.features.imageGen === true && capabilityReady("imageGeneration");
   const system = `${buildSystemPrompt(memories, {
     character: contactCard(contactId),
-    lastUserAt: lastUserMessageAt(contactId),
+    lastUserAt: lastUserMessageAt(contactId, target.conversationId),
     companion: companionPromptExtras(getContact(contactId), historyRows[0]?.id),
     // 与 respondToTurn 同一开关：这位关了「看时间」，主动判断的提示词里也不硬拼时间
     includeNow: getContact(contactId)?.features?.clock !== false,
-  })}\n\n${buildDecideSystem(ownerPron, imageGenOn)}`;
+  })}\n\n${buildDecideSystem(ownerPron, imageGenOn, target)}`;
 
   const facts = [
     `上次检查时你想关注的事：${focus}`,
@@ -596,6 +690,9 @@ async function decideWithModel(
     spokenToday > 0
       ? `今天你已经主动说过 ${spokenToday} 次了（上限 ${dailyLimit} 次，再发就属于打扰）`
       : `今天你还没主动说过话（每天最多主动 ${dailyLimit} 次）`,
+    target.kind === "group"
+      ? `这条消息如果说出口，会发到 QQ 群「${target.title || "未命名群"}」——群里还有其他人，措辞要适合当众说，不要提只在私聊里才会说的细节，也不要转述某位成员私下说的事`
+      : `这条消息如果说出口，会发到你们的私聊`,
   ].join("\n");
 
   // 固定开销（系统提示词 + 这次检查的背景事实）先算清，剩下的空间才给历史。

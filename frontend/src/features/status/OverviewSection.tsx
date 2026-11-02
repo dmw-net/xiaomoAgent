@@ -141,7 +141,8 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
     } as Row] : []),
   ];
 
-  // 顺序跟着后端 CAPABILITY_NAMES：记忆提取 → 看得见的两张 → 听得到的两张
+  // 顺序跟着后端 CAPABILITY_NAMES：记忆提取 → 看得见的两张 → 听得到的两张。
+  // embedding 不列：没配只是召回退纯词面，不算故障，列出来反而是常驻噪音。
   const capRows: Row[] = (["memoryExtract", "imageVision", "imageGeneration", "speechToText", "textToSpeech"] as const).map((name) => {
     // 三态分开：读取中 / 读取失败 / 按真实值。此前 !caps（含读取失败）会把
     // 四项全渲染成绿灯，而语音按钮确实已从输入区消失——用户找不到原因。

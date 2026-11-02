@@ -239,6 +239,12 @@ export function ensureDefaultConversations(): void {
   // 一对一通道先合流，再统一补一次已读水位，避免旧回复在升级后集体变红。
   mergePrivateConversationsIntoLocal();
   seedConversationReadBaselines();
+  // member 这一层撤掉了（见 memory.ts 的 decideMemoryScope）：群里说的话对全群本就公开，
+  // 归到群名下即可。subject_id / subject_name 原样留着当出处，不再参与任何读写。
+  db.exec(`UPDATE memory_events SET scope_kind = 'conversation' WHERE scope_kind = 'member'`);
+  // 群成员名册表是给那一层用的，层没了它就没有任何读它的人；它记的每个 id 与昵称
+  // 本来就能从 messages 重算出来，所以不留一张没人用的表在库里误导后来人。
+  db.exec("DROP TABLE IF EXISTS group_members");
 }
 
 export function listConversations(contactId: string): Conversation[] {
@@ -412,6 +418,34 @@ export function listGroupProactiveConversations(contactId: string): Array<Pick<C
     external_id: String(row.external_id ?? ""),
     account_id: String(row.account_id ?? ""),
     title: String(row.title ?? ""),
+  }));
+}
+
+export type ProactiveCandidate = {
+  id: string;
+  kind: ConversationKind;
+  title: string;
+  /** 这段会话最近一次有动静的时刻；从没聊过为 null。 */
+  activeAt: number | null;
+};
+
+/**
+ * 主动消息的目标候选：主私聊 + 开了主动权限的 QQ 群，最近动静在前。
+ * 「一条主动消息只说给一个地方听」的第一步——候选集本身就是"她有可能主动开口的地方"。
+ */
+export function listProactiveCandidates(contactId: string): ProactiveCandidate[] {
+  const rows = q(
+    `SELECT id, kind, title, last_message_at FROM conversations
+     WHERE contact_id = ? AND enabled = 1 AND left_at IS NULL
+       AND (kind = 'private' OR (channel = 'qq' AND group_proactive = 1))
+     ORDER BY COALESCE(last_message_at, created_at) DESC, id ASC`,
+  ).all(contactId) as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    id: String(row.id ?? ""),
+    kind: String(row.kind ?? "private") as ConversationKind,
+    title: String(row.title ?? ""),
+    activeAt:
+      row.last_message_at === null || row.last_message_at === undefined ? null : Number(row.last_message_at),
   }));
 }
 

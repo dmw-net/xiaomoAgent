@@ -301,11 +301,11 @@ export type CapabilityName =
 
 export const CAPABILITY_NAMES: CapabilityName[] = [
   "memoryExtract",
+  "embedding",
   "imageVision",
   "imageGeneration",
   "speechToText",
   "textToSpeech",
-  "embedding",
 ];
 
 export const CAPABILITY_LABELS: Record<CapabilityName, string> = {

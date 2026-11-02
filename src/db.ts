@@ -310,6 +310,10 @@ ensureColumn("turns", "contact_id", "contact_id TEXT");
 ensureColumn("memory_events", "contact_id", "contact_id TEXT");
 ensureColumn("proactive_tasks", "contact_id", "contact_id TEXT");
 
+// 主动消息的目标会话：一条主动消息只说给一个地方听（2026-11-02）。
+// reminder 记下它是在哪个会话立的（群里立的群里兑现）；care 为 NULL 时到点再按最近动静选。
+ensureColumn("proactive_tasks", "conversation_id", "conversation_id TEXT");
+
 // 图片附件：JSON 数组（["/media/xxx.jpg", …]），文件本体在 db 同级的 media 目录。
 // 绝大多数消息没有附件，保持 NULL 而不是 "[]"——历史行不用动。
 ensureColumn("messages", "attachments", "attachments TEXT");

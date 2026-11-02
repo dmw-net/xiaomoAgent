@@ -73,10 +73,10 @@ export function buildContactListSnapshots(contactIds: string[]): Map<string, Con
               c.kind AS conversation_kind, c.title AS conversation_title
        FROM messages m
        LEFT JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.contact_id IN (${marks}) AND m.superseded_at IS NULL
+       WHERE m.contact_id IN (${marks}) AND m.superseded_at IS NULL AND m.kind != 'tool'
          AND m.id = (
            SELECT m2.id FROM messages m2
-           WHERE m2.contact_id = m.contact_id AND m2.superseded_at IS NULL
+           WHERE m2.contact_id = m.contact_id AND m2.superseded_at IS NULL AND m2.kind != 'tool'
            ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1
          )`,
     ).all(...ids) as LatestMessageRow[]
@@ -86,10 +86,10 @@ export function buildContactListSnapshots(contactIds: string[]): Map<string, Con
               c.kind AS conversation_kind, c.title AS conversation_title
        FROM messages m
        LEFT JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.contact_id IN (${marks}) AND m.superseded_at IS NULL
+       WHERE m.contact_id IN (${marks}) AND m.superseded_at IS NULL AND m.kind != 'tool'
          AND m.id = (
            SELECT m2.id FROM messages m2
-           WHERE m2.contact_id = m.contact_id AND m2.superseded_at IS NULL
+           WHERE m2.contact_id = m.contact_id AND m2.superseded_at IS NULL AND m2.kind != 'tool'
            ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1
          )
        UNION ALL
@@ -98,10 +98,10 @@ export function buildContactListSnapshots(contactIds: string[]): Map<string, Con
               c.kind AS conversation_kind, c.title AS conversation_title
        FROM messages m
        LEFT JOIN conversations c ON c.id = m.conversation_id
-       WHERE m.conversation_id IN (${conversationMarks}) AND m.superseded_at IS NULL
+       WHERE m.conversation_id IN (${conversationMarks}) AND m.superseded_at IS NULL AND m.kind != 'tool'
          AND m.id = (
            SELECT m2.id FROM messages m2
-           WHERE m2.conversation_id = m.conversation_id AND m2.superseded_at IS NULL
+           WHERE m2.conversation_id = m.conversation_id AND m2.superseded_at IS NULL AND m2.kind != 'tool'
            ORDER BY m2.created_at DESC, m2.id DESC LIMIT 1
          )`,
     ).all(...ids, ...conversationIds) as LatestMessageRow[];
@@ -155,7 +155,7 @@ export function buildContactListSnapshots(contactIds: string[]): Map<string, Con
             )
        SELECT m.conversation_id, COUNT(*) AS n
        FROM messages m JOIN effective e ON e.conversation_id = m.conversation_id
-       WHERE m.role = 'assistant' AND m.superseded_at IS NULL AND m.id > e.last_id
+       WHERE m.role = 'assistant' AND m.superseded_at IS NULL AND m.kind != 'tool' AND m.id > e.last_id
        GROUP BY m.conversation_id`,
     ).all(...args) as Array<{ conversation_id: string; n: number }>;
     for (const row of rows) unreadByConversation.set(row.conversation_id, Number(row.n));

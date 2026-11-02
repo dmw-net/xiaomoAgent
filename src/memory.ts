@@ -9,13 +9,14 @@ import { db, kvGet, kvSet } from "./db.ts";
 import { config } from "./config.ts";
 import { callModelJson, embedTexts } from "./model.ts";
 import { getContact, listContacts, pronounOf, updateContact } from "./contacts.ts";
+import { localConversationId, listConversations } from "./conversations.ts";
 import { ownerPronoun } from "./persona.ts";
 import { capabilityConfig, capabilityReady, personaConfig } from "./settings.ts";
 import type { ChatMessage } from "./model.ts";
 
 export type MemoryKind = "promise" | "preference" | "fact" | "plan" | "mood";
 
-export type MemoryScopeKind = "global" | "conversation" | "member";
+export type MemoryScopeKind = "global" | "conversation";
 
 export type MemoryEvent = {
   id: number;
@@ -29,9 +30,10 @@ export type MemoryEvent = {
   valid_until: number | null;
   /** 墓碑删除时间（用户删掉的记忆不进任何召回/清单，但行保留可审计）。 */
   deleted_at?: number | null;
-  /** global=联系人全局；conversation=当前会话；member=当前会话中的某位群成员。 */
+  /** global=跨所有对话；conversation=只属于这一段会话（某个群，或主私聊）。 */
   scope_kind?: MemoryScopeKind;
   scope_conversation_id?: string | null;
+  /** 早期 member 维度留下的列，现在不再写入；行里还留着当出处，读侧不依赖它。 */
   subject_id?: string | null;
   subject_name?: string | null;
   source_message_id?: string | null;
@@ -40,22 +42,35 @@ export type MemoryEvent = {
 
 export type MemoryScope = {
   conversationId?: string;
-  /** 群内发言成员的稳定 openid；私聊可省略。 */
-  memberId?: string;
 };
 
 /** 还没过期（或长期有效）、且没被用户删除的记忆才配进入上下文。 */
 const VALID_CONDITION = "(valid_until IS NULL OR valid_until > ?) AND deleted_at IS NULL";
 
-/** 会话/成员作用域过滤。只有显式传 conversationId 才收窄，旧调用保持联系人全局语义。 */
+/**
+ * 一条记忆该归在哪个空间——**由代码判，不由模型判**。
+ *
+ * 从前这里问的是抽取模型（返回里没有 scope 就默认 global）。真库实测：某个群里
+ * 58 轮全部由三位非主人成员 @ 起来，抽出的 23 条记忆里 20 条被标成 global，
+ * 来自「主人发言」的 0 条。于是群里别人说的话、群规、别人的近况，在私聊里
+ * 也被当成「你和主人之间的事」召回。会话类型是库里已有的确定事实，没必要问模型。
+ *
+ * 只有两层：群轮次一律归这个群（永远不给 global），私聊沿用模型的 global/conversation
+ * 之分。曾经还有第三层「群内某位成员」，已撤——它要一套跨渠道身份归才站得住，
+ * 而那份数据本来就在 messages 每行上，为它单建一张名册表等于给磁盘造第二份真相源。
+ * 群里说出来的话对全群本就公开，记在群名下就够。
+ */
+export function decideMemoryScope(input: {
+  conversationKind?: "private" | "group";
+  modelScope?: MemoryScopeKind;
+}): MemoryScopeKind {
+  if (input.conversationKind === "group") return "conversation";
+  return input.modelScope === "conversation" ? "conversation" : "global";
+}
+
+/** 会话作用域过滤。只有显式传 conversationId 才收窄，旧调用保持联系人全局语义。 */
 function scopeFilter(scope?: MemoryScope): { sql: string; args: string[] } {
   if (!scope?.conversationId) return { sql: "", args: [] };
-  if (scope.memberId) {
-    return {
-      sql: " AND (scope_kind = 'global' OR (scope_kind = 'conversation' AND scope_conversation_id = ?) OR (scope_kind = 'member' AND scope_conversation_id = ? AND subject_id = ?))",
-      args: [scope.conversationId, scope.conversationId, scope.memberId],
-    };
-  }
   return {
     sql: " AND (scope_kind = 'global' OR (scope_kind = 'conversation' AND scope_conversation_id = ?))",
     args: [scope.conversationId],
@@ -252,14 +267,34 @@ export function restoreMemoryEvent(id: number, contactId: string): boolean {
   return Number(result.changes) > 0;
 }
 
-/** 用户手动把会话/成员记忆提升为联系人全局记忆。 */
+/** 读一条记忆（限当前联系人）；转移空间后回给界面用来就地刷新。 */
+export function getMemoryEvent(id: number, contactId: string): MemoryEvent | null {
+  const row = db.prepare("SELECT * FROM memory_events WHERE id = ? AND contact_id = ? AND deleted_at IS NULL")
+    .get(id, contactId) as MemoryEvent | undefined;
+  return row ?? null;
+}
+
+/**
+ * 手动改一条记忆的归属空间（= 界面里的「转移到空间」）。
+ *
+ * 只动归属四列，内容/向量/来源都不动：转移不是重写记忆，是换它能被谁想起。
+ * 成员空间必须带 subject_id——没有主体 id 的"成员记忆"谁也召不回，等于丢了。
+ * 昵称一律从名册现取，不接受前端传来的字符串：名册才是身份的真源。
+ */
+export function setMemorySpace(id: number, contactId: string, space: MemorySpaceFilter): boolean {
+  if (space.kind === "all") return false;
+  // 只有两个去处：全局，或某一段会话。subject_* 两列一律清空（早期 member 维度的残留）。
+  const conversationId = space.kind === "global" ? null : space.conversationId;
+  const scopeKind = space.kind === "global" ? "global" : "conversation";
+  return Number(db.prepare(`UPDATE memory_events SET scope_kind = ?, scope_conversation_id = ?,
+            subject_id = NULL, subject_name = NULL
+            WHERE id = ? AND contact_id = ? AND deleted_at IS NULL`)
+    .run(scopeKind, conversationId, id, contactId).changes) > 0;
+}
+
+/** 用户手动把会话记忆提升为联系人全局记忆——转移空间的一个特例，走同一个写入函数。 */
 export function promoteMemoryEvent(id: number, contactId: string): boolean {
-  const result = db
-    .prepare(`UPDATE memory_events SET scope_kind = 'global', scope_conversation_id = NULL,
-              subject_id = NULL, subject_name = NULL, source_conversation_id = source_conversation_id
-              WHERE id = ? AND contact_id = ? AND deleted_at IS NULL`)
-    .run(id, contactId);
-  return Number(result.changes) > 0;
+  return setMemorySpace(id, contactId, { kind: "global" });
 }
 
 // ── 记忆整理（consolidate）专用读写 ──────────────────────────
@@ -613,18 +648,112 @@ export function recallExplained(
   return { events: hits.map((hit) => hit.event), scores, matched, keywords, total: memoryCount(contactId) };
 }
 
-/** 记忆页的清单：可按类型过滤、可翻页，返回最新在前。 */
-export function listMemoryEventsFiltered(contactId: string, options: { limit?: number; kind?: string; offset?: number } = {}): MemoryEvent[] {
+/** 清单与计数共用同一份 WHERE：两处各写一遍，切了空间后「共 N 条」就会和列表不符。 */
+function memoryListWhere(contactId: string, options: { kind?: string; space?: MemorySpaceFilter }): { sql: string; args: (string | number)[] } {
+  const where = ["contact_id = ?", "deleted_at IS NULL"];
+  const args: (string | number)[] = [contactId];
+  if (options.kind && KINDS.has(options.kind as MemoryKind)) {
+    where.push("kind = ?");
+    args.push(options.kind);
+  }
+  const space = options.space ?? { kind: "all" };
+  if (space.kind === "global") {
+    where.push("scope_kind = 'global'");
+  } else if (space.kind === "conversation") {
+    // 早期 member 条目已经并回 conversation（见 conversations.ts 的启动迁移），
+    // 这里按会话归属一刀切，不再区分是群里谁的事。
+    where.push("scope_kind = 'conversation'", "scope_conversation_id = ?");
+    args.push(space.conversationId);
+  }
+  return { sql: where.join(" AND "), args };
+}
+
+/** 记忆页的清单：可按类型/空间过滤、可翻页，返回最新在前。 */
+export function listMemoryEventsFiltered(contactId: string, options: {
+  limit?: number;
+  kind?: string;
+  offset?: number;
+  /** 记忆空间筛选：按**归属分区**切（一条只属于一个空间），与召回的可见性口径不同。 */
+  space?: MemorySpaceFilter;
+} = {}): MemoryEvent[] {
   const limit = Math.min(500, Math.max(1, options.limit ?? 100));
   const offset = Math.min(5000, Math.max(0, options.offset ?? 0));
-  if (options.kind && KINDS.has(options.kind as MemoryKind)) {
-    return db
-      .prepare(`SELECT * FROM memory_events WHERE contact_id = ? AND kind = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-      .all(contactId, options.kind, limit, offset) as unknown as MemoryEvent[];
-  }
+  const { sql, args } = memoryListWhere(contactId, options);
   return db
-    .prepare(`SELECT * FROM memory_events WHERE contact_id = ? AND deleted_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`)
-    .all(contactId, limit, offset) as unknown as MemoryEvent[];
+    .prepare(`SELECT * FROM memory_events WHERE ${sql} ORDER BY created_at DESC LIMIT ? OFFSET ?`)
+    .all(...args, limit, offset) as unknown as MemoryEvent[];
+}
+
+/** 与 listMemoryEventsFiltered 同口径的总数，供「共 N 条」和分页用。 */
+export function countMemoryEvents(contactId: string, options: { kind?: string; space?: MemorySpaceFilter } = {}): number {
+  const { sql, args } = memoryListWhere(contactId, options);
+  return Number((db.prepare(`SELECT COUNT(*) AS c FROM memory_events WHERE ${sql}`).get(...args) as { c: number }).c);
+}
+
+export type MemorySpaceFilter =
+  | { kind: "all" }
+  | { kind: "global" }
+  | { kind: "conversation"; conversationId: string };
+
+export type MemorySpaceGroup = { conversationId: string; title: string; count: number; left: boolean };
+export type MemorySpaceInventory = {
+  global: number;
+  private: { conversationId: string; title: string; count: number };
+  groups: MemorySpaceGroup[];
+};
+
+/**
+ * 群这一栏的显示名：类别打头 + 真名，和「私聊」同一套句式，一眼知道这是群不是人。
+ *
+ * 注意库里没拿到平台群名的群，title 存的就是字面的「QQ 群」——直接拼会变成
+ * 「QQ 群 · QQ 群」。这种按没名字处理：数字群号还能用来分辨，openid 那种长串不往界面上摆。
+ */
+function groupSpaceLabel(title: string, externalId: string): string {
+  const name = title.trim();
+  if (name !== "" && name !== "QQ 群") return `QQ 群 · ${name}`;
+  return /^\d+$/.test(externalId) ? `QQ 群 · ${externalId}` : "QQ 群";
+}
+
+/**
+ * 这位联系人的记忆按空间盘点一遍：全局多少条、主私聊多少条、每个群多少条。
+ * 群即使一条记忆没有也照样列（用户要能看出「这个群还没记下东西」），已离群的群也留着。
+ */
+export function listMemorySpaces(contactId: string): MemorySpaceInventory {
+  const localId = localConversationId(contactId);
+  const counts = db
+    .prepare(`SELECT scope_kind, scope_conversation_id, COUNT(*) AS n
+              FROM memory_events WHERE contact_id = ? AND deleted_at IS NULL
+              GROUP BY scope_kind, scope_conversation_id`)
+    .all(contactId) as unknown as Array<{ scope_kind: string; scope_conversation_id: string | null; n: number }>;
+  const convs = listConversations(contactId);
+  const byConv = new Map<string, number>();
+  let global = 0;
+  let privateCount = 0;
+  for (const row of counts) {
+    const convId = row.scope_conversation_id;
+    if (row.scope_kind === "global" || convId === null) {
+      global += Number(row.n);
+    } else if (convId === localId) {
+      privateCount += Number(row.n);
+    } else {
+      byConv.set(convId, (byConv.get(convId) ?? 0) + Number(row.n));
+    }
+  }
+  const groups: MemorySpaceGroup[] = convs
+    .filter((c) => c.kind === "group")
+    .map((c) => ({
+      conversationId: c.id,
+      title: groupSpaceLabel(c.title, c.external_id),
+      count: byConv.get(c.id) ?? 0,
+      left: c.left_at !== null,
+    }))
+    .sort((a, b) => b.count - a.count);
+  return {
+    global,
+    // 这一栏就是「和这位联系人的私聊」，用会话标题（=联系人名）会让人以为空间是按人分的。
+    private: { conversationId: localId, title: "私聊", count: privateCount },
+    groups,
+  };
 }
 
 export type MemoryHit = { id: number; contact_id: string; kind: MemoryKind; content: string; created_at: number };
@@ -874,10 +1003,13 @@ export function buildExtractSystem(
   const scopeNote = groupMode
     ? `
 
-这是 QQ 群聊。群内共同经历/规则/约定使用 scope=conversation；只关于当前发言成员的事实使用 scope=member；跨群都不该共享。`
+这是 QQ 群聊。群里记下的事一律归在这个群名下（归属由程序判定，不用你权衡），所以别输出 scope=global。
+群里一屋子人：**条目里提到谁，就把名字写进那句话本身**，别写「他/她/主人」这种指代——
+过几天谁也认不出那是谁，而归属层已经不再替你记着发言人是谁。`
     : `
 
-这是私聊。通常使用 scope=global；只有明确只属于当前对话的短期约定才用 scope=conversation。`;
+这是私聊。关于${ownerPron}本人的长期事实（生日/偏好/家人/工作）用 scope=global——他在哪个渠道说都成立；
+只属于你们两人之间的事（私密约定、梗、只在这段对话里的情境）用 scope=conversation，不要让它出现在别的场合。`;
   return (withBond ? base + bondClause(pron) : base) + scopeNote;
 }
 
@@ -1003,16 +1135,13 @@ export async function extractMemories(input: {
   conversationId?: string;
   conversationKind?: "private" | "group";
   conversationTitle?: string;
-  senderId?: string;
+  /** 发言人昵称：只用于给抽取器标「这句是谁说的」，不再参与归属判定。 */
   senderName?: string;
   sourceMessageId?: string;
 }): Promise<{ added: number; updated: number; suppressed: number; blocked: number }> {
   const pron = pronounOf(getContact(input.contactId)?.gender);
   const ownerPron = ownerPronoun(personaConfig().owner.gender);
-  const scope: MemoryScope = {
-    conversationId: input.conversationId,
-    memberId: input.conversationKind === "group" ? input.senderId : undefined,
-  };
+  const scope: MemoryScope = { conversationId: input.conversationId };
   // 相似旧条目只摆当前会话可见的记忆：A 群的事不能被 B 群的抽取拿来改写。
   const similar = recallExplained(input.contactId, input.userText, DEDUPE_CANDIDATES, { scope }).events;
   const messages: ChatMessage[] = [
@@ -1073,20 +1202,24 @@ export async function extractMemories(input: {
       }
       continue;
     }
+    const scopeKind: MemoryScopeKind = input.conversationId
+      ? decideMemoryScope({ conversationKind: input.conversationKind, modelScope: candidate.scope })
+      : "global";
+    // 群轮次的「关于谁」由代码写死成这个群名。模型给的 subject 在这里不作数——
+    // 它写的是「他」，而群里一屋子人，下次召回时她只能猜这个「他」是谁。
+    // 谁的事就把名字写进那句话本身，这是提示词要求的（见 buildExtractSystem）。
+    const groupTurn = input.conversationKind === "group" && input.conversationId !== undefined;
+    const subjectText = (groupTurn ? (input.conversationTitle ?? "") : candidate.subject).slice(0, 20);
     addMemoryEvent({
       kind: candidate.kind,
       content: candidate.content,
-      subject: candidate.subject,
+      subject: subjectText,
       weight: candidate.weight,
       validUntil: candidate.validUntil,
       sourceTurn: input.turnId,
       contactId: input.contactId,
-      scopeKind: input.conversationId
-        ? (candidate.scope === "member" && input.senderId ? "member" : candidate.scope === "global" ? "global" : "conversation")
-        : "global",
+      scopeKind,
       scopeConversationId: input.conversationId ?? null,
-      subjectId: candidate.scope === "member" ? input.senderId ?? null : null,
-      subjectName: candidate.scope === "member" ? input.senderName ?? null : null,
       sourceMessageId: input.sourceMessageId ?? null,
       sourceConversationId: input.conversationId ?? null,
     });
@@ -1135,7 +1268,8 @@ function normalizeCandidate(input: unknown): MemoryCandidate | null {
       ? Date.now() + daysRaw * 86_400_000
       : null;
   const rawScope = String(record.scope ?? "global");
-  const scope: MemoryScopeKind = rawScope === "conversation" || rawScope === "member" ? rawScope : "global";
+  // member 这一层已经撤掉：模型要是还坚持输出它，就按会话处理，别让它变成第三种归属。
+  const scope: MemoryScopeKind = rawScope === "conversation" || rawScope === "member" ? "conversation" : "global";
   return {
     op,
     id: Number.isFinite(Number(record.id)) ? Number(record.id) : 0,

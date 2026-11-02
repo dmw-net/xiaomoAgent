@@ -527,6 +527,20 @@ export function lastUserMessageAt(contactId: string, conversationId = localConve
   return row?.created_at ?? null;
 }
 
+/**
+ * 跨会话口径的「他上次说话是什么时候」。
+ * 「该不该主动开口」判断的是这个人，不是某段会话：他在 QQ 私聊里一分钟前刚说过话，
+ * 静默时长就不该按本机会话算成"三天没聊"——那个数会直接进主动判断的提示词。
+ * 「说什么」仍按目标会话取（见 recentMessages 的 conversationId），两层口径各管各的。
+ */
+export function lastUserMessageAtAnyConversation(contactId: string): number | null {
+  const row = q(
+      `SELECT MAX(created_at) AS at FROM messages WHERE contact_id = ? AND role = 'user' AND superseded_at IS NULL`,
+    )
+    .get(contactId) as { at: number | null } | undefined;
+  return row?.at ?? null;
+}
+
 /** token 粗估：中日韩字符按 1 字 1 token，其余按 4 字符 1 token。只用于占用展示，不做计费。
  *  系统提示词、工具定义、整段历史在裁剪循环里会被反复重估（trimHistoryToBudget 每丢一轮
  *  全量再算一遍），结果按文本内容缓存：同一段文字永远是同一个数，重估就是 Map 命中。 */
@@ -773,7 +787,13 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
   const bare = buildSystemPrompt([], { character: card, lastUserAt: lastAt, companion, includeNow });
   // 观测路径用 recallExplained（不写 last_used_at）：圆环随消息轮询刷新，
   // 走真实 recall 会把「近 7 天被想起」统计刷成"用户打开了页面"，而不是"她想起过"。
-  const full = buildSystemPrompt(lastUser ? recallExplained(cid, lastUser.text).events : [], { character: card, lastUserAt: lastAt, companion, includeNow });
+  // 必须带空间：不带 scope 时 memory.ts 完全不过滤，圆环会把别的群、别的成员的记忆
+  // 也算进"她下次会想起"，量出来的记忆项比真实的多一截。
+  // 群里的下一句由谁说还不知道，所以只收到会话这一层（global + 本群），不猜成员。
+  const full = buildSystemPrompt(
+    lastUser ? recallExplained(cid, lastUser.text, undefined, { scope: { conversationId: convId } }).events : [],
+    { character: card, lastUserAt: lastAt, companion, includeNow },
+  );
   // 量的是真会发出去的那份工具定义：可见性按联系人不同，不带 cid 会算错。
   // 门控判据与 runAgentLoop / respondToTurn 同源（见 model.ts 的 toolCapsSettings）：
   // 带图会走视觉通道时，显式绑档=不带工具、未显式绑档=按聊天档意图。
@@ -1157,15 +1177,10 @@ async function runAgentLoop(
      但那一条分支同样会认正文形式的调用。别给端点发 tools: []——部分服务商直接 400。 */
 
   const conversationId = turn.conversation_id || localConversationId(contactId);
-  const triggerSender = turn.trigger_message_id
-    ? q("SELECT sender_id FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1")
-        .get(conversationId, turn.trigger_message_id) as { sender_id?: string | null } | undefined
-    : undefined;
   const context: ToolContext = {
     lastUserAt: lastUserMessageAt(contactId, conversationId),
     contactId,
     conversationId,
-    memberId: triggerSender?.sender_id ?? undefined,
     turnId: turn.id,
     assistantPermission: permissionSnapshot,
   };
@@ -1261,6 +1276,10 @@ async function runAgentLoop(
           kind: "tool",
           turnId: turn.id,
           contactId,
+          // 必须跟着这一轮的会话：群轮次的过程卡要留在群里。缺省会落进联系人的主私聊
+          // （见 insertMessage 的 `|| localConversationId`），于是群里看不到她查了什么，
+          // 私聊反倒被外来的卡占满。
+          conversationId,
           text: JSON.stringify({
             tool: call.name,
             ok: result.ok,
@@ -1573,12 +1592,13 @@ export async function respondToTurn(
       : undefined;
     const rawRows = recentMessages(contactId, undefined, upToRow?.id ?? null, conversationId);
     // 混合召回：查询句先向量化（embedding 能力没配/失败时自动退纯词面）。
-    // 群聊还要带当前发言成员 openid，只召回 global + 本群 + 本成员三类记忆。
+    // 群聊只召回 global + 本群两类：群里说出来的话对全群本就公开。
+    // 这里仍要取发言人昵称——不是给归属用，是给记忆抽取标「这句是谁说的」。
     const triggerSender = conversation?.kind === "group" && turn.trigger_message_id
-      ? q(`SELECT sender_id, sender_name FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1`)
-          .get(conversationId, turn.trigger_message_id) as { sender_id?: string | null; sender_name?: string | null } | undefined
+      ? q(`SELECT sender_name FROM messages WHERE conversation_id = ? AND source_message_id = ? LIMIT 1`)
+          .get(conversationId, turn.trigger_message_id) as { sender_name?: string | null } | undefined
       : undefined;
-    const memoryScope = { conversationId, memberId: triggerSender?.sender_id ?? undefined };
+    const memoryScope = { conversationId };
     const memories = assistant ? [] : await recallSmart(contactId, turn.text, undefined, memoryScope);
     const system = assistant
       ? buildAssistantSystemPrompt(assistantPermissionSnapshot)
@@ -1830,7 +1850,6 @@ export async function respondToTurn(
           conversationId,
           conversationKind: conversation?.kind,
           conversationTitle: conversation?.title,
-          senderId: triggerSender?.sender_id ?? undefined,
           senderName: triggerSender?.sender_name ?? undefined,
           sourceMessageId: turn.trigger_message_id ?? undefined,
         }).catch((error: unknown) => recordExtractFailure(error, contactId));

@@ -47,6 +47,7 @@ import {
   resetToolsUnsupported,
 } from "../../model.ts";
 import { backfillMemoryEmbeddings } from "../../memory.ts";
+import { localConversationId } from "../../conversations.ts";
 import { logModelCall } from "../../logs.ts";
 import { previewSystemPrompt } from "../../persona.ts";
 import {
@@ -65,10 +66,7 @@ import {
   recentMessages,
   selectReplayImages,
 } from "../../agent.ts";
-import {
-  listMemoryEventsFiltered,
-  recallExplained,
-} from "../../memory.ts";
+import { recallExplained } from "../../memory.ts";
 import { activeProfileId } from "../../settings.ts";
 import {
   MAX_CARD_BODY_BYTES,
@@ -545,7 +543,7 @@ export const settingsPreviewRoute: Route = async ({ req, res, path, method }) =>
     // 全局预览也换成真实记忆，不再塞两条编造的示例：预览=精确重建是这里的标准，
     // 让用户看到"模型会收到这些"而模型其实收不到，等于把预览变成假样本。
     // 没有指定联系人时按默认联系人兜底，并在 memoryNote 里说破是按谁召回的。
-    const memories = recallExplained(DEFAULT_CONTACT_ID, "").events;
+    const memories = recallExplained(DEFAULT_CONTACT_ID, "", undefined, { scope: { conversationId: localConversationId(DEFAULT_CONTACT_ID) } }).events;
     sendJson(res, 200, {
       ok: true,
       prompt: previewSystemPrompt(character, owner, {
@@ -567,11 +565,12 @@ export const settingsPreviewRoute: Route = async ({ req, res, path, method }) =>
   const rows = imageProxiedHistory(rawRows, replay, visionOn);
   const lastUser = [...rows].reverse().find((r) => r.role === "user");
   // 预览是观测：走 recallExplained，不推进 last_used_at（同 /api/context/usage）。
+  // 带主私聊的空间：上面回放的历史就是那段私聊的（recentMessages 默认它），
+  // 记忆不带空间的话会把别的群、别的成员条目算进「她下次会看到」，预览就成了假样本。
+  const previewScope = { scope: { conversationId: localConversationId(cid) } };
   const memories = lastUser
-    ? recallExplained(cid, lastUser.text).events
-    : listMemoryEventsFiltered(cid, { limit: 8 }).filter(
-        (e) => e.valid_until === null || e.valid_until > Date.now(),
-      );
+    ? recallExplained(cid, lastUser.text, undefined, previewScope).events
+    : recallExplained(cid, "", 8, previewScope).events;
   sendJson(res, 200, {
     ok: true,
     prompt: previewSystemPrompt(character, owner, {

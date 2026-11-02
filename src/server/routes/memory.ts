@@ -4,10 +4,13 @@
 // /api/search（跨联系人的消息+记忆全局搜索）。
 
 import {
+  countMemoryEvents,
   deleteMemoryEvent,
   extractFailures,
+  getMemoryEvent,
   isMemoryKind,
   listMemoryEventsFiltered,
+  listMemorySpaces,
   memoryCount,
   memoryStats,
   promoteMemoryEvent,
@@ -16,13 +19,41 @@ import {
   rememberMessage,
   restoreMemoryEvent,
   searchMemoryEvents,
+  setMemorySpace,
   updateMemoryEvent,
   type MemoryKind,
+  type MemorySpaceFilter,
 } from "../../memory.ts";
+import { getConversation } from "../../conversations.ts";
 import { searchMessages } from "../../agent.ts";
 import { clampInt, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, readJson, sendJson } from "../http.ts";
 import { strictContactId } from "../context.ts";
 import type { Route } from "../types.ts";
+
+/**
+ * 记忆空间筛选参数：scope=all|global|conversation，配 conversationId。
+ *
+ * 会话 id 必须属于这个联系人——否则拿别人的 conversationId 就能把对方群里的记忆翻出来。
+ * 参数不合法（缺 id、会话不属于这位）一律当「没筛」处理，不报错：记忆页的默认视图本来就是全部。
+ */
+function parseSpace(url: URL, contactId: string): MemorySpaceFilter {
+  const kind = url.searchParams.get("scope") ?? "all";
+  if (kind !== "global" && kind !== "conversation") return { kind: "all" };
+  if (kind === "global") return { kind: "global" };
+  const conversationId = url.searchParams.get("conversationId") ?? "";
+  return conversationId !== "" && getConversation(conversationId)?.contact_id === contactId
+    ? { kind: "conversation", conversationId }
+    : { kind: "all" };
+}
+
+/** GET /api/memory/spaces：这位联系人的记忆按空间盘点（全局 / 主私聊 / 每个群各多少条）。 */
+const memorySpacesRoute: Route = ({ res, url, path, method }) => {
+  if (!(method === "GET" && path === "/api/memory/spaces")) return false;
+  const contactId = strictContactId(url, res);
+  if (contactId === null) return true;
+  sendJson(res, 200, { ok: true, contactId, ...listMemorySpaces(contactId) });
+  return true;
+};
 
 /** GET /api/memory：记忆清单或按搜索词召回（观测行为，不记成"她想起过"）。 */
 const memoryRoute: Route = ({ res, url, path, method }) => {
@@ -30,7 +61,10 @@ const memoryRoute: Route = ({ res, url, path, method }) => {
   const contactId = strictContactId(url, res);
   if (contactId === null) return true;
   const query = url.searchParams.get("q");
-  const events = query ? recallExplained(contactId, query, 10).events : listMemoryEventsFiltered(contactId, { limit: 20 });
+  const space = parseSpace(url, contactId);
+  const events = query
+    ? recallExplained(contactId, query, 10, { scope: spaceToScope(space) }).events
+    : listMemoryEventsFiltered(contactId, { limit: 20, space });
   sendJson(res, 200, {
     ok: true,
     contactId,
@@ -42,6 +76,11 @@ const memoryRoute: Route = ({ res, url, path, method }) => {
   return true;
 };
 
+/** 空间筛选 → 召回可见性口径。conversation 收窄到那个会话；global 与 all 不收窄。 */
+function spaceToScope(space: MemorySpaceFilter): { conversationId?: string } | undefined {
+  return space.kind === "conversation" ? { conversationId: space.conversationId } : undefined;
+}
+
 /** GET /api/memory/stats：记忆统计。 */
 const memoryStatsRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/memory/stats")) return false;
@@ -51,12 +90,13 @@ const memoryStatsRoute: Route = ({ res, url, path, method }) => {
   return true;
 };
 
-/** GET /api/memory/events：按类型/分页取记忆事件。 */
+/** GET /api/memory/events：按类型/空间/分页取记忆事件。 */
 const memoryEventsRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/memory/events")) return false;
   const contactId = strictContactId(url, res);
   if (contactId === null) return true;
   const kind = url.searchParams.get("kind") ?? undefined;
+  const space = parseSpace(url, contactId);
   const limit = clampInt(url.searchParams.get("limit"), LIST_LIMIT_DEFAULT, 1, LIST_LIMIT_MAX);
   const offset = clampInt(url.searchParams.get("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
   sendJson(res, 200, {
@@ -64,13 +104,13 @@ const memoryEventsRoute: Route = ({ res, url, path, method }) => {
     contactId,
     kind: kind ?? null,
     offset,
-    total: memoryCount(contactId, kind),
-    events: listMemoryEventsFiltered(contactId, { limit, kind, offset }),
+    total: countMemoryEvents(contactId, { kind, space }),
+    events: listMemoryEventsFiltered(contactId, { limit, kind, offset, space }),
   });
   return true;
 };
 
-/** GET /api/memory/recall：向量召回（带解释）。 */
+/** GET /api/memory/recall：向量召回（带解释）。可按记忆空间收窄，与真实会话的可见范围对齐。 */
 const memoryRecallRoute: Route = async ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/memory/recall")) return false;
   const contactId = strictContactId(url, res);
@@ -81,12 +121,13 @@ const memoryRecallRoute: Route = async ({ res, url, path, method }) => {
     sendJson(res, 400, { ok: false, error: "q 不能为空" });
     return true;
   }
-  const result = recallExplained(contactId, query, limit, { vector: await queryVector(query) });
+  const space = parseSpace(url, contactId);
+  const result = recallExplained(contactId, query, limit, { vector: await queryVector(query), scope: spaceToScope(space) });
   sendJson(res, 200, { ok: true, contactId, ...result });
   return true;
 };
 
-/** PATCH /api/memory/events/:id：纠错通道（roadmap P0-2）。
+/** PATCH /api/memory/events/:id：纠错通道（roadmap P0-2）+ 转移空间。
  *  归属校验在 SQL 里（id + contact_id 同时匹配），拿别人的记忆 id 改不动。 */
 const memoryEventPatchRoute: Route = async ({ req, res, url, path, method }) => {
   if (method !== "PATCH") return false;
@@ -120,15 +161,45 @@ const memoryEventPatchRoute: Route = async ({ req, res, url, path, method }) => 
     }
     patch.weight = Math.min(3, Math.max(0.5, w));
   }
-  if (Object.keys(patch).length === 0) {
+  // 转移空间：目标会话必须属于这位联系人（主私聊和群都是合法空间），不接受前端自己造的 id。
+  let space: MemorySpaceFilter | undefined;
+  if (body.space !== undefined) {
+    const raw = (body.space ?? {}) as Record<string, unknown>;
+    const kind = String(raw.kind ?? "");
+    if (kind === "global") {
+      space = { kind: "global" };
+    } else if (kind === "conversation") {
+      const conversationId = String(raw.conversationId ?? "");
+      const conv = conversationId === "" ? null : getConversation(conversationId);
+      if (conv === null || conv.contact_id !== contactId) {
+        sendJson(res, 400, { ok: false, error: "目标会话不存在，或不属于这位联系人" });
+        return true;
+      }
+      space = { kind: "conversation", conversationId };
+    } else {
+      sendJson(res, 400, { ok: false, error: "不认识的目标空间" });
+      return true;
+    }
+  }
+  if (Object.keys(patch).length === 0 && space === undefined) {
     sendJson(res, 400, { ok: false, error: "没有要改的字段" });
     return true;
   }
-  if (!updateMemoryEvent(id, contactId, patch)) {
+  if (Object.keys(patch).length > 0 && !updateMemoryEvent(id, contactId, patch)) {
     sendJson(res, 404, { ok: false, code: "MEMORY_NOT_FOUND", error: "这条记忆不存在或不属于当前联系人" });
     return true;
   }
-  sendJson(res, 200, { ok: true, note: "记忆已更新，下次召回立即生效" });
+  if (space !== undefined && !setMemorySpace(id, contactId, space)) {
+    sendJson(res, 404, { ok: false, code: "MEMORY_NOT_FOUND", error: "这条记忆不存在或不属于当前联系人" });
+    return true;
+  }
+  // 把转移后的归属回给前端：成员昵称是服务端从名册取的，界面不该自己拼一份。
+  const after = space === undefined ? null : getMemoryEvent(id, contactId);
+  sendJson(res, 200, {
+    ok: true,
+    note: space === undefined ? "记忆已更新，下次召回立即生效" : "归属已转移，只影响哪些对话能想起它",
+    event: after,
+  });
   return true;
 };
 
@@ -212,6 +283,7 @@ const globalSearchRoute: Route = ({ res, url, path, method }) => {
 };
 
 export const routes: Route[] = [
+  memorySpacesRoute,
   memoryRoute,
   memoryStatsRoute,
   memoryEventsRoute,

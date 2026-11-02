@@ -36,7 +36,7 @@ Xiaomo speaks through your model, but it **remembers what happened between you t
 
 | | |
 |---|---|
-| 🧠 **Long-term memory** | Things you mention in passing become “relationship events”, kept separately for private chats and each group. Say your stomach is weak, that you dislike suspense films, or that you agreed to a Sunday movie — it can pick the thread up in the right conversation |
+| 🧠 **Long-term memory** | Things you mention in passing become “relationship events”, kept separately for private chats and each QQ group. Say your stomach is weak, that you dislike suspense films, or that you agreed to a Sunday movie — it can pick the thread up in the right conversation |
 | 🧩 **Memory spaces** | Private chat and every QQ group have their own memory space, switchable from the contact profile with recall probes and visible boundaries |
 | 😄 **Emotes & media** | Images, videos, voice, files and emotes share one media library; emotes can be imported by folder, named automatically, searched by meaning and sent through QQ |
 | 💬 **Reaches out first** | Not random pings: when it speaks and what it says are planned items you can inspect and cancel. Quiet at night, with a daily cap |

@@ -125,7 +125,7 @@ export default function StorageCleanupDialog({ onClose }: { onClose: () => void 
                   disabled={busy !== "" || diagnosticsCount === 0} onChange={() => toggle("diagnosticBodies")} />
                 <div>
                   <b><FileText size={14} /> 诊断原文 {diagnosticsCount > 0 && <span className="storage-recommended">推荐</span>}</b>
-                  <p>完整请求与响应属于排障信息，不是聊天内容；最多保留最近 10 次调用。清理后不影响聊天、记忆和用量统计。</p>
+                  <p>完整请求与响应属于排障信息，不是聊天内容；仅保留最近若干次调用。清理后不影响聊天、记忆和用量统计。</p>
                 </div>
                 <span className="storage-size">{diagnosticsCount > 0 ? `当前 ${formatBytes(diagnosticsBytes)}` : "已清空"}</span>
               </label>

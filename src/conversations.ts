@@ -13,6 +13,24 @@ export type ConversationKind = "private" | "group";
 export type ConversationChannel = "web" | "wechat" | "qq";
 export type ConversationTitleSource = "auto" | "custom";
 export const MAX_CONVERSATION_TITLE_LENGTH = 40;
+/** QQ 群消息的响应方式（OneBot 专属；官方后端平台只推 @ 事件）。 */
+export type QQGroupTriggerMode = "at" | "at_keyword" | "all";
+export const QQ_GROUP_TRIGGER_KEYWORD_LIMIT = 12;
+
+export function normalizeQQGroupTriggerMode(raw: unknown): QQGroupTriggerMode {
+  return raw === "at_keyword" || raw === "all" ? raw : "at";
+}
+
+/** 关键词表归一：切分 → 去空 → 去重 → 截断；落库统一用逗号，防止界面回显依赖输入时的分隔符。 */
+export function normalizeQQGroupTriggerKeywords(raw: string): string {
+  const seen = new Set<string>();
+  for (const part of raw.split(/[,，、;；\n\r\t ]+/)) {
+    const word = part.trim();
+    if (word !== "") seen.add(word.slice(0, 30));
+    if (seen.size >= QQ_GROUP_TRIGGER_KEYWORD_LIMIT) break;
+  }
+  return [...seen].join(",");
+}
 
 export type Conversation = {
   id: string;
@@ -28,6 +46,10 @@ export type Conversation = {
   enabled: boolean;
   /** 群级主动消息开关；仅对 kind="group" 且 channel="qq" 有意义，对应 QQ 侧"机器人主动在群内发言"权限。 */
   group_proactive: boolean;
+  /** 群消息响应方式；仅 OneBot 后端实际生效（官方平台只推 @ 事件）。 */
+  trigger_mode: QQGroupTriggerMode;
+  /** trigger_mode="at_keyword" 时的关键词表（逗号分隔）。 */
+  trigger_keywords: string;
   summary: string;
   summary_updated_at: number | null;
   summary_upto: number | null;
@@ -53,6 +75,8 @@ function rowToConversation(row: Record<string, unknown>): Conversation {
     left_at: row.left_at === null || row.left_at === undefined ? null : Number(row.left_at),
     enabled: Number(row.enabled ?? 1) !== 0,
     group_proactive: Number(row.group_proactive ?? 0) !== 0,
+    trigger_mode: normalizeQQGroupTriggerMode(row.trigger_mode),
+    trigger_keywords: String(row.trigger_keywords ?? ""),
     summary: String(row.summary ?? ""),
     summary_updated_at: row.summary_updated_at === null || row.summary_updated_at === undefined ? null : Number(row.summary_updated_at),
     summary_upto: row.summary_upto === null || row.summary_upto === undefined ? null : Number(row.summary_upto),
@@ -404,6 +428,13 @@ export function removeQQGroupConversation(id: string, contactId: string): Cleare
 
 export function setConversationGroupProactive(id: string, groupProactive: boolean): boolean {
   return Number(q("UPDATE conversations SET group_proactive = ? WHERE id = ?").run(groupProactive ? 1 : 0, id).changes) > 0;
+}
+
+/** 群消息响应方式。关键词只存归一后的串；非关键词模式保留原串，切回来不用重填。 */
+export function setConversationTrigger(id: string, mode: QQGroupTriggerMode, keywords: string): boolean {
+  const normalized = normalizeQQGroupTriggerKeywords(keywords);
+  return Number(q("UPDATE conversations SET trigger_mode = ?, trigger_keywords = ? WHERE id = ?")
+    .run(normalizeQQGroupTriggerMode(mode), normalized, id).changes) > 0;
 }
 
 /** 列出该联系人下已开启群主动消息的 QQ 群会话（用于 proactive 投递）。 */

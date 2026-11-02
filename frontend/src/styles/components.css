@@ -2383,6 +2383,13 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 }
 .qq-conv-proactive:hover { color: var(--text); background: color-mix(in srgb, var(--bg-hover) 55%, transparent); }
 .qq-conv-proactive input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.qq-conv-trigger {
+  padding: 1px 4px; border: 0; border-radius: 5px; background: transparent;
+  color: var(--text-muted); font-size: var(--text-cap); cursor: pointer;
+}
+.qq-conv-trigger:hover { background: var(--bg-hover); color: var(--text); }
+.qq-conv-trigger-seg { margin-bottom: 0; }
+.qq-conv-trigger-seg button { padding: 4px 10px; font-size: var(--text-note); }
 .qq-conv-edit-icon {
   display: grid; width: 23px; height: 23px; flex: none; place-items: center; padding: 0; border-radius: 6px !important;
   color: var(--text-muted); opacity: .7; transition: opacity .16s ease, color .16s ease, background .16s ease;

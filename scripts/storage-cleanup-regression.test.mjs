@@ -12,6 +12,8 @@ const dbFile = "./data/storage-cleanup-regression.db";
 for (const suffix of ["", "-wal", "-shm"]) rmSync(dbFile + suffix, { force: true });
 process.env.DB_PATH = dbFile;
 process.env.DEV_MODE = "1";
+// 断言按 10 条写死：显式指定窗口，别让默认值（DEV_LOG_KEEP）改动时把测试带红。
+process.env.DEV_LOG_KEEP = "10";
 process.env.MEDIA_DIR = "./data/media-storage-regression";
 process.env.SKILLS_DIR = "./data/skills-storage-regression";
 

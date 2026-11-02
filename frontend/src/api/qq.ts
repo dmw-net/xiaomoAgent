@@ -127,6 +127,16 @@ export function setQQConversationGroupProactive(contactId: string, conversationI
   return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/group-proactive?contactId=${encodeURIComponent(contactId)}`, { groupProactive });
 }
 
+/** 群消息响应方式（OneBot 渠道）：仅 @ / @或关键词 / 全部消息。 */
+export function setQQConversationTrigger(
+  contactId: string,
+  conversationId: string,
+  mode: "at" | "at_keyword" | "all",
+  keywords: string,
+): Promise<{ triggerMode: "at" | "at_keyword" | "all"; triggerKeywords: string }> {
+  return postJson(`/api/conversations/${encodeURIComponent(conversationId)}/trigger?contactId=${encodeURIComponent(contactId)}`, { mode, keywords });
+}
+
 /** title=null 时恢复最近一次平台自动群名；自定义名不会被后续事件覆盖。 */
 export function renameQQConversation(
   contactId: string,

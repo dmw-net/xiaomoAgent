@@ -10,7 +10,7 @@ import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
 import { asText, chunkSegments, CredentialCache, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight, withRaw } from "./channels/delivery.ts";
-import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, setConversationMembership, type Conversation } from "./conversations.ts";
+import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, setConversationMembership, type Conversation, type QQGroupTriggerMode } from "./conversations.ts";
 import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, readMedia, saveAudio, saveImage, saveVideo, sniffImageMime } from "./media.ts";
 import { needsStaticVariant, staticFrameOf } from "./renditions.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
@@ -82,7 +82,7 @@ const BIND_PHRASE = "绑定";
 const OP = { DISPATCH: 0, HEARTBEAT: 1, IDENTIFY: 2, RESUME: 6, RECONNECT: 7, INVALID_SESSION: 9, HELLO: 10 } as const;
 
 export type QQStatus = "connected" | "connecting" | "disabled" | "attention" | "not-configured";
-export type QQConversationView = { id: string; kind: "private" | "group"; title: string; titleSource: "auto" | "custom"; externalId: string; enabled: boolean; groupProactive: boolean; leftAt: number | null; messageCount: number; lastMessageAt: string };
+export type QQConversationView = { id: string; kind: "private" | "group"; title: string; titleSource: "auto" | "custom"; externalId: string; enabled: boolean; groupProactive: boolean; triggerMode: QQGroupTriggerMode; triggerKeywords: string; leftAt: number | null; messageCount: number; lastMessageAt: string };
 export type QQBindingView = {
   id: string; contactId: string; userOpenId: string; enabled: boolean; proactive: boolean;
   /** 是否已认领到真实 openid。凭据配好但没绑定时为 false——UI 据此显示「去绑定」入口。 */
@@ -950,6 +950,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     return listConversations(contactId).filter((conv) => conv.channel === "qq" && conv.kind === "group").map((conv) => ({
       id: conv.id, kind: conv.kind, title: conv.title, titleSource: conv.title_source,
       externalId: redact(conv.external_id), enabled: conv.enabled, groupProactive: conv.group_proactive, leftAt: conv.left_at,
+      triggerMode: conv.trigger_mode, triggerKeywords: conv.trigger_keywords,
       messageCount: Number((db.prepare("SELECT COUNT(*) AS c FROM messages WHERE conversation_id = ?").get(conv.id) as { c: number }).c),
       lastMessageAt: conv.last_message_at ? new Date(conv.last_message_at).toISOString() : "",
     }));

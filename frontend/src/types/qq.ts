@@ -13,6 +13,10 @@ export type QQConversationView = {
   enabled: boolean;
   /** 群级主动消息开关：开启后主动消息会投递到该群（需 QQ 侧已开启"机器人主动在群内发言"）。 */
   groupProactive: boolean;
+  /** 群消息响应方式（OneBot 渠道生效）：at=仅 @；at_keyword=@ 或关键词；all=全部消息。 */
+  triggerMode: "at" | "at_keyword" | "all";
+  /** triggerMode=at_keyword 时的关键词表（逗号分隔）。 */
+  triggerKeywords: string;
   /** 机器人被移出群或群解散的时间；非 null 时只能查看历史，不能重新开启收件。 */
   leftAt: number | null;
   /** 当前群会话里的消息条数；清除历史的确认文案与空状态按它显示。 */

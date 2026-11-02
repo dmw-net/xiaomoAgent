@@ -159,11 +159,14 @@ export type ModelCallRow = {
   /** 两列原文的字数：列表页只发摘要（实测原文占整页 98% 字节却一行都不显示）。 */
   req_chars?: number | null;
   res_chars?: number | null;
-  /** 完整响应正文：仅最近 10 条调用保留，更早的为 null（回退 detail 摘要）。开发模式下是服务商原始 JSON 报文。
+  /** 完整响应正文：仅保留最近若干次调用的原文，更早的为 null（回退 detail 摘要）。开发模式下是服务商原始 JSON 报文。
    *  列表页不发它——只有 GET /api/logs/:id（点开某一行）才带。 */
   res_full?: string | null;
   /** 完整请求体 JSON：仅开发模式（DEV_MODE=1）下服务端才会带此字段。 */
   req_full?: string | null;
+  turn_id?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
   total_tokens?: number | null;
 };
 

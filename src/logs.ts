@@ -54,8 +54,9 @@ CREATE INDEX IF NOT EXISTS idx_model_calls_created ON model_calls (created_at);
 CREATE INDEX IF NOT EXISTS idx_model_calls_failed ON model_calls (id) WHERE ok = 0;
 `);
 
-/** 原文全文的环形窗口：只有最近这么多条调用留着请求/响应全文，更早的自动剥掉。 */
-const FULL_TEXT_WINDOW = 10;
+/** 原文全文的环形窗口：只有最近这么多次调用留着请求/响应全文，更早的自动剥掉。
+ *  次数由 DEV_LOG_KEEP 控制（见 config.ts），默认 30、上限 500。 */
+const FULL_TEXT_WINDOW = config.devLogKeep;
 /**
  * 单条全文的字节上限。
  *
@@ -464,11 +465,11 @@ ensureColumn("model_calls", "req_full", "req_full TEXT");
 ensureColumn("model_calls", "res_full", "res_full TEXT");
 
 // 写入口已经按 DEV_MODE 关门；这里再迁移旧版本留下的数据：
-//   开发模式只留最近 10 次原文，普通模式一条原文都不留。
+//   开发模式只留最近 FULL_TEXT_WINDOW 次原文，普通模式一条原文都不留。
 // 真正把 SQLite 文件缩回去由 /api/storage/cleanup 的 VACUUM 完成。
 const bodyMigration = config.devMode ? trimModelCallBodies() : clearModelCallBodies().cleared;
 if (bodyMigration > 0) {
-  console.log(`[logs] 已清理 ${bodyMigration} 条历史调用原文（${config.devMode ? "仅保留最近 10 次" : "普通模式不保存原文"}）`);
+  console.log(`[logs] 已清理 ${bodyMigration} 条历史调用原文（${config.devMode ? `仅保留最近 ${FULL_TEXT_WINDOW} 次` : "普通模式不保存原文"}）`);
 }
 
 export type UsageBucket = {

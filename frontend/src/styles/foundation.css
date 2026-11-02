@@ -1523,6 +1523,8 @@ td .raw-hint {
 .raw-head { display: flex; align-items: flex-start; gap: var(--space-4); margin-bottom: var(--space-5); }
 .raw-head > div { min-width: 0; }
 .raw-sub { font-size: var(--text-sm); color: var(--text-muted); margin-top: var(--space-1); }
+/* 复制与关闭挤在标题右侧：两者都不参与标题换行，按钮尺寸由全局 .btn 提供。 */
+.raw-actions { display: flex; align-items: center; gap: var(--space-2); margin-left: auto; flex: none; }
 .raw-close {
   flex: none; margin-left: auto; width: 28px; height: 28px; border-radius: var(--radius-md);
   border: none; background: transparent; color: var(--text-subtle);

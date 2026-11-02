@@ -7,10 +7,12 @@ import {
   listConversations,
   MAX_CONVERSATION_TITLE_LENGTH,
   normalizeConversationTitle,
+  normalizeQQGroupTriggerKeywords,
   removeQQGroupConversation,
   renameQQGroupConversation,
   setConversationEnabled,
   setConversationGroupProactive,
+  setConversationTrigger,
 } from "../../conversations.ts";
 import { countMessagesFor } from "../../agent.ts";
 import { readJson, sendJson } from "../http.ts";
@@ -168,6 +170,42 @@ const conversationGroupProactiveRoute: Route = async ({ req, res, url, path, met
   return true;
 };
 
+/** QQ 群消息响应方式（OneBot 后端）：仅 @ / @或关键词 / 全部消息。官方后端平台只推 @ 事件，
+ *  这里仍允许写库，但界面只在 OneBot 渠道暴露入口。 */
+const conversationTriggerRoute: Route = async ({ req, res, url, path, method }) => {
+  const m = method === "POST" ? path.match(/^\/api\/conversations\/([^/]+)\/trigger$/) : null;
+  if (m === null) return false;
+  const contactId = strictContactId(url, res);
+  if (contactId === null) return true;
+  const id = decodeURIComponent(m[1] ?? "");
+  const conv = getConversation(id);
+  if (conv === null || conv.contact_id !== contactId || conv.channel !== "qq" || conv.kind !== "group") {
+    sendJson(res, 404, { ok: false, code: "CONVERSATION_NOT_FOUND", error: "QQ 群会话不存在或不属于当前联系人" });
+    return true;
+  }
+  if (conv.left_at !== null) {
+    sendJson(res, 409, { ok: false, error: "机器人已不在该群，无法修改响应方式" });
+    return true;
+  }
+  const body = await readJson<{ mode?: unknown; keywords?: unknown }>(req);
+  if (body.mode !== "at" && body.mode !== "at_keyword" && body.mode !== "all") {
+    sendJson(res, 400, { ok: false, error: "mode 只能是 at、at_keyword 或 all" });
+    return true;
+  }
+  if (body.keywords !== undefined && typeof body.keywords !== "string") {
+    sendJson(res, 400, { ok: false, error: "keywords 必须是字符串" });
+    return true;
+  }
+  const keywords = normalizeQQGroupTriggerKeywords(body.keywords ?? "");
+  if (body.mode === "at_keyword" && keywords === "") {
+    sendJson(res, 400, { ok: false, error: "选了「@ 或关键词」就得填至少一个关键词" });
+    return true;
+  }
+  setConversationTrigger(id, body.mode, keywords);
+  sendJson(res, 200, { ok: true, triggerMode: body.mode, triggerKeywords: keywords });
+  return true;
+};
+
 export const routes: Route[] = [
   conversationsListRoute,
   conversationFlagsRoute,
@@ -175,4 +213,5 @@ export const routes: Route[] = [
   conversationHistoryRoute,
   conversationRemoveRoute,
   conversationGroupProactiveRoute,
+  conversationTriggerRoute,
 ];

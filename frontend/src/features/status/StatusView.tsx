@@ -90,6 +90,33 @@ function prettyJson(raw: string): string {
   try { return JSON.stringify(JSON.parse(raw), null, 2); } catch { return raw; }
 }
 
+/** 一键复制用的整条记录：先给人能读的元数据，再放两段原文（JSON 能解析就缩进）。 */
+function rawCopyPayload(call: ModelCallRow): string {
+  const meta = [
+    `时间：${new Date(call.created_at).toLocaleString()}`,
+    `用途：${PURPOSE_LABEL[call.purpose] ?? call.purpose}`,
+    `结果：${call.ok ? "成功" : `失败${call.code ? `（${call.code}）` : ""}`}`,
+    call.status != null ? `HTTP 状态：${call.status}` : "",
+    `模型：${call.model || "未记录"}`,
+    call.url ? `接口：${call.url}` : "",
+    `耗时：${fmtMs(call.elapsed_ms)}`,
+    call.total_tokens != null
+      ? `Token：输入 ${call.prompt_tokens ?? "?"} / 输出 ${call.completion_tokens ?? "?"} / 合计 ${call.total_tokens}`
+      : "",
+    call.turn_id ? `处理单：${call.turn_id}` : "",
+    call.message ? `摘要：${call.message}` : "",
+  ].filter(Boolean);
+  return [
+    meta.join("\n"),
+    "",
+    "===== 请求体 =====",
+    call.req_full ? prettyJson(call.req_full) : "（未保留原文）",
+    "",
+    "===== 服务商返回 =====",
+    call.res_full ? prettyJson(call.res_full) : (call.detail ?? "（未保留原文）"),
+  ].join("\n");
+}
+
 /** 状态视图（全局）：总览（状态与配置）/ 模型用量 / 调用记录 / 最近处理 / 记忆召回测试。切到哪个 tab 才拉哪个的数据。 */
 export default function StatusView({ active = true, contactId, contactName, contactAvatar, onSwitchContact, onOpenContacts, goSettings }: {
   /** 视图是否真正可见：保活后的隐藏页不再偷偷刷新。 */
@@ -124,6 +151,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
   const [rawId, setRawId] = useState<number | null>(null);
   const [rawCall, setRawCall] = useState<ModelCallRow | null>(null);
   const [rawErr, setRawErr] = useState("");
+  const [rawCopy, setRawCopy] = useState<"idle" | "ok" | "bad">("idle");
   const [pingOut, setPingOut] = useState<PingOut>(null);
   const [busy, setBusy] = useState("");
   const [diag, setDiag] = useState<"idle" | "busy" | "ok" | "bad">("idle");
@@ -239,11 +267,20 @@ export default function StatusView({ active = true, contactId, contactName, cont
     setRawId(id);
     setRawCall(null);
     setRawErr("");
+    setRawCopy("idle");
     void getJson<{ call: ModelCallRow }>(`/api/logs/${id}`)
       .then((d) => setRawCall(d.call))
       .catch((e: Error) => setRawErr(e.message));
   };
-  const closeRaw = (): void => { setRawId(null); setRawCall(null); setRawErr(""); };
+  const closeRaw = (): void => { setRawId(null); setRawCall(null); setRawErr(""); setRawCopy("idle"); };
+
+  /** 一键复制这条调用的排障包：元数据 + 请求体 + 服务商返回，直接粘给对方就能定位。 */
+  const copyRawCall = async (): Promise<void> => {
+    if (rawCall === null) return;
+    const result = await copyText(rawCopyPayload(rawCall));
+    setRawCopy(result === "ok" ? "ok" : "bad");
+    window.setTimeout(() => setRawCopy("idle"), 1800);
+  };
 
   /** 失败的处理单直达那一次调用：从前只有手写探针才看得到请求原文。 */
   const openRawForTurn = (turnId: string): Promise<void> =>
@@ -530,7 +567,14 @@ export default function StatusView({ active = true, contactId, contactName, cont
                 </div>
               )}
             </div>
-            <button type="button" className="raw-close" aria-label="关闭" onClick={closeRaw}><X size={15} /></button>
+            <div className="raw-actions">
+              {rawCall !== null && (
+                <button type="button" className="btn sm" onClick={() => void copyRawCall()}>
+                  {rawCopy === "ok" ? "已复制" : rawCopy === "bad" ? "复制失败" : "复制排错信息"}
+                </button>
+              )}
+              <button type="button" className="raw-close" aria-label="关闭" onClick={closeRaw}><X size={15} /></button>
+            </div>
           </div>
           {rawErr !== "" && <div className="raw-body">取这一条失败：{rawErr}</div>}
           {rawCall === null && rawErr === "" && <LoadingSkeleton rows={2} />}
@@ -561,7 +605,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
               </div>
             )
           )}
-          <div className="raw-note">完整请求与响应只作为排障信息保存，最多保留最近 10 次调用；日常结果以短摘要展示。</div>
+          <div className="raw-note">完整请求与响应只作为排障信息保存，仅保留最近若干次调用；日常结果以短摘要展示。</div>
         </Modal>
       )}
     </div>

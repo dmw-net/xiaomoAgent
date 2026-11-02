@@ -6,6 +6,11 @@ import EmoteCapability from "./EmoteCapability";
 import { ChannelBadge, ChannelNote, ChannelSteps, type ChannelStep, type ChannelTone } from "./ChannelKit";
 
 const GROUP_TITLE_MAX = 40;
+const TRIGGER_MODE_LABEL: Record<QQConversationView["triggerMode"], string> = {
+  at: "仅 @",
+  at_keyword: "@ 或关键词",
+  all: "全部消息",
+};
 
 /**
  * 联系人资料页的「QQ 连接」卡片。
@@ -64,6 +69,11 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   const [editingGroupId, setEditingGroupId] = useState("");
   const [groupTitleDraft, setGroupTitleDraft] = useState("");
   const [renameBusy, setRenameBusy] = useState(false);
+  /** 群消息响应方式的行内编辑（OneBot 渠道）：与改名同一套展开形态。 */
+  const [editingTriggerId, setEditingTriggerId] = useState("");
+  const [triggerModeDraft, setTriggerModeDraft] = useState<QQConversationView["triggerMode"]>("at");
+  const [triggerKeywordsDraft, setTriggerKeywordsDraft] = useState("");
+  const [triggerBusy, setTriggerBusy] = useState(false);
   const [toggleBusyId, setToggleBusyId] = useState("");
   const [clearTarget, setClearTarget] = useState<QQConversationView | null>(null);
   const [clearBusy, setClearBusy] = useState(false);
@@ -600,7 +610,7 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
   };
 
   const startRename = (conv: QQConversationView): void => {
-    setErr(""); setEditingGroupId(conv.id); setGroupTitleDraft(conv.title);
+    setErr(""); setEditingTriggerId(""); setEditingGroupId(conv.id); setGroupTitleDraft(conv.title);
   };
 
   const saveGroupTitle = async (conv: QQConversationView, title: string | null): Promise<void> => {
@@ -618,6 +628,33 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
       if (alive.current) setErr(e instanceof Error ? e.message : String(e));
     } finally {
       if (alive.current) setRenameBusy(false);
+    }
+  };
+
+  const startTriggerEdit = (conv: QQConversationView): void => {
+    setErr(""); setEditingGroupId(""); setEditingTriggerId(conv.id);
+    setTriggerModeDraft(conv.triggerMode); setTriggerKeywordsDraft(conv.triggerKeywords);
+  };
+
+  const saveTrigger = async (conv: QQConversationView): Promise<void> => {
+    if (triggerBusy) return;
+    if (triggerModeDraft === "at_keyword" && triggerKeywordsDraft.trim() === "") {
+      setErr("选了「@ 或关键词」就得填至少一个关键词"); return;
+    }
+    setTriggerBusy(true); setErr("");
+    try {
+      const data = await qqApi.setQQConversationTrigger(contactId, conv.id, triggerModeDraft, triggerKeywordsDraft);
+      if (!alive.current) return;
+      setBinding((prev) => prev === null ? prev : {
+        ...prev,
+        conversations: prev.conversations.map((item) => item.id === conv.id
+          ? { ...item, triggerMode: data.triggerMode, triggerKeywords: data.triggerKeywords } : item),
+      });
+      setEditingTriggerId(""); setTriggerKeywordsDraft("");
+    } catch (e: unknown) {
+      if (alive.current) setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      if (alive.current) setTriggerBusy(false);
     }
   };
 
@@ -982,6 +1019,46 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
                 </div>
               </div>
             </form>
+          ) : editingTriggerId === conv.id ? (
+            <form key={conv.id} className="qq-conv-rename"
+              onSubmit={(e) => { e.preventDefault(); void saveTrigger(conv); }}
+              onKeyDown={(e) => { if (e.key === "Escape" && !triggerBusy) setEditingTriggerId(""); }}>
+              <div className="qq-conv-rename-field">
+                <span>群消息响应方式</span>
+                <div className="seg qq-conv-trigger-seg" role="radiogroup" aria-label="群消息响应方式">
+                  <button type="button" className={triggerModeDraft === "at" ? "on" : ""} disabled={triggerBusy}
+                    onClick={() => setTriggerModeDraft("at")}>仅 @</button>
+                  <button type="button" className={triggerModeDraft === "at_keyword" ? "on" : ""} disabled={triggerBusy}
+                    onClick={() => setTriggerModeDraft("at_keyword")}>@ 或关键词</button>
+                  <button type="button" className={triggerModeDraft === "all" ? "on" : ""} disabled={triggerBusy}
+                    onClick={() => setTriggerModeDraft("all")}>全部消息</button>
+                </div>
+              </div>
+              {triggerModeDraft === "at_keyword" && (
+                <label className="qq-conv-rename-field">
+                  <span>关键词（逗号、顿号或空格分隔）</span>
+                  <input value={triggerKeywordsDraft} maxLength={200} autoFocus
+                    placeholder="例如：小茉、在吗、出来"
+                    onChange={(e) => setTriggerKeywordsDraft(e.target.value)} />
+                </label>
+              )}
+              <div className="qq-conv-rename-foot">
+                <span>
+                  {triggerModeDraft === "all"
+                    ? "群里每条消息都会触发她回复，发言频繁的群注意消耗。"
+                    : triggerModeDraft === "at_keyword"
+                      ? "被 @ 或消息里出现任一关键词时回复。"
+                      : "只有 @ 她时回复；其余群消息不入库。"}
+                </span>
+                <div className="qq-conv-rename-actions">
+                  <button type="button" className="qq-conv-cancel" disabled={triggerBusy}
+                    onClick={() => setEditingTriggerId("")}>取消</button>
+                  <button type="submit" className="qq-conv-save" disabled={triggerBusy}>
+                    {triggerBusy ? "保存中…" : "保存"}
+                  </button>
+                </div>
+              </div>
+            </form>
           ) : (
             <div key={conv.id} className="qq-conv-row">
               <div className="qq-conv-main">
@@ -1002,6 +1079,13 @@ export function QQSection({ contactId, who = "这位联系人" }: { contactId: s
                       : !conv.enabled ? "已停用 · 不响应群消息"
                       : `${conv.titleSource === "custom" ? "自定义名称" : "平台群名"} · 群聊`}
                   </span>
+                  {backend === "onebot" && conv.leftAt === null && (
+                    <button type="button" className="qq-conv-trigger"
+                      title="群里什么消息会触发她回复（仅 OneBot 渠道）"
+                      onClick={() => startTriggerEdit(conv)}>
+                      响应：{TRIGGER_MODE_LABEL[conv.triggerMode]}
+                    </button>
+                  )}
                   <button type="button" className="qq-conv-clear" title="清除该群全部历史（会话保留，继续收发）"
                     onClick={() => { setErr(""); setClearTarget(conv); }}>
                     <Trash2 size={11} strokeWidth={1.9} />清除历史

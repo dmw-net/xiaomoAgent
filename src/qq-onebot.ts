@@ -199,6 +199,20 @@ function obMessageAtBot(message: unknown, botUin: string): boolean {
     return asText(data.qq) === botUin;
   });
 }
+
+/** 群消息是否该进入处理队列：@ 永远放行，其余按该群的响应方式（仅 @ / @或关键词 / 全部消息）。
+ *  纯函数，不碰库也不读账号，回归测试直接喂样本。 */
+export function obGroupAccepted(mode: string, keywords: string, text: string, atBot: boolean): boolean {
+  if (atBot) return true;
+  if (mode === "all") return true;
+  if (mode !== "at_keyword") return false;
+  const haystack = text.trim().toLocaleLowerCase();
+  if (haystack === "") return false;
+  return keywords.split(/[,，、;；\n\r\t ]+/).some((word) => {
+    const needle = word.trim().toLocaleLowerCase();
+    return needle !== "" && haystack.includes(needle);
+  });
+}
 /**
  * 入站媒体段的原始引用。各家协议端回填的字段形态不一（NapCat 给 url+path+file，
  * go-cqhttp 老形态可能只给裸文件名），这里先把三种可能收齐，取字节时再按便宜排序。
@@ -475,25 +489,29 @@ export function createQQOneBotService(): QQService {
     const segments = obInboundSegments(event.message);
     if (text === "" && segments.length === 0) return;
 
-    let contactId: string; let conv; let ownerQq = "";
+    let contactId: string; let conv; let ownerQq = ""; let atBot = false;
     if (isGroup) {
       const gid = asText(event.group_id);
       if (gid === "") return;
       const acc = primaryAccount();
-      // ① @ 闸门：群里只有 @机器人 才响应。NapCat 会把它在的所有群都推过来，
-      //    没这道闸她会在任何群里接任何话——官方渠道是 @ 才推，OneBot 必须自己把关。
-      if (!obMessageAtBot(event.message, acc?.qqNumber ?? "")) return;
+      atBot = obMessageAtBot(event.message, acc?.qqNumber ?? "");
       contactId = acc?.contactId ?? "default";
       ownerQq = acc?.ownerQq ?? "";
-      // ② 白名单闸门：已登记且开收件的群直接用；已停用/已退出的群不复活。
+      // ① 已登记的群按该群自己的响应方式放行：@ 永远算命中；「全部消息」放行日常 chatter；
+      //    「@或关键词」按关键词表命中。没命中的一概不入库（她不会旁听）。
       conv = listConversations(contactId)
         .find((c) => c.channel === "qq" && c.kind === "group" && c.external_id === gid) ?? null;
-      if (conv === null) {
-      // ③ 渠道过户（双向）：官方渠道留下的群会话如果恰好一条，过户成这个群——
-      //    同一个物理群在新渠道是另一个 ID，不过户就会裂成两条会话，历史和记忆全断。
-      const adoptable = findAdoptableGroupConversation(contactId, true);
-      if (adoptable !== null) adoptGroupConversation(adoptable.id, gid);
-        // ④ 首次被 @ 的群才登记成新会话；之后没被 @ 的群消息（日常 chatter）一概不入库。
+      if (conv !== null) {
+        if (!obGroupAccepted(conv.trigger_mode, conv.trigger_keywords, text, atBot)) return;
+      } else {
+        // ② 陌生群只有 @ 才登记：NapCat 会把协议端所在的全部群都推过来，
+        //    「全部消息」只对已经收进列表的群生效，不能因此自动把所有群加进来。
+        if (!atBot) return;
+        // ③ 渠道过户（双向）：官方渠道留下的群会话如果恰好一条，过户成这个群——
+        //    同一个物理群在新渠道是另一个 ID，不过户就会裂成两条会话，历史和记忆全断。
+        const adoptable = findAdoptableGroupConversation(contactId, true);
+        if (adoptable !== null) adoptGroupConversation(adoptable.id, gid);
+        // ④ 首次被 @ 的群才登记成新会话。
         conv = ensureConversation({ contactId, channel: "qq", kind: "group", externalId: gid, title: asText(event.group_name) || ("群 " + gid) });
       }
     } else {
@@ -520,7 +538,7 @@ export function createQQOneBotService(): QQService {
         senderName: (asText(sender.nickname ?? sender.card ?? sender.member_nickname) || (isGroup ? "群成员" : "QQ 用户"))
           + (ownerQq !== "" && asText(event.user_id ?? event.qq) === ownerQq ? "（主人）" : ""),
         sourceMessageId: asText(event.message_id),
-        atBot: isGroup,
+        atBot,
         attachmentMeta: media.meta,
       },
     );
@@ -540,6 +558,7 @@ export function createQQOneBotService(): QQService {
       .map((c) => ({
         id: c.id, kind: "group", title: c.title, titleSource: c.title_source,
         externalId: redact(c.external_id), enabled: c.enabled, groupProactive: c.group_proactive,
+        triggerMode: c.trigger_mode, triggerKeywords: c.trigger_keywords,
         leftAt: c.left_at, messageCount: 0,
         lastMessageAt: c.last_message_at ? new Date(c.last_message_at).toISOString() : "",
       }));

@@ -406,6 +406,11 @@ ensureColumn("conversations", "left_at", "left_at INTEGER");
 // 群主动消息开关：对应 QQ 群设置里"机器人主动在群聊内发言"在应用侧的映射。
 // 默认 0（关闭），需用户在 QQ 侧先开启权限、再在应用里勾选才生效。
 ensureColumn("conversations", "group_proactive", "group_proactive INTEGER NOT NULL DEFAULT 0");
+// QQ 群消息的响应方式（仅 OneBot 后端有意义）：at=仅 @；at_keyword=@ 或关键词；all=全部消息。
+// 官方后端平台只推 @ 事件，这两列对它不起作用；默认 at，避免升级后把没 @ 的群聊全放进来。
+ensureColumn("conversations", "trigger_mode", "trigger_mode TEXT NOT NULL DEFAULT 'at'");
+// trigger_mode=at_keyword 时的关键词表：原串落库（逗号/顿号/空格分隔），匹配时再切分。
+ensureColumn("conversations", "trigger_keywords", "trigger_keywords TEXT NOT NULL DEFAULT ''");
 
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);

@@ -535,7 +535,7 @@ try {
   check("logs 分页 limit/offset/total", typeof p1.total === "number" && p1.calls.length <= 1
     && (p1.total < 2 || (p2.calls.length === 1 && p2.calls[0].id < p1.calls[0].id)), `total=${p1.total}`);
   // 普通模式（DEV_MODE 关闭）：请求和响应原文都不落库，也不从单行详情出口。
-  // 开发模式保留最近 10 次的环形窗口由 scripts/storage-cleanup-regression.test.mjs 覆盖。
+  // 开发模式保留最近若干次（DEV_LOG_KEEP）的环形窗口由 scripts/storage-cleanup-regression.test.mjs 覆盖。
   const logsRing = await import("../src/logs.ts");
   for (let i = 0; i < 12; i += 1) {
     logsRing.logModelCall({

@@ -221,6 +221,12 @@ const { webChannel } = await import("../src/channels/web.ts");
 const { createHttpServer, isLocalMachineHost, isTrustedExternalHost } = await import("../src/server.ts");
 const { addMemoryEvent, recall, memoryCount, listMemoryEvents, memoryStats, listMemoryEventsFiltered } = await import("../src/memory.ts");
 const { db } = await import("../src/db.ts");
+const { walkMediaTree: smokeWalkMediaTree } = await import("../src/media-layout.ts");
+/** 媒体按类型分目录，测试统一按递归媒体树判断“文件是否真的在盘上”。 */
+const mediaFileOnDisk = (url: string): boolean => {
+  const name = url.slice(url.lastIndexOf("/") + 1);
+  return name !== "" && smokeWalkMediaTree().some((entry) => entry.name === name);
+};
 const { ModelError, friendlyModelError } = await import("../src/model.ts");
 
 registerChannel(webChannel);
@@ -874,6 +880,73 @@ try {
   check("密钥未配置时 hasKey 为 false", s0.hasKey === false);
   check("默认角色名可用", typeof s0.persona?.character?.name === "string" && s0.persona.character.name.length > 0);
   check("默认没有覆盖项", s0.overridden.model.length === 0 && s0.overridden.persona.length === 0);
+  check("默认表情频率自然", s0.emoteFrequency === "normal", String(s0.emoteFrequency));
+
+  const emoteFreqPut = await (
+    await fetch(`${BASE}/api/settings`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ emoteFrequency: "often" }),
+    })
+  ).json();
+  check("表情频率保存并回显", emoteFreqPut.ok === true && emoteFreqPut.emoteFrequency === "often", String(emoteFreqPut.emoteFrequency));
+  const emoteFreqBad = await (
+    await fetch(`${BASE}/api/settings`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ emoteFrequency: "always" }),
+    })
+  ).json();
+  check("非法表情频率被拒", emoteFreqBad.ok === false && String(emoteFreqBad.error).includes("表情使用频率"), emoteFreqBad.error);
+
+  // 表情是全局唯一开关：档位开着，所有联系人的预览都该出现表情段（从前这里要先给联系人开 emotes，
+  // 结果真库出现过「全局调到主动、13 个联系人只有 1 个能用」的两档断链）。
+  const emoteHintContact = await (
+    await fetch(`${BASE}/api/contacts`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "表情提示测试" }),
+    })
+  ).json();
+  const emoteHintCid = emoteHintContact.contact.id as string;
+  const emotePreviewOn = await (
+    await fetch(`${BASE}/api/settings/preview`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contactId: emoteHintCid }),
+    })
+  ).json();
+  check("全局档开着时表情进入预览提示词", emotePreviewOn.prompt.includes("[表情]") && emotePreviewOn.prompt.includes("每两三条"), emotePreviewOn.prompt);
+  await fetch(`${BASE}/api/contacts/${encodeURIComponent(emoteHintCid)}`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ features: { tools: false } }),
+  });
+  const emotePreviewToolsOff = await (
+    await fetch(`${BASE}/api/settings/preview`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contactId: emoteHintCid }),
+    })
+  ).json();
+  check("工具总开关关闭时表情提示也不出现", !emotePreviewToolsOff.prompt.includes("[表情]"), emotePreviewToolsOff.prompt);
+  await fetch(`${BASE}/api/contacts/${encodeURIComponent(emoteHintCid)}`, {
+    method: "PUT", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ features: { tools: true } }),
+  });
+  const emoteFreqOff = await (
+    await fetch(`${BASE}/api/settings`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ emoteFrequency: "off" }),
+    })
+  ).json();
+  check("表情频率可以整条关闭", emoteFreqOff.ok === true && emoteFreqOff.emoteFrequency === "off", String(emoteFreqOff.emoteFrequency));
+  const emotePreviewOff = await (
+    await fetch(`${BASE}/api/settings/preview`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ contactId: emoteHintCid }),
+    })
+  ).json();
+  check("全局档关闭后提示词不引用表情", !emotePreviewOff.prompt.includes("[表情]"), emotePreviewOff.prompt);
+  await fetch(`${BASE}/api/settings`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ emoteFrequency: "often" }),
+  });
+  await fetch(`${BASE}/api/contacts/${encodeURIComponent(emoteHintCid)}`, { method: "DELETE" });
 
   const put1 = await (
     await fetch(`${BASE}/api/settings`, {
@@ -945,7 +1018,15 @@ try {
     body: JSON.stringify({ recentTurns: 0 }),
   });
 
-  // 性别驱动的代词（她/他/TA）：PUT 保存回显、列表下发、非法值拒绝
+  // 未设置联系人指代方式时必须走中性，不再默认成女性。
+  const gNeutral = await (await fetch(`${BASE}/api/contacts/default`)).json();
+  const { pronounOf, formatBondLine } = await import("../src/contacts.ts");
+  check("联系人缺省指代为中性", gNeutral.contact?.gender === "other" && pronounOf(undefined) === "TA",
+    `gender=${gNeutral.contact?.gender} pronoun=${pronounOf(undefined)}`);
+  const neutralBond = formatBondLine({ stage: "熟悉", warmth: 60, mood: "轻松", updated_at: null });
+  check("温度计缺省指代为中性", neutralBond.includes("TA此刻的情绪") && !neutralBond.includes("联系人此刻"), neutralBond);
+
+  // 明确设置的代词（她/他/TA）：PUT 保存回显、列表下发、非法值拒绝
   const gPut = await (
     await fetch(`${BASE}/api/contacts/default`, {
       method: "PUT", headers: { "content-type": "application/json" },
@@ -961,7 +1042,7 @@ try {
       body: JSON.stringify({ gender: "robot" }),
     })
   ).json();
-  check("非法性别被拒", gBad.ok === false && String(gBad.error).includes("性别"), gBad.error);
+  check("非法指代方式被拒", gBad.ok === false && String(gBad.error).includes("指代方式"), gBad.error);
   await fetch(`${BASE}/api/contacts/default`, {
     method: "PUT", headers: { "content-type": "application/json" },
     body: JSON.stringify({ gender: "female" }),
@@ -987,7 +1068,7 @@ try {
       body: JSON.stringify({ owner: { gender: "robot" } }),
     })
   ).json();
-  check("非法用户性别被拒", oBad.ok === false && String(oBad.error).includes("性别"), oBad.error);
+  check("非法用户指代方式被拒", oBad.ok === false && String(oBad.error).includes("指代方式"), oBad.error);
   await fetch(`${BASE}/api/settings`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ owner: { gender: "male" } }),
@@ -1001,8 +1082,8 @@ try {
   check("抽取提示词代词跟随性别",
     exMale.includes("他此刻情绪") && exMale.includes("「她计划在") && exMale.includes('"subject":"她"')
     && !exMale.includes("她此刻情绪"), exMale.match(/mood...(.{0,6})此刻/u)?.[1] ?? "");
-  check("抽取缺省口径不变（角色她/用户他）",
-    exDft.includes("她此刻情绪") && exDft.includes("「他计划在") && !exDft.includes("他此刻情绪"));
+  check("抽取缺省口径采用中性 TA（角色与用户都不再默认性别）",
+    exDft.includes("TA此刻情绪") && exDft.includes("「TA计划在") && !exDft.includes("她此刻情绪") && !exDft.includes("他此刻情绪"));
   check("抽取输入行前缀跟用户性别", extractIn("你好", "嗨", new Date("2026-09-22T10:00:00"), "她").includes("）她：你好"));
   check("整理提示词代词跟随性别",
     buildConsolidateSystem("他", "她").includes("以「你」指他、「她」指用户")
@@ -1076,6 +1157,10 @@ try {
   const promptNow = buildSystemPrompt([]);
   check("实际 system prompt 用了新角色卡", promptNow.includes("阿离") && promptNow.includes("高中同桌"));
   check("system prompt 含「她眼中的你」", promptNow.includes("大魔王") && promptNow.includes("不吃香菜"));
+  const promptOften = buildSystemPrompt([], { emoteFrequency: "often" });
+  check("系统提示按全局倾向要求主动发表情",
+    promptOften.includes("[表情]") && promptOften.includes("每两三条") && promptOften.includes("直接调用表情工具"), promptOften);
+  check("未启用表情时系统提示不出现表情段", !promptNow.includes("[表情]"));
 
   const reset = await (
     await fetch(`${BASE}/api/settings`, {
@@ -1087,6 +1172,7 @@ try {
   check("恢复默认成功", reset.ok === true);
   check("覆盖项已清空", reset.overridden.model.length === 0 && reset.overridden.persona.length === 0);
   check("角色名退回默认", reset.persona.character.name !== "阿离", reset.persona.character.name);
+  check("表情频率随恢复默认回到自然", reset.emoteFrequency === "normal", String(reset.emoteFrequency));
 
   const afterReset = buildSystemPrompt([]);
   check("提示词同步退回默认", !afterReset.includes("高中同桌"), afterReset.slice(0, 40));
@@ -1217,9 +1303,8 @@ try {
   board = await pullAll();
   const swapped = board.messages.find((m) => m.id === imgRow!.id);
   check("消息附件被覆盖成新图", JSON.stringify(swapped?.attachments) === JSON.stringify([imgB]), JSON.stringify(swapped?.attachments));
-  const { existsSync: diskHas } = await import("node:fs");
-  check("被换掉的旧图已回收（全库再无引用）", !diskHas(`${MEDIA}/${imgA.slice("/media/".length)}`), imgA);
-  check("换进来的新图还在", diskHas(`${MEDIA}/${imgB.slice("/media/".length)}`), imgB);
+  check("被换掉的旧图已回收（全库再无引用）", !mediaFileOnDisk(imgA), imgA);
+  check("换进来的新图还在", mediaFileOnDisk(imgB), imgB);
   const noAttachRes = await fetch(`${BASE}/api/message/${swapped!.id}/edit`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ text: "编辑带图测试：图全删了", attachments: [] }),
@@ -1880,7 +1965,6 @@ try {
   wav.writeUInt16LE(16, 34);
   wav.write("data", 36, "ascii");
   wav.writeUInt32LE(8000, 40);
-  const { existsSync: existsForVoice } = await import("node:fs");
   const voiceUpRes = await fetch(`${BASE}/api/media/voice`, { method: "POST", headers: { "content-type": "audio/wav" }, body: wav });
   const voiceUp = await voiceUpRes.json() as { url?: string; mime?: string };
   check("语音上传按魔数落盘并返回可播放 URL", voiceUpRes.status === 200 && /^\/media\/[a-f0-9]{16}\.wav$/.test(String(voiceUp.url)) && voiceUp.mime === "audio/wav", JSON.stringify(voiceUp));
@@ -1912,7 +1996,7 @@ try {
   const voiceName = voiceUrl.slice("/media/".length);
   const voiceDelete = await (await jsonPost("/api/media/maintenance", { op: "delete-message", names: [voiceName] })).json() as { ok?: boolean; changed?: number };
   check("媒体页删除语音会回到聊天语义，而不是留下坏消息", voiceDelete.ok === true && voiceDelete.changed === 1);
-  check("删除语音消息后文件同步释放", !existsForVoice(`${MEDIA}/${voiceName}`), voiceName);
+  check("删除语音消息后文件同步释放", !mediaFileOnDisk(voiceUrl), voiceName);
 
   // ── 重放窗口：轮数决定哪些消息进上下文，图片数硬上限决定其中最多看几张 ──
   const { selectReplayImages, countReplayedImages, imageProxiedHistory } = await import("../src/agent.ts");
@@ -1961,7 +2045,7 @@ try {
   // 而 deleteMessage 没兜异常——「删掉一条带图消息」会在事务提交后报 500，图片永久泄漏在磁盘上。
   const orphanUrl = ((await (await fetch(`${BASE}/api/media`, { method: "POST", headers: { "content-type": "image/png" }, body: png })).json()).url) as string;
   releaseMediaFiles([orphanUrl, up.url]);
-  const onDisk = (u: string): boolean => existsSync(`${MEDIA}/${u.slice("/media/".length)}`);
+  const onDisk = mediaFileOnDisk;
   check("没人引用的图片被回收（此前这里的 SQL 每次都抛错）", !onDisk(orphanUrl), orphanUrl);
   check("仍被消息引用的图片不删", onDisk(up.url));
 
@@ -2282,7 +2366,6 @@ try {
     if (t.status === "done" || t.status === "failed") break;
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
-  const delFs = await import("node:fs");
   const delEarly = await fetch(`${BASE}/api/contacts/${encodeURIComponent(delCid)}`, { method: "DELETE" });
   const delEarlyBody = await delEarly.json();
   check("没归档就删 → 被拒（归档是冷却期）", delEarly.status === 400 && String(delEarlyBody.error).includes("归档"), `status=${delEarly.status} ${delEarlyBody.error}`);
@@ -2298,7 +2381,7 @@ try {
   check("归档后彻底删除被接受", delOk.status === 200, `status=${delOk.status}`);
   const archivedLeft = await (await fetch(`${BASE}/api/contacts?archived=1`)).json();
   check("删除后不在归档列表里", !archivedLeft.contacts.some((c: { id: string }) => c.id === delCid));
-  check("删除后图片文件被回收", !delFs.existsSync(`${MEDIA}/${delImg.slice("/media/".length)}`), delImg);
+  check("删除后图片文件被回收", !mediaFileOnDisk(delImg), delImg);
 
   console.log("\n[32] 助手工作区：多会话隔离");
   const threadApi = (suffix: string, body?: Record<string, unknown>) =>
@@ -2350,9 +2433,8 @@ try {
   console.log("\n[32b] 助手工作区：清空消息（工作区保留 / 图片回收 / 通用也能清）");
   {
     const { insertMessage: insClear } = await import("../src/agent.ts");
-    const { existsSync: existsClear } = await import("node:fs");
     const png1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
-    const onDiskClear = (u: string): boolean => existsClear(`${MEDIA}/${u.slice("/media/".length)}`);
+    const onDiskClear = mediaFileOnDisk;
 
     const made = await (await threadApi("", { title: "要清的" })).json();
     const clearCid = `assistant:${made.thread.id}`;
@@ -3029,7 +3111,7 @@ try {
       check("工具带回 attachments（模型只看到 result，图由循环挂到回复上）",
         drawn.ok === true && (drawn.attachments ?? []).length === 1, JSON.stringify(drawn));
       check("图是 /media/<16位hex>.png 的形状（读回与前端都按这个正则）", /^\/media\/[0-9a-f]{16}\.png$/.test(first), first);
-      check("图真的写进了媒体目录", first !== "" && existsSync(`${MEDIA}/${first.slice("/media/".length)}`));
+      check("图真的写进了媒体目录", first !== "" && mediaFileOnDisk(first));
       check("出图请求打了一次服务商", img.hits === 1, String(img.hits));
       check("model_calls 记下 imageGen 并带联系人（配额就靠这几行数）",
         (dbImg.prepare("SELECT COUNT(*) c FROM model_calls WHERE purpose='imageGen' AND ok=1 AND contact_id=?").get(cid) as { c: number }).c === 1);
@@ -3054,7 +3136,7 @@ try {
       const viaUrl = await executeTool("generate_image", JSON.stringify({ prompt: "夜里的灯塔" }), { lastUserAt: null, contactId: cidUrl, turnId: null });
       const urlShot = viaUrl.ok === true ? (viaUrl.attachments ?? [])[0] ?? "" : "";
       check("b64_json 为空时改拉服务商外链并同样落盘", /^\/media\/[0-9a-f]{16}\.png$/.test(urlShot), JSON.stringify(viaUrl));
-      check("外链那张图也真进了媒体目录", urlShot !== "" && existsSync(`${MEDIA}/${urlShot.slice("/media/".length)}`));
+      check("外链那张图也真进了媒体目录", urlShot !== "" && mediaFileOnDisk(urlShot));
       check("拉的就是响应里给的那条地址", img.cosHits === 1, String(img.cosHits));
 
       // 外链地址由服务商的响应决定，所以本机与内网一律不拉。
@@ -3124,7 +3206,7 @@ try {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ faceRef: "" }),
       })).json();
       await new Promise((r) => setTimeout(r, 60));
-      check("清除参考图后旧文件被释放", cleared.contact?.faceRef === "" && !existsSync(`${MEDIA}/${String(upFace.url).slice("/media/".length)}`),
+      check("清除参考图后旧文件被释放", cleared.contact?.faceRef === "" && !mediaFileOnDisk(String(upFace.url)),
         `${cleared.contact?.faceRef} / ${upFace.url}`);
 
       check("主动性判断指令：没开配图就不提 with_image", !buildDecideSystem("他", false).includes("with_image"));
@@ -3205,10 +3287,10 @@ try {
       })).json();
       await new Promise((r) => setTimeout(r, 60));
       check("清掉参考图不会删掉画廊里的原件（画的生死只由删资产决定）",
-        swap.contact?.faceRef === "" && existsSync(`${MEDIA}/${keepAsFace.slice("/media/".length)}`), keepAsFace);
+        swap.contact?.faceRef === "" && mediaFileOnDisk(keepAsFace), keepAsFace);
       const gone = deleteArtifact(art.id);
       await new Promise((r) => setTimeout(r, 60));
-      check("删资产才会真正释放文件", gone.ok === true && !existsSync(`${MEDIA}/${keepAsFace.slice("/media/".length)}`) && getArtifact(art.id) === null,
+      check("删资产才会真正释放文件", gone.ok === true && !mediaFileOnDisk(keepAsFace) && getArtifact(art.id) === null,
         keepAsFace);
 
       // 参考图必须被孤儿清理认出来：它存在 contacts.face_ref，从不进任何消息的 attachments。
@@ -3225,7 +3307,7 @@ try {
       });
       const { sweepOrphanMedia } = await import("../src/media.ts");
       const swept = sweepOrphanMedia(0);
-      const inMedia = (u: string) => existsSync(`${MEDIA}/${String(u).slice("/media/".length)}`);
+      const inMedia = (u: string) => mediaFileOnDisk(String(u));
       check("孤儿清理不删 contacts.face_ref 指向的参考图", inMedia(keep.url), keep.url);
       // 控制组：只证"清理真的在删东西"，否则上一条的"没被删"说明不了任何事。
       check("但没被任何地方引用的文件照样清掉（控制组）",
@@ -3766,7 +3848,7 @@ try {
 
       // 入站三件事：@ 昵称补回正文、引用关系、群图落本地媒体库。平台把 @ 从正文里剥了，
       // 昵称只剩在 mentions[] 里；引用关系只在 message_scene.ext 的 ref_msg_idx 里。
-      const { existsSync: existsQQMedia } = await import("node:fs");
+      const { mediaUrlExists: qqMediaExists } = await import("../src/media.ts");
       const mediaFetchesBefore = qqMock.mediaFetches.length;
       sock.emit({ op: 0, t: "GROUP_AT_MESSAGE_CREATE", s: 12, d: {
         id: "gm2", group_openid: "GROUP-A", group_name: "测试群 A",
@@ -3791,7 +3873,7 @@ try {
       const gm2Image = gm2Images.find((url) => url.startsWith("/media/"));
       check("群图下载后落进本地媒体库",
         qqMock.mediaFetches.length > mediaFetchesBefore && gm2Image !== undefined
-          && existsQQMedia(`${MEDIA}/${gm2Image.slice("/media/".length)}`),
+          && qqMediaExists(gm2Image),
         JSON.stringify({ fetches: qqMock.mediaFetches.length - mediaFetchesBefore, image: gm2Image ?? null }));
       const gm2Meta = gm2?.attachment_meta ? (JSON.parse(gm2.attachment_meta) as Array<{ kind?: string; mime?: string }>) : [];
       check("图片附件元信息标成 image 并带识别出的 mime",
@@ -4167,13 +4249,12 @@ try {
   console.log("\n[39] 恢复出厂设置：清干净 + 重新种子内置联系人");
 
 
-  const fsR = await import("node:fs");
   const { db: dbR } = await import("../src/db.ts");
   // `one()` 那把计数助手定义在更早的分段作用域里，这儿够不着，就地来一把同语义的
   const count = (table: string): number => (dbR.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
   const beforeContacts = count("contacts");
   const beforeMsgs = count("messages");
-  const beforeMedia = fsR.existsSync(MEDIA) ? fsR.readdirSync(MEDIA).length : 0;
+  const beforeMedia = smokeWalkMediaTree().length;
   // 控制组：清库之前必须真有东西，否则"清空了"这句是白说的
   check("控制组：出厂重置前库里确有对话与联系人",
     beforeContacts >= 2 && beforeMsgs > 0 && beforeMedia > 0,
@@ -4193,8 +4274,9 @@ try {
     count("messages") === 0 && count("memory_events") === 0
       && count("proactive_tasks") === 0 && count("model_calls") === 0
       && count("artifacts") === 0);
-  check("图片文件一并回收", !fsR.existsSync(MEDIA) || fsR.readdirSync(MEDIA).length === 0,
-    fsR.existsSync(MEDIA) ? `${fsR.readdirSync(MEDIA).length} 个残留` : "目录已空");
+  const afterResetMedia = smokeWalkMediaTree();
+  check("图片文件一并回收", afterResetMedia.length === 0,
+    afterResetMedia.length === 0 ? "媒体树已空" : `${afterResetMedia.length} 个残留`);
   const afterList = (await (await fetch(`${BASE}/api/contacts`)).json()).contacts as Array<{ id: string }>;
   check("内置联系人被重新种子（会话列表里只剩小茉，助手不在列表）",
     afterList.length === 1 && afterList[0]?.id === "default", JSON.stringify(afterList.map((c) => c.id)));
@@ -4848,28 +4930,26 @@ try {
       WEB_TOOLS.every((t) => t.parameters.type === "object"
         && (t.parameters.additionalProperties as boolean | undefined) === false), "");
 
-    // 动作预算：轮数不再是硬编码 3，越界一律回到"跟随"而不是悄悄收紧。
-    check("默认预算 3，助手放开到上限",
-      settings.globalToolRounds() === 3 && settings.resolveToolRounds(true, 0) === settings.TOOL_ROUNDS_ASSISTANT);
-    check("联系人覆盖生效且优先于全局", settings.resolveToolRounds(false, 6) === 6);
-    check("覆盖越界回到跟随（99 与 0 都不算设过）",
-      settings.resolveToolRounds(false, 99) === 3 && settings.resolveToolRounds(false, 0) === 3);
-    settings.setGlobalToolRounds(5);
-    check("全局改 5 立即生效，不用重启", settings.resolveToolRounds(false, 0) === 5);
-    settings.setGlobalToolRounds("乱填");
-    check("写进非法值回到默认而不是崩", settings.globalToolRounds() === 3);
+    // 动作预算：普通联系人统一走全局，设置助手固定 8 轮。
+    check(
+      "默认预算 5，助手固定 8 轮",
+      settings.globalToolLoopTurns() === 5 && settings.resolveToolLoopTurns(true) === 8 && settings.resolveToolLoopTurns(false) === 5,
+    );
+    settings.setGlobalToolLoopTurns(12);
+    check("全局改 12 立即生效，不用重启", settings.resolveToolLoopTurns(false) === 12);
+    settings.setGlobalToolLoopTurns("乱填");
+    check("写进非法值回到默认而不是崩", settings.globalToolLoopTurns() === 5);
+    check("表情频率默认自然", settings.globalEmoteFrequency() === "normal");
+    settings.setGlobalEmoteFrequency("often");
+    check("全局表情频率改动立即生效", settings.globalEmoteFrequency() === "often");
+    settings.setGlobalEmoteFrequency("乱填");
+    check("表情频率非法值回到默认", settings.globalEmoteFrequency() === "normal");
     await fetch(`${BASE}/api/contacts/${cw}`, {
       method: "PUT", headers: { "content-type": "application/json" },
       body: JSON.stringify({ features: { toolRounds: 7 } }),
     });
-    check("features.toolRounds 收合法值、越界归 0",
-      (await (await fetch(`${BASE}/api/contacts/${cw}`)).json()).contact.features.toolRounds === 7);
-    await fetch(`${BASE}/api/contacts/${cw}`, {
-      method: "PUT", headers: { "content-type": "application/json" },
-      body: JSON.stringify({ features: { toolRounds: 100 } }),
-    });
-    check("features 越界归 0（跟随全局）",
-      (await (await fetch(`${BASE}/api/contacts/${cw}`)).json()).contact.features.toolRounds === 0);
+    check("联系人 features 上的旧 toolRounds 被忽略",
+      (await (await fetch(`${BASE}/api/contacts/${cw}`)).json()).contact.features.toolRounds === undefined);
     db.prepare(`DELETE FROM kv WHERE k = 'agent.tool_rounds'`).run();
 
     // QQ 头像：号码形状由服务端把关（拿它去拼 URL，松一格就是替调用方拼任意地址）。
@@ -4898,7 +4978,7 @@ try {
       const qqHitBody = await qqHit.json();
       const qqMedia = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif))$/.exec(String(qqHitBody.url ?? ""));
       check("真联网：QQ 头像抓成本地 /media 文件",
-        qqHit.status === 200 && qqMedia !== null && existsSync(`${MEDIA}/${qqMedia[1]}`),
+        qqHit.status === 200 && qqMedia !== null && mediaFileOnDisk(`/media/${qqMedia[1]}`),
         `status=${qqHit.status} url=${String(qqHitBody.url).slice(0, 24)}`);
       // 反证：没头像的号拿到的是 QQ 那张占位图，不能把它当成"取到了"就设上去。
       const qqNone = await jsonPost("/api/avatar/qq", { qq: "1234567" });
@@ -4914,7 +4994,7 @@ try {
       // 抓不动的那条允许 preview 为空（整次搜索不该因为一条图床抽风变空），但不能是别的形状。
       const previews = ((thumbs as { hits?: Array<Record<string, unknown>> }).hits ?? []).map((h) => String(h.preview ?? ""));
       const previewOk = (u: string): boolean =>
-        /^\/media\/[a-z0-9]{16}\.(png|jpg|webp|gif)$/.test(u) && existsSync(`${MEDIA}/${u.slice("/media/".length)}`);
+        /^\/media\/[a-z0-9]{16}\.(png|jpg|webp|gif)$/.test(u) && mediaFileOnDisk(u);
       check("真联网：图片搜索把候选图落成本地 /media 预览（用户才看得见那几张图）",
         previews.some(previewOk) && previews.every((u) => u === "" || previewOk(u)),
         `previews=${JSON.stringify(previews)}`);
@@ -4929,7 +5009,7 @@ try {
         // 头像现在统一落成本地 /media 文件（原图也能用了，不再要求必须是缩略图内联）。
         const mediaName = /^\/media\/([a-z0-9]{16}\.(png|jpg|webp|gif))$/.exec(String(saved?.avatar ?? ""))?.[1];
         check("真联网：搜到的图能抓下来、存成本地文件并设成头像（一句话建带头像角色的地基）",
-          set.ok === true && mediaName !== undefined && existsSync(`${MEDIA}/${mediaName}`),
+          set.ok === true && mediaName !== undefined && mediaFileOnDisk(`/media/${mediaName}`),
           `avatar=${String(saved?.avatar ?? "").slice(0, 30)}`);
       } else {
         check("真联网：搜到的缩略图能设成头像并落库（一句话建带头像角色的地基）", false, "没拿到候选图或工具不在白名单");
@@ -5143,11 +5223,16 @@ try {
   console.log("\n[46] 媒体清理闭环（运行检查 → 查看 → 回收站 → 恢复/永久删除）");
   {
     const { saveImage, saveWallpaper, mediaUrlExists } = await import("../src/media.ts");
+    const { currentFileOf } = await import("../src/media-layout.ts");
     const { utimesSync } = await import("node:fs");
     const oldTime = new Date(Date.now() - 2 * 24 * 3_600_000);
     const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");
     const fileName = (url: string): string => url.split("/").pop() as string;
-    const filePath = (url: string): string => `${MEDIA}/${fileName(url)}`;
+    const filePath = (url: string): string => {
+      const current = currentFileOf(url);
+      if (current === null) throw new Error(`测试媒体不在盘上：${url}`);
+      return current.file;
+    };
 
     const orphan = saveImage(png, "image/png");
     utimesSync(filePath(orphan.url), oldTime, oldTime);
@@ -5211,7 +5296,8 @@ try {
     };
     check("回收站文件可以恢复",
       restored.ok === true && restored.changed === 1 && mediaUrlExists(orphan.url) === true
-        && !(restored.trash ?? []).some((item) => item.name === name));
+        && !(restored.trash ?? []).some((item) => item.name === name),
+      JSON.stringify({ restored, exists: mediaUrlExists(orphan.url), asset: currentFileOf(orphan.url) }));
 
     await jsonPost("/api/media/maintenance", { op: "trash", names: [name] });
     const purged = await (await jsonPost("/api/media/maintenance", { op: "purge", names: [name] })).json() as {
@@ -5219,7 +5305,8 @@ try {
     };
     check("永久删除只作用于回收站条目",
       purged.ok === true && purged.changed === 1 && mediaUrlExists(orphan.url) === false
-        && !(purged.trash ?? []).some((item) => item.name === name));
+        && !(purged.trash ?? []).some((item) => item.name === name),
+      JSON.stringify({ purged, exists: mediaUrlExists(orphan.url), asset: currentFileOf(orphan.url) }));
 
     db.prepare("DELETE FROM artifacts WHERE id = ?").run(artifactId);
     db.prepare("DELETE FROM messages WHERE id = ?").run(chatMessageId);

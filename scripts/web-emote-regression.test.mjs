@@ -16,13 +16,12 @@ const PHASE = process.env.WEB_EMOTE_SUB;
 if (PHASE === "1") {
   const run = async () => {
     // 先设隔离再 import（config 在 import 时锁 env）。
-    const { createContact, updateContact } = await import("../src/contacts.ts");
+    const { createContact } = await import("../src/contacts.ts");
     const { ensureLocalConversation, getConversation } = await import("../src/conversations.ts");
     const { executeTool } = await import("../src/tools.ts");
 
-    // 建真实联系人并开 emotes，否则 send_emote 被门控摘掉（executeTool 查不到会报"未知工具"）。
+    // 表情现在是全局唯一开关（出厂 normal 即开），不再按联系人开；建真实联系人只为拿到会话与 ctx。
     createContact({ id: "web-emote-test", name: "表情渠道测试" });
-    updateContact("web-emote-test", { features: { emotes: true } });
     const conv = ensureLocalConversation("web-emote-test");
     assert.strictEqual(getConversation(conv.id)?.channel, "web", "测试会话是 web 频道");
 

@@ -13,7 +13,8 @@
  * 4. 报错 toast 不能永久挂在屏幕上，但也要给足阅读和点重试的时间。
  * 5. 设置助手里的上下文浮层必须压在弹窗之上，否则点击后看似没有反应。
  */
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { join } from "node:path";
 import { strict as assert } from "node:assert";
 
 const rowSource = readFileSync("frontend/src/features/chat/MessageRow.tsx", "utf8");
@@ -44,6 +45,14 @@ assert(
   retractBranch > lastHook,
   "已撤回分支必须排在所有 Hook 之后，否则普通消息切成已撤回时会因 Hook 数变化白屏",
 );
+
+// 用户端文案与代码统一使用中性称呼：未设置性别时不得默认写成她/他。
+const walk = (dir) => readdirSync(dir, { withFileTypes: true }).flatMap((entry) =>
+  entry.isDirectory() ? walk(join(dir, entry.name)) : [join(dir, entry.name)]);
+const frontendSources = walk("frontend/src").filter((path) => /\.(ts|tsx)$/.test(path));
+const genderedCopy = frontendSources.filter((path) =>
+  /她|(?<!其)他(?!人)/u.test(readFileSync(path, "utf8")));
+assert.equal(genderedCopy.length, 0, `用户端源码不应再出现固定性别指代：${genderedCopy.join(", ")}`);
 
 assert(!rowSource.includes('<details className="think">'), "思考过程不应再使用原生 details 的旧样式");
 assert(/<ThinkingBlock\s+reasoning=\{m\.reasoning\}/.test(rowSource), "她的消息应通过 ThinkingBlock 渲染 reasoning");
@@ -76,6 +85,7 @@ const profileViewSource = readFileSync("frontend/src/features/profile/ProfileVie
 const mediaSectionSource = readFileSync("frontend/src/features/settings/MediaSection.tsx", "utf8");
 const settingsViewSource = readFileSync("frontend/src/features/settings/SettingsView.tsx", "utf8");
 const qqSectionSource = readFileSync("frontend/src/features/profile/QQSection.tsx", "utf8");
+const emoteFrequencySource = readFileSync("frontend/src/features/settings/EmoteFrequencySection.tsx", "utf8");
 const outboxSource = readFileSync("frontend/src/lib/outbox.ts", "utf8");
 assert(/VoiceMessageBubble/.test(rowSource) && /kind === "audio"/.test(rowSource), "语音消息必须走专用气泡，而不是当图片或普通文字渲染");
 assert(/voice-wave/.test(voiceSource) && /voice-duration/.test(voiceSource) && /aria-label=\{playing \? "暂停语音消息"/.test(voiceSource), "语音气泡应包含波形、时长和可访问的播放/暂停状态");
@@ -86,7 +96,7 @@ assert(/attachment_meta/.test(mediaSource) && /saveAudio/.test(mediaSource) && /
 assert(/media-type-filter/.test(mediaDialogSource) && /语音/.test(mediaDialogSource), "媒体管理必须提供图片/视频/语音分类");
 assert(/delete-message/.test(mediaDialogSource) && /删除语音消息/.test(mediaDialogSource), "媒体页删除语音必须使用明确确认，而不是绕过消息删文件");
 assert(/attachmentMeta/.test(outboxSource), "离线发件箱必须保留语音元信息，重发后仍能渲染成语音气泡");
-assert(/content-kind-filters/.test(mediaLibrarySource) && /kindCounts/.test(mediaLibrarySource), "媒体库必须同时支持视角与类型筛选");
+assert(/<FilterMenu label="类型" value={kind}/.test(mediaLibrarySource) && /kindCounts/.test(mediaLibrarySource), "媒体库必须同时支持视角与类型筛选");
 assert(/<video className="content-video"/.test(mediaLibrarySource), "媒体库里的视频应可直接预览");
 assert(/<VoiceMessageBubble compact/.test(mediaLibrarySource), "媒体库里的语音应可直接播放，而不是显示成普通文件");
 assert(/transcript=\{a\.detail\.transcript \|\| undefined\}/.test(mediaLibrarySource), "媒体库里的语音应保留可展开的转写");
@@ -104,7 +114,7 @@ assert(
 assert(/<MediaLibrary active=\{active\}/.test(mediaSectionSource), "「媒体与表情」分区应复用 MediaLibrary 作为全局库");
 assert(/key: "media"/.test(settingsViewSource) && /groupPanel\("media"/.test(settingsViewSource), "媒体库必须是设置里的一级分区，不是模型下的一个子页签");
 assert(!/"emote"/.test(settingsViewSource.match(/type ModelTab =[^;]+;/)?.[0] ?? ""), "模型分区的页签里不该再有「表情」");
-assert(/<EmoteCapability/.test(qqSectionSource), "渠道表情能力与内置表情词表应挂在 QQ 连接卡上");
+assert(/<EmoteFrequencySection/.test(mediaSectionSource) && /发表情频率/.test(emoteFrequencySource), "表情频率应作为媒体库的全局设置，不再散落到单个联系人");
 assert(!/设置 → 表情/.test(profileViewSource), "联系人功能开关的说明不该再把人指向已删除的 设置→表情");
 // 命名一致性：两处是同一个库，名字必须成对改。曾经一个叫「她的东西」、一个叫「内容库」，
 // 用户会以为是两个地方。
@@ -237,6 +247,7 @@ assert(/applyEmoteNaming/.test(namingSource), "认图写回走同一条清洗入
 assert(/retryable/.test(namingSource) && /RATE_LIMIT/.test(namingSource),
   "限流要单独判可重试——实测免费档第 7 张就 429，一律不重试等于半库判死");
 assert(/needsStaticVariant\(asset\.url\)/.test(namingSource), "动图要采帧认，只看首帧会把动作描述成姿势");
+assert(/referenceName/.test(namingSource) && /文件名是「/.test(namingSource), "文件命名要作为视觉识别的参考线索，不能只用于分类");
 
 // 7) 界面只有一处管表情语义：认图 CTA、文件夹筛选、改名弹窗都在媒体库里，没有第二个入口。
 assert(/runNaming/.test(mediaLibrarySource), "「智能识别」在媒体库这一页");
@@ -252,7 +263,7 @@ assert(/未命名/.test(mediaLibrarySource) && /智能识别/.test(mediaLibraryS
 assert(!/onBlur=\{\(\) => (set|save)/.test(emoteModalSource), "弹窗里的字段要受控，不能靠失焦提交");
 assert(!/重新识别/.test(emoteModalSource) && /智能识别/.test(emoteModalSource),
   "弹窗那颗按钮首次也叫「智能识别」——没有『先重新后首次』的两套名");
-assert(/识别中…/.test(emoteModalSource) && /esem-spin/.test(experienceCss),
+assert(/renaming \? \(queueLine \?\? "排队中"\)/.test(emoteModalSource) && /esem-spin/.test(experienceCss),
   "单张识别要有进行态（转圈+文案），不能只剩一个置灰按钮");
 assert(/识别完成，写了名称/.test(emoteModalSource) && !/setEdit\(null\)/.test(mediaLibrarySource.split("renameOne")[1]?.slice(0, 700) ?? ""),
   "识别完弹窗不关：结果回填字段并行内说明");
@@ -272,16 +283,20 @@ assert(/@media \(max-width: 560px\)[\s\S]*?\.esem \{ grid-template-columns: 1fr/
 // 9) 识别详情：机器做过的事必须能被查、能被改（逐张结果 / 只重试失败项 / 文件夹能开真目录 / 名字来源可见）。
 assert(/识别详情/.test(mediaLibrarySource), "概览条上要有进入识别详情的入口");
 assert(/ml-results/.test(mediaLibrarySource), "逐张识别结果要有列表");
-assert(/retryFailed/.test(mediaLibrarySource) && /只重试失败的/.test(mediaLibrarySource),
-  "失败的那几张要能单独重试，不能每次都从头再认一遍");
+assert(/retryFailed/.test(mediaLibrarySource) && /只重试失败的/.test(mediaLibrarySource), "失败的那几张要能单独重试，不能每次都从头再认一遍");
+assert(/aria-expanded={showResults}/.test(mediaLibrarySource) && /识别进行中 ·/.test(mediaLibrarySource),
+  "识别运行中也要能打开详情并看到实时进度");
+assert(/识别刚开始，逐张结果会实时出现在这里/.test(mediaLibrarySource),
+  "识别详情在还没有结果时也要给出明确状态，不能点了没反应");
+
 assert(!/movePack|退回/.test(mediaLibrarySource),
   "「退回」整条链已退役：文件夹是真目录，整批调整走资源管理器");
 assert(/rowOpenButtons|openFolderNamed/.test(mediaLibrarySource), "文件夹下拉每行都要有「在文件管理器中打开」");
 assert(/openFolderNamed/.test(mediaLibrarySource) && /清除筛选/.test(mediaLibrarySource) && /scopeCounts/.test(mediaLibrarySource),
   "筛选计数跟随文件夹；条件叠加为空要报出具体条件并给「清除筛选」，不能谎称库是空的");
 // 跑完之后启动文案必须消失：概览条已经写着上一轮结果，留着「已开始识别」会让人以为还在跑。
-assert(/if \(!d\.job\.running\) \{[\s\S]{0,220}?setNotice\(""\)/.test(mediaLibrarySource),
-  "轮询到作业结束时要清掉启动提示");
+assert(/if \(!d\.job\.running\)[\s\S]{0,260}?setNotice\(handled > 0/.test(mediaLibrarySource),
+  "轮询到作业结束时要用完成回执替换启动提示");
 assert(/createPortal/.test(mediaLibrarySource) && /toast-layer/.test(mediaLibrarySource)
   && !/pf-comp-note/.test(mediaLibrarySource) && !/\{err !== ""/.test(mediaLibrarySource),
   "操作回执走轻提示浮层（自动消失、不占排版），不再是一条顶开布局的横 bar");
@@ -307,25 +322,33 @@ assert(/job\?\.results \?\? \[\]/.test(mediaLibrarySource),
   "results 是可选字段，读不到要当空数组，不能把整页渲染崩掉");
 assert(/content-name-src/.test(mediaLibrarySource), "每张卡要看得出名字是机器起的还是人写的");
 assert(/emote_name_source/.test(assetsTableSource) && /namedBy/.test(assetsTableSource), "命名来源要有列，且写入点区分 auto/manual");
+assert(/patch\.namedBy = "file"/.test(readFileSync("src/qq-emote.ts", "utf8")), "导入文件名要写成 file，不能冒充手动维护或留下会从统计里消失的空值");
+assert(/["any", "unnamed", "file", "auto", "manual"]/.test(readFileSync("src/server/routes/assets.ts", "utf8")), "列表接口必须接受 file 命名筛选，不能退回 any");
 assert(/emoteNamedAt === 0/.test(assetsTableSource),
   "语义迁移只许作用在没识别过的行上——识别过的名字与标签是权威数据");
 assert(!/moveEmoteWord|movePackWord/.test(readFileSync("src/server/routes/assets.ts", "utf8"))
   && !/moveEmoteWord/.test(assetsTableSource),
   "退回接口整条退役：没有 UI 入口的全库写口子不能留着当暗道");
-for (const cls of ["ml-results", "ml-results-list", "ml-toolbar", "ml-pack-pop", "ml-pack-row", "ml-naming-acts", "ml-naming-toggle"]) {
+for (const cls of ["ml-results", "ml-results-list", "ml-results-current", "ml-results-empty", "ml-toolbar", "ml-pack-pop", "ml-pack-row", "ml-naming-acts", "ml-naming-toggle", "ml-broken-chip", "ml-select-all", "ml-bulk"]) {
   assert(new RegExp("\\." + cls + "[\\s,{:.]").test(cssAll), "样式类 ." + cls + " 必须在 CSS 里有定义");
 }
 // 信息架构：表情包视角不许再摊三排 chips。类型行在这个视角是噪声（全是图片），
 // 文件夹有几十个值必须收进下拉，而不是和命名状态混成一面墙。
-assert(/\{view !== "emote" && \(\s*<div className="content-filters content-kind-filters"/.test(mediaLibrarySource),
-  "类型筛选行在表情包视角必须隐藏");
+assert(/view === "emote" \? \(/.test(mediaLibrarySource) && /\) : \(\s*<FilterMenu label="类型" value={kind}/.test(mediaLibrarySource),
+  "类型筛选只在非表情包视角显示");
 assert(/ml-pack-pop/.test(mediaLibrarySource) && /aria-haspopup="listbox"/.test(mediaLibrarySource),
   "文件夹筛选要收进一个带 listbox 语义的下拉控件");
 assert(!/aria-label="文件夹">\s*\{packs\.map/.test(mediaLibrarySource),
   "文件夹不该再是一整排平铺的 chips");
 assert(/全部文件夹/.test(mediaLibrarySource), "下拉的默认档叫「全部文件夹」");
-assert(/\.ml-pack-pop\.up/.test(experienceCss) && /togglePack/.test(mediaLibrarySource),
-  "文件夹下拉贴近视口底时要向上翻，不能整块落在折叠线外");
+assert(/\.ml-pack-pop\.up/.test(experienceCss) && /togglePack/.test(mediaLibrarySource), "文件夹下拉贴近视口底时要向上翻，不能整块落在折叠线外");
+assert(/missing: missingOnly/.test(mediaLibrarySource) && /失效/.test(mediaLibrarySource), "失效项要有独立筛选，不能只能在概览条看到数字");
+assert(/content-missing/.test(mediaLibrarySource) && /\.content-missing/.test(componentsCss), "失效卡片要渲染明确占位，不能只剩浏览器的破图图标");
+assert(/文件命名/.test(mediaLibrarySource) && /scopeCounts\.file/.test(mediaLibrarySource), "导入文件名要有独立分类，不能显示成手动维护");
+assert(/智能识别选中/.test(mediaLibrarySource) && /only: selectedIds, force: true/.test(mediaLibrarySource), "批量勾选后要能对选中项强制智能识别");
+assert(/selectAllFiltered/.test(mediaLibrarySource) && /全选筛选结果/.test(mediaLibrarySource), "全选要覆盖当前筛选的全部结果，不能只选已加载的 25 张");
+assert(/content-pick/.test(mediaLibrarySource) && /\.content-pick/.test(componentsCss), "卡片上要有批量选择框");
+
 
 // 导入只走原生选文件夹；入口收在表情包视角的工具行里（页头顶不再压一张「添加」大卡片）。
 const mediaSectionSource2 = readFileSync("frontend/src/features/settings/MediaSection.tsx", "utf8");

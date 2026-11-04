@@ -64,7 +64,7 @@ const { listInflightCalls } = await import("../src/logs.ts");
 const { addMemoryEvent, deleteMemoryEvent, extractFailures, extractMemories, keywords, listMemoryEventsFiltered, memoryStats, recall, recordExtractFailure } = await import("../src/memory.ts");
 const { maybeRefreshRecap } = await import("../src/recap.ts");
 const { callModelJson } = await import("../src/model.ts");
-const { PROACTIVE_DECIDE_MAX_TOKENS } = await import("../src/proactive.ts");
+const { NON_CHAT_DEFAULT_MAX_TOKENS } = await import("../src/model.ts");
 const { maybeRunConsolidation } = await import("../src/consolidate.ts");
 const { buildSystemPrompt } = await import("../src/persona.ts");
 const { db } = await import("../src/db.ts");
@@ -426,9 +426,9 @@ check("空结果进入 emptyRate 统计，而不是失败计数",
   emptyStats.extractSamples >= 2 && emptyStats.emptyRate !== null && emptyStats.emptyRate > 0,
   `samples=${emptyStats.extractSamples} emptyRate=${emptyStats.emptyRate}`);
 
-console.log("\n[16] 主动判断：保留思考、给足预算，截断自动重试");
-check("主动判断预算给思考和 JSON 留足空间（不再是 400）",
-  PROACTIVE_DECIDE_MAX_TOKENS >= 2048, `maxTokens=${PROACTIVE_DECIDE_MAX_TOKENS}`);
+console.log("\n[16] 非聊天默认 16k、截断自动扩到 cap：保留思考，不手写小预算");
+check("非聊天默认预算给思考和 JSON 留足空间（不再是 400/1200）",
+  NON_CHAT_DEFAULT_MAX_TOKENS >= 16384, `NON_CHAT_DEFAULT_MAX_TOKENS=${NON_CHAT_DEFAULT_MAX_TOKENS}`);
 updateModel({ thinkingParam: "templateKw", thinkingMode: "on", maxOutputTokens: 4096 });
 let decideAttempts = 0;
 responder = () => {
@@ -450,11 +450,11 @@ const retryBody = lastBody as {
   max_tokens?: number;
   chat_template_kwargs?: { enable_thinking?: boolean };
 };
-check("思考吃光 400 tokens 后自动扩到 2048 重试并成功",
+check("思考吃光 400 tokens 后自动扩到 cap(4096) 重试并成功",
   decideAttempts === 2 && recoveredDecision.should === false,
   `attempts=${decideAttempts} result=${JSON.stringify(recoveredDecision)}`);
 check("重试仍保持思考开启，用户体验不被偷偷降级",
-  retryBody.max_tokens === 2048 && retryBody.chat_template_kwargs?.enable_thinking === true,
+  retryBody.max_tokens === 4096 && retryBody.chat_template_kwargs?.enable_thinking === true,
   JSON.stringify(retryBody.chat_template_kwargs) + ` max_tokens=${retryBody.max_tokens}`);
 updateModel({ maxOutputTokens: 0, thinkingMode: "", thinkingParam: "effort" });
 

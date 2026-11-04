@@ -3,7 +3,8 @@
  *
  * 覆盖：
  *   1. 素材库 CRUD：登记 / 列表 / 关键词命中 / 删除 / 统计；
- *   2. 目录导入：真实 PNG 文件入库 + 按内容 md5 去重（重导不重复）；
+ *   2. 目录导入：真实 PNG 文件入库 + 按内容 md5 去重（重导不重复）、源文件名整串留档进别名、
+ *    流水号前缀不混进中文名、超上限的文件在回执里报出文件名与原因；
  *   3. 自动采集：默认关（他发来的图不入库），开启后入库；
  *   4. 渠道渲染：official 把 face/mface 降级成文字/emoji、image 原生走富媒体；
  *      onebot 则 face/mface/image 全原生（OneBot 消息段）；
@@ -338,6 +339,32 @@ if (PHASE === "1") {
       assert.strictEqual(boosted.emoteUseCount, 1, "发过一次记一笔");
       assert.ok(search.scoreEmote(r0, ["qwq 库里绝对没有的词"]).score === 0, "用量不能凭空造出命中");
 
+      // 使用次数只能影响候选排序，不能把弱命中推过自动发送线。
+      const weakUrl = savePng();
+      emote.registerEmoteAsset(weakUrl, { caption: "只有这里会出现的夸爆字样" });
+      const { db: rankDb } = await import("../src/db.ts");
+      rankDb.prepare("UPDATE assets SET emote_use_count = 500 WHERE url = ?").run(weakUrl);
+      const weakRanked = search.searchEmotes("夸爆", 3).find((h) => h.asset.url === weakUrl);
+      assert.ok(weakRanked !== undefined, "弱命中仍可作为候选供模型判断");
+      assert.strictEqual(weakRanked.semanticScore, 2, "caption 命中只有纯语义分 2");
+      assert.ok(weakRanked.score > weakRanked.semanticScore, "使用次数仍会抬高排序分");
+      const weakDecision = search.autoPickEmote("夸爆");
+      assert.strictEqual(weakDecision.kind, "choose", "高使用次数不能把弱命中变成高置信自动发");
+      assert.ok(weakDecision.reason.includes("不够高"), "回执说明纯语义分没到线");
+
+      // 语义同分时，使用次数不能制造出“第一名明显领先”的假象。
+      const hotUrl = savePng();
+      const coldUrl = savePng();
+      emote.registerEmoteAsset(hotUrl, { label: "热度同分测试" });
+      emote.registerEmoteAsset(coldUrl, { label: "热度同分测试" });
+      rankDb.prepare("UPDATE assets SET emote_use_count = 500 WHERE url = ?").run(hotUrl);
+      const tieHits = search.searchEmotes("热度同分测试", 3);
+      assert.strictEqual(tieHits[0]?.asset.url, hotUrl, "常用图仍可排在候选第一位");
+      assert.strictEqual(tieHits[0]?.semanticScore, tieHits[1]?.semanticScore, "两张的纯语义分相同");
+      const tieDecision = search.autoPickEmote("热度同分测试");
+      assert.strictEqual(tieDecision.kind, "choose", "使用次数差不能绕过同分阈值");
+      assert.ok(tieDecision.reason.includes("太接近"), "同语义候选交回模型选择");
+
       // 12) 智能识别：真调用链（视觉能力 → 多模态请求 → JSON → 写库），假服务商回 canned 结果。
       const naming = await import("../src/emote-naming.ts");
       assert.strictEqual(naming.startNamingJob().started, false, "图片理解没配时起作业要如实拒绝，不是空跑");
@@ -458,17 +485,36 @@ if (PHASE === "1") {
         const rerun = naming.startNamingJob();
         assert.strictEqual(rerun.started, false, "都认过了就不再起作业");
         assert.strictEqual(captured.length, callsBefore, "重跑一次视觉调用都没发");
-        // 单张识别（弹窗里那颗「智能识别」）：结果整个带回，弹窗原地回填而不是关窗消失。
-        const one = await naming.renameEmoteById(named[0].id);
-        assert.strictEqual(one.ok, true, "单张识别走的是同一条链");
-        assert.strictEqual(one.name, "被吓到", "识别回来的名字写进库");
-        assert.strictEqual(one.caption, "他说了句出人意料的话时甩", "场景随名字一起带回（弹窗回填要用）");
-        assert.ok(Array.isArray(one.tags) && one.tags.includes("惊讶"), "标签一起带回");
-        assert.ok(captured.length > callsBefore, "识别确实发了一次调用");
+        // 单张识别（弹窗里那颗「智能识别」）：排进当前队列，轮询到这一行出现就回填。不另起一条作业，所
+        // 以整库跑着时它排在后面；关闭弹窗也不影响后台继续跑。
+        const started = naming.startNamingJob({ only: [named[0].id], force: true });
+        assert.strictEqual(started.started, true, "排进当前作业");
+        for (let i = 0 && naming.namingJobStatus().running; i < 200; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
+        }
+        const renamed = assetsMod.getAssetById(named[0].id);
+        assert.ok(renamed.emoteLabel !== "", "重认写回了中文名");
+        assert.ok(captured.length > callsBefore, "确实发了一次调用");
+        // 导入文件名是用户给的线索，不能只停在分类里：重认时要给模型看，但提示词明确要求以画面为准。
+        // 线索的真源是 alias——落盘名是内容哈希，label 会被识别覆盖，只有 alias 记得这张图原本叫什么。
+        const fileHintAsset = { ...assetsMod.getAssetById(named[0].id), emoteAlias: ["10N01_猫猫搓手"] };
+        const hintCall = captured.length;
+        const hinted = await naming.captionEmote(fileHintAsset, { attempts: 1 });
+        assert.strictEqual(naming.captionFailed(hinted), false, "带文件名的单张重认要成功");
+        assert.ok(JSON.stringify(captured[hintCall]).includes("文件名是「10N01_猫猫搓手」"),
+          "导入文件名要作为视觉识别的参考线索传进提示词（读 alias，不读会被识别覆盖的 label）");
+        assert.ok(JSON.stringify(captured[hintCall]).includes("不要机械照抄"),
+          "参考名只能校正，不能替代看图和用法判断");
+        // 反证：模型自己起过的名字不喂回去——喂回去只会强化原有偏差。
+        const noAliasAsset = { ...assetsMod.getAssetById(named[0].id), emoteAlias: [], emoteLabel: "被吓到", emoteNameSource: "auto" };
+        const noAliasCall = captured.length;
+        await naming.captionEmote(noAliasAsset, { attempts: 1 });
+        assert.ok(!JSON.stringify(captured[noAliasCall]).includes("参考线索"),
+          "没留档文件名的那张不该拿到参考线索");
         // 重认只该重写语义，不该顺手改掉她填的批次归属。
         const kept = assetsMod.getAssetById(named[0].id);
         assetsMod.applyEmoteSemantics(kept.url, { pack: ["认图测试"], alias: ["heart-hands"] });
-        await naming.renameEmoteById(named[0].id);
+        await naming.captionEmote(kept, { attempts: 1 });
         const afterRename = assetsMod.getAssetById(named[0].id);
         assert.deepEqual(afterRename.emotePack, ["认图测试"], "重认不覆盖用户填的批次名");
         assert.deepEqual(afterRename.emoteAlias, ["heart-hands"], "重认不覆盖别名");
@@ -498,11 +544,59 @@ if (PHASE === "1") {
         assert.strictEqual(back.usableAsEmote, true, "再勾回来");
         assert.strictEqual(back.emoteLabel, toggleRow.emoteLabel, "开关式勾选不洗名字");
         assert.ok(back.emoteNamedAt > 0, "认图状态也还在");
+        // 队列追加：整库跑着时往里排一张（同 id 去重、force 升级），队列长度和 total 都会涨。
+        const extraId = savePng();
+        emote.registerEmoteAsset(extraId, { pack: ["追加队列"] });
+        const preTotal = naming.namingJobStatus().total;
+        const appended = naming.startNamingJob({ only: [extraId], force: true });
+        assert.strictEqual(appended.started, true, "整库跑着时仍可排进当前任务");
+        assert.strictEqual(naming.namingJobStatus().total, preTotal + 1, "总张数跟着加 1");
+        for (let i = 0; i < 400 && naming.namingJobStatus().running; i += 1) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        const extraDone = assetsMod.getAssetById(extraId);
+        assert.ok(extraDone.emoteLabel !== "", "追加进来的那张也认完了");
+        assert.ok(naming.namingJobStatus().results.find((r) => r.id === extraId)?.name !== "", "结果行里有它");
       } finally {
         globalThis.fetch = realFetch;
       }
 
-      // 13) 工具闭环：先查后发、按 id 发、越界拒绝、每轮只许查一次。
+      // 12b) 批量包的「流水号_中文名」：整句柄留档进 alias，名字只收剥掉前缀的部分；
+      //      没进来的文件要在回执里报出文件名和原因——只给一个数字，用户只能猜少了哪两张。
+      assert.strictEqual(emote.stripIndexPrefix("10N01_猫猫搓手"), "猫猫搓手", "剥掉批量包的流水号前缀");
+      assert.strictEqual(emote.stripIndexPrefix("N06_略略略"), "略略略", "纯字母编号前缀同样剥");
+      assert.strictEqual(emote.stripIndexPrefix("heart-hands"), "heart-hands", "英文句柄不切（hands 不是名字）");
+      assert.strictEqual(emote.stripIndexPrefix("HE万岁"), "HE万岁", "没有分隔符就不动");
+      {
+        const packDir = mkdtempSync(join(tmpdir(), `emote-pack-${backend}-`));
+        writeFileSync(join(packDir, "10N01_猫猫搓手.png"), TINY_PNG);
+        // 6MB：真库那两张就是这么被旧口径静默丢掉的。导入这一条放宽到 20MB（MAX_IMPORT_IMAGE_BYTES），
+        // 因为它收的是用户主动交上来的本地文件；全局那道 5MB 闸管的是自动抓来的字节，不跟着抬。
+        const six = Buffer.concat([TINY_PNG, Buffer.alloc(6 * 1024 * 1024, 7)]);
+        writeFileSync(join(packDir, "N06_略略略.png"), six);
+        writeFileSync(join(packDir, "N07_太大只.png"), Buffer.concat([TINY_PNG, Buffer.alloc(21 * 1024 * 1024, 9)]));
+        writeFileSync(join(packDir, "readme.txt"), Buffer.from("not an image"));
+        const r = emote.importEmoteDir(packDir);
+        assert.ok(!("error" in r), "带前缀的批量包导入无报错");
+        assert.strictEqual(r.added, 2, "6MB 那张进得来，21MB 那张被导入上限挡住");
+        assert.strictEqual(r.skipped, 1, "超限计入 skipped；非图片扩展名不算少图");
+        assert.strictEqual(r.skippedFiles.length, 1, "跳过的文件有明细");
+        assert.strictEqual(r.skippedFiles[0].name, "N07_太大只.png", "明细给的是文件名");
+        assert.match(r.skippedFiles[0].reason, /20MB/, "回执报的是导入这一条的上限，不是全局那道：" + r.skippedFiles[0].reason);
+        // 两条闸要分得开：同一份 6MB 字节走全局那条（聊天入站、网页找图）仍然被拒。
+        assert.throws(() => media.saveImage(six, "image/png"), /5MB/, "全局那道 5MB 闸没被导入放宽带跑");
+        const packBase = packDir.split(/[\\/]/).filter(Boolean).pop();
+        const inPack = assetsMod.listEmoteAssets().filter((a) => a.emotePack.includes(packBase));
+        assert.strictEqual(inPack.length, 2, "两张都登记进来了");
+        const row = inPack.find((a) => a.emoteAlias.includes("10N01_猫猫搓手"));
+        assert.deepEqual(row.emoteAlias, ["10N01_猫猫搓手"], "源文件名整串留档进别名（落盘名是哈希，不留档就再也对不回源包）");
+        assert.strictEqual(row.emoteLabel, "猫猫搓手", "名字只收剥掉前缀的部分，不是一整串");
+        assert.strictEqual(row.emoteNameSource, "file", "文件名给的名字标成 file，识别可以覆盖它");
+        assert.ok(row.emoteNamedAt > 0, "文件名已经给出名字，算认过（不白烧一次视觉调用）");
+        assert.ok(!inPack.some((a) => a.emoteLabel === "10N01_猫猫搓手"), "整串句柄不当名字");
+      }
+
+      // 13) 工具闭环：先查后发、按 id 发、越界拒绝；同一轮换词可重试，同一 query 不重复跑。
       // u2 的名字在这里显式写一次：上面那批作业先认哪三张由 created_at 顺序决定，
       // 这一节要测的是「按中文名找得到并发出去」，不是「作业挑了谁」。
       assetsMod.applyEmoteSemantics(u2, { label: "开心", caption: "他被夸了又不好意思承认", namedAt: Date.now() });
@@ -510,16 +604,36 @@ if (PHASE === "1") {
       const { updateContact } = await import("../src/contacts.ts");
       const { ensureLocalConversation } = await import("../src/conversations.ts");
       const contact = createContact({ name: "表情闭环测试" });
-      updateContact(contact.id, { features: { emotes: true } });
+      // 表情现在是全局唯一开关（出厂 normal 就是开的），不再按联系人开——从前这里要 updateContact 开 emotes。
       const conv = ensureLocalConversation(contact.id);
       const ctx = { contactId: contact.id, conversationId: conv.id, turnId: "turn-" + Date.now(), lastUserAt: null };
+
+      // 一步式快路：唯一高置信命中直接发；同分候选只回候选、不替模型赌。
+      const uniqueUrl = savePng();
+      emote.registerEmoteAsset(uniqueUrl, { label: "独一档" });
+      const twinA = savePng();
+      const twinB = savePng();
+      emote.registerEmoteAsset(twinA, { label: "双胞胎表情" });
+      emote.registerEmoteAsset(twinB, { label: "双胞胎表情" });
+      assert.strictEqual(search.autoPickEmote("独一档").kind, "send", "唯一高置信候选可自动发");
+      assert.strictEqual(search.autoPickEmote("双胞胎表情").kind, "choose", "同分候选不自动发");
+      const autoSent = await executeTool("send_emote", JSON.stringify({ keyword: "独一档" }), ctx);
+      assert.strictEqual(autoSent.attachments?.[0], assetsMod.listEmoteAssets().find((a) => a.url === uniqueUrl).url,
+        "keyword 快路一步发出正确素材");
+      const ambiguous = await executeTool("send_emote", JSON.stringify({ keyword: "双胞胎表情" }), ctx);
+      assert.strictEqual(ambiguous.result.sent, false, "候选接近时不发送");
+      assert.ok(ambiguous.result.candidates.length >= 2, "把接近的候选交回模型选择");
       const found = await executeTool("emote_search", JSON.stringify({ query: "开心" }), ctx);
       assert.strictEqual(found.ok, true, "检索工具可调用");
       const candidates = found.result.candidates;
       assert.ok(candidates.length > 0, "查得到候选");
       assert.ok(candidates[0].emote_id !== undefined && candidates[0].name !== undefined, "候选带 id 与名字");
-      const twice = await executeTool("emote_search", JSON.stringify({ query: "比心" }), ctx);
-      assert.ok(String(twice.result.note).includes("已经查过一次"), "同一轮第二次不再查库");
+      const missed = await executeTool("emote_search", JSON.stringify({ query: "绝对没有" }), ctx);
+      assert.strictEqual(missed.result.candidates.length, 0, "第一次没查到");
+      const retried = await executeTool("emote_search", JSON.stringify({ query: "真开心" }), ctx);
+      assert.ok(retried.result.candidates.length > 0, "换个词后同一轮能重试并查到候选");
+      const repeated = await executeTool("emote_search", JSON.stringify({ query: "真开心" }), ctx);
+      assert.ok(String(repeated.result.note).includes("这条查询本轮已经查过"), "同一 query 不重复跑");
       const picked = candidates[0];
       const sent = await executeTool("send_emote", JSON.stringify({ emote_id: picked.emote_id }), ctx);
       assert.strictEqual(sent.ok, true, "按 id 发得出去（应用端挂气泡）");
@@ -540,10 +654,63 @@ if (PHASE === "1") {
       const miss = await executeTool("send_emote", JSON.stringify({ keyword: "qwq 库里绝对没有的词" }), ctx);
       assert.ok(failOf(miss) !== null, "keyword 没打中要如实失败");
       assert.ok(/张/.test(failOf(miss)), "失败回执报的是库的真实规模，不是「换个词」：" + failOf(miss));
-      // 工具声明与开关同源：这位没开表情时，两个工具都不该出现在请求里。
-      updateContact(contact.id, { features: { emotes: false } });
-      const declared = (await import("../src/tools.ts")).toolDefsForApi(contact.id).map((t) => t.function.name);
-      assert.ok(!declared.includes("send_emote") && !declared.includes("emote_search"), "关掉表情开关后两个工具都不声明");
+      // 表情是全局唯一开关：档位设成「关闭」时工具与提示词段一起下线，开回来时一起回来。
+      // 这条门要防的是真库上翻过的车：从前有「全局倾向 + 联系人开关」两档，全局调到「主动」，
+      // 13 个联系人里却只有 1 个开了联系人档——开关看着开着，底下全断。
+      const { setGlobalEmoteFrequency } = await import("../src/settings.ts");
+      const { emoteFrequencyForContact } = await import("../src/contacts.ts");
+      const promptOf = async (id) => (await import("../src/persona.ts"))
+        .buildSystemPrompt([], { emoteFrequency: emoteFrequencyForContact(id) });
+      setGlobalEmoteFrequency("off");
+      const declaredOff = (await import("../src/tools.ts")).toolDefsForApi(contact.id).map((t) => t.function.name);
+      assert.ok(!declaredOff.includes("send_emote") && !declaredOff.includes("emote_search"), "全局档「关闭」时两个表情工具都不声明");
+      assert.ok(!(await promptOf(contact.id)).includes("[表情]"), "全局档「关闭」时提示词里没有表情段");
+      setGlobalEmoteFrequency("often");
+      const declaredOn = (await import("../src/tools.ts")).toolDefsForApi(contact.id).map((t) => t.function.name);
+      assert.ok(declaredOn.includes("send_emote") && declaredOn.includes("emote_search"), "开回「主动」后两个工具一起回来");
+      assert.ok((await promptOf(contact.id)).includes("[表情]"), "开回后表情段一起回来（提示词与工具同源，不会一边有一边没有）");
+      // 反证：这位的「工具总开关」关掉时，表情提示也不该留着——没有手却被告知能发表情，就是下一句「我发了」的编造现场。
+      updateContact(contact.id, { features: { tools: false } });
+      assert.strictEqual(emoteFrequencyForContact(contact.id), null, "工具总开关关掉时这位收不到表情提示");
+      updateContact(contact.id, { features: { tools: true } });
+      // 主动那条路没有工具，表情靠 decide 契约里的 emote_keyword 表达（模型给反应词、代码查库落地）。
+      // 全局档关着就不该向模型声明这个字段——声明了就是许一张发不出来的表情。
+      const { buildDecideSystem } = await import("../src/proactive.ts");
+      assert.ok(buildDecideSystem("他", false, undefined, true).includes("emote_keyword"), "表情开着时主动判断要能给出反应词字段");
+      assert.ok(!buildDecideSystem("他", false, undefined, false).includes("emote_keyword"), "表情关闭时不向模型声明这个字段");
+      assert.ok(buildDecideSystem("他", false, undefined, true).includes("挑不出贴的就只发文字"),
+        "字段说明写的是「够贴才带」，不是每条主动消息都配表情");
+      // 埋点自证：这一轮向模型声明了哪些工具、模型实际调了哪些，必须能在 model_calls 里查到。
+      // 从前只有 DEV_MODE 才落 req_full（真库 14063 行里只有 30 行有值），
+      // 「给了手却没人用」这种问题连分母都凑不出来，只能靠肉眼复现。
+      {
+        const { callModelWithTools } = await import("../src/model.ts");
+        const { db: dbMod } = await import("../src/db.ts");
+        setGlobalEmoteFrequency("often");
+        updateModel({ caps: { tools: true, vision: true, thinking: false, thinkingOnly: false, customProtocol: false } });
+        const realFetchTools = globalThis.fetch;
+        globalThis.fetch = async () => ({
+          ok: true, status: 200,
+          headers: { get: () => "application/json" },
+          text: async () => JSON.stringify({
+            choices: [{ message: { content: "", tool_calls: [{ id: "c1", function: { name: "emote_search", arguments: '{"query":"开心"}' } }] } }],
+            usage: {},
+          }),
+          json: async () => ({}),
+        });
+        try {
+          await callModelWithTools([{ role: "user", content: "甩个开心表情" }], [
+            { type: "function", function: { name: "emote_search", description: "查候选", parameters: {} } },
+            { type: "function", function: { name: "send_emote", description: "发一张", parameters: {} } },
+          ], { purpose: "chat", contactId: contact.id });
+        } finally {
+          globalThis.fetch = realFetchTools;
+        }
+        const logged = dbMod.prepare("SELECT tools_declared, tools_called FROM model_calls ORDER BY id DESC LIMIT 1").get();
+        assert.strictEqual(logged.tools_declared, "emote_search,send_emote", "声明给模型的工具名要落库");
+        assert.strictEqual(logged.tools_called, "emote_search", "模型实际调用的工具名要落库（没调就是空串，和「没声明」要能区分）");
+        updateModel({ caps: { tools: false, vision: true, thinking: false, thinkingOnly: false, customProtocol: false } });
+      }
       // 14) 迁移不再啃已识别的行，也不再靠词频猜文件夹。这条是真库上翻过的车：
       //     识别写完 tags 之后再重启一次应用，「女仆 / 摆烂 / 可爱」这类被多张图共享的语义标签
       //     会被当成批次名搬进 pack，而 pack 刻意不参与检索匹配——等于每次重启都在悄悄啃掉一层语义。
@@ -621,29 +788,43 @@ if (PHASE === "1") {
         const stats = assetsMod.emoteNamingStats();
         assert.strictEqual(auto.total, stats.auto, "「智能命名」筛选的张数与概览条同源（counts 是范围计数，不受筛选项影响）");
         const packRows = assetsMod.listEmotePacks();
-        assert.ok(packRows.every((p) => p.auto + p.manual + p.unnamed === p.total),
-          "每个文件夹的命名三档加起来就是它的张数——界面选中文件夹时 chips 读的就是这组数");
+        assert.ok(packRows.every((p) => p.file + p.auto + p.manual + p.unnamed === p.total),
+          "每个文件夹的命名四档加起来就是它的张数——界面选中文件夹时 chips 读的就是这组数");
         assert.strictEqual(packRows.reduce((s, p) => s + p.auto, 0), stats.auto, "文件夹 auto 汇总与概览条同源");
+        assert.strictEqual(packRows.reduce((s, p) => s + p.file, 0), stats.file, "文件夹 file 汇总与概览条同源");
         assert.strictEqual(packRows.reduce((s, p) => s + p.unnamed, 0), stats.total - stats.named, "文件夹 unnamed 汇总与概览条同源");
         assert.ok(auto.items.every((r) => r.emoteNameSource === "auto"), "筛出来的每一张都真是机器起的");
         assert.ok(assetsMod.listAssets({ view: "emote", named: "manual", limit: 500, offset: 0 }).items
           .every((r) => r.emoteNameSource === "manual"), "手动维护筛出来的每一张都真是手写的");
         assert.ok(assetsMod.listAssets({ view: "emote", named: "unnamed", limit: 500, offset: 0 }).items
           .every((r) => r.emoteNamedAt === 0), "未命名筛出来的确实还没名字");
-        // 来源回填：老库里「有名字但没记来源」的行必须被认成机器命名，
-        // 否则概览条会读成「智能命名 0 · 手动 0 · 未命名 2」而总数是 200——三个数对不上。
+        // 来源字段曾漏写在导入路径上：真库 523 张里 278 张有名字但 source 为空，
+        // chips 只报 245，用户会以为数据丢了。没有来源的老行也不能冒充手动维护，
+        // 统计与筛选都要把它落到「文件命名」，四档必须永远能加回总数。
         const legacyRow = assetsMod.listEmoteAssets().find((r) => r.emoteNamedAt > 0);
         const { db: rawDb } = await import("../src/db.ts");
-        rawDb.prepare("UPDATE assets SET emote_name_source = '' WHERE id = ?").run(legacyRow.id);
+        rawDb.prepare("UPDATE assets SET emote_name_source = '', source = 'unclaimed' WHERE id = ?").run(legacyRow.id);
         const patched = assetsMod.getAssetById(legacyRow.id);
         assert.strictEqual(patched.emoteNameSource, "", "先造一个「有名字没来源」的存量形态");
+        const fallbackStats = assetsMod.emoteNamingStats();
+        assert.strictEqual(fallbackStats.file + fallbackStats.auto + fallbackStats.manual + (fallbackStats.total - fallbackStats.named), fallbackStats.total,
+          "来源为空时四档计数仍要加回总数");
+        const fallbackFile = assetsMod.listAssets({ view: "emote", named: "file", limit: 500, offset: 0 });
+        assert.ok(fallbackFile.items.some((r) => r.id === legacyRow.id),
+          "有名字但没记来源的旧行要能被「文件命名」筛到，不能在界面里消失");
         const filled = assetsMod.backfillEmoteNameSource();
         assert.ok(filled >= 1, "回填命中了这些行");
         assert.strictEqual(assetsMod.getAssetById(legacyRow.id).emoteNameSource, "auto", "回填后算机器命名");
         assert.strictEqual(assetsMod.backfillEmoteNameSource(), 0, "第二次是 no-op");
         const stats2 = assetsMod.emoteNamingStats();
-        assert.strictEqual(stats2.auto + stats2.manual + (stats2.total - stats2.named), stats2.total,
-          "概览条三个数必须能加回总数");
+        assert.strictEqual(stats2.file + stats2.auto + stats2.manual + (stats2.total - stats2.named), stats2.total,
+          "概览条四档必须能加回总数");
+        // 失效项不能只留在概览条里：必须有独立筛选，点一下就能在网格里看到并清理。
+        const victim = assetsMod.listEmoteAssets().find((r) => !r.missing);
+        rawDb.prepare("UPDATE assets SET missing = 1 WHERE id = ?").run(victim.id);
+        const brokenOnly = assetsMod.listAssets({ view: "emote", missing: true, limit: 500, offset: 0 });
+        assert.ok(brokenOnly.total >= 1 && brokenOnly.items.every((r) => r.missing), "失效筛选只列 missing 行");
+        rawDb.prepare("UPDATE assets SET missing = 0 WHERE id = ?").run(victim.id);
       }
       // 16) 日志脱敏不许把一次成功的识别弄失败。真机上那张 5.2MB 的 PNG 就是这么被判死的：
       //     DEV_MODE 下 logModelCall 会对 6.9MB 的请求体跑一条 {512,} 贪婪正则，V8 吃栈溢出。
@@ -732,8 +913,6 @@ if (PHASE === "1") {
           assert.ok(assetsMod.assetStats().broken >= 1, "失效数进统计");
           assert.ok(!search.searchEmotes("老板英明", 10).some((h) => h.asset.url === "/media/老板英明.gif"),
             "失效行退出检索");
-          // 开关在块 13 末尾被关掉做过「不声明」断言，这里要发东西得先开回来。
-          updateContact(contact.id, { features: { emotes: true } });
           const failSend = await executeTool("send_emote", JSON.stringify({ emote_id: goneRow.id }), ctx);
           assert.ok(String(failSend.result?.error ?? "").includes("已失效"), "按 id 硬发要报「已失效」：" + JSON.stringify(failSend));
           writeFileSync(pjoin(mediaMod.mediaDir(), "表情包", "语录新2", "改名了.gif"), dropBuf);

@@ -7,7 +7,7 @@ import type { MemorySpaceInventory, MemorySpaceSelection } from "../../types";
 /**
  * 联系人资料页「记忆」这一栏的工作区：记忆检查 + 记忆清单共用同一个空间选择。
  *
- * 空间状态必须在这一层，因为「输入一句话，看她能想起什么」和下面的清单得是同一口径——
+ * 空间状态必须在这一层，因为「输入一句话，看联系人能想起什么」和下面的清单得是同一口径——
  * 分成两套选择器，用户就会用清单确认了空间、再用检查框问出跨空间的结果。
  */
 export default function MemoryWorkspace({ active, contactId, who }: {

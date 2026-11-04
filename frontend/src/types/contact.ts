@@ -41,7 +41,7 @@ export type ContactItem = {
   pendingKind: "care" | "reminder" | "";
   /** 该联系人名下所有会话的未读助手消息合计（侧栏只显示这一枚红点）。 */
   unread: number;
-  /** 角色性别：female/male/other，驱动界面代词（她/他/TA）。 */
+  /** 联系人指代方式：female/male/other，驱动界面与提示词指代。 */
   gender?: string;
   /** 回放轮数覆盖；0/缺省 = 跟随全局。 */
   recentTurns?: number;

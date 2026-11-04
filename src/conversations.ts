@@ -462,7 +462,7 @@ export type ProactiveCandidate = {
 
 /**
  * 主动消息的目标候选：主私聊 + 开了主动权限的 QQ 群，最近动静在前。
- * 「一条主动消息只说给一个地方听」的第一步——候选集本身就是"她有可能主动开口的地方"。
+ * 「一条主动消息只说给一个地方听」的第一步——候选集本身就是"联系人有可能主动开口的地方"。
  */
 export function listProactiveCandidates(contactId: string): ProactiveCandidate[] {
   const rows = q(

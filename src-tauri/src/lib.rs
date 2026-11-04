@@ -276,7 +276,7 @@ pub fn run() {
                             WindowEvent::CloseRequested { api, .. } => {
                                 save_window_state(app);
                                 // 留在托盘：关窗只是藏起来，后端继续跑（主动性任务、微信/QQ
-                                // 长轮询都在 sidecar 进程里，窗口关了它们就没了 = 她"下线"）。
+                                // 长轮询都在 sidecar 进程里，窗口关了它们就没了 = 联系人"下线"）。
                                 if tray_enabled(app) {
                                     api.prevent_close();
                                     if let Some(window) = app.get_webview_window("main") {
@@ -999,7 +999,7 @@ fn build_tray(app: &tauri::AppHandle) -> Result<(), Box<dyn std::error::Error>> 
     let menu = Menu::with_items(app, &[&open, &quit])?;
 
     let mut builder = TrayIconBuilder::with_id(TRAY_ID)
-        .tooltip("小茉（仍在后台：她还会主动找你说话）")
+        .tooltip("小茉（仍在后台：会继续主动联系你）")
         .menu(&menu)
         .show_menu_on_left_click(false)
         .on_menu_event(|app, event| match event.id.as_ref() {

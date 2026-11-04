@@ -39,7 +39,7 @@ const toLocalInput = (ts: number): string => {
 };
 
 /**
- * 「添加计划」表单。两类计划的**代价不同**（一类必达、一类会被她判掉），
+ * 「添加计划」表单。两类计划的**代价不同**（一类必达、一类会被联系人判掉），
  * 所以类型这一栏不是装饰：选了才看得见那句话会怎么处理。
  */
 function AddTaskForm({ contactId, who, onClose, onAdded }: {

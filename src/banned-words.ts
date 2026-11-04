@@ -1,8 +1,8 @@
 /**
- * 禁用词：她的回复里不该出现的词。
+ * 禁用词：联系人的回复里不该出现的词。
  *
- * 做法是把约束摆在她眼前——追加到**最后一条 user 消息的尾部**，让模型自己不说。
- * 不做出站替换：事后抹 `*` 只改得了显示，改不了她其实已经说出口的那一句，
+ * 做法是把约束摆在联系人眼前——追加到**最后一条 user 消息的尾部**，让模型自己不说。
+ * 不做出站替换：事后抹 `*` 只改得了显示，改不了联系人其实已经说出口的那一句，
  * 而且中文里"不喜欢"被抹成"不**"还会反转语义。事前这句约束只花几十字节。
  *
  * 位置选在最后一条 user 消息而不是 system prompt：近因位置的遵循率明显高于
@@ -33,7 +33,7 @@ export function parseBannedWords(raw: string): string[] {
   return out;
 }
 
-/** 那句约束。词表为空就什么都不加，不给她读一句没用的 SYSTEM NOTE。 */
+/** 那句约束。词表为空就什么都不加，不给联系人读一句没用的 SYSTEM NOTE。 */
 export function bannedWordsNote(words: string[]): string {
   if (words.length === 0) return "";
   const list = words.map((w) => `"${w}"`).join(", ");

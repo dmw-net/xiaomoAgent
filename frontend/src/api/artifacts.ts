@@ -1,6 +1,6 @@
 import { getJson, postJson } from "./client";
 
-/** 她画出来的一张图。后端 artifacts 表的一行。 */
+/** 联系人画出来的一张图。后端 artifacts 表的一行。 */
 export type Artifact = {
   id: string;
   contactId: string;

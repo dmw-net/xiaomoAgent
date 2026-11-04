@@ -77,7 +77,7 @@ function tidy(text: string): string {
 
 /**
  * 把正文里的工具调用块拆出来。没有块、或块都认不出来时原样返回（calls 为空数组）。
- * 认出来的块会从正文里删掉——它们是调用指令，不是她要说给用户听的话。
+ * 认出来的块会从正文里删掉——它们是调用指令，不是联系人要说给用户听的话。
  */
 export function parseTextToolCalls(content: string): { content: string; calls: TextToolCall[] } {
   if (!content.includes("<tool_call>")) return { content, calls: [] };
@@ -99,7 +99,7 @@ export function parseTextToolCalls(content: string): { content: string; calls: T
 
 /**
  * 流式草稿里只留到第一个 <tool_call> 之前：调用块是写给机器的，实时打字时闪一整段 XML
- * 比「她顿了一下」难看太多。整块还没收完（只有开标签）时同样截断。
+ * 比「联系人顿了一下」难看太多。整块还没收完（只有开标签）时同样截断。
  */
 export function trimDraftBeforeToolCall(text: string): string {
   const at = text.indexOf("<tool_call>");

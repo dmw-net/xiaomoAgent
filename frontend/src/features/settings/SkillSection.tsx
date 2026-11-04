@@ -117,8 +117,8 @@ export default function SkillSection({ ask }: {
   const onNameChange = (raw: string): void => {
     const next = raw.trim().toLowerCase();
     setName(next);
-    // 只在他还没碰过原文时同步 name: 那一行——少一次"忘了填 name"的报错。
-    // 一旦手改过就完全交给用户，绝不往回改写他敲的字。
+    // 只在用户还没碰过原文时同步 name: 那一行——少一次"忘了填 name"的报错。
+    // 一旦手改过就完全交给用户，绝不往回改写用户敲的字。
     if (pristine) setContent(TEMPLATE(next).join("\n"));
   };
 
@@ -174,7 +174,7 @@ export default function SkillSection({ ask }: {
     });
   };
 
-  // 可用的排前面，坏技能排后面：一屏进来先看到她现在真能用什么。
+  // 可用的排前面，坏技能排后面：一屏进来先看到联系人现在真能用什么。
   const ordered = [...skills]
     .sort((a, b) => (Number(b.valid) - Number(a.valid)) || a.name.localeCompare(b.name));
 
@@ -297,7 +297,7 @@ export default function SkillSection({ ask }: {
                 </div>
               </div>
             ) : (
-              // 不合规的技能没得开关：它根本没进她的视野，给个勾等于骗人说勾上就能用。
+              // 不合规的技能没得开关：它根本没进联系人的视野，给个勾等于骗人说勾上就能用。
               <>
                 <div className="hint">
                   {s.problems.map((p) => <div key={p}>· {p}</div>)}

@@ -1,4 +1,4 @@
-// 她的画：生成产物台账。内容库的读视图已经并到 /api/assets（src/server/routes/assets.ts）。
+// 联系人的画：生成产物台账。内容库的读视图已经并到 /api/assets（src/server/routes/assets.ts）。
 
 import {
   deleteArtifact,
@@ -19,7 +19,7 @@ import type { Route } from "../types.ts";
 
 
 const artifactsListRoute: Route = ({ res, url, path, method }) => {
-  // 她的画：生成产物台账。按联系人隔离，翻页口径与调用记录/记忆清单一致。
+  // 联系人的画：生成产物台账。按联系人隔离，翻页口径与调用记录/记忆清单一致。
   if (!(method === "GET" && path === "/api/artifacts")) return false;
   const contactId = strictContactId(url, res);
   if (contactId === null) return true;

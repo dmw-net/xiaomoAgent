@@ -55,7 +55,7 @@ const memorySpacesRoute: Route = ({ res, url, path, method }) => {
   return true;
 };
 
-/** GET /api/memory：记忆清单或按搜索词召回（观测行为，不记成"她想起过"）。 */
+/** GET /api/memory：记忆清单或按搜索词召回（观测行为，不记成"联系人想起过"）。 */
 const memoryRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/memory")) return false;
   const contactId = strictContactId(url, res);

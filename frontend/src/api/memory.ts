@@ -40,7 +40,7 @@ export function editMemoryEvent(id: number, patch: {
   return patchJson(cq("/api/memory/events/" + id, cid), patch);
 }
 
-/** 删一条记忆：墓碑标记，她不会再想起。 */
+/** 删一条记忆：墓碑标记，联系人不会再想起。 */
 export function deleteMemoryEvent(id: number, cid?: string): Promise<{ note: string }> {
   return deleteJson(cq("/api/memory/events/" + id, cid));
 }

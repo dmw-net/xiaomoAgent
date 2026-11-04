@@ -66,7 +66,7 @@ export function fetchTurnMessages(turnId: string, cid?: string, conversationId?:
 }
 
 /** 后端返回扁平结构（无 turn 包装字段）——Phase 2 曾凭空假设 { turn } 导致轮询永远失败。
- *  reply 有两个身份：running 时是「她正在写的这一句」（流式草稿，后端按 200ms 节流写），
+ *  reply 有两个身份：running 时是「联系人正在写的这一句」（流式草稿，后端按 200ms 节流写），
  *  done 后是整轮定稿。所以界面只在 running 时拿它当草稿显示，别在其它状态读它。 */
 export function fetchTurn(id: string, cid?: string): Promise<{ id: string; status: string; reply: string | null; reasoning: string | null; error: string | null }> {
   return getJson(cq("/api/turn/" + encodeURIComponent(id), cid));
@@ -137,12 +137,12 @@ export function editMessage(id: number, text: string, attachments?: string[], ci
   return postJson(cq("/api/message/" + id + "/edit", cid), { text, ...(attachments === undefined ? {} : { attachments }) });
 }
 
-/** 只改这一句的文本，不重新生成、不作废任何后续。她的回复与自己早前的话都走这条。 */
+/** 只改这一句的文本，不重新生成、不作废任何后续。联系人的回复与自己早前的话都走这条。 */
 export function editMessageText(id: number, text: string, cid?: string): Promise<{ note?: string }> {
   return putJson(cq("/api/message/" + id + "/text", cid), { text });
 }
 
-/** 撤回单条（软：摘出上下文，她的回复保留）。 */
+/** 撤回单条（软：摘出上下文，联系人的回复保留）。 */
 export function retractMessage(id: number, cid?: string): Promise<unknown> {
   return postJson(cq("/api/message/" + id + "/retract", cid));
 }

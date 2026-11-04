@@ -102,7 +102,7 @@ const staticRoute: Route = async ({ req, res, url, path, method }) => {
    *
    * 为什么必须过服务端：界面那条 CSP 是 `connect-src 'self'`，前端直接 fetch 外站会被浏览器
    * 拦掉；而且全项目只有 web.ts 一扇出网门（地址校验 / 字节上限 / MIME 白名单都在那儿）。
-   * 为什么落成本地文件而不是把外站直链给她：QQ 换头像、哪天换域名，直链就是一张裂图；
+   * 为什么落成本地文件而不是把外站直链给联系人：QQ 换头像、哪天换域名，直链就是一张裂图；
    * /media 的那份跟着数据目录走，也才有东西可备份。
    */
   if (method === "POST" && path === "/api/avatar/qq") {

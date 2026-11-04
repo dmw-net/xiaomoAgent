@@ -328,7 +328,7 @@ const messageEditRoute: Route = async ({ req, res, url, path, method }) => {
 };
 
 const messageTextRoute: Route = async ({ req, res, url, path, method }) => {
-  /** 修改她的一条回复文本：只改这一句，不重新生成、不动后续消息。 */
+  /** 修改联系人的一条回复文本：只改这一句，不重新生成、不动后续消息。 */
   if (!(method === "PUT" && path.startsWith("/api/message/") && path.endsWith("/text"))) return false;
   const raw = decodeURIComponent(path.slice("/api/message/".length, -"/text".length));
   const id = Number(raw);
@@ -354,7 +354,7 @@ const messageTextRoute: Route = async ({ req, res, url, path, method }) => {
 };
 
 const messageRetractRoute: Route = ({ res, url, path, method }) => {
-  /** 撤回：只把这一条从上下文摘除，界面显示成「已撤回」。她的回复**保留**。 */
+  /** 撤回：只把这一条从上下文摘除，界面显示成「已撤回」。联系人的回复**保留**。 */
   if (!(method === "POST" && path.startsWith("/api/message/") && path.endsWith("/retract"))) return false;
   const raw = decodeURIComponent(path.slice("/api/message/".length, -"/retract".length));
   const id = Number(raw);

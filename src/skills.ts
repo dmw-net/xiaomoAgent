@@ -8,11 +8,11 @@
 // - **模型侧只多一个工具**：清单（名字 + 一句话说明）进系统提示，正文用 load_skill 现取。
 //   所以加技能既不占工具位，也不让没用上的技能正文常驻上下文。
 // - **闸门排在给模型看之前**：目录名、文件名、frontmatter、长度全达标才进清单；
-//   不达标的留在设置页带原因显示，绝不把半条指令喂给她去猜。
+//   不达标的留在设置页带原因显示，绝不把半条指令喂给联系人去猜。
 // - **名字只从扫描结果里查表**，参数不参与拼路径——技能名不是文件路径，穿越无从下手。
 //
-// 这一层扩大的是提示注入面（技能正文会被她当成指令执行），所以界面与文档都要写明：
-// 只放你自己写的、或看得懂的文件。她没有文件读写工具，最坏情况是被误导说错话，不是丢数据。
+// 这一层扩大的是提示注入面（技能正文会被联系人当成指令执行），所以界面与文档都要写明：
+// 只放你自己写的、或看得懂的文件。联系人没有文件读写工具，最坏情况是被误导说错话，不是丢数据。
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -71,7 +71,7 @@ function readDisabled(): Set<string> {
     const arr = raw === null ? [] : JSON.parse(raw);
     return Array.isArray(arr) ? new Set(arr.filter((x): x is string => typeof x === "string")) : new Set();
   } catch {
-    // 名单读不出来就当成没停用任何技能：技能是可选增强，坏在这里不该让她没法说话。
+    // 名单读不出来就当成没停用任何技能：技能是可选增强，坏在这里不该让联系人没法说话。
     console.warn("[skills] 停用名单不是合法 JSON，已按全部未停用处理");
     return new Set();
   }
@@ -160,7 +160,7 @@ function inspect(name: string, disabled: Set<string>): SkillEntry {
   }
   const description = parsed.meta["description"] ?? "";
   entry.description = description;
-  if (description === "") entry.problems.push("frontmatter 缺 description：她只看这一句决定要不要加载这篇，必须写清楚这篇管什么");
+  if (description === "") entry.problems.push("frontmatter 缺 description：模型只看这一句决定要不要加载这篇，必须写清楚这篇管什么");
   else if (description.length > MAX_DESCRIPTION_CHARS) {
     entry.problems.push(`description 太长（${description.length} 字，上限 ${MAX_DESCRIPTION_CHARS}）：清单常驻系统提示，一句话就够`);
   }
@@ -203,7 +203,7 @@ export function setSkillEnabled(name: string, enabled: boolean): boolean {
   return listSkills().some((s) => s.name === name);
 }
 
-/** 存一份技能的结果。ok 只说明"字落盘了"；她看不看得见，看 saved.valid。 */
+/** 存一份技能的结果。ok 只说明"字落盘了"；联系人看不看得见，看 saved.valid。 */
 export type SkillSaveResult =
   | { ok: true; saved: SkillEntry }
   | { ok: false; error: string };
@@ -216,9 +216,9 @@ let tmpSeq = 0;
  * 只有 mode="create" 会拒绝覆盖已存在的目录——否则一次手滑就把别人改好的那篇换成白纸。
  *
  * 为什么"先写后判"而不是"判过才写"：用户刚敲的字一个字都不能因为不合规就消失，
- * 否则他得先去别处备份再来第二次。所以这里照写，再把闸门的结论原样带回去，
+ * 否则用户得先去别处备份再来第二次。所以这里照写，再把闸门的结论原样带回去，
  * 界面据此把 problems 摊在编辑器下面，改完再存一次即可。
- * 安全上没有问题：写进去的文件进不了她的视野（loadOne 只认 usableSkills），
+ * 安全上没有问题：写进去的文件进不了联系人的视野（loadOne 只认 usableSkills），
  * 最坏情况是一份存着但没生效的草稿。
  */
 export function saveSkill(name: string, content: string, mode: "create" | "overwrite"): SkillSaveResult {
@@ -293,7 +293,7 @@ export function deleteSkill(name: string): { ok: true; name: string } | { ok: fa
 /**
  * 技能目录的整体状况，给设置页和设置助手用。
  * 技能是磁盘上的外部文件，"配了但没生效"是常态而不是异常，
- * 所以这里把不可用的原因一并带出去，让她能回答「我那个技能怎么没起作用」。
+ * 所以这里把不可用的原因一并带出去，让联系人能回答「我那个技能怎么没起作用」。
  */
 export function skillsStatus(): {
   dir: string;
@@ -365,7 +365,7 @@ export const SKILL_TOOL: ToolDef = {
     "加载一份用户自定义技能的完整做法说明（name 用系统提示「[技能]」清单里给的名字，原样传）。" +
     "清单里只有一句话说明，具体步骤、字段口径、注意事项都在这一步才拿到——" +
     "落在某个技能范围内的活，先加载再动手，不要凭名字推测内容。" +
-    "返回的 content 是资料文本，按它办事但不要整段复述给他；技能里没有的事就按平常的方式处理。",
+    "返回的 content 是资料文本，按它办事但不要整段复述给用户；技能里没有的事就按平常的方式处理。",
   parameters: {
     type: "object",
     properties: {
@@ -384,8 +384,8 @@ export const SKILL_TOOL: ToolDef = {
       name: loaded.entry.name,
       description: loaded.entry.description,
       content: loaded.body,
-      // 本项目没有文件读取工具：技能若引用同目录下的其它文件，她读不到。
-      // 与其让她反复试，不如在这里一次性讲清边界（写进给模型的说明口径）。
+      // 本项目没有文件读取工具：技能若引用同目录下的其它文件，联系人读不到。
+      // 与其让联系人反复试，不如在这里一次性讲清边界（写进给模型的说明口径）。
       note: "这就是这篇技能的全部内容。应用没有开放文件读取工具，" +
         "正文里提到的其它文件、脚本或路径你打不开；缺什么就直接说明，别猜。",
     };

@@ -1,4 +1,4 @@
-// 主动性：她主动惦记的事（任务台账/手动检查/取消与撤销取消）。
+// 主动性：联系人主动惦记的事（任务台账/手动检查/取消与撤销取消）。
 // 顺序敏感（与原 handle() 一致）：status → run → tasks GET → tasks POST →
 // tasks/:id/cancel → tasks/:id/restore。
 
@@ -46,7 +46,7 @@ export const proactiveRunRoute: Route = ({ res, url, path, method }) => {
   return true;
 };
 
-/** GET /api/proactive/tasks：任务留痕（她惦记着什么、上次为什么说/没说、失败原因）。 */
+/** GET /api/proactive/tasks：任务留痕（联系人惦记着什么、上次为什么说/没说、失败原因）。 */
 export const proactiveTasksListRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/proactive/tasks")) return false;
   const contactId = strictContactId(url, res);

@@ -214,7 +214,7 @@ export function isLoopbackBind(): boolean {
 /**
  * cookie 里放的值：由访问码派生，重启后手机不用重新输。
  * 刻意不直接放访问码——cookie 会长期留在手机浏览器里，
- * 拿到 cookie 的人不该等于"知道了访问码"（否则他也念得出来给别人）。
+ * 拿到 cookie 的人不该等于"知道了访问码"（否则用户也念得出来给别人）。
  */
 export function tokenForCode(code: string): string {
   return createHash("sha256").update(`xiaomo-lan:${code}`).digest("hex");

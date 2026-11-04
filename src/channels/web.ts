@@ -89,7 +89,7 @@ export const webChannel: Channel = {
       text: message.text,
       kind: message.kind,
       contactId: message.contactId,
-      // 主动性也能带图（她画的那张）。空数组不落列，保持"绝大多数消息没有附件"的 NULL。
+      // 主动性也能带图（联系人画的那张）。空数组不落列，保持"绝大多数消息没有附件"的 NULL。
       ...(message.attachments && message.attachments.length > 0 ? { attachments: message.attachments } : {}),
       ...(message.attachmentMeta && message.attachmentMeta.length > 0 ? { attachmentMeta: message.attachmentMeta } : {}),
     });

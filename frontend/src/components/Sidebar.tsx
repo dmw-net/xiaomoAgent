@@ -397,7 +397,7 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
             <span className="lb"><FileDown size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />导出人格文档</span>
             <span className="nt">导出一个文件</span>
           </button>
-          {/* 内置小茉也可以归档（归档→删除那套冷却期对她一样生效）；
+          {/* 内置小茉也可以归档（归档→删除那套冷却期对联系人一样生效）；
               助手根本不在会话列表里（后端已过滤），这里不用再点名排除谁。 */}
           <button type="button" className="danger" onClick={() => { archive(menu.contact); }}>
             <span className="lb"><Archive size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />归档</span>

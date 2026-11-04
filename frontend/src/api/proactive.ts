@@ -19,7 +19,7 @@ export function cancelProactiveTask(id: number, cid?: string): Promise<unknown> 
   return postJson(cq("/api/proactive/tasks/" + id + "/cancel", cid));
 }
 
-/** 用户自己立一条计划：reminder = 到点原样送到（必定说），care = 到点她想想要不要说。 */
+/** 用户自己立一条计划：reminder = 到点原样送到（必定说），care = 到点联系人想想要不要说。 */
 export function createProactiveTask(input: { kind: "care" | "reminder"; focus: string; dueAt: number }, cid?: string):
   Promise<{ task: TaskRow; note?: string }> {
   return postJson(cq("/api/proactive/tasks", cid), input);

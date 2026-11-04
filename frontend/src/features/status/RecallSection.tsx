@@ -12,7 +12,7 @@ import type { PanelAria } from "../../components/Tabs";
  * 召回请求本身不带联系人参数——服务端认的是全站当前联系人。
  *
  * 带 space 时只在那个空间能被想起的记忆里查。真实会话就是按空间召回的，
- * 不带空间等于把别的群、别的成员也算进来，这个框就不再是"她能想起什么"的答案。
+ * 不带空间等于把别的群、别的成员也算进来，这个框就不再是"联系人能想起什么"的答案。
  */
 export default function RecallSection({ contactId, embedded = false, contactName, contactAvatar, onSwitchContact, onOpenContacts, panel, space, spaceInventory }: {
   panel: PanelAria;

@@ -160,7 +160,7 @@ export default function App(): JSX.Element {
         setOwnerName(d.persona?.owner?.name || "");
         setOwnerAvatar(d.persona?.owner?.avatar || "");
         // 没走完首次设置就开一次弹窗；「稍后设置」不写标记，所以下次打开还会来，
-        // 直到他在收尾那一步按下「开始聊天」。
+        // 直到用户在收尾那一步按下「开始聊天」。
         if (d.onboardingDone !== true) setOnboarding(true);
       })
       .catch(() => {});
@@ -305,7 +305,7 @@ export default function App(): JSX.Element {
   }, [navigate]);
 
   /** 上下文提示里的「去设置」：进「主对话模型」并把高级参数展开——输入上限就藏在那里，
-   *  不展开等于把人领到门口又让他自己找门。 */
+   *  不展开等于把人领到门口又让用户自己找门。 */
   const openModelSettings = useCallback((): void => {
     setSettingsTab("model");
     setSettingsAdvanced(true);

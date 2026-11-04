@@ -27,6 +27,7 @@ import {
   SeenKeys,
   SingleFlight,
   withRaw,
+  type DeliveryResult,
 } from "./channels/delivery.ts";
 
 const KV_LINKS = "wechat.links";
@@ -493,13 +494,15 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
     contactId: string,
     text: string | string[],
     opts: { proactive?: boolean } = {},
-  ): Promise<void> => {
+  ): Promise<DeliveryResult> => {
     const link = links.byContact(contactId);
-    if (link === null || !deliveryAllowed(link, opts.proactive === true)) return;
+    if (link === null || !deliveryAllowed(link, opts.proactive === true)) {
+      return { ok: false, error: "微信联系人未绑定、已停用或当前不允许主动投递" };
+    }
     const segments = splitWechatText(text);
-    if (segments.length === 0) return;
+    if (segments.length === 0) return { ok: false, error: "没有可发送的文字" };
     const startedAt = clock();
-    await deliverOutbound({
+    return await deliverOutbound({
       segments,
       send: (segment) => postItem(link, { type: 1, text_item: { text: segment } }),
       elapsed: () => clock() - startedAt,

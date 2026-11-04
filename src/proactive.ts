@@ -3,19 +3,19 @@
 // 任务化（2026-09-16，借鉴参考项目）：
 // 之前的模式是「每 30 分钟到点、从零想一次该不该联系」——无状态、每次判断都是凭空的。
 // 现在改成任务化模式：**判断一次，带着具体观察落成一条定时任务，到点执行、执行留痕**。
-//   - 判断时模型顺手产出「下次想关注的点」（focus），比如「他答应周五给答复，明天问问」；
+//   - 判断时模型顺手产出「下次想关注的点」（focus），比如「用户答应周五给答复，明天问问」；
 //   - focus 连同到期时间写进 proactive_tasks 表；
 //   - 到期后检查器拿 focus 作为「这次重点关注什么」再判断；
 //   - 每次执行都留痕（说了什么/为什么没说/失败原因），状态页可查。
-// 于是「她怎么突然找我」变成一个可以回答的问题：看一眼任务就知道她惦记着什么。
+// 于是「联系人怎么突然找我」变成一个可以回答的问题：看一眼任务就知道联系人惦记着什么。
 //
 // 多联系人（2026-09-17）：每个联系人独立一套任务与「今天是否已说过」的配额——
 // 跟 A 聊过天，不代表 B 今天也被关心过。循环对每个未归档联系人各跑一遍检查。
 //
 // 闸门的变化：免打扰时段仍是硬闸门（顺延任务）；开关也是。
 // 「静默时长」和「每日一次」从硬闸门改为**判断依据**注入提示词——
-// 因为判断本身就该考虑这些（"他刚说过话，那这次可能不该发"），
-// 由闸门一刀切反而让模型失去了表达「我惦记着他但知道现在不该说」的机会。
+// 因为判断本身就该考虑这些（"用户刚说过话，那这次可能不该发"），
+// 由闸门一刀切反而让模型失去了表达「我惦记着用户但知道现在不该说」的机会。
 
 import { config, inQuietHours } from "./config.ts";
 import { wechat } from "./wechat.ts";
@@ -34,14 +34,16 @@ import {
   trimHistoryToBudget,
 } from "./agent.ts";
 import { recall } from "./memory.ts";
+import { autoPickEmote } from "./emote-search.ts";
 import { buildSystemPrompt, ownerPronoun } from "./persona.ts";
-import { companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getContact, listContacts } from "./contacts.ts";
+import { companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, emoteFrequencyForContact, getContact, listContacts } from "./contacts.ts";
 import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
 import { isAssistant } from "./assistant.ts";
 import { maybeRunConsolidation } from "./consolidate.ts";
 import { getChannel } from "./channels/types.ts";
 import { getConversation, listProactiveCandidates, localConversationId } from "./conversations.ts";
 import type { ChatMessage } from "./model.ts";
+import { enqueueAndDeliver } from "./outbound.ts";
 
 export type ProactiveDecision = {
   spoken: boolean;
@@ -258,7 +260,7 @@ export function cancelProactiveTask(id: number, contactId?: string): boolean {
 }
 
 /** 用户自己在「主动性」面板上立一条计划。两种语义（界面必须讲清，因为代价不同）：
- *  - care：到点拿 focus 去问模型「该不该说」——她会改写成一句自然的话，也可能决定不说，吃每日配额；
+ *  - care：到点拿 focus 去问模型「该不该说」——联系人会改写成一句自然的话，也可能决定不说，吃每日配额；
  *  - reminder：到点把 focus **原样**发出去，不问模型、不吃配额（承诺必须兑现）。
  *  到点不等于立刻：真正的发送落在下一次检查（默认每 PROACTIVE_INTERVAL_MINUTES 分钟一趟），
  *  落在免打扰时段会顺延。 */
@@ -272,7 +274,7 @@ export function createProactiveTask(
   const dueAt = Number(input.dueAt);
   // 容忍 1 分钟的时钟差：表单算出来的「刚刚」被网络往返拖到过去几秒，不该因此报错。
   if (!Number.isFinite(dueAt) || dueAt < Date.now() - 60_000) {
-    throw new Error("时间要在未来（想立刻看她说什么，用「立即检查主动性」）");
+    throw new Error("时间要在未来（想立刻检查联系人会说什么，用「立即检查主动性」）");
   }
   return insertTask(contactId, focus, dueAt, kind);
 }
@@ -296,8 +298,10 @@ export function restoreProactiveTask(id: number, contactId?: string): boolean {
 /** 主动性判断指令：ownerPron = 用户的代词（owner.gender），全文一致。
  *  imageGenOn 决定要不要向模型声明 with_image 这个字段——没开就不声明，
  *  和工具侧「不声明的工具模型调不到」同一套口径。
+ *  emoteOn 同理决定 emote_keyword：主动那条路没有工具，表情靠这个字段表达，
+ *  模型只给「想配的反应词」，够不够贴由检索层判（不是一句「我可以发表情」的空承诺）。
  *  target 告诉模型这条话会发到哪：群场合要说得像群场合（不引用私聊里的内容）。 */
-export function buildDecideSystem(ownerPron: string, imageGenOn = false, target?: ProactiveTarget): string {
+export function buildDecideSystem(ownerPron: string, imageGenOn = false, target?: ProactiveTarget, emoteOn = false): string {
   const venue = target?.kind === "group"
     ? `\n\n这次的开场会发到 QQ 群「${target.title || "未命名群"}」里，其他群成员看得到：像在群里说话，不要引用你们私聊里聊过的内容，也不要提某位成员私下说过的事。`
     : "";
@@ -305,13 +309,14 @@ export function buildDecideSystem(ownerPron: string, imageGenOn = false, target?
 先简要评估关键证据；如果出现新证据，可以修正判断。证据足够后就定下来，不要在已经确认的信息上反复绕圈，随后输出 JSON。
 
 只输出 JSON：
-{"should":true|false,"reason":"一句话理由","text":"要说的话","focus":"下次检查时想关注的具体事项","nextCheckHours":6}${imageGenOn ? ',"with_image":"要不要配一张图，true|false","image_prompt":"画什么的一句话画面描述"' : ""}
+{"should":true|false,"reason":"一句话理由","text":"要说的话","focus":"下次检查时想关注的具体事项","nextCheckHours":6}${imageGenOn ? ',"with_image":"要不要配一张图，true|false","image_prompt":"画什么的一句话画面描述"' : ""}${emoteOn ? ',"emote_keyword":"要不要配一个表情：给一个 2~6 字的中文反应词（例：比心、我躺平了、暗中观察），不配就留空"' : ""}
 
 字段说明：
 - should/text：现在是否开口、说什么。该主动联系的情形：${ownerPron}提过的事有了后续、约定的时间到了、${ownerPron}明显情绪低落、太久没联系了。不该联系的情形：没有新内容可说、上次是你主动且没过多久、只是想说什么"在吗"之类的空话。宁可不发也不要发空话，text 控制在 40 字以内。
 - focus：**必填**。下次检查时想关注的一件具体事（比如「${ownerPron}答应周五给答复，到时候问问」「${ownerPron}最近加班很凶，看看这周缓过来没有」）。给不出就写「常规关心：看看你最近的状态」。
 - nextCheckHours：下次检查放在几小时后（1 到 24 的整数）。接近约定时间就设小一点，没有明确节点就 6-12。${imageGenOn ? `
-- with_image / image_prompt：这一条值不值得配一张图（画一张约 8 秒、有每日张数上限，所以只在真的想给他看点什么的时候才 true）。image_prompt 用中文写画面：主体 / 场景 / 风格 / 光线。` : ""}${venue}`;
+- with_image / image_prompt：这一条值不值得配一张图（画一张约 8 秒、有每日张数上限，所以只在真的想给用户看点什么的时候才 true）。image_prompt 用中文写画面：主体 / 场景 / 风格 / 光线。` : ""}${emoteOn ? `
+- emote_keyword：这条话适不适合配一个表情来收尾（比如撒娇、道歉、庆祝的场合）。写的是你想表达的那个反应词，不是文件名也不是标签名；系统会从她的表情库里挑最贴的一张，**挑不出贴的就只发文字**，所以拿不准就留空，别硬凑。` : ""}${venue}`;
 }
 
 export async function runProactiveCheck(
@@ -339,7 +344,7 @@ async function runProactiveCheckInner(
 ): Promise<ProactiveDecision> {
   if (!config.proactive.enabled) return { spoken: false, reason: "主动性开关是关的" };
 
-  // 免打扰时段：硬闸门。到期的任务顺延而不是丢弃——她惦记的事不该因为时间点不好就丢了。
+  // 免打扰时段：硬闸门。到期的任务顺延而不是丢弃——联系人惦记的事不该因为时间点不好就丢了。
   const hour = new Date().getHours();
   if (inQuietHours(hour)) {
     postponeDueTasks(contactId, `落在免打扰时段（${config.proactive.quietHours}）`);
@@ -347,14 +352,14 @@ async function runProactiveCheckInner(
   }
 
   // 取该联系人最早到期的任务。没有到期任务时：
-  //   - 若有排在未来的 pending（她清楚自己惦记什么、到什么时候）→ 本次直接跳过。
+  //   - 若有排在未来的 pending（联系人清楚自己惦记什么、到什么时候）→ 本次直接跳过。
   //     旧逻辑在这里「新建一条立即到期再消费」，每 tick 净增一条 pending，任务无限堆积。
   //   - 只有完全没有 pending（首次启动/任务被取消后）才建一条兜底。
   let task = dueTask(contactId);
 
   // 到点提醒（reminder）：不询问模型、不吃每日配额——立下的承诺必须兑现，
   // 免打扰时段已经在上面的硬闸门里顺延过了。在哪个会话立的，就在哪个会话兑现；
-  // 没记会话的旧数据落回主私聊（提醒是对一个人的承诺，不替他决定发进哪个群）。
+  // 没记会话的旧数据落回主私聊（提醒是对一个人的承诺，不替用户决定发进哪个群）。
   if (task?.kind === "reminder") {
     const reminderTarget = resolveProactiveTarget(contactId, task);
     if (reminderTarget.kind === "private" && !getChannel("web")) {
@@ -392,11 +397,11 @@ async function runProactiveCheckInner(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     finishTask(task.id, "failed", `判断失败：${message}`, message);
-    // 失败必须看得见，否则用户只会觉得"她变冷了"。
+    // 失败必须看得见，否则用户只会觉得"联系人变冷了"。
     throw error;
   }
 
-  // 禁用词同样管住她主动说的那句：约束已随 decideWithModel 那条 user 消息摆给她了，
+  // 禁用词同样管住联系人主动说的那句：约束已随 decideWithModel 那条 user 消息摆给联系人了，
   // 不再事后抹。模型未就绪时走 echoDecision，那条路不问模型、也就没有词表可言。
   const cleanText = decision.text?.trim() ?? "";
 
@@ -405,8 +410,8 @@ async function runProactiveCheckInner(
       finishTask(task.id, "failed", "没有可用通道", "channel missing");
       return { spoken: false, reason: "没有可用通道" };
     }
-    // 她想配一张图：先画再送。画砸了不影响这句话本身——文字照发，只是这一条少一张图，
-    // 免得"想给他带张画"反把人憋得一句都不说。配额和对话那条路共用同一个计数。
+    // 联系人想配一张图：先画再送。画砸了不影响这句话本身——文字照发，只是这一条少一张图，
+    // 免得"想给用户带张画"反把人憋得一句都不说。配额和对话那条路共用同一个计数。
     const wantImage = decision.withImage && decision.imagePrompt !== ""
       && imagesToday(contactId) < IMAGE_DAILY_LIMIT;
     const images: string[] = [];
@@ -417,6 +422,13 @@ async function runProactiveCheckInner(
       } catch (error) {
         console.warn(`[proactive] 想配图但没画成，这句只发文字：${error instanceof Error ? error.message : String(error)}`);
       }
+    }
+    // 表情：模型只给「想配的那个反应词」，贴不贴由检索层判（和被动聊天同一套阈值：
+    // 分数够高、且明显领先第二名才发）。挑不出就只发文字——主动消息的骚扰面更高，宁缺毋滥。
+    // 一条主动消息最多一张配图：画出来的优先，表情次之，不叠两张。
+    if (images.length === 0 && decision.emoteKeyword !== "") {
+      const pick = autoPickEmote(decision.emoteKeyword);
+      if (pick.kind === "send") images.push(pick.hit.asset.url);
     }
     await deliverProactiveToTarget(contactId, target, cleanText, images);
     markSpokenToday(contactId);
@@ -436,7 +448,7 @@ async function runProactiveCheckInner(
   return { spoken: false, reason };
 }
 
-type DecisionOutput = { should: boolean; reason: string; text?: string; focus: string; nextCheckHours: number; withImage: boolean; imagePrompt: string };
+type DecisionOutput = { should: boolean; reason: string; text?: string; focus: string; nextCheckHours: number; withImage: boolean; imagePrompt: string; emoteKeyword: string };
 
 function echoDecision(idleMinutes: number, quotaLeft: boolean, spokenToday: number, dailyLimit: number): DecisionOutput {
   return {
@@ -451,6 +463,7 @@ function echoDecision(idleMinutes: number, quotaLeft: boolean, spokenToday: numb
     nextCheckHours: 6,
     withImage: false,
     imagePrompt: "",
+    emoteKeyword: "",
   };
 }
 
@@ -465,7 +478,7 @@ function dueTask(contactId: string): ProactiveTask | null {
 }
 
 function idleMinutesNow(contactId: string): number {
-  // 判断「他多久没说话」用跨会话口径：他在 QQ 私聊/群里刚说过话，
+  // 判断「用户多久没说话」用跨会话口径：用户在 QQ 私聊/群里刚说过话，
   // 就不该按本机会话算成"三天没聊"——那会直接进主动判断的提示词。
   const lastUserAt = lastUserMessageAtAnyConversation(contactId);
   return lastUserAt === null ? Number.POSITIVE_INFINITY : Math.floor((Date.now() - lastUserAt) / 60_000);
@@ -585,7 +598,7 @@ export type ProactiveTarget = {
  * 2) care 按最近动静选：主私聊与开了主动权限的群里，挑最近有动静的那段
  *    （listProactiveCandidates 已按 activeAt 排好序）；都没聊过就回主私聊。
  * reminder 没记会话时偏向主私聊：提醒是对一个人的承诺（"提醒我吃药"），
- * 拿不准就发私聊，不该替他决定发进哪个群。
+ * 拿不准就发私聊，不该替用户决定发进哪个群。
  * （导出仅供 smoke 回归直接验证目标选择规则。）
  */
 export function resolveProactiveTarget(contactId: string, task: ProactiveTask): ProactiveTarget {
@@ -620,7 +633,10 @@ async function deliverProactiveToTarget(
       conversationId: target.conversationId,
       ...(images.length > 0 ? { attachments: images } : {}),
     });
-    await qq.deliverToConversation(target.conversationId, text);
+    await enqueueAndDeliver({
+      channel: "qq", contactId, conversationId: target.conversationId,
+      segments: [text], kind: "proactive", tier: "proactive",
+    });
     if (images.length > 0) {
       await qq.deliverMediaToGroup(contactId, target.conversationId, "", images.map((url) => ({ url })));
     }
@@ -633,24 +649,22 @@ async function deliverProactiveToTarget(
     ...(images.length > 0 ? { attachments: images } : {}),
   });
   // 微信这条链路发不出媒体：带图就在文字里说破，免得那张画凭空消失。
-  void wechat.deliverToContact(
-    contactId,
-    images.length > 0 ? `${text}\n（画了一张图，微信发不出去，在这个应用里看）` : text,
-    { proactive: true },
-  );
-  if (images.length > 0) {
-    void qq.deliverMediaToContact(contactId, text, images.map((url) => ({ url })), { proactive: true });
-  } else {
-    void qq.deliverToContact(contactId, text, { proactive: true });
-  }
+  void enqueueAndDeliver({
+    channel: "wechat", contactId, kind: "proactive", tier: "proactive",
+    segments: [images.length > 0 ? `${text}\n（画了一张图，微信发不出去，在这个应用里看）` : text],
+  }).catch(() => { /* 失败已落死信队列与 model_calls */ });
+  void enqueueAndDeliver({
+    channel: "qq", contactId, kind: "proactive", tier: "proactive",
+    segments: [text],
+  })
+    .then(() => {
+      if (images.length > 0) {
+        return qq.deliverMediaToContact(contactId, "", images.map((url) => ({ url })), { proactive: true });
+      }
+      return undefined;
+    })
+    .catch(() => { /* 文字失败已落死信队列；媒体失败已落 qq lastError */ });
 }
-
-/**
- * 主动判断不是短问答：开启思考时，模型要先权衡沉默时长、历史互动和上次追问是否已打扰，
- * 最后才写一小段 JSON。400 tokens 连思考都不够（真机曾 400/400 全花在 reasoning 上），
- * 所以这里给足「思考 + JSON」的总额度。max_tokens 是上限不是消耗量，正常输出不会因此变长。
- */
-export const PROACTIVE_DECIDE_MAX_TOKENS = 2048;
 
 async function decideWithModel(
   contactId: string,
@@ -665,23 +679,28 @@ async function decideWithModel(
   // 群目标只带 conversationId，于是能想起的就是「全局 + 这个群」两类——
   // 主动开口不该把别处的事端过来。
   const historyRows = recentMessages(contactId, 6, undefined, target.conversationId);
-  // 指用户的代词跟 owner.gender 走（与提示词其余部分同一口径）；写死「他」时，
-  // 女性用户会在她自己的主动关心判断里被叫成"他"。
+  // 指用户的代词跟 owner.gender 走（与提示词其余部分同一口径）；写死「用户」时，
+  // 女性用户会在联系人自己的主动关心判断里被叫成"用户"。
   const ownerPron = ownerPronoun(personaConfig().owner.gender);
   // 主动消息把历史摊平成一段文本塞进一条 user 消息，所以按摊平后的长度算预算，丢的仍是整轮。
   const saidBy = (rows: Array<{ role: string; text: string }>) =>
     rows.map((row) => `${row.role === "user" ? ownerPron : "我"}：${row.text}`).join("\n");
   const memories = recall(contactId, saidBy(historyRows) || "最近", 5, null, { conversationId: target.conversationId });
   // 主动性能不能带图 = 这个联系人开了 imageGen 且图像生成能力真配置好了。
-  // 两个条件缺一不可：只开开关没配模型，她会期待一张永远画不出来的图。
+  // 两个条件缺一不可：只开开关没配模型，联系人会期待一张永远画不出来的图。
   const imageGenOn = getContact(contactId)?.features.imageGen === true && capabilityReady("imageGeneration");
+  // 主动消息能不能带表情：看全局那一档（表情已不归联系人单独管）。
+  // 刻意不把 emoteFrequency 传进 buildSystemPrompt——persona 那段写的是「直接调用表情工具」，
+  // 而主动这条链路没有工具，说了就是空头承诺；表情由 decide 指令里的 emote_keyword 表达，
+  // 由代码查库落地，模型不需要、也不能「自己发」。
+  const emoteOn = emoteFrequencyForContact(contactId) !== null;
   const system = `${buildSystemPrompt(memories, {
     character: contactCard(contactId),
     lastUserAt: lastUserMessageAt(contactId, target.conversationId),
     companion: companionPromptExtras(getContact(contactId), historyRows[0]?.id),
     // 与 respondToTurn 同一开关：这位关了「看时间」，主动判断的提示词里也不硬拼时间
     includeNow: getContact(contactId)?.features?.clock !== false,
-  })}\n\n${buildDecideSystem(ownerPron, imageGenOn, target)}`;
+  })}\n\n${buildDecideSystem(ownerPron, imageGenOn, target, emoteOn)}`;
 
   const facts = [
     `上次检查时你想关注的事：${focus}`,
@@ -718,7 +737,8 @@ async function decideWithModel(
     nextCheckHours?: unknown;
     with_image?: unknown;
     image_prompt?: unknown;
-  }>(messages, { purpose: "proactive", maxTokens: PROACTIVE_DECIDE_MAX_TOKENS, contactId });
+    emote_keyword?: unknown;
+  }>(messages, { purpose: "proactive", contactId });
 
   const hoursRaw = Number(raw.nextCheckHours);
   return {
@@ -729,12 +749,13 @@ async function decideWithModel(
     nextCheckHours: Number.isFinite(hoursRaw) ? hoursRaw : 6,
     withImage: raw.with_image === true,
     imagePrompt: typeof raw.image_prompt === "string" ? raw.image_prompt.trim().slice(0, 900) : "",
+    emoteKeyword: typeof raw.emote_keyword === "string" ? raw.emote_keyword.trim().slice(0, 12) : "",
   };
 }
 
 /**
  * 只解释「现在检查是什么状态」，不真的说话。
- * 用户看到"她怎么不主动找我"时，最想知道的就是卡在哪。
+ * 用户看到"联系人怎么不主动找我"时，最想知道的就是卡在哪。
  * 注意这个函数**不调用模型、不产生副作用**，可以被状态页安全地反复轮询。
  */
 export type GateState = { passed: boolean; detail: string };
@@ -783,7 +804,7 @@ export function inspectGates(contactId = "default"): {
 
 export function startProactiveLoop(): NodeJS.Timeout {
   const everyMs = config.proactive.intervalMinutes * 60_000;
-  // 每轮对每个未归档联系人各检查一次——他们的任务、配额、记忆互不相干。
+  // 每轮对每个未归档联系人各检查一次——这些联系人的任务、配额、记忆互不相干。
   const timer = setInterval(() => {
     void (async () => {
       for (const contact of listContacts()) {
@@ -791,7 +812,7 @@ export function startProactiveLoop(): NodeJS.Timeout {
         try {
           await runProactiveCheck(contact.id, "timer");
         } catch (error) {
-          // 主动性失败必须看得见，否则用户只会觉得"她变冷了"。
+          // 主动性失败必须看得见，否则用户只会觉得"联系人变冷了"。
           console.warn(`[proactive] ⚠️ ${contact.name} 检查失败：${error instanceof Error ? error.message : String(error)}`);
         }
       }

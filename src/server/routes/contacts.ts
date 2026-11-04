@@ -172,7 +172,7 @@ export const contactCreateRoute: Route = async ({ req, res, path, method }) => {
   let createGender: ContactGender | undefined;
   if (body.gender !== undefined) {
     if (body.gender !== "female" && body.gender !== "male" && body.gender !== "other") {
-      sendJson(res, 400, { ok: false, error: "性别只能是 female / male / other" });
+      sendJson(res, 400, { ok: false, error: "指代方式只能是 female / male / other" });
       return true;
     }
     createGender = body.gender;
@@ -182,7 +182,7 @@ export const contactCreateRoute: Route = async ({ req, res, path, method }) => {
   return true;
 };
 
-/** PUT /api/contacts/<id>：资料页保存（头像/人设/绑定/能力/回放轮数/性别/生活线/温度计）。 */
+/** PUT /api/contacts/<id>：资料页保存（头像/人设/绑定/能力/回放轮数/指代方式/生活线/温度计）。 */
 export const contactUpdateRoute: Route = async ({ req, res, path, method }) => {
   const m = method === "PUT" ? path.match(/^\/api\/contacts\/([^/]+)$/) : null;
   if (!m) return false;
@@ -240,7 +240,7 @@ export const contactUpdateRoute: Route = async ({ req, res, path, method }) => {
   let gender: ContactGender | undefined;
   if (body.gender !== undefined) {
     if (body.gender !== "female" && body.gender !== "male" && body.gender !== "other") {
-      sendJson(res, 400, { ok: false, error: "性别只能是 female / male / other" });
+      sendJson(res, 400, { ok: false, error: "指代方式只能是 female / male / other" });
       return true;
     }
     gender = body.gender;

@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { config } from "./config.ts";
 import { applyOnebotSettings } from "./qq-onebot.ts";
-import { qq, qqBackend } from "./qq.ts";
+import { qq, qqUsesBackend } from "./qq.ts";
 import { logModelCall } from "./logs.ts";
 
 /** 托管目录：数据目录下的 napcat/（迁移数据目录时会跟着走）。 */
@@ -88,7 +88,7 @@ async function obLoginInfo(): Promise<{ uin: string; nickname: string }> {
 
 /** 综合状态：安装了吗 / 起来了吗 / 登录了吗 / 卡在哪一步。界面 4 秒轮一次。
  *  托管目录之外跑着的 NapCat 也要认：3000 端口有应答就算"已连接"——
- *  用户自己装的那份是合法形态，别逼他再装一份托管的。 */
+ *  用户自己装的那份是合法形态，别逼用户再装一份托管的。 */
 export async function napcatStatus(): Promise<NapcatStatus> {
   const out: NapcatStatus = {
     installed: existsSync(shellFile("napcat.mjs")),
@@ -99,6 +99,14 @@ export async function napcatStatus(): Promise<NapcatStatus> {
   if (viaOb.uin !== "") {
     out.running = true; out.loggedIn = true;
     out.uin = viaOb.uin; out.nickname = viaOb.nickname;
+    // 扫码完成后 HTTP 通道会先恢复，状态探测走这条快路径；仍要把新号落成自动登录。
+    if (readAutoLoginAccount() !== out.uin) {
+      const managedToken = readWebuiToken();
+      if (managedToken !== "") {
+        const managedCredential = await napcatCredential(managedToken);
+        if (managedCredential !== null) await rememberNapcatLogin(out.uin, managedCredential);
+      }
+    }
     return out;
   }
   const token = readWebuiToken();
@@ -116,8 +124,17 @@ export async function napcatStatus(): Promise<NapcatStatus> {
   if (out.loggedIn) {
     const info = await obLoginInfo();
     out.uin = info.uin; out.nickname = info.nickname;
+    // 首次扫码或切换账号后，状态轮询会先于启动请求看到登录成功。
+    await rememberNapcatLogin(info.uin, cred);
   }
   return out;
+}
+
+/** 把当前登录号写成 NapCat 的自动登录账号；否则下次启动又会退回扫码页。 */
+async function rememberNapcatLogin(uin: string, credential: string): Promise<void> {
+  if (uin === "" || readAutoLoginAccount() === uin) return;
+  await webuiApi("/QQLogin/SetQuickLoginQQ", { uin }, credential);
+  persistAutoLoginAccount(uin);
 }
 
 /** 登录 WebUI（token 的 SHA256 + ".napcat" 后缀是它的鉴权约定），失败返回 null。 */
@@ -213,7 +230,7 @@ export async function startNapcat(): Promise<{ ok: boolean; needsQr: boolean; er
           httpBase: `http://127.0.0.1:${NAPCAT_HTTP_PORT}`,
           wsUrl: `ws://127.0.0.1:${NAPCAT_WS_PORT}`,
         });
-        if (qqBackend() === "onebot") { qq.stopAll(); qq.startAll(); }
+        if (qqUsesBackend("onebot")) { qq.stopAll(); qq.startAll(); }
         logModelCall({ purpose: "qq", ok: true, model: "onebot", url: "napcat/start", elapsedMs: Date.now() - started, message: `NapCat 已就绪（${info.uin} ${info.nickname}），收发通道已接回小茉` });
         return { ok: true, needsQr: false, error: "" };
       }
@@ -226,6 +243,54 @@ export async function startNapcat(): Promise<{ ok: boolean; needsQr: boolean; er
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logModelCall({ purpose: "qq", ok: false, code: "NAPCAT_START", model: "onebot", url: "napcat/start", elapsedMs: Date.now() - started, message });
+    return { ok: false, needsQr: false, error: message };
+  }
+}
+
+
+/**
+ * 切换托管 NapCat 当前登录的 QQ。
+ *
+ * NapCat 一个进程只承载一个 QQ，也没有“退出登录”API；可行做法是清掉自动登录账号再
+ * 重启进程，让它回到扫码页。重启会短暂中断所有 OneBot 收发，所以界面必须先确认。
+ * 登录完成后由 napcatStatus 轮询把新号重新写回自动登录。
+ */
+export async function reloginNapcat(): Promise<{ ok: boolean; needsQr: boolean; error: string }> {
+  const started = Date.now();
+  try {
+    if (!existsSync(shellFile("launcher.bat"))) {
+      return { ok: false, needsQr: false, error: "只有小茉托管的 NapCat 能从界面切换 QQ" };
+    }
+    const token = readWebuiToken();
+    if (token === "") return { ok: false, needsQr: false, error: "NapCat WebUI 还没就绪，稍后再试" };
+    const credential = await napcatCredential(token);
+    if (credential === null) return { ok: false, needsQr: false, error: "登录 NapCat WebUI 失败，无法切换 QQ" };
+
+    // 本地记录和 NapCat 的自动登录都要清空，否则重启后会直接登回原账号。
+    persistAutoLoginAccount("");
+    const cleared = await webuiApi("/QQLogin/SetQuickLoginQQ", { uin: "" }, credential);
+    if (cleared === null) return { ok: false, needsQr: false, error: "清除自动登录账号失败，稍后再试" };
+    const restarted = await webuiApi("/QQLogin/RestartNapCat", {}, credential);
+    if (restarted === null) return { ok: false, needsQr: false, error: "重启 NapCat 失败，稍后再试" };
+
+    // WebUI 会随进程重启短暂不可用；持续重登并等新的扫码阶段出现。
+    for (let waited = 0; waited < 120_000; waited += 3000) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const nextToken = readWebuiToken();
+      if (nextToken === "") continue;
+      const nextCredential = await napcatCredential(nextToken);
+      if (nextCredential === null) continue;
+      const status = await webuiApi("/QQLogin/CheckLoginStatus", {}, nextCredential);
+      if (status === null) continue;
+      if (status.loginPhase === "waiting_qrcode" && typeof status.qrcodeurl === "string" && status.qrcodeurl !== "") {
+        logModelCall({ purpose: "qq", ok: true, model: "onebot", url: "napcat/relogin", elapsedMs: Date.now() - started, message: "已清除原登录账号，等待扫码切换 QQ" });
+        return { ok: true, needsQr: true, error: "" };
+      }
+    }
+    return { ok: false, needsQr: false, error: "等待切换二维码超时，稍后再试" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    logModelCall({ purpose: "qq", ok: false, code: "NAPCAT_RELOGIN", model: "onebot", url: "napcat/relogin", elapsedMs: Date.now() - started, message });
     return { ok: false, needsQr: false, error: message };
   }
 }

@@ -103,7 +103,6 @@ export async function maybeRefreshConversationSummary(
     ];
     const raw = await callModelJson<{ recap?: unknown }>(messages, {
       purpose: "recap",
-      maxTokens: 400,
       contactId: conv.contact_id,
       capability: "memoryExtract",
     });
@@ -142,7 +141,6 @@ export async function maybeRefreshRecap(contactId: string, oldestKeptId: number)
     ];
     const raw = await callModelJson<{ recap?: unknown }>(messages, {
       purpose: "recap",
-      maxTokens: 400,
       contactId,
       capability: "memoryExtract",
     });

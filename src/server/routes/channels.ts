@@ -5,9 +5,9 @@
 // /api/contacts/<id>/qq 当成「id=qq/xxx」吞掉回 404。router.ts 里 channels 排在
 // contacts.detailRoutes 之前，正是为这一点（见 router.ts 的分段注释）。
 
-import { qq, applyQQBackend, qqBackend, qqBackendSaved, saveQQBackend } from "../../qq.ts";
+import { qq, applyQQBackend, qqBackend, qqBackendFor, qqBackendSaved, qqBackendSavedFor, qqUsesBackend, saveQQBackend, saveQQBackendForContact } from "../../qq.ts";
 import { upsertOneBotAccount, onebotLoginInfo, onebotSettings, applyOnebotSettings } from "../../qq-onebot.ts";
-import { napcatStatus, installNapcat, startNapcat } from "../../napcat.ts";
+import { napcatStatus, installNapcat, startNapcat, reloginNapcat } from "../../napcat.ts";
 import { config } from "../../config.ts";
 import { wechat } from "../../wechat.ts";
 import { getContact } from "../../contacts.ts";
@@ -15,33 +15,40 @@ import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 
 /** GET/POST /api/qq/backend：QQ 后端选型（official/onebot）。
- *  GET 附带 OneBot 侧配置是否就绪；POST 落库并**当场热切**（旧后端 stopAll、新后端 startAll），
- *  重启从来不需要——restartRequired 只为兼容旧前端字段，恒为 false。 */
-const qqBackendRoute: Route = async ({ res, path, method, req }) => {
+ *  带 contactId 时只修改/读取这位联系人的活动渠道；不带时修改全局默认值。
+ *  两套适配器常驻，切换不需要重启；restartRequired 只为兼容旧前端字段，恒为 false。 */
+const qqBackendRoute: Route = async ({ res, url, path, method, req }) => {
   if (path === "/api/qq/backend" && method === "GET") {
-    const saved = qqBackendSaved();
-    const running = qqBackend();
+    const contactId = url.searchParams.get("contactId") ?? "";
+    const backend = contactId !== "" ? qqBackendFor(contactId) : qqBackend();
+    const saved = contactId !== "" ? qqBackendSavedFor(contactId) : qqBackendSaved();
     sendJson(res, 200, {
       ok: true,
-      backend: running,
+      backend,
       saved,
-      /** 兼容字段：热切换落地后不再有待重启状态。 */
+      contactId: contactId || null,
       restartPending: false,
-      /** OneBot 侧最小可运行条件：HTTP 出站地址已配。WS 入站可缺省（只出不进也能跑）。 */
-      onebotReady: running === "onebot" && config.qq.onebotHttpBase !== "",
+      onebotReady: backend === "onebot" && config.qq.onebotHttpBase !== "",
     });
     return true;
   }
   if (path === "/api/qq/backend" && method === "POST") {
     const body = await readJson<Record<string, unknown>>(req).catch(() => ({}) as Record<string, unknown>);
     const backend = body.backend;
+    const contactId = typeof body.contactId === "string" ? body.contactId.trim() : "";
     if (backend !== "official" && backend !== "onebot") {
       sendJson(res, 400, { ok: false, error: "backend 只能是 official 或 onebot" });
       return true;
     }
-    saveQQBackend(backend);
-    applyQQBackend(backend);
-    sendJson(res, 200, { ok: true, backend, restartRequired: false, applied: true });
+    if (contactId !== "") {
+      saveQQBackendForContact(contactId, backend);
+      qq.startAll();
+      sendJson(res, 200, { ok: true, backend, contactId, restartRequired: false, applied: true });
+    } else {
+      saveQQBackend(backend);
+      applyQQBackend(backend);
+      sendJson(res, 200, { ok: true, backend, restartRequired: false, applied: true });
+    }
     return true;
   }
   return false;
@@ -128,7 +135,7 @@ export const qqContactRoute: Route = async ({ req, res, path, method }) => {
   }
   if (method === "POST" && action === "/onebot-bind" && arg === "") {
     // OneBot 后端专属：把「真实 QQ 号」绑到这位联系人。官方后端下调用是无效安全态。
-    if (qqBackend() !== "onebot") {
+    if (qqBackendFor(contactId) !== "onebot") {
       sendJson(res, 409, { ok: false, error: "OneBot 绑定仅在 QQ_BACKEND=onebot 时可用；当前是官方 Bot 后端" });
       return true;
     }
@@ -141,7 +148,7 @@ export const qqContactRoute: Route = async ({ req, res, path, method }) => {
     const patch: { enabled?: boolean; proactive?: boolean; ownerQq?: string } = {};
     if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
     if (typeof body.proactive === "boolean") patch.proactive = body.proactive;
-    // 主人 QQ 号：群聊里把她从一众群成员里认出来的唯一依据；空串=清除。
+    // 主人 QQ 号：群聊里把联系人从一众群成员里认出来的唯一依据；空串=清除。
     if (typeof body.ownerQq === "string") {
       const ownerQq = body.ownerQq.trim();
       if (ownerQq !== "" && !/^\d{5,15}$/.test(ownerQq)) {
@@ -257,7 +264,7 @@ const qqOneBotSettingsRoute: Route = async ({ res, path, method, req }) => {
     // 令牌传空串 = 清掉；不传 = 保持不变。
     if (typeof body.token === "string") patch.token = body.token;
     const saved = applyOnebotSettings(patch);
-    if (qqBackend() === "onebot") { qq.stopAll(); qq.startAll(); }
+    if (qqUsesBackend("onebot")) { qq.stopAll(); qq.startAll(); }
     sendJson(res, 200, { ok: true, httpBase: saved.httpBase, wsUrl: saved.wsUrl, hasToken: saved.token !== "", applied: true });
     return true;
   }
@@ -266,7 +273,8 @@ const qqOneBotSettingsRoute: Route = async ({ res, path, method, req }) => {
 
 /** /api/qq/napcat：小茉托管的 NapCat（本机一键安装/启动/登录）。
  *  GET status：安装/运行/登录状态 + 二维码链接（界面 4s 轮询）。
- *  POST install：下载解压（较慢，请求同步等待）。POST start：拉起+配置+等登录（最长约 3 分钟）。 */
+ *  POST install：下载解压（较慢，请求同步等待）。POST start：拉起+配置+等登录（最长约 3 分钟）。
+ *  POST relogin：清掉自动登录并重启 NapCat，回到扫码页切换另一个 QQ。 */
 const qqNapcatRoute: Route = async ({ res, path, method, req }) => {
   if (path !== "/api/qq/napcat") return false;
   if (method === "GET") {
@@ -278,7 +286,8 @@ const qqNapcatRoute: Route = async ({ res, path, method, req }) => {
     const action = typeof body.action === "string" ? body.action : "";
     if (action === "install") sendJson(res, 200, await installNapcat().then((r) => ({ ok: r.ok, error: r.error })));
     else if (action === "start") sendJson(res, 200, await startNapcat().then((r) => ({ ok: r.ok, error: r.error, needsQr: r.needsQr })));
-    else sendJson(res, 400, { ok: false, error: "action 只能是 install 或 start" });
+    else if (action === "relogin") sendJson(res, 200, await reloginNapcat().then((r) => ({ ok: r.ok, error: r.error, needsQr: r.needsQr })));
+    else sendJson(res, 400, { ok: false, error: "action 只能是 install、start 或 relogin" });
     return true;
   }
   return false;

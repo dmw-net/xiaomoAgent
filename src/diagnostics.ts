@@ -8,6 +8,7 @@ import { resolve } from "node:path";
 import { config } from "./config.ts";
 import { db } from "./db.ts";
 import { scanOrphanMedia } from "./media.ts";
+import { outboundSummary } from "./outbound.ts";
 
 export type DiagnosticLevel = "ok" | "warn" | "bad";
 
@@ -18,7 +19,7 @@ export type DiagnosticCheck = {
   summary: string;
   detail?: string;
   /** 给界面决定下一步跳到哪里，不在后端拼 UI 文案。 */
-  action?: "backup" | "storage" | "activity" | "settings" | "media";
+  action?: "backup" | "storage" | "activity" | "settings" | "media" | "outbound";
 };
 
 export type UserDiagnostics = {
@@ -84,6 +85,25 @@ export function runUserDiagnostics(): UserDiagnostics {
     level: orphanTasks === 0 ? "ok" : "warn",
     summary: orphanTasks === 0 ? "没有孤立计划" : `${orphanTasks} 条计划指向已删除的联系人`,
     detail: orphanTasks === 0 ? undefined : "这些计划不会执行，可安全忽略；后续清理会回收。",
+  });
+
+  const outbound = outboundSummary();
+  const outboundReason = outbound.dead > 0
+    ? `${outbound.dead} 条消息进入死信队列，没有送达`
+    : outbound.open > 0
+      ? `${outbound.open} 条消息仍在投递或等待重试`
+      : "投递队列没有积压";
+  checks.push({
+    id: "outbound",
+    label: "消息投递",
+    level: outbound.dead > 0 ? "bad" : outbound.open > 0 ? "warn" : "ok",
+    summary: outboundReason,
+    detail: outbound.dead > 0
+      ? "打开「活动记录 → 投递队列」查看失败原因；可以先重试，确认不会再发就忽略。"
+      : outbound.open > 0
+        ? "系统会自动重试；如果长时间没有进展，打开「活动记录 → 投递队列」查看。"
+        : undefined,
+    action: outbound.dead > 0 || outbound.open > 0 ? "outbound" : undefined,
   });
 
   try {

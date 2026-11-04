@@ -145,12 +145,14 @@ function registerMedia(id: string, ext: string, kind: AssetKind, mime: string, b
 }
 
 /** 存一张图，返回可直接回给前端的 /media URL。mime 不在白名单时抛错。
- *  dir 给「表情包/<文件夹>」就落进表情目录（导入/打标链路），默认落 图片/。 */
-export function saveImage(buffer: Buffer, mime: string, dir?: string): { url: string; id: string } {
+ *  dir 给「表情包/<文件夹>」就落进表情目录（导入/打标链路），默认落 图片/。
+ *  maxBytes 默认是全局那道 5MB 闸；只有「用户主动导入本地文件夹」这条会传更高的值——
+ *  同一份字节还要去内联喂视觉模型、随聊天入站自动抓取，那些路径不该跟着一起放宽。 */
+export function saveImage(buffer: Buffer, mime: string, dir?: string, maxBytes = MAX_IMAGE_BYTES): { url: string; id: string } {
   const ext = IMAGE_EXT[mime];
   if (!ext) throw new Error("图片格式不支持（仅 png / jpg / webp / gif）");
-  if (buffer.length === 0 || buffer.length > MAX_IMAGE_BYTES) {
-    throw new Error(`图片大小需在 ${MAX_IMAGE_BYTES / (1024 * 1024)}MB 以内`);
+  if (buffer.length === 0 || buffer.length > maxBytes) {
+    throw new Error(`图片大小需在 ${Math.round(maxBytes / (1024 * 1024))}MB 以内`);
   }
   const id = randomBytes(8).toString("hex");
   const relDir = dir ?? KIND_DIR.image;
@@ -620,6 +622,7 @@ export function reconcileAssets(): {
   const rows = db.prepare(
     "SELECT id, url, kind, hash, rel_path, usable_as_emote, emote_pack, missing FROM assets",
   ).all() as Array<{ id: string; url: string; kind: string; hash: string; rel_path: string; usable_as_emote: number; emote_pack: string; missing: number }>;
+  const inTrash = db.prepare("SELECT 1 AS hit FROM media_trash WHERE name = ?");
   const rowByName = new Map(rows.map((r) => [nameOfUrl(r.url), r]));
   const knownHashes = new Set(rows.map((r) => r.hash).filter((h) => h !== ""));
   // 同名多份（用户拷贝/撞名）：第一份按身份认领，其余计入重复，绝不互相打架。
@@ -725,6 +728,15 @@ export function reconcileAssets(): {
       continue;
     }
     if (Number(row.usable_as_emote) === 1) {
+      if (Number(row.missing) !== 1) {
+        db.prepare("UPDATE assets SET missing = 1 WHERE id = ?").run(row.id);
+        markedMissing += 1;
+      }
+      continue;
+    }
+    // 普通资产进了回收站时不能销账：恢复必须复活原身份，不能指望按哈希重新认领
+    // （同内容不同文件很常见，重新认领会被去重挡掉，/media 地址就失效了）。
+    if (inTrash.get(nameOfUrl(row.url)) !== undefined) {
       if (Number(row.missing) !== 1) {
         db.prepare("UPDATE assets SET missing = 1 WHERE id = ?").run(row.id);
         markedMissing += 1;
@@ -979,6 +991,7 @@ export function trashMediaFiles(names: string[]): MediaMutationResult {
     }
     const found = resolveMediaFile(item.url);
     const from = found?.file ?? "";
+    const originalRelPath = found?.relPath ?? name;
     const to = trashPath(name);
     if (from === "" || !existsSync(from) || existsSync(to)) {
       skipped += 1;
@@ -986,8 +999,8 @@ export function trashMediaFiles(names: string[]): MediaMutationResult {
     }
     try {
       db.prepare(
-        "INSERT INTO media_trash (name, url, size, original_mtime, trashed_at) VALUES (?, ?, ?, ?, ?)",
-      ).run(name, item.url, item.size, item.modifiedAt, trashedAt);
+        "INSERT INTO media_trash (name, url, size, original_mtime, trashed_at, original_rel_path) VALUES (?, ?, ?, ?, ?, ?)",
+      ).run(name, item.url, item.size, item.modifiedAt, trashedAt, originalRelPath);
       try {
         renameSync(from, to);
       } catch (error) {
@@ -1009,22 +1022,26 @@ export function restoreMediaFiles(names: string[]): MediaMutationResult {
   let skipped = 0;
   let bytes = 0;
   for (const name of wanted) {
-    const trashed = db.prepare("SELECT size FROM media_trash WHERE name = ?").get(name) as { size: number } | undefined;
+    const trashed = db.prepare("SELECT size, original_rel_path FROM media_trash WHERE name = ?")
+      .get(name) as { size: number; original_rel_path: string } | undefined;
     if (!trashed) {
       skipped += 1;
       continue;
     }
     const from = trashPath(name);
-    // 回到库记得的位置（表情回收站场景行不会被销，rel_path 还在）；没有行就回平铺，对账会再归位。
+    // 原始相对路径必须在移入回收站时留档：快照对账会清掉“盘上暂时没有”的普通资产行，
+    // 恢复时再靠 assets 表就会丢目录，只能回到根目录并失去 /media 身份。
     const assetRow = db.prepare("SELECT rel_path FROM assets WHERE url = ?").get(`/media/${name}`) as { rel_path: string } | undefined;
-    const to = (assetRow !== undefined && assetRow.rel_path !== "" ? nativePath(assetRow.rel_path) : "") || join(MEDIA_DIR, name);
-    if (!existsSync(from) || existsSync(to)) {
+    const originalRelPath = trashed.original_rel_path !== "" ? trashed.original_rel_path : assetRow?.rel_path ?? "";
+    const to = originalRelPath !== "" ? nativePath(originalRelPath) : join(MEDIA_DIR, name);
+    if (to === "" || !existsSync(from) || existsSync(to)) {
       skipped += 1;
       continue;
     }
     try {
-      if (assetRow !== undefined && assetRow.rel_path.includes("/")) ensureDir(assetRow.rel_path.slice(0, assetRow.rel_path.lastIndexOf("/")));
+      if (originalRelPath.includes("/")) ensureDir(originalRelPath.slice(0, originalRelPath.lastIndexOf("/")));
       renameSync(from, to);
+      db.prepare("UPDATE assets SET rel_path = ?, missing = 0 WHERE url = ?").run(originalRelPath || name, `/media/${name}`);
       db.prepare("DELETE FROM media_trash WHERE name = ?").run(name);
       changed += 1;
       bytes += trashed.size;
@@ -1049,6 +1066,7 @@ export function purgeMediaFiles(names: string[]): MediaMutationResult {
     }
     try {
       rmSync(trashPath(name), { force: true });
+      db.prepare("DELETE FROM assets WHERE url = ? AND usable_as_emote = 0").run(`/media/${name}`);
       db.prepare("DELETE FROM media_trash WHERE name = ?").run(name);
       changed += 1;
       bytes += row.size;

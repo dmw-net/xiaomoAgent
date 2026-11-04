@@ -160,6 +160,10 @@ export function logModelCall(row: {
   resRaw?: string | null;
   /** 发给模型的请求体：仅 DEV_MODE 下序列化落盘。 */
   requestBody?: unknown;
+  /** 这一轮声明给模型的工具名（空数组 = 一个都没声明，落空串而不是 NULL，两者要能区分）。 */
+  toolsDeclared?: string[];
+  /** 模型这一轮实际调用的工具名（没调就空数组）。 */
+  toolsCalled?: string[];
   promptTokens?: number | null;
   completionTokens?: number | null;
   totalTokens?: number | null;
@@ -168,7 +172,7 @@ export function logModelCall(row: {
   /** 调用方主动取消（barge-in / 跨进程取消 / 到点放弃）——不是故障，不落失败行。 */
   cancelled?: boolean;
 }): void {
-  // 取消不该记成失败：用户在她说话时插一句就会触发一次，落成 ok=0 会让
+  // 取消不该记成失败：用户在联系人说话时插一句就会触发一次，落成 ok=0 会让
   // 状态页红点与「累计失败」虚高——"失败必须可见"这条纪律反过来被噪声淹了。
   // 想看"刚才为什么停了"有处理单那边的记录，不缺这一行。
   if (row.cancelled === true) return;
@@ -183,8 +187,8 @@ export function logModelCall(row: {
         : (row.resFull == null ? null : capFullText(redactSecrets(row.resFull))))
     : null;
   db.prepare(
-    `INSERT INTO model_calls (turn_id, purpose, ok, code, status, model, url, elapsed_ms, message, detail, created_at, prompt_tokens, completion_tokens, total_tokens, contact_id, profile_id, req_full, res_full)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO model_calls (turn_id, purpose, ok, code, status, model, url, elapsed_ms, message, detail, created_at, prompt_tokens, completion_tokens, total_tokens, contact_id, profile_id, req_full, res_full, tools_declared, tools_called)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     row.turnId ?? null,
     row.purpose,
@@ -204,6 +208,8 @@ export function logModelCall(row: {
     row.profileId ?? null,
     reqFull,
     resFull,
+    row.toolsDeclared === undefined ? null : row.toolsDeclared.join(","),
+    row.toolsCalled === undefined ? null : row.toolsCalled.join(","),
   );
   if (reqFull !== null || resFull !== null) trimModelCallBodies();
 }
@@ -293,6 +299,7 @@ const SUMMARY_COLUMNS = `id, turn_id, purpose, ok, code, status, model, url, ela
 export type CallFilter = {
   onlyFailed?: boolean;
   purpose?: string;
+  purposes?: string[];
   turnId?: string;
   modelOnly?: boolean;
   channelOnly?: boolean;
@@ -303,6 +310,10 @@ function filterClause(filter: CallFilter): { where: string; args: Array<string |
   const args: Array<string | number> = [];
   if (filter.onlyFailed) parts.push("ok = 0");
   if (filter.purpose) { parts.push("purpose = ?"); args.push(filter.purpose); }
+  if (filter.purposes?.length) {
+    parts.push(`purpose IN (${filter.purposes.map(() => "?").join(",")})`);
+    args.push(...filter.purposes);
+  }
   if (filter.turnId) { parts.push("turn_id = ?"); args.push(filter.turnId); }
   // 参数要紧跟占位符的顺序推：上面几项先推，这里后推，和 SQL 里出现的次序一致。
   if (filter.modelOnly || filter.channelOnly) {
@@ -419,7 +430,7 @@ export function listInflightCalls(): Array<InflightCall & { elapsedMs: number; t
  * 「重新计数」的水印：早于它的调用不再计入任何失败读数。
  *
  * 状态页的红点数的是累计失败（实测 957 次），修好之后它照样挂着——用户去看了一眼，
- * 但没有任何地方告诉他"这条已经翻篇了"。这个水印就是那一下：只挪读数起点，
+ * 但没有任何地方告诉用户"这条已经翻篇了"。这个水印就是那一下：只挪读数起点，
  * model_calls 里的记录一条都不删，调用记录页照旧能翻到全部历史。
  */
 const KV_FAILURE_WATERMARK = "status.failureWatermark";
@@ -463,6 +474,11 @@ ensureColumn("model_calls", "contact_id", "contact_id TEXT");
 ensureColumn("model_calls", "profile_id", "profile_id TEXT");
 ensureColumn("model_calls", "req_full", "req_full TEXT");
 ensureColumn("model_calls", "res_full", "res_full TEXT");
+// 这一轮向模型声明了哪些工具、模型实际调了哪些（逗号分隔的名字）。
+// req_full 只在 DEV_MODE 落盘且只留最近几十条，所以「工具声明了却没人调用」这种问题
+// 过去只能靠肉眼复现；这两列常驻、便宜，一条 SQL 就能出率。
+ensureColumn("model_calls", "tools_declared", "tools_declared TEXT");
+ensureColumn("model_calls", "tools_called", "tools_called TEXT");
 
 // 写入口已经按 DEV_MODE 关门；这里再迁移旧版本留下的数据：
 //   开发模式只留最近 FULL_TEXT_WINDOW 次原文，普通模式一条原文都不留。

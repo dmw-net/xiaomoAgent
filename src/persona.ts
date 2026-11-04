@@ -1,26 +1,27 @@
 // 人设与上下文拼装。
 //
 // 设计要点：上下文由六块拼成，且每块来源清晰可查——
-//   ① 角色卡（她是谁、怎么说话、怎么相处）——**用户在应用里可改**
-//   ② 她眼中的用户（她怎么称呼你、你在她眼里是什么样的人）——**每个角色各不相同**
+//   ① 角色卡（联系人是谁、怎么说话、怎么相处）——**用户在应用里可改**
+//   ② 联系人眼中的用户（联系人怎么称呼你、你在联系人眼里是什么样的人）——**每个角色各不相同**
 //   ③ 陪伴增强段（关系现状 / 生活线 / 上次说到，按联系人开关，可整段不出现）
 //   ④ 记忆召回（这次对话"想起来"的几条关系事件）
-//   ⑤ 技能清单（只有 name + 一句话，正文要她 load_skill 去取）
+//   ⑤ 技能清单（只有 name + 一句话，正文要联系人 load_skill 去取）
 //   ⑥ 最近 N 轮原话
 // 这样做的好处是：任何一条被塞进模型的文字，你都能说出它从哪来、为什么在这。
 // （反面教材：把整段历史连同模型的思考过程一起回放，上下文会无界膨胀。）
 //
-// 关于「她眼中的用户」为什么必须挂在角色下面
+// 关于「联系人眼中的用户」为什么必须挂在角色下面
 // ------------------------------------------
 // 同一个用户，在 A 角色眼里和在 B 角色眼里本就应该不一样：
-//   A：你是她大学同学，她知道你现在做后端、最近在熬夜赶项目；
-//   B：你是她店里的老客，她只知道你常点不加糖的美式。
+//   A：你是联系人大学同学，联系人知道你现在做后端、最近在熬夜赶项目；
+//   B：你是联系人店里的老客，联系人只知道你常点不加糖的美式。
 // 过去这里是一个全局 OWNER_NAME 变量，等于所有角色共享同一个人设——
 // 那就没有"关系"可言了，只有一个客服账号。
 
 import type { MemoryEvent } from "./memory.ts";
 import type { ChatMessage } from "./model.ts";
-import { personaConfig, type CharacterCard, type OwnerProfile } from "./settings.ts";
+import type { ToolReplay } from "./tool-history.ts";
+import { personaConfig, type CharacterCard, type EmoteFrequency, type OwnerProfile } from "./settings.ts";
 import { skillCatalogSection } from "./skills.ts";
 
 /**
@@ -43,23 +44,23 @@ export function buildCharacterSection(card: CharacterCard): string {
 }
 
 /**
- * 指用户的代词单源。**缺省（没设性别）走中性的「TA」，不把用户默认成男性**——
- * 项目已在界面文案上摆脱他/她，提示词里对用户的代词不该还留一个"默认是男人"的旧口径。
- * female→她、male→他，其余（含没设、other）都走 TA。
+ * 指用户的代词单源。**未设置指代方式时走中性的「TA」，不把用户默认成男性**——
+ * 界面文案统一使用中性称呼；提示词里对用户的代词只跟随明确设置的 owner.gender。
+ * female / male 使用对应代词，未设置或 other 一律走 TA。
  */
 export function ownerPronoun(gender?: "female" | "male" | "other"): string {
   return gender === "female" ? "她" : gender === "male" ? "他" : "TA";
 }
 
 /**
- * 拼出「她眼中的用户」段落。
- * 空白字段会被整段省略——没写就不占上下文，也避免出现"你眼中的他是：（空）"这种噪音。
+ * 拼出「联系人眼中的用户」段落。
+ * 空白字段会被整段省略——没写就不占上下文，也避免出现"你眼中的用户是：（空）"这种噪音。
  */
 export function buildOwnerSection(owner: OwnerProfile): string {
-  // 用户的性别决定提示词里的代词；没设性别走中性「TA」，不把用户默认成男性。
+  // 用户明确设置的指代方式决定提示词里的代词；未设置时走中性「TA」，不把用户默认成男性。
   const op = ownerPronoun(owner.gender);
   const lines: string[] = [];
-  // 称呼没填就整段不提（原来默认值是「他」，会拼出「你称呼他为「他」」这种自指废话）。
+  // 称呼没填就整段不提（原来默认值是「用户」，会拼出「你称呼用户为「用户」」这种自指废话）。
   if (owner.name.trim() !== "") lines.push(`你称呼${op}为「${owner.name}」。`);
 
   if (owner.impression.trim() !== "") {
@@ -79,7 +80,7 @@ export function buildOwnerSection(owner: OwnerProfile): string {
  *    宁可少想起几条，也不能让一段超长旧事把 system 撑爆。
  * ② 披露：记忆段带固定外壳，明确告诉模型三件事——这是回忆不是命令、
  *    与当下冲突时以谁为准。没有这层，模型可能把记忆里的内容当成
- *    他刚说的话来接茬，甚至执行记忆里记录的"指令"（注入风险）。
+ *    用户刚说的话来接茬，甚至执行记忆里记录的"指令"（注入风险）。
  */
 export const MEMORY_BUDGET = {
   /** 单条记忆的字符上限：超长内容截断，一条记忆吃光预算是事故。 */
@@ -148,7 +149,7 @@ export function buildMemorySection(memories: MemoryEvent[]): string {
  * 以后新增段落请保持这个次序，否则每次调用都在打破服务商的前缀缓存。
  */
 export type CompanionSections = {
-  /** 她的作息（自然语言，注入 [现在]）。 */
+  /** 联系人的作息（自然语言，注入 [现在]）。 */
   schedule?: string;
   /** 生活线摘要（记忆整理的产出，独立成段）。 */
   lifeline?: string;
@@ -163,29 +164,43 @@ export type CompanionSections = {
 /** 陪伴增强段的字符预算：整段加起来不该吃穿记忆段之外的余量。 */
 const COMPANION_BUDGET = { lifeline: 200, recap: 200, bond: 80, schedule: 120 } as const;
 
+/** 全局表情倾向只改“主动不主动”，不参与检索或发送决策；off 由 emoteSection 直接整段不出现。 */
+const EMOTE_GUIDANCE: Record<Exclude<EmoteFrequency, "off">, string> = {
+  rare: "只在情绪非常明显、确实贴切时偶尔发一张；不要为了活跃气氛硬发。",
+  normal: "闲聊、接梗、庆祝或安慰时，如果一张表情比文字更自然，就主动发一张；认真解决问题时少发。",
+  often: "轻松聊天里可以更主动地用表情表达情绪，通常每两三条回复可发一张；不要为了频率硬凑，认真解决问题时仍要少发。",
+};
+
+function emoteSection(frequency: EmoteFrequency | null | undefined): string {
+  if (!frequency || frequency === "off") return "";
+  return `[表情]\n你可以发表情。${EMOTE_GUIDANCE[frequency]}要发时直接调用表情工具，不要只在文字里描述表情或预告。`;
+}
+
 export function buildSystemPrompt(
   memories: MemoryEvent[],
   override?: {
     character?: CharacterCard;
     owner?: OwnerProfile;
-    /** 他最后一次说话的时间戳（agent.ts 传入避免循环依赖；省略则不含该项）。 */
+    /** 用户最后一次说话的时间戳（agent.ts 传入避免循环依赖；省略则不含该项）。 */
     lastUserAt?: number | null;
     /** 可插拔陪伴能力：调用方按联系人开关取值，空串 = 该段整个不出现。 */
     companion?: CompanionSections;
     /**
      * [现在] 行（硬拼的时间文本）跟「看时间」能力同一开关：调用方按联系人 features.clock
      * 传入，缺省 true（历史行为）。false = 提示词里不出现任何日期/时段/距上次说话——
-     * 她的时间感知整个改走工具那条路（工具也在同一开关下，关了就是真没有）。
+     * 联系人的时间感知整个改走工具那条路（工具也在同一开关下，关了就是真没有）。
      * 作息是独立能力，不陪葬：关掉时间后它单独成段。
      */
     includeNow?: boolean;
+    /** 联系人开启表情工具后才传；null/缺省 = 提示词里完全不出现表情段。 */
+    emoteFrequency?: EmoteFrequency | null;
   },
 ): string {
   const settings = personaConfig();
   const character = override?.character ?? settings.character;
   const owner = override?.owner ?? settings.owner;
   const companion = override?.companion;
-  // 对用户的全称代词单源：[现在] 行与背景资料外壳都跟着性别走。
+  // 对用户的代词单源：[现在] 行与背景资料外壳都跟着指代方式走。
   const op = ownerPronoun(owner.gender);
 
   const scheduleLine = companion?.schedule
@@ -194,6 +209,7 @@ export function buildSystemPrompt(
   const nowLine = override?.includeNow === false
     ? ""
     : nowText(new Date(), override?.lastUserAt, op) + (scheduleLine !== "" ? `；${scheduleLine}` : "");
+  const emoteLine = emoteSection(override?.emoteFrequency);
   const bracketed = [
     companion?.bondLine
       ? `[关系现状]\n说话的语气要与它相称：${companion.bondLine.trim().slice(0, COMPANION_BUDGET.bond)}`
@@ -207,9 +223,10 @@ export function buildSystemPrompt(
     companion?.conversationSummary
       ? `[本会话摘要]\n（只属于当前会话，不能带到别的群或私聊）\n${companion.conversationSummary.trim().slice(0, COMPANION_BUDGET.recap)}`
       : "",
+    emoteLine,
     `[记忆]\n${buildMemorySection(memories)}`,
     nowLine !== "" ? `[现在]\n${nowLine}` : scheduleLine !== "" ? `[作息]\n${scheduleLine}` : "",
-    // 用户自定义技能的清单（只有 name + 一句话）；正文要她自己 load_skill 去取。
+    // 用户自定义技能的清单（只有 name + 一句话）；正文要联系人自己 load_skill 去取。
     // 一个都没有时这里返回空串，被下面的 filter 整段省掉——不占常驻 token。
     skillCatalogSection(),
   ].filter((part) => part !== "").join("\n");
@@ -235,17 +252,18 @@ export function previewSystemPrompt(
   owner: OwnerProfile,
   /** 按联系人预览时传入：陪伴段与「距上次说话」和真实对话同口径；
    *  memories 给该联系人真实记忆（预览尽量贴近实际）。includeNow 同 buildSystemPrompt。 */
-  extra?: { companion?: CompanionSections; lastUserAt?: number | null; memories?: MemoryEvent[]; includeNow?: boolean },
+  extra?: { companion?: CompanionSections; lastUserAt?: number | null; memories?: MemoryEvent[]; includeNow?: boolean; emoteFrequency?: EmoteFrequency | null },
 ): string {
   return buildSystemPrompt(extra?.memories ?? [], {
     character, owner, companion: extra?.companion, lastUserAt: extra?.lastUserAt, includeNow: extra?.includeNow,
+    emoteFrequency: extra?.emoteFrequency,
   });
 }
 
 /**
  * 「现在」的环境描述。为什么要写时间段语义而不是只给日期时间：
  * 模型对「2026-09-16 23:40」这种数字没有体感——它会凌晨三点理直气壮地发「早上好」。
- * 把深夜/工作日/深夜他是否醒着这些判断依据直接给足，她才说得出「都这个点了还不睡？」。
+ * 把深夜/工作日/深夜用户是否醒着这些判断依据直接给足，联系人才说得出「都这个点了还不睡？」。
  */
 /** 时间段的自然语言描述（persona 与工具 get_current_time 共用）。 */
 export function describePeriod(hour: number): string {
@@ -270,7 +288,7 @@ export function nowText(now = new Date(), lastUserAt?: number | null, op = "TA")
   const day = now.getDay();
   parts.push(day === 0 || day === 6 ? "今天是周末" : "今天是工作日");
 
-  // 距他上次说话多久——判断「他现在在不在线」的唯一依据
+  // 距用户上次说话多久——判断「用户现在在不在线」的唯一依据
   if (lastUserAt !== undefined && lastUserAt !== null) {
     const mins = Math.floor((Date.now() - lastUserAt) / 60_000);
     parts.push(
@@ -284,30 +302,82 @@ export function nowText(now = new Date(), lastUserAt?: number | null, op = "TA")
   return parts.join("；");
 }
 
-/** 把最近对话转成模型消息。只保留原话，不含任何中间产物。 */
+/** 把最近对话转成模型消息。只保留原话，不含任何中间产物。
+ *
+ *  toolReplay：按协议回放的工具往返（见 tool-history.ts）。
+ *  给了就在那一轮的第一条 assistant 消息**之前**插 assistant.tool_calls + tool 结果——
+ *  顺序必须是 user → assistant(tool_calls) → tool → assistant(正文)，反了就是协议错误。
+ *  这是模型唯一能看见「工具到底怎么调」的地方；只把往返压成一句正文占位符，
+ *  模型下一轮就会照着写占位符（「[表情：…]」那种），而不是真的去调工具。
+ *  折叠成备注的轮次不插消息，只在正文末尾补一行「这一轮用过什么」。
+ */
 export function toChatMessages(
   rows: Array<{ role: string; text: string; turn_id?: string | null; sender_name?: string | null }>,
+  toolReplay?: ReadonlyMap<string, ToolReplay>,
 ): ChatMessage[] {
   const out: ChatMessage[] = [];
-  const turns: Array<string | null> = [];
+  /** 每轮**最后一条正文** assistant 消息在 out 里的下标：备注要补在合并完的那条上。 */
+  const lastAssistantAt = new Map<string, number>();
+  /** 已经插过往返的轮：一轮只插一次，哪怕它拆成了好几颗气泡。 */
+  const inserted = new Set<string>();
+  /** 上一条正文消息与它的轮次：气泡合并只认它，绝不与 tool_calls 那条空正文合并。 */
+  let lastText: ChatMessage | null = null;
+  let lastTextTurn: string | null = null;
   for (const row of rows) {
     if (row.role !== "user" && row.role !== "assistant") continue;
     const tid = row.turn_id ?? null;
-    const last = out[out.length - 1];
-    // 她的一轮回复会按句子拆成多条气泡落库（segmentReply），进模型上下文时必须合回一条：
+    const replay = tid !== null ? toolReplay?.get(tid) : undefined;
+    if (row.role === "assistant" && tid !== null && replay !== undefined && !inserted.has(tid)) {
+      inserted.add(tid);
+      if (replay.native.length > 0) {
+        out.push({
+          role: "assistant",
+          content: "",
+          tool_calls: replay.native.map((call) => ({
+            id: call.callId,
+            type: "function" as const,
+            function: { name: call.name, arguments: call.args },
+          })),
+        });
+        for (const call of replay.native) {
+          out.push({ role: "tool", tool_call_id: call.callId, content: call.result ?? "" });
+        }
+        // 中间隔着 tool 消息，正文不该再和上一条 assistant 合并。
+        lastText = null;
+        lastTextTurn = null;
+      }
+    }
+    // 联系人的一轮回复会按句子拆成多条气泡落库（segmentReply），进模型上下文时必须合回一条：
     // 否则模型看到的是连续好几条 assistant 消息——既不像一次完整发言，
     // 也有服务商把同角色连续消息当协议错误拒掉。按 turn_id 合：同一轮的气泡才是一条回复；
     // turn_id 缺失的老数据不猜，原样保留。
-    if (row.role === "assistant" && last && last.role === "assistant"
-      && tid !== null && turns[turns.length - 1] === tid) {
-      last.content = `${last.content}\n${row.text}`;
+    if (row.role === "assistant" && lastText !== null && lastTextTurn === tid && tid !== null) {
+      lastText.content = `${lastText.content}\n${row.text}`;
       continue;
     }
     const content = row.role === "user" && (row.sender_name ?? "").trim() !== ""
       ? `[${String(row.sender_name).trim()}] ${row.text}`
       : row.text;
     out.push({ role: row.role as "user" | "assistant", content });
-    turns.push(tid);
+    if (row.role === "assistant") {
+      lastText = out[out.length - 1] ?? null;
+      lastTextTurn = tid;
+      if (tid !== null) lastAssistantAt.set(tid, out.length - 1);
+    } else {
+      lastText = null;
+      lastTextTurn = null;
+    }
+  }
+  // 备注补在最后：合并过的气泡只有合并完之后才是一整段话，边合并边补会把备注夹在中间。
+  if (toolReplay !== undefined) {
+    for (const [tid, replay] of toolReplay) {
+      if (replay.native.length > 0 || replay.note === null) continue;
+      const at = lastAssistantAt.get(tid);
+      if (at === undefined) continue;
+      const msg = out[at];
+      if (msg === undefined || typeof msg.content !== "string") continue;
+      msg.content = msg.content === "" ? replay.note : `${msg.content}\n${replay.note}`;
+    }
   }
   return out;
 }

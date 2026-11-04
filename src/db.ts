@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS turns (
 );
 
 -- 关系事件：这套记忆只存"状态与承诺"，不存原始聊天记录。
--- content 是一句话事实，例如「他答应周日一起吃饭」「他偏好咸口」。
+-- content 是一句话事实，例如「用户答应周日一起吃饭」「用户偏好咸口」。
 CREATE TABLE IF NOT EXISTS memory_events (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
   kind         TEXT    NOT NULL,            -- promise | preference | fact | mood | plan
@@ -154,7 +154,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_created ON messages (created_at);
 CREATE INDEX IF NOT EXISTS idx_memory_created   ON memory_events (created_at);
 
 -- 主动性任务：借鉴参考项目——判断一次，带着具体观察落成一条定时任务，
--- 到点执行、执行留痕。用户能在状态页看到「她接下来想做什么、为什么」。
+-- 到点执行、执行留痕。用户能在状态页看到「联系人接下来想做什么、为什么」。
 CREATE TABLE IF NOT EXISTS proactive_tasks (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
   focus          TEXT    NOT NULL DEFAULT '',  -- 下次检查时想关注的点（模型生成的观察）
@@ -230,7 +230,8 @@ CREATE TABLE IF NOT EXISTS media_trash (
   url           TEXT    NOT NULL,
   size          INTEGER NOT NULL,
   original_mtime INTEGER NOT NULL,
-  trashed_at    INTEGER NOT NULL
+  trashed_at    INTEGER NOT NULL,
+  original_rel_path TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_media_trash_time ON media_trash (trashed_at);
 
@@ -244,6 +245,36 @@ CREATE TABLE IF NOT EXISTS image_descriptions (
   created_at     INTEGER NOT NULL,
   PRIMARY KEY (asset_hash, vision_scope, prompt_version)
 );
+
+
+-- ── 服务端持久出盒箱：T1 投递不丢（2026-11-04）───────────────────
+CREATE TABLE IF NOT EXISTS outbound_deliveries (
+  id            TEXT PRIMARY KEY,
+  contact_id    TEXT NOT NULL,
+  conversation_id TEXT NOT NULL,       -- NULL = global/local 会话，群则带真实 group id
+  channel       TEXT NOT NULL,         -- qq | wechat | web
+  text          TEXT NOT NULL,
+  segments      TEXT,                  -- JSON array，保留原本的气泡分条
+  attachments   TEXT,                  -- JSON array of /media URLs
+  attachment_meta TEXT,                -- JSON metadata for attachments
+  kind          TEXT NOT NULL DEFAULT 'chat', -- chat | proactive
+  status        TEXT NOT NULL DEFAULT 'pending', -- pending | in_flight | delivered | failed | dead_letter | expired | ignored
+  attempts      INTEGER NOT NULL DEFAULT 0,
+  max_attempts  INTEGER NOT NULL DEFAULT 6,
+  tier          TEXT NOT NULL DEFAULT 'interactive', -- interactive | proactive | background | best-effort
+  freshness_at  INTEGER,               -- deliveryExpiry(createdAt, tier)
+  source_message_id TEXT,              -- 平台消息 id：QQ 被动回复窗口/群里引用
+  last_error    TEXT,
+  created_at    INTEGER NOT NULL,
+  scheduled_at  INTEGER,               -- next send time (for backoff)
+  delivered_at  INTEGER,
+  failed_at     INTEGER,
+  ignored_at    INTEGER,
+  reason        TEXT                   -- human-readable failure reason
+);
+CREATE INDEX IF NOT EXISTS idx_outbound_pending ON outbound_deliveries(status, scheduled_at) WHERE status IN ('pending', 'failed');
+CREATE INDEX IF NOT EXISTS idx_outbound_contact ON outbound_deliveries(contact_id, created_at DESC);
+-- 过期自动丢弃：超过 freshness_at 且 attempts >= max_attempts 的标记 expired
 `);
 
 export function kvGet(key: string): string | null {
@@ -280,6 +311,26 @@ ensureColumn("messages", "reasoning", "reasoning TEXT");
 // 不进上下文回放，且每联系人只保留最近若干轮（滚出即 NULL，见 agent.ts trimToolDetailWindow）。
 ensureColumn("messages", "tool_detail", "tool_detail TEXT");
 
+// ── 工具往返的结构化存档（2026-11-03）────────────────────────
+// 从前一张工具卡只有给人看的 {tool, ok, summary}，历史回放时整个往返被压成一句正文
+// 占位符（「喏，发了。」+「[图片：这是你自己发出的图…]」）。模型在上下文里从来没见过
+// 真正的 tool_call，学到的模式就成了「发表情 = 写一句方括号占位符」——那次
+// 「让它发表情，它回了一段 [表情：…] 文字」就是照着历史抄的。
+// 这四列让 assistant.tool_calls + tool 结果能按协议原样回放（见 src/tool-history.ts）。
+// 载荷（args/result）按轮滚动清理，只留最近 TOOL_STORE_TURNS 轮；call_id 与 name 永久保留，
+// 清掉载荷的轮次仍能靠名字拼出「这一轮用过什么」的一行备注。
+ensureColumn("messages", "tool_call_id", "tool_call_id TEXT");
+ensureColumn("messages", "tool_name", "tool_name TEXT");
+ensureColumn("messages", "tool_args", "tool_args TEXT");
+ensureColumn("messages", "tool_result", "tool_result TEXT");
+
+// 持久出盒箱的增量列：老库已有 outbound_deliveries 时不用删库。
+ensureColumn("outbound_deliveries", "segments", "segments TEXT");
+ensureColumn("outbound_deliveries", "source_message_id", "source_message_id TEXT");
+ensureColumn("outbound_deliveries", "ignored_at", "ignored_at INTEGER");
+// 旧版只把用尽次数的记录留在 failed；统一迁成显式死信，概览与列表才有稳定口径。
+db.prepare("UPDATE outbound_deliveries SET status = 'dead_letter' WHERE status = 'failed' AND attempts >= max_attempts").run();
+
 // superseded_at：这条消息已不在对话里（还在库里，可以回溯）。
 //   NULL  = 仍在对话上下文里
 //   有值  = 已从上下文摘除；配合 superseded_kind 决定界面怎么显示
@@ -308,7 +359,7 @@ ensureColumn("contacts", "avatar", "avatar TEXT");
 
 // 记忆有效期（借鉴「三重时间」设计）：NULL = 长期有效；
 // 有值 = 到期后不再进入召回（界面仍显示但标记"已过期"）。
-// 场景：换了的住址、结束了的项目——她记住的旧信息不该一直冒出来。
+// 场景：换了的住址、结束了的项目——联系人记住的旧信息不该一直冒出来。
 ensureColumn("memory_events", "valid_until", "valid_until INTEGER");
 // 记忆可删（P0-2）：墓碑列，旧库补列。
 ensureColumn("memory_events", "deleted_at", "deleted_at INTEGER");
@@ -339,7 +390,7 @@ ensureColumn("turns", "attachment_meta", "attachment_meta TEXT");
 // 只存档 id 不拷配置：档改了所有绑定它的联系人立刻跟着变。
 ensureColumn("contacts", "model_profile", "model_profile TEXT");
 ensureColumn("contacts", "recent_turns", "recent_turns INTEGER NOT NULL DEFAULT 0");
-ensureColumn("contacts", "gender", "gender TEXT NOT NULL DEFAULT 'female'");
+ensureColumn("contacts", "gender", "gender TEXT NOT NULL DEFAULT 'other'");
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages (contact_id, created_at);
    CREATE INDEX IF NOT EXISTS idx_messages_contact_recent ON messages (contact_id, created_at DESC, id DESC);
@@ -406,6 +457,7 @@ ensureColumn("conversations", "left_at", "left_at INTEGER");
 // 群主动消息开关：对应 QQ 群设置里"机器人主动在群聊内发言"在应用侧的映射。
 // 默认 0（关闭），需用户在 QQ 侧先开启权限、再在应用里勾选才生效。
 ensureColumn("conversations", "group_proactive", "group_proactive INTEGER NOT NULL DEFAULT 0");
+ensureColumn("media_trash", "original_rel_path", "original_rel_path TEXT NOT NULL DEFAULT ''");
 // QQ 群消息的响应方式（仅 OneBot 后端有意义）：at=仅 @；at_keyword=@ 或关键词；all=全部消息。
 // 官方后端平台只推 @ 事件，这两列对它不起作用；默认 at，避免升级后把没 @ 的群聊全放进来。
 ensureColumn("conversations", "trigger_mode", "trigger_mode TEXT NOT NULL DEFAULT 'at'");

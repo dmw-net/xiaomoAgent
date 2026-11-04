@@ -28,6 +28,12 @@ import {
   saveProfile,
   setOnboardingDone,
   syncProviderConnection,
+
+  EMOTE_FREQUENCIES,
+  isEmoteFrequency,
+  setGlobalEmoteFrequency,
+  setGlobalToolLoopTurns,
+  TOOL_LOOP_TURN_LIMITS,
   updateModel,
   updatePersona,
   validateCapabilityProfile,
@@ -57,6 +63,7 @@ import {
   contactModelProfile,
   countContactsBoundToProfile,
   DEFAULT_CONTACT_ID,
+  emoteFrequencyForContact,
   getContact,
   ASSISTANT_CONTACT_ID,
 } from "../../contacts.ts";
@@ -108,6 +115,8 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
     character?: Record<string, unknown>;
     owner?: Record<string, unknown>;
     recentTurns?: unknown;
+    toolLoopTurns?: unknown;
+    emoteFrequency?: unknown;
     reset?: unknown;
     onboarding?: { completed?: boolean };
   }>(req, MAX_CARD_BODY_BYTES);
@@ -141,6 +150,15 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
     personaPatch.owner = pickStrings(body.owner) as Partial<OwnerProfile>;
   }
   if (body.recentTurns !== undefined) personaPatch.recentTurns = body.recentTurns;
+  if (body.toolLoopTurns !== undefined) {
+    const n = Number(body.toolLoopTurns);
+    if (!Number.isInteger(n) || n < TOOL_LOOP_TURN_LIMITS.min || n > TOOL_LOOP_TURN_LIMITS.max) {
+      errors.push(`全局工具循环轮次只能是 ${TOOL_LOOP_TURN_LIMITS.min}~${TOOL_LOOP_TURN_LIMITS.max} 的整数`);
+    }
+  }
+  if (body.emoteFrequency !== undefined && !isEmoteFrequency(body.emoteFrequency)) {
+    errors.push(`表情使用频率只能是 ${EMOTE_FREQUENCIES.join(" / ")}`);
+  }
   if (body.character !== undefined || body.owner !== undefined || body.recentTurns !== undefined) {
     const check = validatePersona(personaPatch);
     if (!check.ok) errors.push(...check.errors);
@@ -152,6 +170,8 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
   }
 
   if (body.model !== undefined) updateModel(normalizeModelPatch(body.model));
+  if (body.toolLoopTurns !== undefined) setGlobalToolLoopTurns(body.toolLoopTurns);
+  if (body.emoteFrequency !== undefined) setGlobalEmoteFrequency(body.emoteFrequency);
   if (body.character !== undefined || body.owner !== undefined || body.recentTurns !== undefined) {
     updatePersona({
       character: personaPatch.character,
@@ -184,7 +204,7 @@ export const modelPingRoute: Route = async ({ req, res, path, method }) => {
   const override: Partial<ModelSettings> = {};
   // 地址语义：没传 baseUrl = 用已保存的配置测（状态页「实测模型连通」走这条）；
   // 显式传空串 = 用户在表单里清空了地址栏，这时如实报"还缺地址"，
-  // 绝不能回落到 .env 默认值替他白测一个无关地址。
+  // 绝不能回落到 .env 默认值替用户白测一个无关地址。
   if (typeof body.baseUrl === "string") {
     override.baseUrl = body.baseUrl.trim().replace(/\/+$/, "");
   }
@@ -525,7 +545,7 @@ export const capabilitiesTestRoute: Route = async ({ req, res, path, method }) =
 
 export const settingsPreviewRoute: Route = async ({ req, res, path, method }) => {
   /** 预览：把当前（或正在编辑的）角色卡拼成模型真正会收到的系统提示词。
-   *  带 contactId = 还原「下一轮发消息时她实际收到的请求」：
+   *  带 contactId = 还原「下一轮发消息时联系人实际收到的请求」：
    *  联系人卡（可被 character 草稿覆盖）+ 陪伴段 + 距上次说话 + 按你最后一句话的真实召回
    *  + 按生效轮数回放的对话历史 + 与真实发送同一套的图片降级标记。助手卡内置提示词，不参与。
    *  唯一说破的差异：预览不做发送前的预算裁剪（那一刻才知道要裁多少）。 */
@@ -553,6 +573,7 @@ export const settingsPreviewRoute: Route = async ({ req, res, path, method }) =>
         lastUserAt: lastUserMessageAt(DEFAULT_CONTACT_ID),
         companion: companionPromptExtras(getContact(DEFAULT_CONTACT_ID)),
         includeNow: getContact(DEFAULT_CONTACT_ID)?.features?.clock !== false,
+        emoteFrequency: emoteFrequencyForContact(DEFAULT_CONTACT_ID),
       }),
       memoryEvents: memories.map((m) => ({ id: m.id, kind: m.kind, subject: m.subject, content: m.content })),
       memoryNote: "[记忆] 全局预览不带具体召回查询，这里显示默认联系人最近的几条记忆。要看某段关系的召回，请到该联系人的资料页预览。",
@@ -579,7 +600,7 @@ export const settingsPreviewRoute: Route = async ({ req, res, path, method }) =>
   const lastUser = [...rows].reverse().find((r) => r.role === "user");
   // 预览是观测：走 recallExplained，不推进 last_used_at（同 /api/context/usage）。
   // 带主私聊的空间：上面回放的历史就是那段私聊的（recentMessages 默认它），
-  // 记忆不带空间的话会把别的群、别的成员条目算进「她下次会看到」，预览就成了假样本。
+  // 记忆不带空间的话会把别的群、别的成员条目算进「联系人下次会看到」，预览就成了假样本。
   const previewScope = { scope: { conversationId: localConversationId(cid) } };
   const memories = lastUser
     ? recallExplained(cid, lastUser.text, undefined, previewScope).events
@@ -591,6 +612,7 @@ export const settingsPreviewRoute: Route = async ({ req, res, path, method }) =>
       lastUserAt: lastUserMessageAt(cid),
       memories,
       includeNow: getContact(cid)?.features?.clock !== false,
+      emoteFrequency: emoteFrequencyForContact(cid),
     }),
     history: rows.map((r) => ({ role: r.role, text: r.text })),
     memoryEvents: memories.map((m) => ({ id: m.id, kind: m.kind, subject: m.subject, content: m.content })),

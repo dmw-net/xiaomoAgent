@@ -30,7 +30,7 @@ type CaptionResult = {
   confidence?: unknown;
 };
 
-const FRAME_COUNT = 4;
+const FRAME_COUNT = 6;
 /** 一次只跑一张：视觉模型这条路上并发不会更快（限流是按分钟算的），只会更快撞墙。 */
 const CONCURRENCY = 1;
 
@@ -45,7 +45,7 @@ export function captionFailed(outcome: CaptionOutcome): outcome is CaptionFailur
 
 /**
  * 哪些失败值得再试一次。
- * 实测她配的那家免费档跑到第 7 张就回 429「已达到免费用户的 API 速率限制」——
+ * 实测联系人配的那家免费档跑到第 7 张就回 429「已达到免费用户的 API 速率限制」——
  * 200 张的整库作业如果不退避重试，会有一半的张数在几十毫秒里被判死。
  * 而 400/没回 JSON 是**这张图或这个提示词的问题**，重试只是白烧额度。
  */
@@ -57,7 +57,7 @@ const BACKOFF_MS = [8_000, 20_000, 45_000];
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-function promptFor(frameCount: number): string {
+function promptFor(frameCount: number, referenceName = ""): string {
   return [
     "你是表情包的标注员。你的任务不是写图片说明，而是还原这张图**作为一句聊天回复时传达的意思**，",
     "让一个人能够按对话情境准确地搜索到它。",
@@ -71,6 +71,9 @@ function promptFor(frameCount: number): string {
     "   （「惊讶里带戒备」这种，而不是「惊讶」一个词）。",
     frameCount > 1
       ? `\n（这几张图是同一段动作的连续帧：判断动作的起点、怎么变、方向和结果，不要用其中一帧概括整段动作。）`
+      : "",
+    referenceName !== ""
+      ? `\n参考线索：这张图导入时的文件名是「${referenceName}」。它可能已经点出梗义，可用来校正识别；但不要机械照抄，最终名称仍要以画面和聊天用法为准。`
       : "",
     "",
     "只输出 JSON，不要解释：",
@@ -146,7 +149,12 @@ async function oneCaptionAttempt(asset: AssetRow): Promise<{ name: string; capti
   if (!capabilityReady("imageVision")) {
     return { error: "图片理解还没配好（设置 → 能力模型 → 图片理解）", retryable: false };
   }
-  const parts: Array<Record<string, unknown>> = [{ type: "text", text: promptFor(needsStaticVariant(asset.url) ? FRAME_COUNT : 1) }];
+  // 线索＝导入时那个文件名：落盘名是内容哈希，登记时原样存进 alias，只有它记得这张图原本叫什么。
+  // 不读 label——那是模型或用户起的名字，喂回去只会强化原有偏差。
+  const referenceName = asset.emoteAlias[0] ?? "";
+  const parts: Array<Record<string, unknown>> = [{
+    type: "text", text: promptFor(needsStaticVariant(asset.url) ? FRAME_COUNT : 1, referenceName),
+  }];
   // 动图采帧失败时要把它记下来：那既是一个降级（只认首帧），也是一个可诊断的事实。
   let frameNote = "";
   if (needsStaticVariant(asset.url)) {
@@ -171,7 +179,7 @@ async function oneCaptionAttempt(asset: AssetRow): Promise<{ name: string; capti
   try {
     raw = await callModel(
       [{ role: "user", content: parts as never }],
-      { capability: "imageVision", maxTokens: 1200, temperature: 0.3, purpose: "emote_naming" },
+      { capability: "imageVision", temperature: 0.3, purpose: "emote_naming" },
     );
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -192,23 +200,19 @@ async function oneCaptionAttempt(asset: AssetRow): Promise<{ name: string; capti
   return { name, caption: textOf(parsed.meaning, 120), tags };
 }
 
-/** 单张重认：界面上那颗「重新识别」。 */
-export async function renameEmoteById(id: string): Promise<
-  { ok: true; name: string; caption: string; tags: string[] } | { ok: false; error?: string }
-> {
-  const asset = getAssetById(id);
-  if (asset === null || !asset.usableAsEmote) return { ok: false, error: "这张不在她的表情库里" };
-  const outcome = await captionEmote(asset);
-  if (captionFailed(outcome)) return { ok: false, error: outcome.error };
-  applyEmoteNaming(asset.url, outcome, Date.now());
-  // 把写回的三个字段整个带回去：弹窗要在原地展示结果，而不是关掉让人去网格里找。
-  return { ok: true, name: outcome.name, caption: outcome.caption, tags: outcome.tags };
-}
-
-// ── 整库作业：一条命令跑完，界面轮询进度 ────────────────────────────
+// ── 作业：一条命令跑完，界面轮询进度；跑着也能往里追加 ────────────────
 
 /** 一轮作业里每张图的结局——「哪些识别好了、哪些没成、成了的叫什么」全靠它摆在界面上。 */
-export type NamingResult = { id: string; file: string; name: string; error: string };
+export type NamingResult = {
+  id: string;
+  file: string;
+  name: string;
+  error: string;
+  /** 成功时把写回的用法与标签一起留下：弹窗里那颗「智能识别」原地回填读的就是这一行，
+   *  有了它就不必再为一张图单开一条查询。 */
+  caption: string;
+  tags: string[];
+};
 
 export type NamingJobStatus = {
   running: boolean;
@@ -234,52 +238,86 @@ let job: NamingJobStatus = {
   finishedAt: 0, results: [],
 };
 
+/**
+ * 队列里的一项：一张图，加「这张要不要覆盖已有名字」。
+ * force 挂在项上而不是作业上——整库跑到一半时追加的那一张，和同批那几百张的语义不一样：
+ * 那一次是人明确要求重认的。
+ */
+type NamingTask = { id: string; force: boolean };
+
+/** 待办队列（含正在跑的那一张）。作业跑着也往里加，所以它是模块级的。 */
+const queue: NamingTask[] = [];
+
 export function namingJobStatus(): NamingJobStatus { return { ...job }; }
 
 /**
- * 起一次认图作业。已经在跑就是 no-op（界面重复点击、两个人同时点都不会把额度烧两遍）。
+ * 排进智能识别队列。
+ * 没在跑就起一条作业；已经在跑就追加到当前这条后面——不另起一条，否则两条线各烧各的调用、
+ * 自适应节流也各算各的，界面上还会出现两个进度。所以「单张识别」和「整库识别」共用同一个队列、
+ * 同一个进度、同一份逐张结果。
  * force=false 时只认还没认过的，所以这颗按钮可以放心反复按，也是断点续跑的全部机制。
  */
 export function startNamingJob(options: {
   force?: boolean;
   limit?: number;
-  /** 只认这批 id（界面上「重试失败的 N 张」用它）。给了就以此为准，不再看 force。 */
+  /** 只认这批 id（界面上「重试失败的 N 张」和弹窗里那颗「智能识别」用它）。给了就以此为准，不再看 force。 */
   only?: string[];
   /** 注入等待：测试里不真睡，同时能看清作业退避/降速了几次。 */
   wait?: (ms: number) => Promise<void>;
-} = {}): { started: boolean; reason?: string; total: number } {
-  if (job.running) return { started: false, reason: "已经在跑了", total: job.total };
+} = {}): { started: boolean; reason?: string; total: number; queued: number } {
   if (!capabilityReady("imageVision")) {
-    return { started: false, reason: "图片理解还没配好（设置 → 能力模型 → 图片理解）", total: 0 };
+    return { started: false, reason: "图片理解还没配好（设置 → 能力模型 → 图片理解）", total: job.total, queued: 0 };
   }
+  const only = options.only ?? [];
   const force = options.force === true;
   // 失效行不进池：原图不在盘上，认一次失败一次，白烧调用。放回文件后自然会再被看见。
   const all = listEmoteAssets().filter((a) => !a.missing);
-  const pool = options.only !== undefined && options.only.length > 0
-    ? all.filter((a) => options.only!.includes(a.id))
+  const wanted = only.length > 0
+    ? all.filter((a) => only.includes(a.id))
     : all.filter((a) => force || a.emoteNamedAt === 0);
-  const capped = typeof options.limit === "number" && options.limit > 0 ? pool.slice(0, options.limit) : pool;
-  if (capped.length === 0) return { started: false, reason: "没有要识别的图（库里的表情都已命名）", total: 0 };
+  const capped = typeof options.limit === "number" && options.limit > 0 ? wanted.slice(0, options.limit) : wanted;
+  const fresh: NamingTask[] = [];
+  for (const asset of capped) {
+    // 同一张在队列里只留一项：连点两次不该烧两次调用。但后一次的 force 要赢——
+    // 弹窗那颗「智能识别」明确要求覆盖，不能被前面那次的「只认没认过的」顶掉。
+    const pending = queue.find((t) => t.id === asset.id);
+    if (pending !== undefined) { if (force) pending.force = true; continue; }
+    fresh.push({ id: asset.id, force });
+  }
+  queue.push(...fresh);
+  if (job.running) {
+    job.total += fresh.length;
+    return { started: true, total: job.total, queued: fresh.length };
+  }
+  if (queue.length === 0) {
+    return {
+      started: false,
+      reason: only.length > 0
+        ? "这些张不在可识别的范围内（已失效，或不在联系人的表情库里）"
+        : "没有要识别的图（库里的表情都已命名）",
+      total: job.total,
+      queued: 0,
+    };
+  }
   job = {
-    running: true, total: capped.length, done: 0, named: 0, failed: 0,
+    running: true, total: queue.length, done: 0, named: 0, failed: 0,
     current: "", lastError: "", throttleMs: 0, finishedAt: 0, results: [],
   };
-  void runNamingJob(capped, force, options.wait ?? sleep);
-  return { started: true, total: capped.length };
+  void runNamingJob(options.wait ?? sleep);
+  return { started: true, total: job.total, queued: fresh.length };
 }
 
 // ── 采集后自动补名 ────────────────────────────────────────────────
 // 收进库的表情没有名字就等于没进候选——检索看不见它。让用户每张都记得回界面点
 // 「智能识别」是靠不住的，采集成功自己排一次延时作业：连发十张也只认一轮
-// （防抖），图片理解没配好安静跳过，手动作业占着道就等它完事再来。
+// （防抖），图片理解没配好安静跳过，手动作业正跑着就追加到它后面接着跑。
 let captureNamingTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function scheduleCaptureNaming(delayMs = 60_000): void {
   if (captureNamingTimer !== null) clearTimeout(captureNamingTimer);
   captureNamingTimer = setTimeout(() => {
     captureNamingTimer = null;
-    const result = startNamingJob({});
-    if (!result.started && result.reason !== undefined && result.reason.includes("已经在跑")) scheduleCaptureNaming(delayMs);
+    startNamingJob({});
   }, delayMs);
   // 到点再认，不该拖住进程退出（桌面端关应用、测试子进程都算）。
   if (typeof captureNamingTimer.unref === "function") captureNamingTimer.unref();
@@ -290,13 +328,7 @@ export function cancelCaptureNaming(): void {
   if (captureNamingTimer !== null) { clearTimeout(captureNamingTimer); captureNamingTimer = null; }
 }
 
-async function runNamingJob(pool: AssetRow[], force: boolean, nap: (ms: number) => Promise<void>): Promise<void> {
-  let cursor = 0;
-  const take = (): AssetRow | undefined => {
-    const index = cursor;
-    cursor += 1;
-    return pool[index];
-  };
+async function runNamingJob(nap: (ms: number) => Promise<void>): Promise<void> {
   /**
    * 自适应节流：默认一张都不等（付费档跑满速），一旦看到限流就把间隔抬起来，连续成功再慢慢落回去。
    * 为什么不只靠单张的重试：重试解的是「这一张撞墙了」，节流解的是「整库都别去撞墙」——
@@ -314,39 +346,50 @@ async function runNamingJob(pool: AssetRow[], force: boolean, nap: (ms: number) 
       ? [...job.results, result].slice(-RESULTS_CAP)
       : [result, ...job.results.filter((r) => r.error === "")].slice(0, RESULTS_CAP);
   };
+  const line = (task: NamingTask, file: string, error: string): NamingResult =>
+    ({ id: task.id, file, name: "", error, caption: "", tags: [] });
   const worker = async (): Promise<void> => {
     for (;;) {
-      const asset = take();
-      if (asset === undefined) return;
+      // 取活必须一步做完：中间只要 await，追加就可能插到「队列空了」和「作业收尾」之间。
+      const task = queue.shift();
+      if (task === undefined) return;
       if (gapMs > 0) await nap(gapMs);
-      job.current = asset.url.split("/").pop() ?? "";
-      // 抢跑保护：另一条线（单张重认）刚把这张认过了就别再花一次调用。
-      const fresh = getAssetById(asset.id);
-      const needs = fresh !== null && (force || fresh.emoteNamedAt === 0);
-      const outcome = needs ? await captionEmote(asset, { wait: nap }) : null;
+      // 排队的这几分钟里原图可能被删、被标失效、被手改名——每次取活重新读一遍库。
+      const asset = getAssetById(task.id);
+      const file = asset?.url.split("/").pop() ?? task.id;
+      job.current = file;
+      if (asset === null || asset.missing) {
+        const reason = asset === null ? "这张已经不在表情库里" : "原图不在盘上了";
+        job.done += 1;
+        job.failed += 1;
+        job.lastError = `${file}：${reason}`;
+        pushResult(line(task, file, reason));
+        continue;
+      }
+      // 抢跑保护：另一条线刚把这张认过了就别再花一次调用；force 那一律重认。
+      if (!task.force && asset.emoteNamedAt > 0) { job.done += 1; continue; }
+      const outcome = await captionEmote(asset, { wait: nap });
       job.done += 1;
-      if (outcome === null) continue;
       if (!captionFailed(outcome)) {
-        if (fresh !== null) {
-          applyEmoteNaming(fresh.url, outcome, Date.now());
-          job.named += 1;
-        }
-        pushResult({ id: asset.id, file: job.current, name: outcome.name, error: "" });
+        applyEmoteNaming(asset.url, outcome, Date.now());
+        job.named += 1;
+        pushResult({
+          id: task.id, file, name: outcome.name, error: "",
+          caption: outcome.caption, tags: outcome.tags,
+        });
         // 这张是靠退避救回来的 → 服务商在限流，下一张开始就慢一点；
         // 干净成功才慢慢把间隔落回去。只数「最终失败几张」是看不见这件事的。
         if (outcome.retried > 0) setGap(Math.min(20_000, Math.max(gapMs, 3_000)));
         else setGap(Math.floor(gapMs / 2));
         continue;
       }
-      if (needs) {
-        job.failed += 1;
-        job.lastError = `${job.current}：${outcome.error}`;
-      }
-      pushResult({ id: asset.id, file: job.current, name: "", error: outcome.error });
+      job.failed += 1;
+      job.lastError = `${file}：${outcome.error}`;
+      pushResult(line(task, file, outcome.error));
       if (outcome.retryable) setGap(Math.min(20_000, Math.max(gapMs, 3_000) * 2));
     }
   };
-  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, pool.length) }, () => worker()));
+  await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, () => worker()));
   job.running = false;
   job.current = "";
   job.finishedAt = Date.now();

@@ -136,6 +136,13 @@ export const config = Object.freeze({
   ownerName: str("OWNER_NAME", ""),
   /** 回放最近多少【轮】对话（一问一答算一轮）。运行期可在应用内覆盖（设置 → 模型与能力 → 主对话模型 → 对话上下文）。 */
   recentTurnsInContext: int("RECENT_TURNS_IN_CONTEXT", 6),
+  /**
+   * 最近多少轮的工具往返按协议**原生**回放（assistant.tool_calls + tool 结果）。
+   * 更早的轮次折成一行「用过什么」的备注，不再带载荷——这是历史里唯一让模型看见
+   * 「工具到底是怎么调的」的地方，全是占位符它就会照着写占位符（见 src/tool-history.ts 顶部）。
+   * 0 = 全部折叠成备注（最省上下文，但等于放弃这份示范）；默认 4，与 recentTurns 同量级。
+   */
+  toolHistoryTurns: uint("TOOL_HISTORY_TURNS", 4),
   recallLimit: int("RECALL_LIMIT", 6),
   model: Object.freeze({
     mode: modelMode,
@@ -171,8 +178,8 @@ export const config = Object.freeze({
     onebotWsUrl: str("QQ_ONEBOT_WS"),
     /** OneBot 访问令牌；协议端配了 access_token 才需要。 */
     onebotToken: str("QQ_ONEBOT_TOKEN"),
-    /** 表情包系统：把「他发来的图片」顺手登记进表情素材库。默认关——
-     *  他发的图是聊天内容，不等于"我要用来接梗的表情包"，不擅自入库。 */
+    /** 表情包系统：把「用户发来的图片」顺手登记进表情素材库。默认关——
+     *  用户发的图是聊天内容，不等于"我要用来接梗的表情包"，不擅自入库。 */
     emoteAutoCapture: bool("QQ_EMOTE_AUTO_CAPTURE", false),
     /** 表情素材库的本地目录（放一批梗图文件夹，启动/手动扫描后批量入库）。
      *  留空 = 不启用目录播种，素材库只靠单图上传与自动采集。 */

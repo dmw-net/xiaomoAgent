@@ -28,6 +28,7 @@ import { isPrivateAddress } from "./web.ts";
 import { parseTextToolCalls } from "./text-tool-calls.ts";
 import { isIP } from "node:net";
 import { MAX_IMAGE_BYTES, mediaDataUrl, saveImage, sniffImageMime } from "./media.ts";
+import { INTERACTIVE_MAX_ATTEMPTS, withRetry } from "./reliability.ts";
 
 /** OpenAI 兼容的多模态内容块：文本 + dataURL 图片（服务商普遍接受 base64 data URL）。 */
 export type MessageContentPart =
@@ -128,6 +129,7 @@ export type ModelErrorCode =
   | "TIMEOUT"
   | "EMPTY_RESPONSE"
   | "OUTPUT_TRUNCATED"
+  | "CANCELLED"
   | "UNKNOWN";
 
 export class ModelError extends Error {
@@ -280,20 +282,26 @@ function attribution(options: CallOptions): { contactId: string | null; profileI
   return { contactId, profileId: bound !== "" ? bound : activeProfileId() };
 }
 
-/** 模型档没填「输出上限」、调用方也没给预算时的兜底回复长度。 */
+/** 日常聊天没填「输出上限」时的兜底回复长度。 */
 const DEFAULT_MAX_TOKENS = 1024;
 
+/** 非聊天用途（识别、整理、主动判断等）没填「输出上限」时的兜底预算。 */
+export const NON_CHAT_DEFAULT_MAX_TOKENS = 16384;
+
 /**
- * max_tokens 的唯一算法：档上的「输出上限」是硬顶，调用方的 maxTokens 是这一用途的预算，
- * 两者取小；都没填用 1024 兜底。
+ * max_tokens 的唯一算法：
+ * - 档上的「输出上限」(cap) 是硬顶；
+ * - 调用方显式传了 maxTokens 就用它（再被 cap 收口）；
+ * - 没传时：聊天 → cap（没填 cap 就 1024），非聊天 → 16384（没填 cap 就 16384）。
  *
- * 所以聊天不传 maxTokens（让用户的设置说了算），而抽取/整理/主动消息各自传小预算
- * ——它们是"这类输出本来就该短"，不是"模型只能输出这么多"。
- * 两个请求体构造点（attempt / callModelWithTools）都必须走这里：
- * 曾经工具路径漏了硬顶，导致「输出上限」对日常聊天完全不生效。
+ * 所以调用方**不再各自写死小预算**，统一交给这里：
+ * 日常聊天走 cap，非聊天走 16k 兜底；截断时自动扩到 cap 或翻倍（见 OUTPUT_TRUNCATED 重试）。
+ * 两个请求体构造点（attempt / callModelWithTools）都必须走这里。
  */
 function resolveMaxTokens(settings: ModelSettings, options: CallOptions): number {
-  const cap = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : DEFAULT_MAX_TOKENS;
+  const isChat = options.purpose === "chat";
+  const fallback = isChat ? DEFAULT_MAX_TOKENS : NON_CHAT_DEFAULT_MAX_TOKENS;
+  const cap = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : fallback;
   return Math.min(options.maxTokens ?? cap, cap);
 }
 
@@ -311,15 +319,23 @@ export async function callModel(messages: ChatMessage[], options: CallOptions = 
     turnId: options.turnId ?? null,
   });
   try {
-    return await attempt(messages, options, true);
+    return await withRetry(() => attempt(messages, options, true), {
+      attempts: INTERACTIVE_MAX_ATTEMPTS,
+      baseMs: 500,
+      maxDelayMs: 45000,
+      respectRetryAfter: true,
+      onRetry: (attempt, delayMs, cause) => {
+        console.warn(`[model] ${options.purpose ?? "chat"} 调用失败，${delayMs}ms 后重试（第 ${attempt + 1}/${INTERACTIVE_MAX_ATTEMPTS} 次）：${cause.slice(0, 100)}`);
+      },
+    });
   } catch (error) {
     // 思考模型可能把本次输出额度全花在 reasoning 上，正文一个字都没轮到。
-    // 这不是让用户手动重试的错误：自动把上限翻倍后再试一次；仍有模型档硬顶兜底，
-    // 所以不会突破用户配置，也不会无限重试。
+    // 这不是让用户手动重试的错误：自动扩额度再试一次——
+    // 档上填了「输出上限」就扩到那个硬顶；没填就按当前值翻倍（非聊天兜底 16k，翻倍仍有得吃），
+    // 只重试一次，不会循环。
     if (error instanceof ModelError && error.code === "OUTPUT_TRUNCATED") {
-      const cap = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : DEFAULT_MAX_TOKENS;
       const current = resolveMaxTokens(settings, options);
-      const next = Math.min(cap, Math.max(current * 2, 2048));
+      const next = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : current * 2;
       if (next > current) {
         console.warn(`[model] ${options.purpose ?? "chat"} 的输出被思考用完，自动把上限从 ${current} 提到 ${next} 重试一次`);
         return await attempt(messages, { ...options, maxTokens: next }, true);
@@ -814,11 +830,14 @@ async function attempt(
     const causeDetail = causeChain(error);
     const aborted = isAbort(error);
     const timedOut = aborted && abortClock.timedOut();
-    const code: ModelErrorCode = aborted
+    // barge-in cancellation (explicit stop by user) ≠ network timeout
+    const code: ModelErrorCode = timedOut
       ? "TIMEOUT"
-      : looksLikeNetworkError(error)
-        ? "NETWORK"
-        : "UNKNOWN";
+      : aborted
+        ? "CANCELLED"
+        : looksLikeNetworkError(error)
+          ? "NETWORK"
+          : "UNKNOWN";
 
     const modelError = new ModelError({
       code,
@@ -920,7 +939,15 @@ export async function callModelWithTools(
     turnId: options.turnId ?? null,
   });
   try {
-    return await callModelWithToolsInner(messages, tools, options);
+    return await withRetry(() => callModelWithToolsInner(messages, tools, options), {
+      attempts: INTERACTIVE_MAX_ATTEMPTS,
+      baseMs: 500,
+      maxDelayMs: 45000,
+      respectRetryAfter: true,
+      onRetry: (attempt, delayMs, cause) => {
+        console.warn(`[model] ${options.purpose ?? "chat"} (with tools) 调用失败，${delayMs}ms 后重试（第 ${attempt + 1}/${INTERACTIVE_MAX_ATTEMPTS} 次）：${cause.slice(0, 100)}`);
+      },
+    });
   } finally {
     endModelCall(inflightId);
   }
@@ -1076,7 +1103,7 @@ async function callModelWithToolsInner(
     const elapsedMs = Date.now() - started;
     const timedOut = isAbort(error) && abortClock.timedOut();
     const modelError = new ModelError({
-      code: isAbort(error) ? "TIMEOUT" : looksLikeNetworkError(error) ? "NETWORK" : "UNKNOWN",
+      code: timedOut ? "TIMEOUT" : isAbort(error) ? "CANCELLED" : looksLikeNetworkError(error) ? "NETWORK" : "UNKNOWN",
       message: timedOut && streamStarted
         ? `流式响应静默超时（${settings.timeoutMs}ms 没有收到新数据）`
         : `工具调用请求失败：${error instanceof Error ? error.message : String(error)}`,

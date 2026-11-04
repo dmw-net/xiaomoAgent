@@ -16,6 +16,7 @@ import { routes as lanRoutes } from "./routes/lan.ts";
 import { routes as eventsRoutes } from "./routes/events.ts";
 import { routes as pagesRoutes } from "./routes/pages.ts";
 import { routes as diagnosticsRoutes } from "./routes/diagnostics.ts";
+import { outboundRoutes } from "./routes/outbound.ts";
 import { routes as skillsRoutes } from "./routes/skills.ts";
 import { routes as extensionsRoutes } from "./routes/extensions.ts";
 import { routes as assetsRoutes } from "./routes/assets.ts";
@@ -71,8 +72,9 @@ export const ROUTES: Route[] = [
   ...eventsRoutes,
   // 页面与静态资源（/ 、/assets/、/media/、旧路径 302）
   ...pagesRoutes,
-  // 健康与自省（/healthz、/api/status、运行检查、存储、日志）
+  // 健康与自省（/healthz、/api/status、运行检查、存储、日志、出站队列）
   ...diagnosticsRoutes,
+  ...outboundRoutes,
   // 试连（原顺序：排在日志之后、设置之前）
   modelPingRoute,
   personaDefaultCardRoute,
@@ -90,7 +92,7 @@ export const ROUTES: Route[] = [
   ...extensionsRoutes,
   // 资产：一个页面要的全部（视角是参数）
   ...assetsRoutes,
-  // 她的画 + 内容库
+  // 联系人的画 + 内容库
   ...contentRoutes,
   // 上下文用量
   ...modelRoutes,

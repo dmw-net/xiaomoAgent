@@ -21,6 +21,9 @@ export type EmoteMatchField = "label" | "alias" | "tag" | "caption" | "pack";
 
 export type EmoteHit = {
   asset: AssetRow;
+  /** 语义分：只用于判断“够不够确定自动发”，使用次数绝不参与。 */
+  semanticScore: number;
+  /** 排序分：语义分 + 使用次数加成，只用于候选排序，不参与自动发送阈值和分差。 */
   score: number;
   /** 最高分是在哪个字段上拿到的；pack 意味着「只命中了文件夹名」，属于宽泛桶，不该自动发。 */
   matchedOn: EmoteMatchField;
@@ -39,6 +42,8 @@ const USAGE_CAP = 1.5;
 /** 自动发（send_emote 只给 keyword 的那条快路）的最低分。
  *  这个阈值的作用是把「只命中了文件夹名」和「半个词凑巧撞上」挡掉——宁可回一句没有，也别甩一张不相干的。 */
 export const AUTO_PICK_MIN_SCORE = 3;
+/** 自动发还要求第一名明显领先第二名；同分或接近时交回候选，让模型选。 */
+export const AUTO_PICK_MIN_GAP = 1;
 
 function normalize(value: string): string {
   return value.toLowerCase().replace(/\s+/g, "").trim();
@@ -105,23 +110,26 @@ export function scoreEmote(asset: AssetRow, terms: string[]): { score: number; m
   return { score: best, matchedOn: field };
 }
 
-/** 全库检索：按分排，同分先常用、再随机（同质桶里随机是特性，不是缺陷）。
+/** 全库检索：默认按排序分（语义 + 使用次数）排；自动发送决策传 semantic 只看纯语义。
+ *  同分先常用、再随机（同质桶里随机是特性，不是缺陷）。
  *  默认池排除「已失效」——原图不在盘上的候选，选中也发不出去，不如一开始就别给。 */
-export function searchEmotes(query: string, topK = 5, pool?: AssetRow[]): EmoteHit[] {
+export function searchEmotes(query: string, topK = 5, pool?: AssetRow[], order: "rank" | "semantic" = "rank"): EmoteHit[] {
   const terms = queryTerms(query);
   const assets = pool ?? listEmoteAssets().filter((a) => !a.missing);
   if (terms.length === 0 || assets.length === 0) return [];
   const hits: EmoteHit[] = [];
   for (const asset of assets) {
-    const { score, matchedOn } = scoreEmote(asset, terms);
-    if (score <= 0) continue;
-    hits.push({ asset, score: score + usageBonus(asset), matchedOn });
+    const { score: semanticScore, matchedOn } = scoreEmote(asset, terms);
+    if (semanticScore <= 0) continue;
+    hits.push({ asset, semanticScore, score: semanticScore + usageBonus(asset), matchedOn });
   }
-  hits.sort((a, b) => b.score - a.score || b.asset.emoteUseCount - a.asset.emoteUseCount);
+  const sortScore = (hit: EmoteHit): number => order === "semantic" ? hit.semanticScore : hit.score;
+  hits.sort((a, b) => sortScore(b) - sortScore(a) || b.asset.emoteUseCount - a.asset.emoteUseCount);
   const want = Math.max(1, topK);
   const top = hits.slice(0, want);
-  // 同分的那几张换个顺序：同一个「开心」桶里连着回同一张，会显得她很呆。
-  const tie = top.filter((h) => h.score >= (top[0]?.score ?? 0) - 0.001);
+  if (top.length === 0) return top;
+  // 同分的那几张换个顺序：同一个「开心」桶里连着回同一张，会显得联系人很呆。
+  const tie = top.filter((h) => sortScore(h) >= sortScore(top[0]!) - 0.001);
   if (tie.length <= 1) return top;
   const rest = top.filter((h) => !tie.includes(h));
   for (let i = tie.length - 1; i > 0; i -= 1) {
@@ -132,14 +140,37 @@ export function searchEmotes(query: string, topK = 5, pool?: AssetRow[]): EmoteH
 }
 
 /**
- * 只给一个关键词时的快路：分够高才敢直接发。
- * 返回 null 不代表库是空的，代表「没有一个够贴的」——调用方要如实这么说，并给出 emote_search 这条退路。
+ * 一步式快路的决策：分数够高且领先明显才自动发；否则把候选交回模型。
+ * 这比「查了必发」安全：模型仍是最终选图者，只是常见的高置信场景少走一轮。
  */
-export function pickEmoteByKeyword(keyword: string): EmoteHit | null {
-  const hits = searchEmotes(keyword, 3);
+export type AutoPickDecision =
+  | { kind: "send"; hit: EmoteHit; candidates: EmoteHit[] }
+  | { kind: "choose"; candidates: EmoteHit[]; reason: string }
+  | { kind: "none" };
+
+export function autoPickEmote(keyword: string): AutoPickDecision {
+  // 排序仍可带使用次数；但“能不能自动发”必须只看纯语义分。
+  // 否则一张常用图会仅凭历史次数制造出分差，或把弱命中推过最低分。
+  const hits = searchEmotes(keyword, 3, undefined, "semantic");
   const best = hits[0];
-  if (best === undefined || best.score < AUTO_PICK_MIN_SCORE || best.matchedOn === "pack") return null;
-  return best;
+  if (best === undefined) return { kind: "none" };
+  if (best.matchedOn === "pack") {
+    return { kind: "choose", candidates: hits, reason: "只命中了文件夹名，无法确定具体是哪张" };
+  }
+  if (best.semanticScore < AUTO_PICK_MIN_SCORE) {
+    return { kind: "choose", candidates: hits, reason: "候选分数不够高" };
+  }
+  const second = hits[1];
+  if (second !== undefined && best.semanticScore - second.semanticScore < AUTO_PICK_MIN_GAP) {
+    return { kind: "choose", candidates: hits, reason: "前几张候选分数太接近" };
+  }
+  return { kind: "send", hit: best, candidates: hits };
+}
+
+/** 兼容旧调用：只关心「能不能直接发」的调用方仍可用它。 */
+export function pickEmoteByKeyword(keyword: string): EmoteHit | null {
+  const decision = autoPickEmote(keyword);
+  return decision.kind === "send" ? decision.hit : null;
 }
 
 /** 没给说法时的随机采样（「就是想甩个表情，无所谓哪张」）。空库返回空数组；失效行同被排除。 */

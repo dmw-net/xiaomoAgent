@@ -1,10 +1,10 @@
 // 派生形态：一份原图 + 按渠道能力准备好的替代形态。
 //
-// 为什么不是「发送时躲开动图」：那样用户库里的动图永远甩不出去，他只能看着，
+// 为什么不是「发送时躲开动图」：那样用户库里的动图永远甩不出去，用户只能看着，
 // 而挑选逻辑还得替每个渠道记一遍「这个格式对端收不收」。
 // 成熟做法都是入库时派生、发送时按能力挑形态——WhatsApp 把贴纸重编码成 512×512 WebP，
 // Telegram 强制一边 512px，微信表情平台要 240×240。问题在派生期暴露，
-// 而不是在她甩表情那一刻变成一条 850019。
+// 而不是在联系人甩表情那一刻变成一条 850019。
 //
 // 目前只派生一种：动图的静帧。官方 Bot 的富媒体只收 png/jpg，GIF 会被回
 // 850019「富媒体文件格式不支持」，而静帧是它一定收的形态。
@@ -109,7 +109,9 @@ export function needsStaticVariant(url: string): boolean {
  *
  * ⚠️ 读法陷阱（和上面 staticFrameOf 那条是同一个坑的两面）：
  * `{ animated: true }` 会把 GIF 读成**所有帧竖排的一张长图**（实测 8 帧 512×512 → 512×4096）。
- * 派生静帧时那是 bug，采帧时它是可用的前提——按总高除以帧数裁，才是单帧完整的画面。
+ * 派生静帧时那是 bug。采帧**不能**靠在 animated 输入上 extract 长图：sharp 0.35.5 实测
+ * extract 的坐标系是按单页算的，top>0 一律 `extract_area: bad extract area`（40 帧 GIF 只有第 0
+ * 帧裁得出来，还静默退回首帧）。所以逐帧读取必须用输入选项 `{ page: n }`，一帧一次解码。
  */
 export async function sampleFrames(url: string, maxFrames = 4): Promise<Buffer[]> {
   const abs = mediaAbsPath(url);
@@ -121,9 +123,6 @@ export async function sampleFrames(url: string, maxFrames = 4): Promise<Buffer[]
     const meta = await sharp(buffer, { animated: true }).metadata();
     const pages = Math.max(1, Math.floor(meta.pages ?? 1));
     if (pages === 1) return [await sharp(buffer).png().toBuffer()];
-    const frameWidth = Math.floor(meta.width ?? 0);
-    const frameHeight = Math.floor((meta.height ?? 0) / pages);
-    if (frameWidth <= 0 || frameHeight <= 0) throw new Error("帧尺寸算不出来");
     const count = Math.min(Math.max(1, maxFrames), pages);
     const indexes: number[] = [];
     for (let i = 0; i < count; i += 1) {
@@ -133,9 +132,7 @@ export async function sampleFrames(url: string, maxFrames = 4): Promise<Buffer[]
     }
     const frames: Buffer[] = [];
     for (const frame of indexes) {
-      frames.push(await sharp(buffer, { animated: true })
-        .extract({ left: 0, top: frame * frameHeight, width: frameWidth, height: frameHeight })
-        .png().toBuffer());
+      frames.push(await sharp(buffer, { page: frame }).png().toBuffer());
     }
     return frames;
   } catch {

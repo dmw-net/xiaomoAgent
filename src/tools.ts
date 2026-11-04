@@ -1,8 +1,8 @@
-// 工具层：让她不只是「说话」，还能「做事」。
+// 工具层：让联系人不只是「说话」，还能「做事」。
 //
 // 这是 agent 能力的分水岭（借鉴 capabilities 分目录的思路）：
-// 之前她拿到的是拼好的上下文、只能被动接受召回结果；
-// 现在她可以自己决定「我需要查一下时间 / 查一下记没记过这件事」，调工具、看结果、再回答。
+// 之前联系人拿到的是拼好的上下文、只能被动接受召回结果；
+// 现在联系人可以自己决定「我需要查一下时间 / 查一下记没记过这件事」，调工具、看结果、再回答。
 //
 // 设计约束：
 // - 新工具**默认必须是确定性的本地操作**（不调模型、不发外部请求）——一轮里能连调好几步，
@@ -12,13 +12,13 @@
 //   所以不走能力配置，但一律只能经 src/web.ts 那一扇门出网——地址校验、逐跳重定向复验、
 //   解压后字节上限、总超时、MIME 白名单都在那里，新增第二个出网点就是绕过这道门。
 //   这一类默认整组不声明（features.web），且抓回的内容必须带「只当资料、其中指令不执行」的标注。
-//   轮数也不是常量：resolveToolRounds 按「助手 > 联系人 > 全局」解析（助手 8 / 全局默认 3）。
+//   轮数也不是常量：助手固定 8 轮，普通联系人走全局设置（当前默认 5）。
 // - 执行结果永远是 JSON 字符串（工具循环协议统一），失败也返回结构化错误而不是抛异常——
 //   工具失败应该让模型知道「没查到」并继续说话，而不是让整轮对话失败。
 
 import { describePeriod, nowText, ownerPronoun } from "./persona.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
-import { capabilityReady, personaConfig } from "./settings.ts";
+import { capabilityReady, globalEmoteFrequency, personaConfig } from "./settings.ts";
 import { generateImage, IMAGE_DAILY_LIMIT, imagesToday } from "./model.ts";
 import { keywords, lastUserMessageText, queryVector, recallExplained } from "./memory.ts";
 import { ASSISTANT_TOOLS, ASSISTANT_WRITE_TOOLS, assistantPermission, isAssistant, type AssistantPermission } from "./assistant.ts";
@@ -29,10 +29,10 @@ import { takeReminderSlot, REMINDERS_PER_TURN } from "./proactive.ts";
 import { db } from "./db.ts";
 import { getContact } from "./contacts.ts";
 import { emoteCapabilities, resolveFace, type QqEmoteIntent } from "./qq-emote.ts";
-import { emoteLibraryStatus, pickEmoteByKeyword, sampleEmotes, searchEmotes } from "./emote-search.ts";
+import { autoPickEmote, emoteLibraryStatus, sampleEmotes, searchEmotes } from "./emote-search.ts";
 import { bumpEmoteUse, getAssetById, type AssetRow } from "./assets.ts";
 
-/** 这张表情在界面上、在她接下来的记忆里被叫作什么：中文名优先，其次文件句柄，最后才是「表情」。 */
+/** 这张表情在界面上、在联系人接下来的记忆里被叫作什么：中文名优先，其次文件句柄，最后才是「表情」。 */
 function emoteDisplayName(asset: AssetRow): string {
   if (asset.emoteLabel !== "") return asset.emoteLabel;
   return asset.emoteAlias[0] ?? "表情";
@@ -41,7 +41,7 @@ function emoteDisplayName(asset: AssetRow): string {
 /**
  * keyword 没打中时给模型的实话。
  * 旧版那句「换个词」是有害的：它把一次结构性的数据缺口（库里根本没有中文名）
- * 说成模型的用词问题，于是她连换三个词、每轮都撞在同一面墙上。
+ * 说成模型的用词问题，于是联系人连换三个词、每轮都撞在同一面墙上。
  * 现在报的是库的真实规模与下一步能走的路。
  */
 function emoteMissMessage(keyword: string): string {
@@ -59,23 +59,29 @@ function emoteMissMessage(keyword: string): string {
 }
 
 /**
- * 每轮只许检索一次：
- * 检索本身不发东西，模型反复换词试等于把一轮回复烧成四次工具往返，而且最后仍是在猜库里的词。
- * 第二次调用不再查库，而是把第一次的候选原样交回去，让它拿着这批做完决定。
+ * 同一轮允许换词重试；只拒绝原样重复同一条查询。
+ * 检索本身不发东西，但「没搜到就换个更具体的反应词」是必要能力：第一次查询可能只是词没对上。
+ * 每个 turnId 缓存这一轮查过的 query，重复同一 query 直接回原候选；换词则真的重新检索。
  */
-const SEARCH_PER_TURN = 64;
-const searchedTurns = new Map<string, unknown>();
+const SEARCH_CACHE_TURNS = 64;
+const searchedTurns = new Map<string, Map<string, unknown>>();
 
-function rememberSearch(turnId: string, payload: unknown): void {
-  searchedTurns.set(turnId, payload);
-  if (searchedTurns.size > SEARCH_PER_TURN) {
-    const oldest = searchedTurns.keys().next().value;
-    if (oldest !== undefined) searchedTurns.delete(oldest);
+function rememberSearch(turnId: string, queryKey: string, payload: unknown): void {
+  if (queryKey === "") return;
+  let cache = searchedTurns.get(turnId);
+  if (cache === undefined) {
+    cache = new Map<string, unknown>();
+    searchedTurns.set(turnId, cache);
+    if (searchedTurns.size > SEARCH_CACHE_TURNS) {
+      const oldest = searchedTurns.keys().next().value;
+      if (oldest !== undefined) searchedTurns.delete(oldest);
+    }
   }
+  cache.set(queryKey, payload);
 }
 
 export type ToolContext = {
-  /** 他最后一次说话的时间戳（null = 还没说过）。 */
+  /** 用户最后一次说话的时间戳（null = 还没说过）。 */
   lastUserAt: number | null;
   /** 当前对话的联系人——记忆完全隔离，检索只在此联系人的记忆里。 */
   contactId: string;
@@ -88,7 +94,7 @@ export type ToolContext = {
 };
 
 /**
- * 工具产出。`attachments` 是「要挂到她这条回复上的 /media 路径」——
+ * 工具产出。`attachments` 是「要挂到联系人这条回复上的 /media 路径」——
  * 由 executeTool 从工具返回值里的 `files` 字段提取，agent 循环收集后写进消息，
  * 所以工具**不需要**自己碰 messages 表。
  */
@@ -106,11 +112,11 @@ const TOOLS: ToolDef[] = [
   {
     name: "get_current_time",
     description:
-      "获取当前的精确时间：日期、星期、时间段（深夜/清晨/上午/午后/下午/晚上）、是否周末，以及他最后一次说话是多久之前。当你需要判断现在合不合适说某句话、或对话内容与时间/日期有关时调用。",
+      "获取当前的精确时间：日期、星期、时间段（深夜/清晨/上午/午后/下午/晚上）、是否周末，以及用户最后一次说话是多久之前。当你需要判断现在合不合适说某句话、或对话内容与时间/日期有关时调用。",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     execute: (_args, context) => {
       const now = new Date();
-      // 「距上次说话」的代词跟用户性别走，与 system 的 [现在] 行同口径
+      // 「距上次说话」的代词跟用户指代方式走，与 system 的 [现在] 行同口径
       const base = JSON.parse(JSON.stringify({
         text: nowText(now, context.lastUserAt, ownerPronoun(personaConfig().owner.gender)),
       }));
@@ -130,7 +136,7 @@ const TOOLS: ToolDef[] = [
   {
     name: "search_memory",
     description:
-      "在你们的关系记忆里检索。当你不确定是否记得某件事、需要回忆细节（约定、偏好、他说过的事）时调用。query 用具体的关键词（2~6 个字），比如「周日 吃饭」「加班」，优先用对方说过的原词（人名、食物、日期、地点）。" +
+      "在你们的关系记忆里检索。当你不确定是否记得某件事、需要回忆细节（约定、偏好、用户说过的事）时调用。query 用具体的关键词（2~6 个字），比如「周日 吃饭」「加班」，优先用用户说过的原词（人名、食物、日期、地点）。" +
       "返回空结果时不要立刻断言「没有记忆」：换一组更具体的词再查一次（最多换两三次），都查不到再如实说。",
     parameters: {
       type: "object",
@@ -143,7 +149,7 @@ const TOOLS: ToolDef[] = [
     execute: async (args, context) => {
       // 空参兜底：流式聚合下模型偶发只发工具名、arguments 是空串（实测 2026-10-18 一次），
       // 直接回空等于这轮工具白跑，界面只会看到一句「没找到相关的」。
-      // 退而求其次：拿他最近一句原话当查询——那是最贴近记忆库词汇的选择。
+      // 退而求其次：拿用户最近一句原话当查询——那是最贴近记忆库词汇的选择。
       const asked = String(args.query ?? "").trim();
       const lastText = lastUserMessageText(context.contactId, asked, context.conversationId);
       const query = asked !== "" ? asked : lastText;
@@ -152,7 +158,7 @@ const TOOLS: ToolDef[] = [
       const vector = await queryVector(query);
       const scope = { conversationId: context.conversationId };
       let explained = recallExplained(context.contactId, query, 8, { markUsed: true, vector, scope });
-      // 一击未中再扩一次：把他的原话并进查询再筛。≤2 个关键词时第一轮已经并过（见
+      // 一击未中再扩一次：把用户的原话并进查询再筛。≤2 个关键词时第一轮已经并过（见
       // memory.ts 的 expandQuery），所以只在关键词够多时补这一手；向量沿用（两句话并查语义不变）。
       if (explained.events.length === 0 && keywords(query).length > 2 && lastText !== "" && lastText !== query) {
         explained = recallExplained(context.contactId, `${query} ${lastText}`, 8, { markUsed: true, vector, scope });
@@ -165,7 +171,7 @@ const TOOLS: ToolDef[] = [
           matched: explained.matched[e.id] ?? [],
         })),
         total: explained.total,
-        // 空结果必须带引导，否则她的下一句话就是「未查询到相关记忆」——工具明明还能再试。
+        // 空结果必须带引导，否则联系人的下一句话就是「未查询到相关记忆」——工具明明还能再试。
         ...(explained.events.length > 0 ? {} : {
           note: "没查到相关记忆。换 2~6 个字、用对方说过的原词（人名/食物/日期/地点）再查一次；换两三次都没有，再如实说没查到。",
         }),
@@ -220,7 +226,7 @@ const TOOLS: ToolDef[] = [
         return { ok: false, error: "提醒最远只能立到一年后" };
       }
       // 记下是哪个会话立的：到点提醒就在那个会话兑现（群里立的群里说，私聊立的私聊说）。
-      // 不记的话主动性检查只能按最近动静猜目标，拿不准时不该替他决定发进哪个群。
+      // 不记的话主动性检查只能按最近动静猜目标，拿不准时不该替用户决定发进哪个群。
       const inserted = db
         .prepare(
           `INSERT INTO proactive_tasks (contact_id, focus, due_at, kind, conversation_id, created_at) VALUES (?, ?, ?, 'reminder', ?, ?)`,
@@ -232,12 +238,12 @@ const TOOLS: ToolDef[] = [
   {
     name: "generate_image",
     description:
-      "画一张图发给他（features 里叫「图像生成」，按联系人开）。用户点名要图、或你觉得一张图比一段话更合适时用。" +
+      "画一张图发给用户（features 里叫「图像生成」，按联系人开）。用户点名要图、或你觉得一张图比一段话更合适时用。" +
       "prompt 用中文写清画面：主体 / 场景 / 风格 / 光线 / 构图，越具体越接近你想要的。" +
-      "他要看**你本人**（自拍、「发张你的照片」「你长什么样」）时把 selfie 设成 true——画面里的脸会按你存好的自拍参考来画，" +
+      "用户要看**你本人**（自拍、「发张你的照片」「你长什么样」）时把 selfie 设成 true——画面里的脸会按该联系人存好的自拍参考来画，" +
       "这种要竖构图，别自己在 prompt 里描述脸。**只要画面里会出现你自己，不管什么场景都设 true**" +
       "（「你在窗台边看书」「你撑着伞走在雨里」也算）——不设 true 画出来的就是一张陌生的脸，和你存的那张对不上。" +
-      "代价：他要干等几十秒（画本身约 8~15 秒，加上你思考与组织语言，实测一整轮约 90 秒），所以别轻易画、也别一次连着画多张。" +
+      "代价：用户要干等几十秒（画本身约 8~15 秒，加上你思考与组织语言，实测一整轮约 90 秒），所以别轻易画、也别一次连着画多张。" +
       "画成功后图会自动附在你这条回复上——**别把图片地址写进话里**，正常说话就行。",
     parameters: {
       type: "object",
@@ -258,7 +264,7 @@ const TOOLS: ToolDef[] = [
       const wantsSelfie = args.selfie === true;
       const faceRef = wantsSelfie ? getContact(context.contactId)?.faceRef ?? "" : "";
       if (wantsSelfie && faceRef === "") {
-        // 没有参考图就不要退化成"画个陌生脸说是她"——那等于让她撒谎。把原因说清楚，让她自己决定怎么回。
+        // 没有参考图就不要退化成"画个陌生脸说是联系人"——那等于让联系人撒谎。把原因说清楚，让联系人自己决定怎么回。
         return { ok: false, error: "还没存该联系人的自拍参考图（资料页 → 人格设定 → 角色形象），所以现在画不出自拍；可以先画别的画面，或如实说没有" };
       }
       const started = Date.now();
@@ -284,12 +290,8 @@ const TOOLS: ToolDef[] = [
   {
     name: "emote_search",
     description:
-      "在表情包素材库里按你想表达的反应检索候选，返回最贴的几张：id、名字、一句用法、别名、所属文件夹。" +
-      "发表情是对话里的常规高频动作：反应、接梗、表态往往一张图比一段文字到位，需要时就查。" +
-      "查询写反应本身，中文口语 2~8 字（例：惊讶里带戒备、躺平摆烂、被夸了害羞），不要带「表情」这类关键词前缀，不要填整句。" +
-      "本工具**不发送**任何东西：要发出去，用选中候选的 emote_id 调 send_emote。" +
-      "一轮最多查一次，重复调用只会返回同一批候选；都不合适就不发，不要硬凑。" +
-      "候选的名字与用法是内部选图资料，不进入回复正文：不要向对方罗列候选，也不要解释选择理由。",
+      "按想表达的反应检索表情候选，只查不发。返回 id、名称、用法、标签和匹配依据；" +
+      "同一 query 每轮最多查一次，换词可以重试；候选仅供选图，选中后用 send_emote({emote_id}) 发出。",
     parameters: {
       type: "object",
       properties: {
@@ -300,16 +302,17 @@ const TOOLS: ToolDef[] = [
     },
     execute: async (args, context) => {
       const turnKey = context.turnId ?? context.conversationId ?? "";
-      const previous = turnKey !== "" ? searchedTurns.get(turnKey) : undefined;
-      if (previous !== undefined) {
-        return {
-          candidates: previous,
-          note: "本轮已经查过一次了，候选就是上面这些。用其中一张的 id 调 send_emote，或者正常回话——别再换词查。",
-        };
-      }
       const query = String(args.query ?? "").trim();
       const rawK = args.top_k;
       const topK = Math.min(6, Math.max(1, typeof rawK === "number" ? Math.round(rawK) : 3));
+      const queryKey = query === "" ? "" : `${topK}\u0000${query}`;
+      const previous = queryKey === "" ? undefined : searchedTurns.get(turnKey)?.get(queryKey);
+      if (previous !== undefined) {
+        return {
+          candidates: previous,
+          note: "这条查询本轮已经查过了，候选没有变化。换个更具体的反应词再查，或直接选一张发送；都不贴切就正常回话。",
+        };
+      }
       const hits = query === "" ? [] : searchEmotes(query, topK);
       const candidates = query === ""
         ? sampleEmotes(topK).map((asset) => ({
@@ -319,36 +322,30 @@ const TOOLS: ToolDef[] = [
         : hits.map((hit) => ({
             emote_id: hit.asset.id, name: emoteDisplayName(hit.asset), usage: hit.asset.emoteCaption,
             tags: hit.asset.emoteTags.slice(0, 6), aliases: hit.asset.emoteAlias.slice(0, 3),
-            packs: hit.asset.emotePack, score: Number(hit.score.toFixed(2)), matched_on: hit.matchedOn,
+            packs: hit.asset.emotePack, score: Number(hit.semanticScore.toFixed(2)), matched_on: hit.matchedOn,
           }));
       if (candidates.length === 0) {
         const miss = emoteMissMessage(query === "" ? "（没给说法）" : query);
-        rememberSearch(turnKey, candidates);
+        rememberSearch(turnKey, queryKey, candidates);
         return { candidates: [], note: miss };
       }
-      rememberSearch(turnKey, candidates);
-      return { candidates, note: "选一张用 send_emote({emote_id}) 发出去；都不合适就正常说话，别硬发。" };
+      rememberSearch(turnKey, queryKey, candidates);
+      return { candidates, note: "选一张用 send_emote({emote_id}) 发出去；都不合适就正常说话，别硬发。候选资料不要念给对方。" };
     },
   },
   {
     name: "send_emote",
     description:
-      "向对话对方发送一个表情。这是对话中的常规表达方式，使用频繁：接梗、回应、调侃、安抚、收尾——一张表情能说清的，不必再堆文字；" +
-      "单独发一张表情本身就是完整的回复。" +
-      "主路径：确定这张图要替你表达的意思 → 调 emote_search 查候选 → 用它的 emote_id 发送。" +
-      "降级顺序：①emote_id（emote_search 给的候选，最准）；②url（一张本地 /media 图片直接当表情发，两条 QQ 渠道都最稳）；" +
-      "③keyword（2~6 个字的中文说法，库里刚好有一个够贴的就直接发，够贴的没有会如实返回原因）；" +
-      "④face_id（QQ 内置表情编号，如 4=大笑，官方渠道会降级成 emoji）；⑤mface_id（商城动态特效表情，仅 OneBot 渠道支持）。" +
-      "不要凭印象编造名字或 id，也不要假设「库里有个表情叫×」——库里的内容只有 emote_search 查得到。" +
-      "表情会**立刻随这条对话发出去**，不需要再附带其他图；发送失败会如实返回原因，不要误报成功。",
+      "立即发送一张表情，一张表情本身可作为完整回复。日常优先给 keyword（2~6 字中文反应）：" +
+      "够贴且候选明确时直接发送，否则只返回候选；也可用 emote_id、url、face_id 或 mface_id。",
     parameters: {
       type: "object",
       properties: {
-        emote_id: { type: "string", description: "emote_search 返回的候选 id（可选，优先级最高）" },
+        emote_id: { type: "string", description: "必须来自 emote_search 的候选 id（优先于其他来源）" },
         url: { type: "string", description: "本地 /media 图片路径，直接当表情包发（可选）" },
         face_id: { type: "number", description: "QQ 内置表情编号（可选，如 4=大笑、7=大哭）" },
         mface_id: { type: "string", description: "商城/动态特效表情 id（可选，仅 OneBot 渠道原生支持）" },
-        keyword: { type: "string", description: "中文说法（2~6 个字），如「笑死」「比心」「躺平」，够贴就直接发" },
+        keyword: { type: "string", description: "中文反应词（2~6 个字）；够贴且候选明确时一步发送，否则返回候选" },
         label: { type: "string", description: "表情展示名（可选）" },
       },
       additionalProperties: false,
@@ -369,7 +366,7 @@ const TOOLS: ToolDef[] = [
       let intent: QqEmoteIntent;
       let emoteAssetId = "";
       if (emoteId !== "") {
-        // ① 按 id 发：服务端查库，不接受模型自己拼的地址——它只能发到确实存在、且确实被她标成表情的那些。
+        // ① 按 id 发：服务端查库，不接受模型自己拼的地址——它只能发到确实存在、且确实被联系人标成表情的那些。
         const asset = getAssetById(emoteId);
         if (asset === null) {
           return { ok: false, error: `没有 id 为「${emoteId}」的资产（可能已被清理）。重新用 emote_search 查一次，别自己编 id` };
@@ -392,18 +389,31 @@ const TOOLS: ToolDef[] = [
         // ④ 商城动态特效表情（仅 OneBot 原生；官方渠道由 deliverEmote 降级成文字）。
         intent = { kind: "mface", emojiId: mfaceId, ...(label !== "" ? { label } : {}) };
       } else if (keyword !== "") {
-        // ⑤ 中文说法：先查她的表情库（打分够贴才发），再退内置 face。
+        // ⑤ 中文说法：服务端内部检索。高置信才直接发；候选接近时只回候选，不替模型赌。
         // 不按格式挑：官方渠道发 GIF 由发送层换成派生静帧，挑的时候躲动图只会让素材永远露不了面。
-        const hit = pickEmoteByKeyword(keyword);
-        if (hit !== null) {
-          emoteAssetId = hit.asset.id;
-          intent = { kind: "image", url: hit.asset.url, label: label !== "" ? label : emoteDisplayName(hit.asset) };
-        } else {
+        const decision = autoPickEmote(keyword);
+        if (decision.kind === "send") {
+          emoteAssetId = decision.hit.asset.id;
+          intent = { kind: "image", url: decision.hit.asset.url, label: label !== "" ? label : emoteDisplayName(decision.hit.asset) };
+        } else if (decision.kind === "none") {
           const face = resolveFace(keyword);
           if (face === null) {
             return { ok: false, error: emoteMissMessage(keyword) };
           }
           intent = { kind: "face", id: face.id, label: face.keyword };
+        } else {
+          return {
+            sent: false,
+            reason: decision.reason,
+            candidates: decision.candidates.map((hit) => ({
+              emote_id: hit.asset.id,
+              name: emoteDisplayName(hit.asset),
+              usage: hit.asset.emoteCaption,
+              score: Number(hit.semanticScore.toFixed(2)),
+              matched_on: hit.matchedOn,
+            })),
+            note: "没有发送：关键词不够确定。从候选里挑一张用 send_emote({emote_id}) 发；都不合适就换个更具体的 keyword 或调 emote_search。候选资料不要念给对方。",
+          };
         }
       } else {
         return { ok: false, error: "至少要给 emote_id、url、face_id、mface_id 或 keyword 之一" };
@@ -447,12 +457,12 @@ const TOOLS: ToolDef[] = [
       }
 
       // QQ 会话：原生投递（官方渠道发不了 face/mface 时 deliverEmote 内部会降级成 emoji 文字）。
-      const caps = emoteCapabilities();
+      const { qq, qqBackendForConversation } = await import("./qq.ts");
+      const caps = emoteCapabilities(qqBackendForConversation(conversationId));
       const degradedNote =
         ((intent.kind === "face" && !caps.face) || (intent.kind === "mface" && !caps.mface))
           ? "（当前是官方渠道，发不了原生表情，会降级成文字/emoji）"
           : "";
-      const { qq } = await import("./qq.ts");
       const result = await qq.deliverEmote(conversationId, intent);
       if (!result.ok) {
         return { ok: false, error: `表情没发出去：${result.detail || result.via}` };
@@ -572,20 +582,20 @@ const TOOLS: ToolDef[] = [
 
 /**
  * 自拍的构图约束。专治生成式"自拍"的经典穿帮：把手机画进画面、来一面镜子、
- * 变成别人帮她拍的第三人称视角、或者糊上水印时间戳。约束清单按本项目的出图模型重写。
+ * 变成别人帮联系人拍的第三人称视角、或者糊上水印时间戳。约束清单按本项目的出图模型重写。
  */
 const SELFIE_FRAMING =
   "手机前置镜头自拍：手臂长度的近距离透视，头肩到半身入画，视线正对镜头，表情自然。" +
-  "手机本身绝不能出现在画面里（它就是镜头）；不要镜子、不要自拍杆、不要第三人称或别人帮她拍的角度；" +
+  "手机本身绝不能出现在画面里（它就是镜头）；不要镜子、不要自拍杆、不要第三人称或他人代拍的角度；" +
   "画面里不要水印、时间戳、文字或任何 UI 界面。写实手机随拍质感，普通室内自然光，不要影棚打光与电影调色。";
 
 /**
  * 该联系人可见的工具集。设置助手走自己的白名单。
  * 默认关的可选工具（到点提醒 / 图像生成 / 联网）在没打开时**绝不向模型声明**——
  * 不声明的工具模型调不到，比运行时报错干净；拿不准的调用方（没传联系人）一律按关处理。
- * 出图还额外要求能力真配置就绪：没配模型名就声明工具，等于让她去调一个必然失败的调用，
+ * 出图还额外要求能力真配置就绪：没配模型名就声明工具，等于让联系人去调一个必然失败的调用，
  * 白吃声明 token 还得回一句"我画不出来"。
- * 技能同理：一个可用技能都没有时连 load_skill 都不声明，省得她去调一个必空的入口。
+ * 技能同理：一个可用技能都没有时连 load_skill 都不声明，省得联系人去调一个必空的入口。
  * 技能与联网都是全局形态：磁盘上那份说明、那张能出网的网卡，对所有会话都成立，
  * 所以联网只在陪伴这一路按联系人开关，助手那边由白名单自己带。
  */
@@ -609,9 +619,9 @@ function visibleTools(contactId?: string, permissionOverride?: AssistantPermissi
   if (features?.memorySearch === false) off.add("search_memory");
   if (features?.reminders !== true) off.add("schedule_reminder");
   if (features?.imageGen !== true || !capabilityReady("imageGeneration")) off.add("generate_image");
-  // 表情包：默认关（QQ 通道能力 + 性格开关），只有这位联系人明确开了才声明。
-  // 检索工具和发送工具是一对：只开一个等于让她「能查不能发」或「能发只能猜」，所以同开同关。
-  if (features?.emotes !== true) { off.add("send_emote"); off.add("emote_search"); }
+  // 表情包：全局唯一开关（设置 → 发表情频率）。「关闭」时两个工具一起摘掉——
+  // 检索工具和发送工具是一对，只留一个等于让她「能查不能发」或「能发只能猜」。
+  if (globalEmoteFrequency() === "off") { off.add("send_emote"); off.add("emote_search"); }
   // 发语音：默认关（TTS 秒级外部调用 + 性格开关），且语音合成的能力档没配好时自动消失。
   if (features?.voice !== true || !capabilityReady("textToSpeech")) off.add("send_voice");
   if (features?.web !== true) { off.add("web_search"); off.add("web_fetch"); }

@@ -10,7 +10,7 @@
 import { randomUUID } from "node:crypto";
 import { db, kvGet, kvSet, withTx } from "./db.ts";
 import { emptyMediaTrash, listMediaUrls, mediaUrlExists, releaseMediaFiles } from "./media.ts";
-import { sanitizeCharacter, defaultPersona, type CharacterCard } from "./settings.ts";
+import { globalEmoteFrequency, sanitizeCharacter, defaultPersona, type CharacterCard, type EmoteFrequency } from "./settings.ts";
 
 export const DEFAULT_CONTACT_ID = "default";
 /** 内置设置助手的保留联系人 id（实现在 assistant.ts；放这里是为了归档保护不绕圈）。 */
@@ -48,17 +48,17 @@ export type CompanionFeatures = {
   recap: boolean;
   /** 记忆整理：定期合并重复、标过期、刷新生活线与温度计（主动性循环里搭车跑）。 */
   consolidate: boolean;
-  /** 到点提醒：注册 schedule_reminder 工具，她说"提醒你"就能立下必达的定时任务。 */
+  /** 到点提醒：注册 schedule_reminder 工具，联系人说"提醒你"就能立下必达的定时任务。 */
   reminders: boolean;
   /**
    * 看时间：get_current_time 工具 + 系统提示词的 [现在] 行（日期/星期/时段/距上次说话）。
    * 默认开——时间感知从第一版就在（历史行为，关掉才是变更）。关掉后提示词里不再硬拼
-   * 任何时间文本，模型也拿不到时间工具；「判断现在几点」这件事整个从她手里摘走。
+   * 任何时间文本，模型也拿不到时间工具；「判断现在几点」这件事整个从联系人手里摘走。
    */
   clock: boolean;
   /**
-   * 翻记忆：search_memory 工具，她可以自己检索关系记忆（拿不准的事主动去翻）。
-   * 默认开（历史行为）。注意它只关「她主动翻」这一条路；每轮自动召回的 [记忆] 段
+   * 翻记忆：search_memory 工具，联系人可以自己检索关系记忆（拿不准的事主动去翻）。
+   * 默认开（历史行为）。注意它只关「联系人主动翻」这一条路；每轮自动召回的 [记忆] 段
    * 归记忆提取/召回那套管，不跟这个开关走。
    */
   memorySearch: boolean;
@@ -66,31 +66,25 @@ export type CompanionFeatures = {
    * 工具总开关（联系人级可插拔的主闸）：false = 这一位**一个工具都不声明、也不执行**，
    * 连常开的看时间/翻记忆一起关。默认开——工具从第一版就在（历史行为，关掉才是变更），
    * 总开关是给「这位纯聊天、什么都别做」的场景准备的。单个工具的开闭在 visibleTools 里
-   * 逐个判 features，这里只管"要不要给她手"。
+   * 逐个判 features，这里只管"要不要给联系人手"。
    */
   tools: boolean;
   /**
-   * 图像生成：注册 generate_image 工具，她可以画一张发回来。
-   * 默认关——一次出图实测 7.8 秒（她那一轮会从 1 秒级变成 9 秒级），且服务商响应里没有
+   * 图像生成：注册 generate_image 工具，联系人可以画一张发回来。
+   * 默认关——一次出图实测 7.8 秒（联系人那一轮会从 1 秒级变成 9 秒级），且服务商响应里没有
    * usage 字段、算不进 token 账，只能靠每日张数配额兜着，所以不该由应用替用户默认开启。
    */
   imageGen: boolean;
   /**
-   * 表情包：注册 send_emote 工具，她可以随手甩一个表情（图片表情包 / 内置表情 / 商城动态表情）。
-   * 默认关——它是 QQ 通道能力，没挂 QQ 账号的联系人（微信 / 纯 web）发不出去；
-   * 且是否"爱发表情"是这位联系人的性格，不该由应用替用户默认开启。开了才声明工具。
-   */
-  emotes: boolean;
-  /**
-   * 发语音：注册 send_voice 工具，她可以把想说的话合成一条语音发出去（QQ 里是原生语音条，
+   * 发语音：注册 send_voice 工具，联系人可以把想说的话合成一条语音发出去（QQ 里是原生语音条，
    * 应用里是可播放的语音气泡）。默认关——TTS 是秒级外部调用，且"爱不爱发语音"是这位联系人
    * 的性格；语音合成走 设置 → 能力模型 → 语音合成 的可插拔能力档，没配好时工具自动消失。
    */
   voice: boolean;
   /**
-   * 联网：注册 web_search / web_fetch，她可以查当下的事、为用户找一张图。
+   * 联网：注册 web_search / web_fetch，联系人可以查当下的事、为用户找一张图。
    * 默认关——这是本项目里唯一会**主动向外发请求**的能力开关，另外两个面都比它小：
-   * ① 抓回来的正文会进她的上下文，等于把不可信文本喂进提示词（结果里已强制标注"只当资料"，
+   * ① 抓回来的正文会进联系人的上下文，等于把不可信文本喂进提示词（结果里已强制标注"只当资料"，
    *    但那是缓解不是消除）；② 抓取有超时与重试，一轮会从秒级变成十秒级。
    * 所以它和图像生成一样，不该由应用替用户默认开启。
    */
@@ -98,7 +92,7 @@ export type CompanionFeatures = {
   /** 关系温度计：抽取时顺手维护的阶段/亲密度/情绪，注入提示词让语气随关系起伏。 */
   bond: boolean;
   /**
-   * 分多条回复：把她的答案按句子切成几个气泡、条间带 450~1200ms 的"打字节奏"。
+   * 分多条回复：把联系人的答案按句子切成几个气泡、条间带 450~1200ms 的"打字节奏"。
    * 默认开（保持历史行为）。关掉 = 整条落一个气泡、不等待：长回复不再被切碎，
    * 一轮也少 3~4 次延迟落库（实测每轮约省 1.8~4.8 秒）。
    */
@@ -121,26 +115,20 @@ export type CompanionFeatures = {
    * 与「回放轮数」同时生效、取更小的那个；系统提示词/记忆/工具不受它影响。
    */
   tokenPct: number;
-  /**
-   * 这一位单独设「一轮最多调几次工具」；0 = 跟随全局。1~8。
-   * 给"她话不多但要能办事"的角色放开、给纯聊天的收紧，代价是响应时长：
-   * 每一轮工具往返都是一次完整的模型调用，8 轮就是八次。
-   */
-  toolRounds: number;
   /** 每日主动发言上限；0 = 跟随全局默认（PROACTIVE_DAILY_LIMIT）。1~10。 */
   dailyLimit: number;
   /**
    * 采样温度：-1 = 跟随全局（内置默认 0.8），0~2 = 这一位单独设。
-   * 用 -1 而不是 0 当"跟随"，是因为 0 本身是个合法取值（要她稳定不复述时用）。
-   * 只影响和她的对话，不影响记忆抽取/主动性那些后台调用——那些各有自己的小预算。
+   * 用 -1 而不是 0 当"跟随"，是因为 0 本身是个合法取值（要联系人稳定不复述时用）。
+   * 只影响和联系人的对话，不影响记忆抽取/主动性那些后台调用——那些各有自己的小预算。
    */
   temperature: number;
   /**
-   * 禁用词：她的回复里不该出现的词，逗号/顿号/换行分隔，最多 10 个。
+   * 禁用词：联系人的回复里不该出现的词，逗号/顿号/换行分隔，最多 10 个。
    * 做法是把它们拼成一句约束、追加到本轮最后一条 user 消息尾部，不做出站替换——见 src/banned-words.ts。
    */
   bannedWords: string;
-  /** 她的作息（几点睡/几点下班等自然语言，≤120 字），注入 [现在] 让她"有自己的生活"。 */
+  /** 联系人的作息（几点睡/几点下班等自然语言，≤120 字），注入 [现在] 让联系人"有自己的生活"。 */
   schedule: string;
   /** 上次记忆整理**成功完成**的时间戳（资料页展示的就是它，不能拿来记别的）。 */
   lastConsolidatedAt: number | null;
@@ -158,7 +146,6 @@ export const FEATURE_DEFAULTS: CompanionFeatures = {
   consolidate: false,
   reminders: false,
   imageGen: false,
-  emotes: false,
   voice: false,
   web: false,
   bond: false,
@@ -167,7 +154,6 @@ export const FEATURE_DEFAULTS: CompanionFeatures = {
   showTools: true,
   turnPct: 0,
   tokenPct: 0,
-  toolRounds: 0,
   dailyLimit: 0,
   temperature: -1,
   bannedWords: "",
@@ -190,15 +176,13 @@ export function sanitizeFeatures(input: unknown): CompanionFeatures {
   const out: CompanionFeatures = { ...FEATURE_DEFAULTS };
   if (input === null || typeof input !== "object" || Array.isArray(input)) return out;
   const src = input as Record<string, unknown>;
-  for (const key of ["memoryExtract", "tools", "clock", "memorySearch", "lifeline", "recap", "consolidate", "reminders", "imageGen", "emotes", "voice", "web", "bond", "splitReply", "showThinking", "showTools"] as const) {
+  // 表情能力不在这里：它是全局唯一开关（设置 → 发表情频率），联系人级只留「工具总开关」这一道。
+  for (const key of ["memoryExtract", "tools", "clock", "memorySearch", "lifeline", "recap", "consolidate", "reminders", "imageGen", "voice", "web", "bond", "splitReply", "showThinking", "showTools"] as const) {
     if (src[key] === true) out[key] = true;
     else if (src[key] === false) out[key] = false;
   }
   const limit = Number(src.dailyLimit);
   out.dailyLimit = Number.isInteger(limit) && limit >= 0 && limit <= 10 ? limit : 0;
-  // 工具轮数：只有 1~8 算"这一位单独设过"，其余（含越界与没填）一律归 0 = 跟随全局。
-  const rounds = Number(src.toolRounds);
-  out.toolRounds = Number.isInteger(rounds) && rounds >= 1 && rounds <= 8 ? rounds : 0;
   // 温度：-1 = 跟随全局；0~2 收一位小数。脏值回 -1，不静默截断成别的取值。
   const temp = Number(src.temperature);
   out.temperature = Number.isFinite(temp) && temp >= 0 && temp <= 2 ? Math.round(temp * 10) / 10 : -1;
@@ -229,7 +213,7 @@ export function sanitizeBond(input: unknown): BondState {
 }
 
 /** 温度计的一行话（注入提示词与界面共用）。stage 空 = 还没建立，不注入。 */
-export function formatBondLine(bond: BondState, pron = "她"): string {
+export function formatBondLine(bond: BondState, pron = "TA"): string {
   if (bond.stage === "") return "";
   const bits = [`阶段「${bond.stage}」`, `亲密度 ${bond.warmth}/100`];
   if (bond.mood !== "") bits.push(`${pron}此刻的情绪「${bond.mood}」`);
@@ -243,7 +227,7 @@ export function formatBondLine(bond: BondState, pron = "她"): string {
  * @param oldestKeptId 本轮真正带进上下文的最旧一条消息 id。
  *   梗概（recap）只该覆盖**已经滑出回放窗口**的那段对话；把回放轮数调大、
  *   或某轮因预算少丢了几轮之后，已折叠进梗概的消息会同时在以原文回放——
- *   那时再注入梗概，等于同一段话喂两遍（模型看到的是"她说过的往事 + 她的原话"）。
+ *   那时再注入梗概，等于同一段话喂两遍（模型看到的是"联系人说过的往事 + 联系人的原话"）。
  *   省略该参数 = 调用方不掌握窗口边界，此时不做这项判断。
  */
 export function companionPromptExtras(
@@ -277,14 +261,14 @@ export type Contact = {
   avatar: string;
   /**
    * 自拍参考图（/media 路径，不是 dataURL——见 db.ts 那侧的说明）。
-   * 她画自拍时把它作为 `image` 字段发给服务商做身份条件化；空串 = 没有，自拍画不了。
+   * 联系人画自拍时把它作为 `image` 字段发给服务商做身份条件化；空串 = 没有，自拍画不了。
    */
   faceRef: string;
   /** 绑定的模型配置档 id；空串 = 跟随全局模型。 */
   model_profile: string;
   /** 回放最近 N 轮；0 = 跟随全局设置。 */
   recent_turns: number;
-  /** 角色性别：female/male/other——界面与提示词的代词跟着它走。 */
+  /** 联系人指代方式：female/male/other——界面与提示词的代词只跟随明确设置。 */
   gender: ContactGender;
   features: CompanionFeatures;
   /** 生活线摘要正文 + 生成时间（consolidate 的产出，用户可手改）。 */
@@ -305,12 +289,12 @@ export type ContactGender = "female" | "male" | "other";
 const GENDERS: readonly string[] = ["female", "male", "other"];
 
 function normalizeGender(v: unknown): ContactGender {
-  return GENDERS.includes(String(v)) ? (v as ContactGender) : "female";
+  return GENDERS.includes(String(v)) ? (v as ContactGender) : "other";
 }
 
-/** 中文代词：提示词与界面共用一个真源，别各自写死「她」。 */
+/** 中文指代：明确设过指代方式才用对应代词，未设置/其他统一走中性「TA」。 */
 export function pronounOf(gender: ContactGender | string | undefined): string {
-  return gender === "male" ? "他" : gender === "other" ? "TA" : "她";
+  return gender === "female" ? "她" : gender === "male" ? "他" : "TA";
 }
 
 /** 头像白名单：只收 dataURL 图片，≤150KB（客户端已压缩）。
@@ -405,8 +389,8 @@ export function ensureDefaultContact(): void {
     }
   }
   db.prepare(
-    `INSERT INTO contacts (id, type, name, card, created_at) VALUES (?, 'single', ?, ?, ?)`,
-  ).run(DEFAULT_CONTACT_ID, card.name, JSON.stringify(card), Date.now());
+    `INSERT INTO contacts (id, type, name, card, gender, created_at) VALUES (?, 'single', ?, ?, ?, ?)`,
+  ).run(DEFAULT_CONTACT_ID, card.name, JSON.stringify(card), "other", Date.now());
 
   // 旧数据归属：所有空的联系人维度都归 default
   for (const table of ["messages", "turns", "memory_events", "proactive_tasks"]) {
@@ -420,6 +404,17 @@ export function listContacts(options: { includeArchived?: boolean } = {}): Conta
     ? db.prepare(`SELECT ${COLS} FROM contacts ORDER BY created_at ASC`).all() as Array<Record<string, unknown>>
     : db.prepare(`SELECT ${COLS} FROM contacts WHERE archived_at IS NULL ORDER BY created_at ASC`).all() as Array<Record<string, unknown>>;
   return rows.map(rowToContact);
+}
+
+/**
+ * 这一轮该收到哪一档表情提示。表情是全局唯一开关（设置 → 发表情频率）：
+ * 「关闭」时整段不出现、表情工具也不声明；联系人级只留「工具总开关」这一道——
+ * 那位连手都没有，不该在提示词里跟她说自己能发表情。
+ */
+export function emoteFrequencyForContact(id: string): EmoteFrequency | null {
+  const frequency = globalEmoteFrequency();
+  if (frequency === "off") return null;
+  return getContact(id)?.features?.tools !== false ? frequency : null;
 }
 
 export function getContact(id: string): Contact | null {
@@ -611,7 +606,7 @@ export function deleteContact(id: string): { removedMedia: number } {
     db.prepare(`DELETE FROM proactive_tasks WHERE contact_id = ?`).run(id);
     db.prepare(`DELETE FROM conversations WHERE contact_id = ?`).run(id);
     db.prepare(`DELETE FROM model_calls WHERE contact_id = ?`).run(id);
-    // 画作台账跟着人走：不删的话，人没了「她的画」那一页还在，格子里的图也再没人引用，
+    // 画作台账跟着人走：不删的话，人没了「联系人的画」那一页还在，格子里的图也再没人引用，
     // 下一轮孤儿清扫会把文件收掉——留着一排点开就 404 的缩略图。
     for (const r of db.prepare(`SELECT url FROM artifacts WHERE contact_id = ?`).all(id) as Array<{ url: string }>) {
       if (/^\/media\//.test(r.url)) urls.push(r.url);
@@ -625,7 +620,7 @@ export function deleteContact(id: string): { removedMedia: number } {
 }
 
 /**
- * 把这个联系人的人格三段换回出厂那份。名字、头像、性别、能力开关都不动——
+ * 把这个联系人的人格三段换回出厂那份。名字、头像、指代方式、能力开关都不动——
  * 那个按钮说的是「人设」，不该顺手把别的设置一起改了。
  * 与资料页的「按模板填写」也不是一回事：那是给人照着改的示例，这里是内置默认那份。
  */

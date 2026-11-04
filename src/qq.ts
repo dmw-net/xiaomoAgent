@@ -9,7 +9,7 @@ import { db, kvGet, kvSet } from "./db.ts";
 import { getChannel } from "./channels/types.ts";
 import { getContact } from "./contacts.ts";
 import { logModelCall } from "./logs.ts";
-import { asText, chunkSegments, CredentialCache, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight, withRaw } from "./channels/delivery.ts";
+import { asText, chunkSegments, CredentialCache, deliverOutbound, deliveryAllowed, redact, SeenKeys, SingleFlight, withRaw, type DeliveryResult } from "./channels/delivery.ts";
 import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations, setConversationMembership, type Conversation, type QQGroupTriggerMode } from "./conversations.ts";
 import { MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, readMedia, saveAudio, saveImage, saveVideo, sniffImageMime } from "./media.ts";
 import { needsStaticVariant, staticFrameOf } from "./renditions.ts";
@@ -89,6 +89,10 @@ export type QQBindingView = {
   hasUserOpenId: boolean;
   status: QQStatus; hasReplyWindow: boolean; lastError: string; lastReceivedAt: string;
   lastSentAt: string; createdAt: string; conversations: QQConversationView[];
+  /** OneBot 渠道专属：主人的真实 QQ 号（私聊投递目标；群聊里据此把主人从群成员里认出来）。官方渠道靠 userOpenId 对比，不设此字段。 */
+  ownerQq?: string;
+  /** OneBot 渠道专属：完整绑定的真实 QQ 号（userOpenId 在视图里是脱敏的，编辑表单需要原值回填）。 */
+  qqNumber?: string;
 };
 type StoredAccount = {
   id: string; contactId: string; appId: string; clientSecret: string; enabled: boolean; proactive: boolean;
@@ -146,7 +150,7 @@ function inboundMediaFiles(message: Record<string, unknown>): InboundMedia[] {
 
 /**
  * 平台把 @ 从正文里剥掉了，被 @ 的昵称只剩在 mentions[] 里——不补回正文，
- * 模型看到的「就是 他呀」就丢了「在跟谁说话」。bot 自己不在 mentions 里，仍再挡一次。
+ * 模型看到的「就是 用户呀」就丢了「在跟谁说话」。bot 自己不在 mentions 里，仍再挡一次。
  */
 function withMentions(text: string, message: Record<string, unknown>): string {
   const names: string[] = [];
@@ -347,9 +351,13 @@ class Gateway {
   }
 }
 
-export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => number; socketFactory?: (url: string) => QQSocket } = {}) {
+export function createQQService(deps: {
+  fetchImpl?: typeof fetch; now?: () => number; socketFactory?: (url: string) => QQSocket;
+  isEnabledForContact?: (contactId: string) => boolean;
+} = {}) {
   const http = deps.fetchImpl ?? globalThis.fetch;
   const clock = deps.now ?? ((): number => Date.now());
+  const acceptsContact = deps.isEnabledForContact ?? ((): boolean => true);
   let accounts: StoredAccount[] = [];
   let hydrated = false;
   let disposed = false;
@@ -522,7 +530,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
           const mime = sniffImageMime(body);
           if (mime === "") throw new Error("图片魔数无法识别");
           savedUrl = saveImage(body, mime).url; savedMime = mime;
-          // 表情系统自动采集：开关开着就把他发来的图顺手登记成素材（关则 no-op）。
+          // 表情系统自动采集：开关开着就把用户发来的图顺手登记成素材（关则 no-op）。
           captureInboundEmote(savedUrl);
         } else if (entry.kind === "audio") {
           const saved = saveAudio(body); savedUrl = saved.url; savedMime = saved.mime;
@@ -795,7 +803,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     if (conv === null || conv.channel !== "qq" || !conv.enabled) {
       return { ok: false, native: false, via: "skipped", detail: "会话不可用或不是 QQ 会话" };
     }
-    const render = renderEmote(intent);
+    const render = renderEmote(intent, "official");
     if (render.mediaRefs.length > 0) {
       // 图片类表情：只发图本身，不重复发标签文字。
       const outcome = conv.kind === "group"
@@ -821,11 +829,13 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     return { ok: false, native: false, via: "skipped", detail: "官方渠道发不了这种表情，已跳过" };
   };
 
-  const deliver = async (account: StoredAccount | null, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<void> => {
-    if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
-    const segments = splitQqText(text); if (segments.length === 0) return;
+  const deliver = async (account: StoredAccount | null, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<DeliveryResult> => {
+    if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) {
+      return { ok: false, error: "QQ 未配置、已停用或当前不允许主动投递" };
+    }
+    const segments = splitQqText(text); if (segments.length === 0) return { ok: false, error: "没有可发送的文字" };
     const startedAt = clock();
-    await deliverOutbound({
+    return await deliverOutbound({
       segments, send: (segment) => sendPrivate(account, segment, opts.msgId ?? ""), elapsed: () => clock() - startedAt,
       onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
       onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 投递失败（${account.contactId}）：${message}`); },
@@ -833,22 +843,27 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
     });
   };
 
-  const deliverToContact = async (contactId: string, text: string | string[], opts: { proactive?: boolean } = {}): Promise<void> => {
+  const deliverToContact = async (contactId: string, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<DeliveryResult> => {
     const account = byContact(contactId);
-    if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) return;
+    if (account === null || !configured(account) || !deliveryAllowed(account, opts.proactive === true)) {
+      return { ok: false, error: "QQ 联系人未绑定、已停用或当前不允许主动投递" };
+    }
     const inWindow = account.replyMessageId !== "" && clock() - account.replyMessageAt < REPLY_WINDOW_MS;
-    await deliver(account, text, { proactive: opts.proactive === true, msgId: inWindow ? account.replyMessageId : "" });
+    return await deliver(account, text, {
+      proactive: opts.proactive === true,
+      msgId: opts.msgId || (inWindow ? account.replyMessageId : ""),
+    });
   };
 
-  const deliverToConversation = async (conversationId: string, text: string | string[], opts: { triggerMessageId?: string } = {}): Promise<void> => {
+  const deliverToConversation = async (conversationId: string, text: string | string[], opts: { triggerMessageId?: string } = {}): Promise<DeliveryResult> => {
     const conv = getConversation(conversationId);
-    if (conv === null || conv.channel !== "qq" || !conv.enabled) return;
+    if (conv === null || conv.channel !== "qq" || !conv.enabled) return { ok: false, error: "QQ 会话不可用" };
     const account = byId(conv.account_id) ?? byContact(conv.contact_id);
-    if (account === null || !configured(account)) return;
-    if (conv.kind === "private") { await deliver(account, text, { msgId: opts.triggerMessageId || account.replyMessageId }); return; }
-    const segments = splitQqText(text); if (segments.length === 0) return;
+    if (account === null || !configured(account)) return { ok: false, error: "QQ 机器人账号未配置" };
+    if (conv.kind === "private") return await deliver(account, text, { msgId: opts.triggerMessageId || account.replyMessageId });
+    const segments = splitQqText(text); if (segments.length === 0) return { ok: false, error: "没有可发送的文字" };
     const startedAt = clock();
-    await deliverOutbound({
+    return await deliverOutbound({
       segments, send: (segment) => sendGroup(account, conv.external_id, segment, opts.triggerMessageId ?? ""), elapsed: () => clock() - startedAt,
       onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
       onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 群投递失败（${conv.id}）：${message}`); },
@@ -938,7 +953,7 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   };
 
   const acceptEvent = async (accountId: string, type: string, message: Record<string, unknown>): Promise<void> => {
-    const account = byId(accountId); if (account === null) return;
+    const account = byId(accountId); if (account === null || !acceptsContact(account.contactId)) return;
     if (type === "C2C_MESSAGE_CREATE") { await receivePrivate(account, message); return; }
     if (type === "GROUP_AT_MESSAGE_CREATE") { await receiveGroupAt(account, message); return; }
     if (type === "GROUP_ADD_ROBOT" || type === "GROUP_DEL_ROBOT") await receiveGroupLifecycle(account, type, message);
@@ -1136,70 +1151,165 @@ export function createQQService(deps: { fetchImpl?: typeof fetch; now?: () => nu
   };
 }
 
-/** 官方 Bot API 后端的单例。消费点应通过 qq-routed.ts 的门面（按 config.qq.backend 选择后端）。 */
-export const qqOfficial = createQQService();
+/** 官方 Bot API 后端的单例。消费点统一通过 qq 门面，按联系人选择后端。 */
+export const qqOfficial = createQQService({ isEnabledForContact: (contactId) => qqBackendFor(contactId) === "official" });
 
-/**
- * 后端统一接口：消费点（proactive / agent / index / 路由）只认这个面，
- * 不关心背后是官方 Bot API 还是 OneBot v11 协议端。QQService = 官方后端的返回形状。
- */
+/** 后端统一接口：消费点（proactive / agent / index / 路由）只认这个面。 */
 export type QQService = typeof qqOfficial;
+export type QQBackend = "official" | "onebot";
 
-/**
- * 消费点统一用的门面。背后两个后端：
- *   - "official"（默认）→ qq.ts 的官方 Bot API 后端；
- *   - "onebot"         → qq-onebot.ts 的 OneBot v11 协议端后端。
- * 两边都实现同一个 QQService 面，消费点零感知即可切换——而且切换是**运行期热切**：
- * 门面把每次成员调用实时分发到当前生效的实例，切换瞬间旧后端 stopAll、新后端 startAll，
- * 在飞的投递跑完旧实例自然收尾，下一条消息就走新渠道，全程不断服务。
- *
- * 选型的真源：界面里切换后落 KV（`qq.backend`）并当场热切；KV 同时是下次启动的初值，
- * 环境变量/desktop.json 只是没有界面选择时的缺省（config 是冻结的，不回写）。
- * 生效值统一从 qqBackend() 读：表情能力探测、路由分流都认它，永远对齐。
- */
 const QQ_BACKEND_KV = "qq.backend";
+const QQ_CONTACT_BACKEND_KV = "qq.backend.contacts.v1";
 const savedBackend = kvGet(QQ_BACKEND_KV);
-let effectiveBackend: "official" | "onebot" =
+let effectiveBackend: QQBackend =
   savedBackend === "official" || savedBackend === "onebot" ? savedBackend : config.qq.backend;
-/** 当前生效的 QQ 渠道（热切换由 applyQQBackend 改写，读方拿到的永远是现行值）。 */
-export function qqBackend(): "official" | "onebot" { return effectiveBackend; }
-/** 界面里选过、写在库里的渠道；与 qqBackend() 一致是常态，不一致只出现在写盘失败的瞬间。 */
-export function qqBackendSaved(): "official" | "onebot" | null {
+
+/** 没有联系人覆盖时使用的默认渠道。 */
+export function qqBackend(): QQBackend { return effectiveBackend; }
+
+/** 全局默认值是否由界面保存过；保留给兼容接口。 */
+export function qqBackendSaved(): QQBackend | null {
   const value = kvGet(QQ_BACKEND_KV);
   return value === "official" || value === "onebot" ? value : null;
 }
-export function saveQQBackend(backend: "official" | "onebot"): void {
+
+/** 历史兼容：只修改默认值；新界面按联系人保存覆盖。 */
+export function saveQQBackend(backend: QQBackend): void {
   kvSet(QQ_BACKEND_KV, backend);
 }
 
-// ── 渠道热切换：门面 + 双后端缓存 ─────────────────────────────
-// 两个后端实例都常驻（懒创建），`qq` 门面的每次调用都实时分发到当前生效的那个。
-let officialService: QQService = qqOfficial;
-let onebotService: QQService | null = null;
-const activeService = (): QQService => {
-  if (effectiveBackend === "onebot") {
-    if (onebotService === null) onebotService = createQQOneBotService();
-    return onebotService;
-  }
-  return officialService;
-};
-
-/** 运行期切换渠道：落库由调用方（saveQQBackend）负责，这里只负责把进程切过去。 */
-export function applyQQBackend(backend: "official" | "onebot"): void {
-  if (backend === effectiveBackend) return;
-  const previous = activeService();
-  effectiveBackend = backend;
-  const next = activeService();
-  previous.stopAll();
-  next.startAll();
-  console.log(`[qq] 渠道已热切换：${previous === officialService ? "official" : "onebot"} → ${backend}`);
+let contactBackends: Record<string, QQBackend> | null = null;
+function hydrateContactBackends(): void {
+  if (contactBackends !== null) return;
+  contactBackends = {};
+  const raw = kvGet(QQ_CONTACT_BACKEND_KV);
+  if (raw === null || raw === "") return;
+  try {
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    for (const [contactId, value] of Object.entries(parsed)) {
+      if (contactId !== "" && (value === "official" || value === "onebot")) contactBackends[contactId] = value;
+    }
+  } catch { /* 坏档按默认渠道 */ }
+}
+function persistContactBackends(): void {
+  if (contactBackends !== null) kvSet(QQ_CONTACT_BACKEND_KV, JSON.stringify(contactBackends));
 }
 
+/** 这位联系人实际使用的渠道；没单独选过就继承全局默认。 */
+export function qqBackendFor(contactId: string): QQBackend {
+  hydrateContactBackends();
+  return (contactId !== "" ? contactBackends?.[contactId] : undefined) ?? effectiveBackend;
+}
+
+/** 这位联系人是否单独保存过渠道；null=继承全局默认。 */
+export function qqBackendSavedFor(contactId: string): QQBackend | null {
+  hydrateContactBackends();
+  return contactBackends?.[contactId] ?? null;
+}
+
+/** 为单个联系人切换渠道，不影响其他联系人；两套绑定配置都会保留。 */
+export function saveQQBackendForContact(contactId: string, backend: QQBackend): void {
+  if (contactId === "") throw new Error("contactId 不能为空");
+  hydrateContactBackends();
+  contactBackends![contactId] = backend;
+  persistContactBackends();
+}
+
+/** 当前是否至少有一位联系人（或默认值）在使用某个后端；NapCat 自启动/重启用。 */
+export function qqUsesBackend(backend: QQBackend): boolean {
+  if (effectiveBackend === backend) return true;
+  hydrateContactBackends();
+  return Object.values(contactBackends ?? {}).some((value) => value === backend);
+}
+
+/** 会话所属联系人决定走哪个后端。 */
+export function qqBackendForConversation(conversationId: string): QQBackend {
+  const conv = getConversation(conversationId);
+  return conv === null ? effectiveBackend : qqBackendFor(conv.contact_id);
+}
+
+// ── 双后端常驻 + 按联系人路由 ───────────────────────────────────
+let officialService: QQService = qqOfficial;
+let onebotService: QQService | null = null;
+const onebot = (): QQService => {
+  if (onebotService === null) onebotService = createQQOneBotService({ isEnabledForContact: (contactId) => qqBackendFor(contactId) === "onebot" });
+  return onebotService;
+};
+const serviceForBackend = (backend: QQBackend): QQService =>
+  backend === "onebot" ? onebot() : officialService;
+const serviceForContact = (contactId: string): QQService => serviceForBackend(qqBackendFor(contactId));
+const serviceForConversation = (conversationId: string): QQService =>
+  serviceForBackend(qqBackendForConversation(conversationId));
+
+/** 历史兼容：修改默认渠道时不再停掉另一套服务，因为其他联系人可能还在用。 */
+export function applyQQBackend(backend: QQBackend): void {
+  effectiveBackend = backend;
+  officialService.startAll();
+  onebot().startAll();
+  console.log("[qq] 默认渠道已设为 " + backend + "；两套适配器保持常驻，按联系人路由");
+}
+
+const pickStatus = (a: QQStatus, b: QQStatus): QQStatus => {
+  if (a === "connected" || b === "connected") return "connected";
+  if (a === "attention" || b === "attention") return "attention";
+  if (a === "connecting" || b === "connecting") return "connecting";
+  if (a === "disabled" && b === "disabled") return "disabled";
+  return "not-configured";
+};
+
 /**
- * 门面：Proxy 把每个成员调用转发到当前生效的后端实例。
- * 服务的公开面全是方法（读写 KV、发消息、开/停网关），逐调用分发没有一致性问题；
- * 切换瞬间拿到的引用换目标，等于"下一条消息就走新渠道"。
+ * 统一门面：未带联系人上下文的调用走默认渠道；投递、绑定、快照、凭据等
+ * 按 contactId（或会话所属联系人）精确分发到对应适配器。
  */
-export const qq: QQService = new Proxy({} as QQService, {
-  get: (_target, prop) => Reflect.get(activeService(), prop),
-});
+export const qq: QQService = {
+  deliverToContact: (contactId, text, opts) => serviceForContact(contactId).deliverToContact(contactId, text, opts),
+  deliverToConversation: (conversationId, text, opts) => serviceForConversation(conversationId).deliverToConversation(conversationId, text, opts),
+  deliverMediaToContact: (contactId, text, media, opts) => serviceForContact(contactId).deliverMediaToContact(contactId, text, media, opts),
+  deliverMediaToGroup: (contactId, groupConvId, text, media) => serviceForContact(contactId).deliverMediaToGroup(contactId, groupConvId, text, media),
+  deliverMediaToConversation: (conversationId, text, media) => serviceForConversation(conversationId).deliverMediaToConversation(conversationId, text, media),
+  deliverEmote: (conversationId, intent) => serviceForConversation(conversationId).deliverEmote(conversationId, intent),
+  beginBind: (contactId) => serviceForContact(contactId).beginBind(contactId),
+  pollBind: (contactId, attemptId) => serviceForContact(contactId).pollBind(contactId, attemptId),
+  snapshotFor: (contactId) => serviceForContact(contactId).snapshotFor(contactId),
+  summary: () => {
+    const official = officialService.summary();
+    const ob = onebot().summary();
+    return {
+      configured: official.configured || ob.configured,
+      appId: official.appId || ob.appId,
+      status: pickStatus(official.status, ob.status),
+      lastError: [
+        official.configured ? official.lastError : "",
+        ob.configured ? ob.lastError : "",
+      ].filter((value) => value !== "").join("；"),
+      bindings: official.bindings + ob.bindings,
+      max: official.max + ob.max,
+      active: official.active + ob.active,
+      proactive: official.proactive + ob.proactive,
+      trouble: [...official.trouble, ...ob.trouble],
+    };
+  },
+  setCredentials: (contactId, patch) => serviceForContact(contactId).setCredentials(contactId, patch),
+  beginCredentialQr: (contactId) => serviceForContact(contactId).beginCredentialQr(contactId),
+  pollCredentialQr: (contactId, taskId) => serviceForContact(contactId).pollCredentialQr(contactId, taskId),
+  setFlags: (id, patch) => officialService.setFlags(id, patch) || onebot().setFlags(id, patch),
+  setFlagsByContact: (contactId, patch) => serviceForContact(contactId).setFlagsByContact(contactId, patch),
+  disconnect: (id) => officialService.disconnect(id) || onebot().disconnect(id),
+  disconnectByContact: (contactId) => serviceForContact(contactId).disconnectByContact(contactId),
+  startAll: () => { officialService.startAll(); onebot().startAll(); },
+  stopAll: () => { officialService.stopAll(); onebotService?.stopAll(); },
+  dispose: () => { officialService.dispose(); onebotService?.dispose(); },
+  clearAll: () => { officialService.clearAll(); onebot().clearAll(); },
+  gatewayStatus: (contactId) => contactId !== undefined
+    ? serviceForContact(contactId).gatewayStatus(contactId)
+    : pickStatus(officialService.gatewayStatus(), onebot().gatewayStatus()),
+  lastGatewayError: () => {
+    const officialSummary = officialService.summary();
+    const onebotSummary = onebot().summary();
+    return [
+      officialSummary.configured ? officialService.lastGatewayError() : "",
+      onebotSummary.configured ? onebot().lastGatewayError() : "",
+    ].filter((value) => value !== "").join("；");
+  },
+  splitQqText: (value) => officialService.splitQqText(value),
+};

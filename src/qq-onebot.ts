@@ -27,7 +27,7 @@ import {
   MAX_AUDIO_BYTES, MAX_IMAGE_BYTES, MAX_VIDEO_BYTES, mediaAbsPath,
   saveAudio, saveImage, saveVideo, sniffAudioMime, sniffImageMime, sniffVideoMime,
 } from "./media.ts";
-import { asText, chunkSegments, redact, withRaw } from "./channels/delivery.ts";
+import { asText, chunkSegments, redact, withRaw, type DeliveryResult } from "./channels/delivery.ts";
 import { adoptGroupConversation, ensureConversation, ensureLocalConversation, findAdoptableGroupConversation, getConversation, listConversations } from "./conversations.ts";
 import type { MessageAttachmentKind, MessageAttachmentMeta } from "../shared/api.ts";
 import { captureInboundEmote, renderEmote, type EmoteSendResult, type QqEmoteIntent } from "./qq-emote.ts";
@@ -36,7 +36,7 @@ import type { QQService, QqMediaRef, MediaOutcome, QQBindingView, QQConversation
 /** 一个 OneBot 端点 = 一个真实 QQ 号，绑定到一个联系人。 */
 type OneBotAccount = {
   id: string; contactId: string; qqNumber: string;
-  /** 主人的真实 QQ 号：群聊里把他从一众群成员里认出来（sender 标记「主人」）。 */
+  /** 主人的真实 QQ 号：私聊的出站目标，也是群聊里识别「主人」的唯一依据。 */
   ownerQq: string;
   enabled: boolean; proactive: boolean;
   lastError: string; lastReceivedAt: string; lastSentAt: string; createdAt: string;
@@ -44,6 +44,29 @@ type OneBotAccount = {
 
 type OneBotSegment = Record<string, unknown>;
 const KV_OB = "qq.onebot.v1";
+
+/** 私聊路由只需要账号里的这三个字段；抽成纯函数后回归测试可直接喂 OneBot 事件。 */
+export type OneBotPrivateRouteAccount = Pick<OneBotAccount, "contactId" | "qqNumber" | "ownerQq">;
+
+/**
+ * OneBot 私聊入站归属：self_id 是协议端登录的机器人号，user_id 是发消息的人。
+ * 必须先按 self_id 找到这台机器人，再确认发送者就是登记的 ownerQq。
+ * 只按 user_id 匹配会把「主人发来的私聊」当成找不到账号，而机器人发给自己的消息
+ * 反而可能命中 qqNumber；因此这里同时校验两侧身份。
+ */
+export function obPrivateRoute(
+  event: Record<string, unknown>,
+  accountList: readonly OneBotPrivateRouteAccount[],
+): { account: OneBotPrivateRouteAccount; senderQq: string } | null {
+  const selfQq = asText(event.self_id);
+  const senderQq = asText(event.user_id ?? event.qq);
+  if (senderQq === "" || senderQq === selfQq) return null;
+  const account = selfQq === ""
+    ? (accountList.length === 1 ? accountList[0] : undefined)
+    : accountList.find((item) => item.qqNumber === selfQq);
+  if (account === undefined || account.ownerQq === "") return null;
+  return senderQq === account.ownerQq ? { account, senderQq } : null;
+}
 
 // ── 协议端连接设置：KV 覆盖环境变量，界面里可改、热生效 ───────────────
 // 协议端在哪（HTTP 出站地址 / forward WS 入站地址 / 访问令牌）是用户的部署事实，
@@ -427,17 +450,23 @@ export async function onebotLoginInfo(): Promise<OneBotLoginInfo> {
 }
 
 /** OneBot v11 后端：出站走协议端 HTTP API，入站靠它推 forward websocket 事件。 */
-export function createQQOneBotService(): QQService {
+export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: string) => boolean } = {}): QQService {
+  const acceptsContact = deps.isEnabledForContact ?? ((): boolean => true);
   let ws: OBWebSocket | null = null;
   let disposed = false;
   let reachable = false;
   let inboundTail: Promise<void> = Promise.resolve();
 
   const byContact = (contactId: string): OneBotAccount | null => { hydrate(); return (accounts ?? []).find((a) => a.contactId === contactId) ?? null; };
+  /** 按协议端登录号（机器人自己）查找 OneBotAccount；私聊发送者要用 ownerQq 另行校验。 */
+  const byQq = (qq: string): OneBotAccount | null => { hydrate(); if (qq === "") return null; return (accounts ?? []).find((a) => a.qqNumber === qq) ?? null; };
   const primaryAccount = (): OneBotAccount | null => { hydrate(); const list = accounts ?? []; return list.find((a) => a.enabled) ?? list[0] ?? null; };
   /** 出站的气泡序列：agent 分好的条原样逐条发，超长元素再按上限硬切——
    *  与官方后端的 splitQqText 同一节奏（本地几颗气泡，QQ 里几条消息），不能 join 成一大段。 */
   const obTextSegments = (text: string | string[]): string[] => chunkSegments(text, 4000);
+
+  /** 私聊投递目标是主人号；qqNumber 是协议端登录的机器人自己，绝不能拿来当 user_id。 */
+  const privateTarget = (acc: OneBotAccount): string => acc.ownerQq;
 
   /** 发一组段；返回是否真的发出去了（协议端报错时 false），供媒体回执与 send_emote 如实上报。 */
   const sendOut = async (acc: OneBotAccount, scope: "private" | "group", targetId: string, text: string, media: OneBotSegment[]): Promise<boolean> => {
@@ -445,7 +474,7 @@ export function createQQOneBotService(): QQService {
     if (text !== "") segments.push(obText(text));
     segments.push(...media);
     if (segments.length === 0) return false;
-    if (targetId === "" && scope === "private") { acc.lastError = "没有绑定真实 QQ 号，无法发送"; persist(); return false; }
+    if (targetId === "" && scope === "private") { acc.lastError = "没有设置主人 QQ 号，无法发送私聊"; persist(); return false; }
     try {
       const params: Record<string, unknown> = scope === "private" ? { user_id: targetId, message: segments } : { group_id: targetId, message: segments };
       await obAction(scope === "private" ? "send_private_msg" : "send_group_msg", params);
@@ -493,12 +522,15 @@ export function createQQOneBotService(): QQService {
     if (isGroup) {
       const gid = asText(event.group_id);
       if (gid === "") return;
-      const acc = primaryAccount();
-      atBot = obMessageAtBot(event.message, acc?.qqNumber ?? "");
+      hydrate();
+      const selfId = asText(event.self_id);
+      const acc = (selfId !== "" ? byQq(selfId) : null) ?? primaryAccount();
+      if (acc === null || !acc.enabled || !acceptsContact(acc.contactId)) return;
+      atBot = obMessageAtBot(event.message, acc.qqNumber);
       contactId = acc?.contactId ?? "default";
       ownerQq = acc?.ownerQq ?? "";
       // ① 已登记的群按该群自己的响应方式放行：@ 永远算命中；「全部消息」放行日常 chatter；
-      //    「@或关键词」按关键词表命中。没命中的一概不入库（她不会旁听）。
+      //    「@或关键词」按关键词表命中。没命中的一概不入库（联系人不会旁听）。
       conv = listConversations(contactId)
         .find((c) => c.channel === "qq" && c.kind === "group" && c.external_id === gid) ?? null;
       if (conv !== null) {
@@ -515,9 +547,14 @@ export function createQQOneBotService(): QQService {
         conv = ensureConversation({ contactId, channel: "qq", kind: "group", externalId: gid, title: asText(event.group_name) || ("群 " + gid) });
       }
     } else {
-      const acc = byContact(asText(event.user_id ?? event.qq));
-      if (acc === null) return; // 未绑定到本机联系人的私聊不收
+      // self_id 定位协议端登录的机器人，user_id 必须等于该账号登记的主人号。
+      hydrate();
+      const route = obPrivateRoute(event, accounts ?? []);
+      if (route === null) return; // 未绑定，或不是主人发来的私聊
+      const acc = byQq(route.account.qqNumber);
+      if (acc === null || !acc.enabled || !acceptsContact(acc.contactId)) return;
       contactId = acc.contactId;
+      ownerQq = acc.ownerQq;
       conv = ensureLocalConversation(contactId);
       acc.lastReceivedAt = new Date().toISOString(); acc.lastError = ""; persist();
     }
@@ -568,31 +605,40 @@ export function createQQOneBotService(): QQService {
     enabled: acc.enabled, proactive: acc.proactive, hasUserOpenId: acc.qqNumber !== "", status: statusOf(),
     hasReplyWindow: false, lastError: acc.lastError, lastReceivedAt: acc.lastReceivedAt,
     lastSentAt: acc.lastSentAt, createdAt: acc.createdAt, conversations: convsFor(acc.contactId),
+    ownerQq: acc.ownerQq, qqNumber: acc.qqNumber,
   });
 
   // ── QQService 方法面（签名与官方后端一致）────────────────────────
-  const deliverToContact = async (contactId: string, text: string | string[], opts: { proactive?: boolean } = {}): Promise<void> => {
+  const deliverToContact = async (contactId: string, text: string | string[], opts: { proactive?: boolean; msgId?: string } = {}): Promise<DeliveryResult> => {
     const acc = byContact(contactId);
-    if (acc === null || !acc.enabled) return;
-    if (opts.proactive === true && !acc.proactive) return;
-    for (const segment of obTextSegments(text)) {
-      await sendOut(acc, "private", acc.qqNumber, segment, []);
+    if (acc === null || !acc.enabled) return { ok: false, error: "OneBot 联系人未绑定或已停用" };
+    if (opts.proactive === true && !acc.proactive) return { ok: false, error: "当前不允许主动投递" };
+    const segments = obTextSegments(text);
+    if (segments.length === 0) return { ok: false, error: "没有可发送的文字" };
+    for (const segment of segments) {
+      if (!(await sendOut(acc, "private", privateTarget(acc), segment, []))) {
+        return { ok: false, error: acc.lastError || "OneBot 私聊投递失败" };
+      }
     }
+    return { ok: true, error: "" };
   };
 
-  const deliverToConversation = async (conversationId: string, text: string | string[], _opts: { triggerMessageId?: string } = {}): Promise<void> => {
+  const deliverToConversation = async (conversationId: string, text: string | string[], opts: { triggerMessageId?: string } = {}): Promise<DeliveryResult> => {
     const conv = getConversation(conversationId);
-    if (conv === null || conv.channel !== "qq" || !conv.enabled) return;
+    if (conv === null || conv.channel !== "qq" || !conv.enabled) return { ok: false, error: "QQ 会话不可用" };
     if (conv.kind === "group") {
       const acc = primaryAccount();
-      if (acc !== null) {
-        for (const segment of obTextSegments(text)) {
-          await sendOut(acc, "group", conv.external_id, segment, []);
+      if (acc === null || !acc.enabled) return { ok: false, error: "OneBot 账号不可用" };
+      const segments = obTextSegments(text);
+      if (segments.length === 0) return { ok: false, error: "没有可发送的文字" };
+      for (const segment of segments) {
+        if (!(await sendOut(acc, "group", conv.external_id, segment, []))) {
+          return { ok: false, error: acc.lastError || "OneBot 群投递失败" };
         }
       }
-      return;
+      return { ok: true, error: "" };
     }
-    await deliverToContact(conv.contact_id, text);
+    return await deliverToContact(conv.contact_id, text, { msgId: opts.triggerMessageId });
   };
 
   const deliverMediaToContact = async (contactId: string, text: string | string[], media: QqMediaRef[], opts: { proactive?: boolean } = {}): Promise<MediaOutcome> => {
@@ -601,12 +647,12 @@ export function createQQOneBotService(): QQService {
     if (acc === null || !acc.enabled) return outcome;
     if (opts.proactive === true && !acc.proactive) return outcome;
     for (const segment of obTextSegments(text)) {
-      const sent = await sendOut(acc, "private", acc.qqNumber, segment, []);
+      const sent = await sendOut(acc, "private", privateTarget(acc), segment, []);
       if (sent) outcome.sent += 1;
       else { outcome.failed += 1; outcome.lastError = acc.lastError; }
     }
     if (media.length > 0) {
-      const sent = await sendOut(acc, "private", acc.qqNumber, "", media.map(obMediaSegment));
+      const sent = await sendOut(acc, "private", privateTarget(acc), "", media.map(obMediaSegment));
       if (sent) outcome.sent += 1;
       else { outcome.failed += 1; outcome.lastError = acc.lastError; }
     }
@@ -617,7 +663,7 @@ export function createQQOneBotService(): QQService {
     const outcome: MediaOutcome = { sent: 0, failed: 0, lastError: "" };
     const conv = getConversation(groupConvId);
     const acc = primaryAccount();
-    if (conv === null || conv.channel !== "qq" || conv.kind !== "group" || !conv.enabled || acc === null) return outcome;
+    if (conv === null || conv.channel !== "qq" || conv.kind !== "group" || !conv.enabled || acc === null || !acc.enabled) return outcome;
     for (const segment of obTextSegments(text)) {
       const sent = await sendOut(acc, "group", conv.external_id, segment, []);
       if (sent) outcome.sent += 1;
@@ -649,7 +695,7 @@ export function createQQOneBotService(): QQService {
     if (conv === null || conv.channel !== "qq" || !conv.enabled) {
       return { ok: false, native: false, via: "skipped", detail: "会话不可用或不是 QQ 会话" };
     }
-    const render = renderEmote(intent);
+    const render = renderEmote(intent, "onebot");
     if (render.segments.length === 0) {
       // 只有降级文字（理论上 OneBot 不会走到这，但留个兜底）。
       if (render.fallbackText !== "") {
@@ -661,13 +707,13 @@ export function createQQOneBotService(): QQService {
     }
     if (conv.kind === "group") {
       const acc = primaryAccount();
-      if (acc === null) return { ok: false, native: false, via: "skipped", detail: "没有可用的 OneBot 账号" };
+      if (acc === null || !acc.enabled) return { ok: false, native: false, via: "skipped", detail: "没有可用的 OneBot 账号" };
       const sent = await sendOut(acc, "group", conv.external_id, "", render.segments);
       if (!sent) return { ok: false, native: false, via: "skipped", detail: acc.lastError || "协议端发送失败" };
     } else {
       const acc = byContact(conv.contact_id);
       if (acc === null || !acc.enabled) return { ok: false, native: false, via: "skipped", detail: "联系人没有绑定 OneBot 账号" };
-      const sent = await sendOut(acc, "private", acc.qqNumber, "", render.segments);
+      const sent = await sendOut(acc, "private", privateTarget(acc), "", render.segments);
       if (!sent) return { ok: false, native: false, via: "skipped", detail: acc.lastError || "协议端发送失败" };
     }
     return { ok: true, native: render.native, via: "native" };

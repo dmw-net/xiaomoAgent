@@ -137,7 +137,6 @@ export function describeImageForChat(
       purpose: "image_understanding",
       turnId: options.turnId ?? null,
       contactId: options.contactId ?? null,
-      maxTokens: 900,
       temperature: 0.2,
       signal: options.signal,
     });

@@ -46,6 +46,7 @@ import {
 } from "../../media.ts";
 import { runUserDiagnostics } from "../../diagnostics.ts";
 import { inspectGates } from "../../proactive.ts";
+import { outboundSummary } from "../../outbound.ts";
 import {
   cleanupStorage,
   isStorageCleanupOp,
@@ -134,6 +135,7 @@ const statusRoute: Route = ({ res, url, path, method }) => {
     /** 通道是全局资产（一个联系人一条链接），总览按整体报，不按当前会话那位报。 */
     wechat: wechat.summary(),
     qq: qq.summary(),
+    outbound: outboundSummary(),
     uptimeSec: Math.round(process.uptime()),
     time: new Date().toISOString(),
   });
@@ -254,6 +256,7 @@ const logsRoute: Route = ({ res, url, path, method }) => {
     const filter: CallFilter = {
       onlyFailed: url.searchParams.get("failed") === "1",
       purpose: url.searchParams.get("purpose") || undefined,
+      purposes: url.searchParams.get("purposes")?.split(",").map((p) => p.trim()).filter(Boolean).slice(0, 8),
       turnId: url.searchParams.get("turnId") || undefined,
       modelOnly: scope === "model",
       channelOnly: scope === "channel",

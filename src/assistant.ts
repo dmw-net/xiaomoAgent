@@ -36,7 +36,7 @@ import type { ToolDef } from "./tools.ts";
 export { ASSISTANT_CONTACT_ID };
 export const ASSISTANT_CONTACT_NAME = "设置助手";
 
-// ── 助手权限档位：约束她能自己动多少配置 ──────────────────────────
+// ── 助手权限档位：约束联系人能自己动多少配置 ──────────────────────────
 // 三档的语义是硬的，不是提示词里的客套话：
 //   readonly — 全部写工具从声明里摘掉，物理断手；
 //   confirm  — 可逆写直接放行，不可逆动作必须等用户在界面上真实点击（确认卡片）；
@@ -335,10 +335,17 @@ export function autoTitleThread(contactId: string, text: string): void {
 
 /** 启动时确保保留联系人存在（幂等；已存在不覆盖用户改过的资料）。 */
 export function ensureAssistantContact(): void {
-  if (getContact(ASSISTANT_CONTACT_ID)) return;
+  const existing = getContact(ASSISTANT_CONTACT_ID);
+  if (existing) {
+    // 设置助手不是陪伴角色，界面上也不提供指代方式选择；历史版本按默认值落成的
+    // female/male 在这里归中性，避免内部提示词继续把它绑定到某种指代。
+    if (existing.gender !== "other") updateContact(ASSISTANT_CONTACT_ID, { gender: "other" });
+    return;
+  }
   createContact({
     id: ASSISTANT_CONTACT_ID,
     name: ASSISTANT_CONTACT_NAME,
+    gender: "other",
     card: {
       name: ASSISTANT_CONTACT_NAME,
       identity: "我是小茉应用的内置设置助手：帮你接入模型、创建和配置联系人、排查能力设置。",
@@ -392,7 +399,7 @@ function statusSnapshot(): Record<string, unknown> {
     })),
     capabilitiesReady: capabilitiesStatus(),
     // 技能是磁盘上的外部文件，坏掉的形态五花八门（缺文件、名字不合法、正文超长）。
-    // 快照里带上 blocked 的原因，用户问「我那个技能怎么没生效」时她能答上来，
+    // 快照里带上 blocked 的原因，用户问「我那个技能怎么没生效」时联系人能答上来，
     // 而不是只会说"我没看到技能"把人送去重启。
     skills: skillsStatus(),
     // 扩展（MCP / webhook / JS 工具）同样进快照：助手回答「现在能查网吗」这类问题
@@ -431,7 +438,7 @@ function resolveProfile(target: string): { id?: string; label?: string; error?: 
 
 /**
  * 画头像的构图约束。要的不是"一张插画"而是**能被认出来的头像**：
- * 头肩居中、方图、脸是画面主体——她会被显示在 32~48px 的圆里，全身构图进去就是一团糊。
+ * 头肩居中、方图、脸是画面主体——联系人会被显示在 32~48px 的圆里，全身构图进去就是一团糊。
  */
 const AVATAR_FRAMING =
   "人物头像：方形构图，头肩到胸口入画，脸部为画面主体并居中，视线看向镜头。" +
@@ -565,8 +572,8 @@ export const ASSISTANT_TOOLS: ToolDef[] = [
       "给某位联系人设头像。image_url 与 draw_prompt 二选一：\n" +
       "· image_url：抓一张现成的图。可以给网图地址（配合 web_search 的结果用；原图也行，不再受内联体积限制），" +
       "也可以是应用里已有的 /media 路径（比如 web_search 图片结果里的 preview——用户挑中的那张就是它，" +
-      "本来就是本地文件、不用再下一遍；或者她刚画出来的那张画）。\n" +
-      "· draw_prompt：让她画一张。给一句画面描述即可（角色是谁、什么气质、发色衣着），构图由程序补。\n" +
+      "本来就是本地文件、不用再下一遍；或者联系人刚画出来的那张画）。\n" +
+      "· draw_prompt：让联系人画一张。给一句画面描述即可（角色是谁、什么气质、发色衣着），构图由程序补。\n" +
       "两种来源最后都落成本地 /media 文件，图不再依赖外部站点，也不会因为对方换域名而裂图。\n" +
       "用户说「给XX换个头像」「建一个XX并配好头像」时，先确认这位联系人存在（不存在先 create_contact），再设。",
     parameters: {
@@ -575,7 +582,7 @@ export const ASSISTANT_TOOLS: ToolDef[] = [
         contact: { type: "string", description: "联系人名字或 id" },
         image_url: { type: "string", description: "http(s) 图片地址，或应用里已有的 /media 路径" },
         page_url: { type: "string", description: "可选：图所在页面，个别站点按来源页防盗链时才用得上" },
-        draw_prompt: { type: "string", description: "或：让她画一张头像，给一句画面描述" },
+        draw_prompt: { type: "string", description: "或：让联系人画一张头像，给一句画面描述" },
       },
       required: ["contact"],
       additionalProperties: false,
@@ -829,14 +836,14 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
     // 所以把顺序与"每步看回执"写死在这里，而不是指望模型自己安排。
     "- 用户要「建一个XX并配好角色和头像」时按这个顺序走：create_contact（可带人设三段）→ " +
       "配头像走 set_contact_avatar：要用现成的图就先 web_search（kind 传 image）——" +
-      "搜到的图会直接显示在界面上，你只要按序号请用户挑（别把地址念给他），他说第几张就用那一条的 preview 传进去；" +
-      "想让她自己画一张就直接传 draw_prompt。抓来的图会先存成本地文件再设，不依赖外部站点长期可用。" +
+      "搜到的图会直接显示在界面上，你只要按序号请用户挑（别把地址念给用户），用户说第几张就用那一条的 preview 传进去；" +
+      "想让联系人自己画一张就直接传 draw_prompt。抓来的图会先存成本地文件再设，不依赖外部站点长期可用。" +
       "每一步都要看它的回执，中间任何一步失败就停下来把话说清停在哪一步、为什么，" +
       "不要接着往下报「已经建好了」——这几步没有回滚，联系人建了就是建了。",
-    // 「列几张让我看看」是**看图**这一步本身，不是让她去描述图。缺了这条纪律，模型会
+    // 「列几张让我看看」是**看图**这一步本身，不是让联系人去描述图。缺了这条纪律，模型会
     // 很自然地退回它训练里那套「我没法渲染图片，你自己点链接看」——而图就在界面上摆着。
     "- 用户只是说「列几张XX的图 / 头像，让我看看」时：web_search（kind 传 image）之后图会自己显示在界面上，" +
-      "你按序号说清这批图都是什么、请他挑即可。**不要**说「我没法把图片渲染在这里」，也不要贴一串网址。",
+      "你按序号说清这批图都是什么、请用户挑即可。**不要**说「我没法把图片渲染在这里」，也不要贴一串网址。",
     "- 用户贴出 API 密钥时直接用于 configure_model，不要在回复里复述密钥（最多提前 6 个字符）。",
     "- 目标有歧义（同名、找不到）时，把工具给的候选列出来请用户确认，不要乱选。",
     "- 建议用户去界面操作时给出准确路径：设置 → 模型与能力 → 主对话模型 / 能力模型 / 技能与工具；侧栏联系人 → 编辑资料。",
@@ -844,7 +851,7 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
       "看 app_status 返回的 skills：blocked 里带了不合规的原因，照着说明白要改哪一项；" +
       "目录路径也在 skills.dir 里，直接报给用户。技能改了不用重启，重新扫描即生效。",
     skills === "" ? "" : "- 用户要办的事落在下面「[技能]」清单里时，先 load_skill 取完整做法再照着说或照着做。",
-    "- 你自己的模型绑定由用户在「编辑资料 → 模型」手动维护，不受全局切换影响；如果用户把你启用的新模型配坏了，他仍能在设置页手动切回。",
+    "- 你自己的模型绑定由用户在「编辑资料 → 模型」手动维护，不受全局切换影响；如果用户把你启用的新模型配坏了，用户仍能在设置页手动切回。",
     // 扩展的三条红线：未经同意不删、脚本许可必须先讲风险、密钥永远不进 URL。
     "- 扩展纪律：导入（import_extension）后默认不启用，问清用户再 enable；删除扩展必须先得到用户明确同意；" +
       "替用户写清单时密钥放 headers、绝不拼进 URL；" +

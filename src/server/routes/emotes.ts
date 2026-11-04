@@ -1,5 +1,5 @@
 // 表情包管理域：素材库（图片表情）的增删查、目录导入、单图上传、采集开关，
-// 渠道能力探测与内置表情词表，以及「智能识别」的整库/单张语义作业。
+// 渠道能力探测与内置表情词表，以及「智能识别」语义作业（一个队列：整库、勾选、单张都排同一条道）。
 //
 // 为什么放 media 域之后：它消费的是媒体库（/media 图片），语义上紧贴媒体；
 // 又属于"能力管理"，与设置页其它能力分区同层。路由只插表不改序（见 router.ts 顶部）。
@@ -8,7 +8,7 @@
 // 所有 /api/* 返回 JSON 且永远带 ok 字段，前端只靠 ok 判断成败。
 
 import { emoteNamingStats, isHumanName } from "../../assets.ts";
-import { namingJobStatus, renameEmoteById, startNamingJob } from "../../emote-naming.ts";
+import { namingJobStatus, startNamingJob } from "../../emote-naming.ts";
 import { MAX_IMAGE_BYTES, saveImage, sniffImageMime } from "../../media.ts";
 import {
   emoteAutoCapture,
@@ -20,18 +20,20 @@ import {
   removeEmoteAsset,
   setEmoteAutoCapture,
 } from "../../qq-emote.ts";
+import { qqBackend, qqBackendFor } from "../../qq.ts";
 import { readBinary, readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 
 /** GET /api/emotes：渠道能力探测 + 采集开关 + 张数。
  *  库里的东西本身走 /api/assets（媒体库那一页），这里不再列第二份清单——
  *  两处都能列，就早晚会出现「一边显中文名一边显句柄」那种对不上。 */
-const emotesListRoute: Route = ({ res, path, method }) => {
+const emotesListRoute: Route = ({ res, url, path, method }) => {
   if (!(path === "/api/emotes" && method === "GET")) return false;
+  const contactId = url.searchParams.get("contactId") ?? "";
   sendJson(res, 200, {
     ok: true,
     stats: emoteStats(),
-    capabilities: emoteCapabilities(),
+    capabilities: emoteCapabilities(contactId !== "" ? qqBackendFor(contactId) : qqBackend()),
     autoCapture: emoteAutoCapture(),
   });
   return true;
@@ -63,7 +65,8 @@ const emotesAddRoute: Route = async ({ req, res, path, method }) => {
   }
   const label = typeof body.label === "string" ? body.label.trim() : "";
   const tags = Array.isArray(body.tags) ? body.tags.filter((t): t is string => typeof t === "string").slice(0, 8) : [];
-  registerEmoteAsset(url, { label, tags, ...(isHumanName(label) ? { namedAt: Date.now() } : {}) }, "upload");
+  registerEmoteAsset(url, { label, tags,
+    ...(isHumanName(label) ? { namedAt: Date.now(), namedBy: "manual" } : {}) }, "upload");
   sendJson(res, 200, { ok: true, ...emoteStats() });
   return true;
 };
@@ -81,10 +84,10 @@ const emotesUploadRoute: Route = async ({ req, res, path, method, url }) => {
     }
     const saved = saveImage(buffer, sniffed);
     const label = (url.searchParams.get("label") ?? "").trim();
-    // 上传时给的是中文名就算认过图了（不必再让视觉模型猜一次她刚说过的话）；
+    // 上传时给的是中文名就算认过图了（不必再让视觉模型猜一次联系人刚说过的话）；
     // 没给或给的是英文句柄就留空，等「智能识别」。
     registerEmoteAsset(saved.url, label === "" ? {}
-      : { label, tags: [label], ...(isHumanName(label) ? { namedAt: Date.now() } : {}) }, "upload");
+      : { label, tags: [label], ...(isHumanName(label) ? { namedAt: Date.now(), namedBy: "manual" } : {}) }, "upload");
     sendJson(res, 200, { ok: true, url: saved.url, ...emoteStats() });
   } catch (error) {
     sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -117,7 +120,7 @@ const emotesImportRoute: Route = async ({ req, res, path, method }) => {
 };
 
 type EmotePrefsBody = { autoCapture?: unknown };
-/** POST /api/emotes/preferences：自动采集开关——他发来的图片是否顺手入库。默认关（见 config）。 */
+/** POST /api/emotes/preferences：自动采集开关——用户发来的图片是否顺手入库。默认关（见 config）。 */
 const emotesPrefsRoute: Route = async ({ req, res, path, method }) => {
   if (!(path === "/api/emotes/preferences" && method === "POST")) return false;
   let body: EmotePrefsBody;
@@ -153,9 +156,10 @@ const emoteNamingStatusRoute: Route = ({ res, path, method }) => {
 };
 
 /**
- * POST /api/emotes/naming：让她把未命名的表情逐张看一遍，补上中文名与用法。
+ * POST /api/emotes/naming：排进智能识别队列——整库、勾选的几张、弹窗里那一张都走这一个入口。
  * 作业在后台跑，这个请求立刻返回（跑完 200 张要几分钟，让 HTTP 挂着的收益是零）。
- * `force=true` 才重认已经认过的——那是「整库重命名」，会盖掉她手改过的名字，所以默认不给。
+ * 已经在跑就是往当前作业后面追加（界面上因此只有一个进度、一份逐张结果）。
+ * `force=true` 才重认已经认过的——那是「整库重命名」，会盖掉联系人手改过的名字，所以默认不给。
  */
 const emoteNamingStartRoute: Route = async ({ req, res, path, method }) => {
   if (!(path === "/api/emotes/naming" && method === "POST")) return false;
@@ -171,28 +175,6 @@ const emoteNamingStartRoute: Route = async ({ req, res, path, method }) => {
   return true;
 };
 
-/** POST /api/emotes/naming/one：识别这一张（弹窗里那颗「智能识别」）。成功时把写回的字段整个带回，弹窗原地展示结果。 */
-const emoteNamingOneRoute: Route = async ({ req, res, path, method }) => {
-  if (!(path === "/api/emotes/naming/one" && method === "POST")) return false;
-  let body: { id?: unknown };
-  try {
-    body = await readJson<{ id?: unknown }>(req);
-  } catch {
-    sendJson(res, 400, { ok: false, error: "请求体不是合法的 JSON" });
-    return true;
-  }
-  const id = typeof body.id === "string" ? body.id.trim() : "";
-  if (id === "") {
-    sendJson(res, 400, { ok: false, error: "缺少 id（要重认的那一张）" });
-    return true;
-  }
-  const result = await renameEmoteById(id);
-  sendJson(res, 200, result.ok
-    ? { ok: true, id, name: result.name, caption: result.caption, tags: result.tags, naming: emoteNamingStats() }
-    : { ok: false, error: result.error });
-  return true;
-};
-
 export const routes: Route[] = [
   emotesListRoute,
   emotesFacesRoute,
@@ -202,6 +184,5 @@ export const routes: Route[] = [
   emotesPrefsRoute,
   emoteNamingStatusRoute,
   emoteNamingStartRoute,
-  emoteNamingOneRoute,
   emotesDeleteRoute,
 ];

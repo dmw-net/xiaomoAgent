@@ -2,7 +2,7 @@
 //
 // 三条纪律（全部来自对上一代产品的实测教训）：
 // 1) 记忆 ≠ 上下文：记忆是结构化、可检索、可编辑的数据；上下文是每轮临时拼装的东西。
-// 2) 只存"关系事件"，不存原始聊天记录 —— 存「他答应周日一起吃饭」而不是几万条对话。
+// 2) 只存"关系事件"，不存原始聊天记录 —— 存「用户答应周日一起吃饭」而不是几万条对话。
 // 3) 抽取失败必须可见（写计数 + 打日志），绝不静默。
 
 import { db, kvGet, kvSet } from "./db.ts";
@@ -323,8 +323,8 @@ const ACTIVE_WINDOW_MS = 3 * 86_400_000;
 const MAX_PER_KIND = 3;
 
 /**
- * 他最近一句原话（排除 exclude 那句）。给 search_memory 的空参兜底与二次扩展用：
- * 他自己的用词是离记忆库词汇最近的查询源（记忆内容就是从他的话里抽的）。
+ * 用户最近一句原话（排除 exclude 那句）。给 search_memory 的空参兜底与二次扩展用：
+ * 用户自己的用词是离记忆库词汇最近的查询源（记忆内容就是从用户的话里抽的）。
  * 只读，不写 last_used_at——取词不算「想起过」。
  */
 export function lastUserMessageText(contactId: string, exclude?: string, conversationId?: string): string {
@@ -342,11 +342,11 @@ export function lastUserMessageText(contactId: string, exclude?: string, convers
 }
 
 /**
- * 短句追问的查询扩展：他这句几乎没词（「那个事呢？」「真的吗」）时，
- * 把上一句他自己说的话并进来一起筛。
+ * 短句追问的查询扩展：用户这句几乎没词（「那个事呢？」「真的吗」）时，
+ * 把上一句用户自己说的话并进来一起筛。
  *
- * 只在可用关键词 ≤2 时才扩，因为扩展源是**他的**上一句而不是她的长回复——
- * 她的话长且杂，并进候选会把召回变成"最近聊过什么都算相关"。
+ * 只在可用关键词 ≤2 时才扩，因为扩展源是**用户的**上一句而不是联系人的长回复——
+ * 联系人的话长且杂，并进候选会把召回变成"最近聊过什么都算相关"。
  * 通用做法是把它参数化成"往回扫最近 N 条消息"（Scan Depth）；
  * 这里取 N=1 且只在缺词时启用，够用且不引入噪音。
  */
@@ -361,7 +361,7 @@ function expandQuery(contactId: string, query: string, scope?: MemoryScope): str
 
 /**
  * 召回打分的唯一实现：关键词粗筛（SQL LIKE）+「命中数 ×(1+查询覆盖率)× 重要度」排序，
- * 再做三件事：近重复合并、同类限流、承诺/计划保底。纯读——要不要算作「她想起过」
+ * 再做三件事：近重复合并、同类限流、承诺/计划保底。纯读——要不要算作「联系人想起过」
  * 由调用方决定，见 recall / recallExplained 的 markUsed。
  *
  * 为什么不再乘时间衰减：半衰期一周的乘子会把"低频但必须记得"的事（生日、忌口）压到
@@ -376,7 +376,7 @@ function scoreRecall(contactId: string, query: string, limit: number, vector: Qu
   const keys = keywords(expandQuery(contactId, query, scope));
   if (keys.length === 0) {
     // 没关键词可筛（纯图片轮、只有语气词）：借几条最要紧的往事保持连贯。
-    // score 记 0 —— 它没有回应这句话，不算"她想起过"，见 markRecalled。
+    // score 记 0 —— 它没有回应这句话，不算"联系人想起过"，见 markRecalled。
     const events = recentForContext(contactId, Math.min(limit, 3), scope);
     return { hits: events.map((event) => ({ event, score: 0, matchedKeys: [] })), keywords: [] };
   }
@@ -384,7 +384,7 @@ function scoreRecall(contactId: string, query: string, limit: number, vector: Qu
   // contact_id 必须进 SQL：召回是跨联系人隔离的承重墙，A 的事不能注入 B 的提示词。
   // 漏掉它时，B 的关键词会捞出 A 的私密记忆，还会给 A 的记忆写上 last_used_at。
   // 关键词还要转义 LIKE 通配符：用户说"涨了 100%"时，裸 % 会让粗筛退化成近似全表匹配。
-  // subject（"关于谁"）同样是查询入口：查「她的事」时关键词命中的是 subject 列，
+  // subject（"关于谁"）同样是查询入口：查「联系人的事」时关键词命中的是 subject 列，
   // 只 LIKE content 会把"正文没写全、主体却在"的条目整个漏掉。
   const placeholders = keys.map(() => "(content LIKE ? ESCAPE '\\' OR subject LIKE ? ESCAPE '\\')").join(" OR ");
   const params = keys.flatMap((k) => [likePattern(k), likePattern(k)]);
@@ -605,9 +605,9 @@ export async function recallSmart(contactId: string, query: string, limit = conf
 /**
  * 对话主链路的召回：只要事件，并把真正命中的那些记为「被想起」。
  *
- * 「近 7 天被想起多少条」「她最近一次想起是什么时候」这两个健康度指标全部来自
- * last_used_at，它们要回答的是"她是不是真的在用记忆"。于是只有她的回忆行为能写这个字段：
- * 用户说话时的被动注入（这里）、她自己调 search_memory 主动查（tools.ts）算；
+ * 「近 7 天被想起多少条」「联系人最近一次想起是什么时候」这两个健康度指标全部来自
+ * last_used_at，它们要回答的是"联系人是不是真的在用记忆"。于是只有联系人的回忆行为能写这个字段：
+ * 用户说话时的被动注入（这里）、联系人自己调 search_memory 主动查（tools.ts）算；
  * 观测路径（上下文占用圆环、提示词预览、记忆页搜索与试验台）一律走 recallExplained 且不标记。
  */
 export function recall(contactId: string, query: string, limit = config.recallLimit, vector: QueryVector | null = null, scope?: MemoryScope): MemoryEvent[] {
@@ -782,7 +782,7 @@ export type MemoryStats = {
   expiredCount: number;
   /** 写入侧机械闸累计挡下的重复条目（同一件事又说了一遍）。 */
   suppressedRepeats: number;
-  /** 累计拦下的「他删过的事又被重新记下」——roadmap P0-2 那条验收标准的实现证据。 */
+  /** 累计拦下的「用户删过的事又被重新记下」——roadmap P0-2 那条验收标准的实现证据。 */
   blockedResurrects: number;
   /** 近 30 天平均每轮记下几条（roadmap P0-1 要的 avgPerTurn）。 */
   avgPerTurn: number;
@@ -864,7 +864,7 @@ export function memoryStats(contactId: string): MemoryStats {
   };
 }
 
-/** 记忆最近有没有被想起来过——用来判断"她是不是真的在用记忆"。 */
+/** 记忆最近有没有被想起来过——用来判断"联系人是不是真的在用记忆"。 */
 export function lastRecallAt(contactId: string): number | null {
   const row = db
     .prepare(`SELECT MAX(last_used_at) AS t FROM memory_events WHERE contact_id = ? AND deleted_at IS NULL`)
@@ -922,7 +922,7 @@ export function keywords(text: string): string[] {
     for (let i = 0; i + 2 <= piece.length; i += 1) out.add(piece.slice(i, i + 2));
   }
   const kept = [...out].filter((k) => !STOP_BIGRAMS.has(k));
-  // 全是停用词（"哈哈哈哈"、"怎么了"）时退回原集合：宁可宽一点，也别让她这轮彻底空白。
+  // 全是停用词（"哈哈哈哈"、"怎么了"）时退回原集合：宁可宽一点，也别让联系人这轮彻底空白。
   return (kept.length > 0 ? kept : [...out]).slice(0, 64);
 }
 
@@ -939,7 +939,7 @@ export type MemoryCandidate = {
   scope: MemoryScopeKind;
 };
 
-/** 抽取提示词里指用户的代词一律跟随 owner.gender（缺省「他」）。 */
+/** 抽取提示词里指用户的代词一律跟随 owner.gender；未设置时使用中性「TA」。 */
 function extractBase(ownerPron: string): string {
   return `你是一个关系记忆抽取器。从一轮对话里提取"值得长期记住的关系事件"。
 
@@ -994,8 +994,8 @@ function bondClause(pron: string): string {
 /** pron = 角色的代词（contact.gender）；ownerPron = 用户的代词（owner.gender）。 */
 export function buildExtractSystem(
   withBond: boolean,
-  pron = "她",
-  ownerPron = "他",
+  pron = "TA",
+  ownerPron = "TA",
   similar: MemoryEvent[] = [],
   groupMode = false,
 ): string {
@@ -1008,7 +1008,7 @@ export function buildExtractSystem(
 过几天谁也认不出那是谁，而归属层已经不再替你记着发言人是谁。`
     : `
 
-这是私聊。关于${ownerPron}本人的长期事实（生日/偏好/家人/工作）用 scope=global——他在哪个渠道说都成立；
+这是私聊。关于${ownerPron}本人的长期事实（生日/偏好/家人/工作）用 scope=global——${ownerPron}在哪个渠道说都成立；
 只属于你们两人之间的事（私密约定、梗、只在这段对话里的情境）用 scope=conversation，不要让它出现在别的场合。`;
   return (withBond ? base + bondClause(pron) : base) + scopeNote;
 }
@@ -1023,13 +1023,13 @@ export function buildExtractSystem(
  * 原样抽成一条 fact，之后每一轮都从 [记忆] 段进系统提示词，
  * 而 [记忆] 段那句"只是回忆依据"的自然语言外壳拦不住一条长得像事实的句子。
  *
- * 外壳只包 userText，不包 assistantText——她自己的回复本来就是我们生成的。
+ * 外壳只包 userText，不包 assistantText——联系人自己的回复本来就是我们生成的。
  */
 export function buildExtractInput(
   userText: string,
   assistantText: string,
   now = new Date(),
-  ownerPron = "他",
+  ownerPron = "TA",
   source = "web",
   context?: { senderName?: string; conversationKind?: "private" | "group"; conversationTitle?: string },
 ): string {
@@ -1083,11 +1083,11 @@ export function resetExtractFailures(): void {
 }
 
 /**
- * 落库前的机械闸：先问「这事是不是已经记过」，再问「这事是不是他刚删掉的」。
+ * 落库前的机械闸：先问「这事是不是已经记过」，再问「这事是不是用户刚删掉的」。
  *
  * 两道都比"让模型自己判断"可靠：它们不花模型调用、不受提示词遵守度影响，
  * 而实测那条 update 通道上线以来一次都没被用过（见文件头注释里的实测数）。
- * 只用于**自动抽取**这条写路径——用户在记忆页手动补一条是他的决定，不该被静默挡掉。
+ * 只用于**自动抽取**这条写路径——用户在记忆页手动补一条是用户的决定，不该被静默挡掉。
  *
  * 相似度阈值按"同一件事换了说法"这一档定：0.72。低于它的（换城市、换工作）
  * 会被当成新事实放行——那是进步，不是重复。
@@ -1155,7 +1155,6 @@ export async function extractMemories(input: {
 
   const raw = await callModelJson<unknown>(messages, {
     purpose: "extract",
-    maxTokens: 512,
     contactId: input.contactId,
     capability: "memoryExtract",
   });
@@ -1195,7 +1194,7 @@ export async function extractMemories(input: {
       if (gate.verdict === "tombstone") {
         blocked += 1;
         bumpCounter(`${BLOCKED_KEY}:${input.contactId}`);
-        console.log(`[memory] 他删过的事没再记下：「${candidate.content}」（对应已删「${gate.matched}」）`);
+        console.log(`[memory] 用户删过的事没再记下：「${candidate.content}」（对应已删「${gate.matched}」）`);
       } else {
         suppressed += 1;
         bumpCounter(`${SUPPRESSED_KEY}:${input.contactId}`);
@@ -1206,7 +1205,7 @@ export async function extractMemories(input: {
       ? decideMemoryScope({ conversationKind: input.conversationKind, modelScope: candidate.scope })
       : "global";
     // 群轮次的「关于谁」由代码写死成这个群名。模型给的 subject 在这里不作数——
-    // 它写的是「他」，而群里一屋子人，下次召回时她只能猜这个「他」是谁。
+    // 它写的是「用户」，而群里一屋子人，下次召回时联系人只能猜这个「用户」是谁。
     // 谁的事就把名字写进那句话本身，这是提示词要求的（见 buildExtractSystem）。
     const groupTurn = input.conversationKind === "group" && input.conversationId !== undefined;
     const subjectText = (groupTurn ? (input.conversationTitle ?? "") : candidate.subject).slice(0, 20);

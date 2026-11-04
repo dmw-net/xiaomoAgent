@@ -20,7 +20,7 @@
 // 素材库怎么长出来（三种来源，都落进同一个 KV，去重 + 有界）：
 //   1. 手动上传（界面单图）        registerEmoteAsset
 //   2. 目录播种（本地放一批梗图）  importEmoteDir（按内容 md5 去重，重扫不重复）
-//   3. 自动采集（他发来的图）      captureInboundEmote（开关默认关，见 autoCapture）
+//   3. 自动采集（用户发来的图）      captureInboundEmote（开关默认关，见 autoCapture）
 
 import { createHash } from "node:crypto";
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -34,11 +34,11 @@ import {
   registerAsset, unmarkEmote, type AssetSource, type EmoteSemantics,
 } from "./assets.ts";
 import {
-  MAX_IMAGE_BYTES, mediaAbsPath, mediaFileInfo, mediaTypeOfUrl, readMedia, saveImage, sniffImageMime,
+  mediaAbsPath, mediaFileInfo, mediaTypeOfUrl, readMedia, saveImage, sniffImageMime,
 } from "./media.ts";
 import { dirFor } from "./media-layout.ts";
 import { scheduleCaptureNaming } from "./emote-naming.ts";
-import { qqBackend, type QqMediaRef } from "./qq.ts";
+import { qqBackend, type QQBackend, type QqMediaRef } from "./qq.ts";
 
 /** 表情意图：只描述"想发什么"，不描述"渠道怎么说"。 */
 export type QqEmoteIntent =
@@ -80,9 +80,9 @@ export type EmoteCapabilities = {
   /** 图片表情包两条链路都原生（官方富媒体 / OneBot image 段），最稳的默认路径。 */
   image: boolean;
 };
-export function emoteCapabilities(): EmoteCapabilities {
-  const onebot = qqBackend() === "onebot";
-  return { backend: onebot ? "onebot" : "official", face: onebot, mface: onebot, image: true };
+export function emoteCapabilities(backend: QQBackend = qqBackend()): EmoteCapabilities {
+  const onebot = backend === "onebot";
+  return { backend, face: onebot, mface: onebot, image: true };
 }
 
 // ── 内置表情表（关键词 → face id + 降级 emoji）─────────────────────
@@ -158,8 +158,8 @@ export function faceEmoji(id: number): string {
  *   - face：OneBot 原生 face 段；官方没有内置表情概念，降级成 emoji 字符（native=false）。
  *   - mface：OneBot（NapCat/LLOneBot）原生 mface 段；官方降级成文字。
  */
-export function renderEmote(intent: QqEmoteIntent): EmoteRender {
-  const caps = emoteCapabilities();
+export function renderEmote(intent: QqEmoteIntent, backend: QQBackend = qqBackend()): EmoteRender {
+  const caps = emoteCapabilities(backend);
   switch (intent.kind) {
     case "image":
     case "custom": {
@@ -317,6 +317,7 @@ export function registerEmoteAsset(url: string, patch: EmoteSemantics = {}, sour
     ...(patch.alias !== undefined ? { alias: cleanTags(patch.alias) } : {}),
     ...(patch.pack !== undefined ? { pack: cleanTags(patch.pack) } : {}),
     ...(patch.namedAt !== undefined ? { namedAt: patch.namedAt } : {}),
+    ...(patch.namedBy !== undefined ? { namedBy: patch.namedBy } : {}),
   });
 }
 
@@ -370,9 +371,30 @@ const FACE_SYNONYMS: Record<string, string[]> = {
 // 指纹存进独立的 KV manifest，第二次扫同一目录直接跳过——
 // 用户换个文件夹名、多扫几遍，素材库不会越扫越脏。
 const IMPORT_KV_PREFIX = "qq.emote.import.";
+/**
+ * 导入文件夹这一条单独放宽到 20MB：那是用户主动把本地图包交给她，落盘就是静态文件。
+ * 全局那道 5MB 闸（MAX_IMAGE_BYTES）管的是自动来的字节——聊天入站抓取、网页找图、
+ * 以及要 base64 内联喂视觉模型的那些，跟着一起抬会把十几 MB 的载荷推进对话请求里。
+ * 真库实测：5.2MB 的 PNG 在 deepseek 档 7.5s 正常认完；发送侧 OneBot 走本地路径不内联，
+ * 官方渠道的 GIF 本来就先派生静帧，所以这两张 5~6MB 的动图进库后不会撞别的墙。
+ */
+export const MAX_IMPORT_IMAGE_BYTES = 20 * 1024 * 1024;
 
-type ImportRecord = { added: number; skipped: number; total: number };
+type SkippedFile = { name: string; reason: string };
+type ImportRecord = { added: number; skipped: number; total: number; skippedFiles: SkippedFile[] };
+/** 回执里最多列几张被跳过的文件；总数照实报，明细只是让人知道「为什么少了两张」。 */
+const SKIPPED_REPORT_CAP = 40;
 function contentMd5(buffer: Buffer): string { return createHash("md5").update(buffer).digest("hex"); }
+
+/**
+ * 批量表情包的常见文件名是「流水号_名字」（`10N01_猫猫搓手`、`N06_略略略`）。
+ * 那串前缀是打包者的编号，不是这张图在说什么——直接当名字，界面上就是一串认不出的字符。
+ * 只在剥完剩下的确实是人话时才剥，免得把 `heart-hands` 这种句柄切成 `hands`。
+ */
+export function stripIndexPrefix(value: string): string {
+  const rest = value.replace(/^[0-9A-Za-z]+[_-]/, "").trim();
+  return rest !== "" && isHumanName(rest) ? rest : value;
+}
 
 /** 文件夹名＝路径最后一段（去掉盘符/尾斜杠）。导入的归属文件夹就是它，没有第二个名字来源。 */
 export function folderNameOf(dir: string): string {
@@ -383,7 +405,7 @@ export function folderNameOf(dir: string): string {
  * 扫描一个目录（**不递归子目录**，一层即可）把图片导入素材库。
  * 每张图先复制进媒体库（`/media` 统一路径，两条渠道都能发），再登记成 asset。
  * 归属文件夹＝源文件夹名：文件夹层是来源事实，导入时不再接受手填的别名。
- * 返回本次实际新增 / 跳过的张数，方便界面回执"导入了 N 张"。
+ * 返回本次实际新增 / 跳过的张数**和被跳过的文件名+原因**，方便界面回执"导入了 N 张、少了哪两张"。
  */
 export function importEmoteDir(dir: string): ImportRecord | { error: string } {
   const abs = dir.trim();
@@ -400,6 +422,12 @@ export function importEmoteDir(dir: string): ImportRecord | { error: string } {
   const rawManifest = kvGet(manifestKey);
   const seen: Set<string> = new Set(rawManifest ? (JSON.parse(rawManifest) as string[]) : []);
   let added = 0; let skipped = 0;
+  const skippedFiles: SkippedFile[] = [];
+  /** 被跳过的每一张都要有名字和原因：只报个数字，用户就只能猜「少的那两张是哪来的」。 */
+  const noteSkip = (name: string, reason: string): void => {
+    skipped += 1;
+    if (skippedFiles.length < SKIPPED_REPORT_CAP) skippedFiles.push({ name, reason });
+  };
   for (const name of entries) {
     const file = join(abs, name);
     let buffer: Buffer;
@@ -408,34 +436,42 @@ export function importEmoteDir(dir: string): ImportRecord | { error: string } {
       buffer = readFileSync(file);
     } catch { continue; }
     const ext = (name.split(".").pop() ?? "").toLowerCase();
+    // 非图片扩展名不算「跳过」——README/说明文件本来就不是表情材料，报进回执只会让人以为丢了图。
     if (!["png", "jpg", "jpeg", "webp", "gif", "bmp"].includes(ext)) continue;
     const mime = sniffImageMime(buffer);
-    if (mime === "" || buffer.length > MAX_IMAGE_BYTES) continue;
+    if (mime === "") { noteSkip(name, "读不出是图片"); continue; }
+    if (buffer.length > MAX_IMPORT_IMAGE_BYTES) {
+      noteSkip(name, `超过 ${Math.round(MAX_IMPORT_IMAGE_BYTES / 1024 / 1024)}MB 上限`);
+      continue;
+    }
     const md5 = contentMd5(buffer);
-    if (seen.has(md5)) { skipped += 1; continue; }
+    if (seen.has(md5)) { noteSkip(name, "库里已经有同一张图"); continue; }
     // 直接落进 表情包/<源文件夹名>/：磁盘位置和库里的归属同一步写就，不存在中间态。
-    const saved = saveImage(buffer, mime, dirFor({ emote: true, folder: packName, kind: "image" }));
-    // 纯哈希/UUID 文件名（GitHub 归档、协议端落盘那种）没有人类可读名，什么都不当——
-    // 留给认图作业。英文句柄（heart-hands）当**别名**：按原名还找得到，但它不是「这张在说什么」。
-    // 中文文件名直接当名字，省一次识别。
+    const saved = saveImage(buffer, mime, dirFor({ emote: true, folder: packName, kind: "image" }), MAX_IMPORT_IMAGE_BYTES);
+    // 落盘名是内容哈希，源文件名不在登记时留档就再也对不回那个包（认图也拿不到「导入时叫什么」这条线索），
+    // 所以句柄一律进 alias——机器名（纯 hex/UUID）除外，那串字符本来就不可读。
+    // 名字里带中文才直接当名字用（省一次识别），但先剥掉批量包的流水号前缀：`10N01_猫猫搓手` 说的是「猫猫搓手」。
     const raw = name.replace(/\.[^.]+$/, "");
-    const baseName = isMachineName(raw) ? "" : raw;
+    const handle = isMachineName(raw) ? "" : raw;
+    const cleanName = stripIndexPrefix(handle);
     const pack = packName === "" ? [] : [packName];
-    const patch: EmoteSemantics = baseName === ""
-      ? { pack }
-      : isHumanName(baseName)
-        ? { label: baseName, tags: [baseName], pack, namedAt: Date.now() }
-        : { alias: [baseName], pack };
+    const patch: EmoteSemantics = { ...(handle === "" ? {} : { alias: [handle] }), pack };
+    if (isHumanName(cleanName)) {
+      patch.label = cleanName;
+      patch.tags = [cleanName];
+      patch.namedAt = Date.now();
+      patch.namedBy = "file";
+    }
     registerEmoteAsset(saved.url, patch, "imported");
     seen.add(md5);
     added += 1;
   }
   const allSeen = new Set([...(rawManifest ? (JSON.parse(rawManifest) as string[]) : []), ...seen]);
   kvSet(manifestKey, JSON.stringify([...allSeen]));
-  return { added, skipped, total: entries.length };
+  return { added, skipped, total: entries.length, skippedFiles };
 }
 
-// ── 自动采集：把他发来的图片顺手登记（开关默认关）──────────────────
+// ── 自动采集：把用户发来的图片顺手登记（开关默认关）──────────────────
 // 采集开关存进独立 KV；默认值读 env config（QQ_EMOTE_AUTO_CAPTURE，默认关）。
 const PREFS_KV = "qq.emote.prefs";
 
@@ -450,7 +486,7 @@ export function setEmoteAutoCapture(on: boolean): void {
 }
 
 /**
- * 入站媒体钩子：他发来一张图片，开关开着就顺手入库，成为以后可接的表情素材。
+ * 入站媒体钩子：用户发来一张图片，开关开着就顺手入库，成为以后可接的表情素材。
  * url 应是已落盘的 /media 路径。采集时不猜名字——语义交给认图作业，猜出来的名字是错的还改不掉。
  * 关掉开关时是纯 no-op（不入库、不报错）。
  * 去重按内容哈希：同一张梗图被反复转发时每次落盘都是新文件名，按 URL 挡不住，

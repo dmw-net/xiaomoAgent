@@ -1,7 +1,7 @@
 // 资产：一个页面要的全部。
 //
 // 视角（全部 / 表情包 / 收藏 / 作品 / 聊天）是参数，不是五个功能；联系人也是参数——
-// 「她的东西」本来就是全局库，「和某人」只是在这堆东西上多带一个条件。
+// 「联系人的东西」本来就是全局库，「和某人」只是在这堆东西上多带一个条件。
 // 以前这里是三套各查各源的接口（/api/content 按联系人、/api/emotes 读 kv、/api/media/maintenance 扫盘），
 // 同一个动作在三处各有一份实现，删除语义也对不上。
 //
@@ -20,11 +20,11 @@ import type { Route } from "../types.ts";
 
 const VIEWS: string[] = ["all", "emote", "starred", "generated", "chat"];
 const KINDS: string[] = ["all", "image", "video", "audio", "file"];
-const NAMED_FILTERS: string[] = ["any", "unnamed", "auto", "manual"];
+const NAMED_FILTERS: string[] = ["any", "unnamed", "file", "auto", "manual"];
 
 /**
  * GET /api/assets?view=&kind=&q=&pack=&contactId=&limit=&offset=
- * contactId 是**可选筛选**而不是必传身份：不给就是全库（「她的东西」本来就是全局的），
+ * contactId 是**可选筛选**而不是必传身份：不给就是全库（「联系人的东西」本来就是全局的），
  * 给了就是「和某人」这个视角。这一点和 /api/content 的 strictContactId 不同，是刻意的。
  * pack 只在表情视角有意义：按文件夹筛（文件夹名不参与语义匹配，但可以是筛选条件）。
  */
@@ -43,6 +43,7 @@ const assetsListRoute: Route = ({ res, url, path, method }) => {
     q: url.searchParams.get("q") ?? "",
     pack: url.searchParams.get("pack") ?? "",
     named,
+    missing: url.searchParams.get("missing") === "1",
     limit: clampInt(url.searchParams.get("limit"), LIST_LIMIT_DEFAULT, 1, LIST_LIMIT_MAX),
     offset: clampInt(url.searchParams.get("offset"), 0, 0, Number.MAX_SAFE_INTEGER),
   });
@@ -89,12 +90,12 @@ const assetsActionRoute: Route = async ({ req, res, path, method }) => {
       setEmoteMark(asset.url, true);
     } else {
       registerEmoteAsset(asset.url, { label, ...(tags !== undefined ? { tags } : {}),
-        ...(isHumanName(label) ? { namedAt: Date.now() } : {}) });
+        ...(isHumanName(label) ? { namedAt: Date.now(), namedBy: "manual" } : {}) });
     }
   } else if (op === "unmarkEmote") {
     removeEmoteAsset(asset.url);
   } else if (op === "editEmote") {
-    // 她手改的名字/说法就是数据本体：写回同一批语义字段，并标成 manual——
+    // 联系人手改的名字/说法就是数据本体：写回同一批语义字段，并标成 manual——
     // 人写过的东西优先于再猜一次，界面上也要能一眼看出哪些还是机器起的。
     if (!asset.usableAsEmote) {
       sendJson(res, 400, { ok: false, error: "这张不是表情包素材，没有表情语义可改" });
@@ -110,6 +111,18 @@ const assetsActionRoute: Route = async ({ req, res, path, method }) => {
       namedAt: Date.now(),
       namedBy: "manual",
     });
+  } else if (op === "moveEmote") {
+    // 只改文件夹归属，不把“移动”误记成一次手动命名；磁盘位置由 applyEmoteSemantics 同步。
+    if (!asset.usableAsEmote) {
+      sendJson(res, 400, { ok: false, error: "这张不是表情包素材，不能移动表情文件夹" });
+      return true;
+    }
+    const pack = stringList(body.pack);
+    if (pack === undefined || pack.length === 0 || pack[0]!.trim() === "") {
+      sendJson(res, 400, { ok: false, error: "缺少目标文件夹" });
+      return true;
+    }
+    applyEmoteSemantics(asset.url, { pack });
   } else if (op === "star") {
     setStarred(asset.id, true);
   } else if (op === "unstar") {
@@ -129,7 +142,7 @@ const assetsActionRoute: Route = async ({ req, res, path, method }) => {
     sendJson(res, 200, { ok: true, asset: null, stats: assetStats(), naming: emoteNamingStats(), packs: listEmotePacks() });
     return true;
   } else {
-    sendJson(res, 400, { ok: false, error: "op 只支持 markEmote / unmarkEmote / editEmote / probeMissing / dropMissing / star / unstar" });
+    sendJson(res, 400, { ok: false, error: "op 只支持 markEmote / unmarkEmote / editEmote / moveEmote / probeMissing / dropMissing / star / unstar" });
     return true;
   }
   const next = getAssetById(asset.id);

@@ -27,9 +27,10 @@ import { purgeExpiredMediaTrash, reconcileAssets } from "./media.ts";
 import { migrateMediaLayout } from "./media-layout.ts";
 import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./contacts.ts";
 import { wechat } from "./wechat.ts";
-import { qq, qqBackend } from "./qq.ts";
+import { qq, qqUsesBackend } from "./qq.ts";
 import { autostartNapcatIfInstalled } from "./napcat.ts";
 import { ensureDefaultConversations } from "./conversations.ts";
+import { startOutboundLoop, stopOutboundLoop } from "./outbound.ts";
 
 // 兜底日志：单机应用「带病存活 + 看得见错误」好过静默崩溃。
 // 崩在这里意味着代码里有违背假设的路径——把它打进日志（状态页可查最近错误），不退出。
@@ -81,6 +82,8 @@ let maintenanceTimer: NodeJS.Timeout | null = null;
 
 function beginDuty(): void {
   if (proactiveTimer === null) proactiveTimer = startProactiveLoop();
+  // 出站队列同一时间只允许一个当家进程消费。
+  startOutboundLoop();
   // 微信通道：恢复已绑定链接的收件长轮询（未绑定时无操作）。
   // 只由当家进程做——两个进程各轮一遍，对端一句话会被投递两次。
   wechat.startAll();
@@ -88,7 +91,7 @@ function beginDuty(): void {
   // 同一条用户消息会被投递两次（官方按会话推事件，不去重）。
   qq.startAll();
   // OneBot 渠道下把托管的 NapCat 顺带拉起来（装过且已记自动登录，用户无需再点）。
-  if (qqBackend() === "onebot") autostartNapcatIfInstalled();
+  if (qqUsesBackend("onebot")) autostartNapcatIfInstalled();
   if (maintenanceTimer === null) {
     maintenance();
     maintenanceTimer = setInterval(maintenance, MAINTENANCE_MS);
@@ -99,6 +102,7 @@ function beginDuty(): void {
 function endDuty(): void {
   if (proactiveTimer !== null) { clearInterval(proactiveTimer); proactiveTimer = null; }
   if (maintenanceTimer !== null) { clearInterval(maintenanceTimer); maintenanceTimer = null; }
+  stopOutboundLoop();
   wechat.stopAll();
   qq.stopAll();
 }

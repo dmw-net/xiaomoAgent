@@ -256,7 +256,7 @@ export function contentHash(buffer: Buffer): string {
 
 // ── 表情素材：assets 上的一个标记，不再是 kv 表里的独立 blob ──────────────
 //
-// 「她发出的一张表情图」和「这张图存在」是同一件事的两个属性。分成两处存，就出现了
+// 「联系人发出的一张表情图」和「这张图存在」是同一件事的两个属性。分成两处存，就出现了
 // 「删了表情登记、文件还留在盘上」「同一张图在内容库和表情库各有一份名字」这类裂缝。
 //
 // 语义层的字段分工（检索只读前三样，文件夹名刻意排除在外）：
@@ -275,8 +275,8 @@ export type EmoteSemantics = {
   pack?: string[];
   /** 什么时候算「识别过」的。识别作业写它，导入时人话文件名也写它。 */
   namedAt?: number;
-  /** 这个名字是谁给的：识别作业写 auto，人在界面上改过写 manual。 */
-  namedBy?: "auto" | "manual";
+  /** 这个名字是谁给的：识别作业写 auto，人写的/从文件名读到的写 manual。 */
+  namedBy?: "auto" | "manual" | "file";
 };
 
 /**
@@ -331,21 +331,22 @@ export function markEmote(url: string, patch: EmoteSemantics = {}): boolean {
   return changed.changes > 0;
 }
 
-/** 发出去一次就记一笔：打分用它做轻微上浮，界面用它把「她常甩的」排前面。 */
+/** 发出去一次就记一笔：打分用它做轻微上浮，界面用它把「联系人常甩的」排前面。 */
 export function bumpEmoteUse(id: string): void {
   db.prepare("UPDATE assets SET emote_use_count = emote_use_count + 1 WHERE id = ? AND usable_as_emote = 1").run(id);
 }
 
 /**
- * 把「有名字但没记来源」的行认成机器命名。
+ * 把「有名字但没记来源」的行补上来源。
  *
- * 这一列出之前只有识别作业会写名字（手改的入口是和它同一批上线的），所以这个推断是事实而不是猜。
- * 不回填的话概览条会读成「共 200：智能命名 0 · 手动维护 0 · 2 张未命名」——
- * 三个数对不上，用户第一个怀疑的就是数据坏了。写成幂等的：每次启动跑一次，没有可回填的就不动。
+ * 导入中文文件名会写 namedAt，但旧版本漏了 namedBy；这些名字是用户提供的，归 manual。
+ * 其余历史行只可能是认图作业写的，归 auto。不回填时概览条的三档加不回总数，
+ * 用户第一个怀疑的就是数据坏了。写成幂等的：每次启动跑一次，没有可回填的就不动。
  */
 export function backfillEmoteNameSource(): number {
   return Number(db.prepare(
-    "UPDATE assets SET emote_name_source = 'auto' WHERE emote_named_at > 0 AND emote_name_source = ''",
+    `UPDATE assets SET emote_name_source = CASE WHEN source = 'imported' THEN 'file' ELSE 'auto' END
+       WHERE emote_named_at > 0 AND emote_name_source = ''`,
   ).run().changes);
 }
 
@@ -370,21 +371,28 @@ export function backfillEmoteFolder(): number {
 }
 
 /** 识别进度与来源分布：界面上那颗「智能识别」按钮、概览条那行数字都读它。 */
-export function emoteNamingStats(): { total: number; named: number; auto: number; manual: number } {
+export function emoteNamingStats(): { total: number; named: number; auto: number; manual: number; file: number } {
   const row = db.prepare(`
     SELECT COUNT(*) AS n,
            COALESCE(SUM(CASE WHEN emote_named_at > 0 THEN 1 ELSE 0 END), 0) AS named,
-           COALESCE(SUM(CASE WHEN emote_name_source = 'auto' THEN 1 ELSE 0 END), 0) AS auto,
-           COALESCE(SUM(CASE WHEN emote_name_source = 'manual' THEN 1 ELSE 0 END), 0) AS manual
+           COALESCE(SUM(CASE WHEN emote_named_at > 0 AND emote_name_source = 'auto' THEN 1 ELSE 0 END), 0) AS auto,
+           COALESCE(SUM(CASE WHEN emote_named_at > 0 AND emote_name_source = 'manual' THEN 1 ELSE 0 END), 0) AS manual,
+           COALESCE(SUM(CASE WHEN emote_named_at > 0 AND emote_name_source NOT IN ('auto', 'manual') THEN 1 ELSE 0 END), 0) AS file
       FROM assets WHERE usable_as_emote = 1 AND parent_id IS NULL
-  `).get() as { n: number; named: number; auto: number; manual: number };
-  return { total: row.n, named: row.named, auto: row.auto, manual: row.manual };
+  `).get() as { n: number; named: number; auto: number; manual: number; file: number };
+  return { total: row.n, named: row.named, auto: row.auto, manual: row.manual, file: row.file };
 }
 
-/** 命名状态筛选：界面上「未命名 / AI 命名 / 手动维护」那排 chips 就是这几个值。 */
-export type EmoteNamedFilter = "any" | "unnamed" | "auto" | "manual";
+/** 命名状态筛选：界面上「未命名 / 智能识别 / 手动维护」那排 chips 就是这几个值。 */
+export type EmoteNamedFilter = "any" | "unnamed" | "file" | "auto" | "manual";
 const NAMED_CLAUSE: Record<EmoteNamedFilter, string> = {
-  any: "", unnamed: "emote_named_at = 0", auto: "emote_name_source = 'auto'", manual: "emote_name_source = 'manual'",
+  any: "",
+  unnamed: "emote_named_at = 0",
+  auto: "emote_named_at > 0 AND emote_name_source = 'auto'",
+  manual: "emote_named_at > 0 AND emote_name_source = 'manual'",
+  // 老数据可能只有名字、没有来源。导入文件名与来源未记录都归「文件命名」，
+  // 不能让有名字的图在分类里凭空消失，也不能冒充用户手改。
+  file: "emote_named_at > 0 AND emote_name_source NOT IN ('auto', 'manual')",
 };
 
 /**
@@ -433,7 +441,7 @@ export function migrateEmoteSemantics(): { split: number } {
 /**
  * 只翻「能不能当表情甩」这个开关，不动语义字段。
  * 界面上那颗笑脸是**开关**，不是重新登记：已经认过名的那张被取消再勾回来，
- * 名字和标签必须还在——否则一次误点就把她（或视觉模型）起好的名字洗掉了。
+ * 名字和标签必须还在——否则一次误点就把联系人（或视觉模型）起好的名字洗掉了。
  */
 export function setEmoteMark(url: string, on: boolean): boolean {
   // 勾上时若还没有文件夹（聊天里随手标记的图就是这种），归进默认文件夹，
@@ -473,20 +481,21 @@ export function listEmoteAssets(): AssetRow[] {
 
 /**
  * 文件夹清单以及每个文件夹认过图没有。
- * 「表情包」视角那个文件夹下拉读它——她备了三个文件夹，用户想先看「语录」那一叠。
+ * 「表情包」视角那个文件夹下拉读它——联系人备了三个文件夹，用户想先看「语录」那一叠。
  * auto/manual/unnamed 带着命名状态的分桶计数：选中文件夹时，界面上那排状态 chips 的
  * 数字要跟着文件夹变——全库数字不随筛选动，会被读成「筛选坏了」（2026-11-02 用户实测报告）。
  */
-export function listEmotePacks(): Array<{ pack: string; total: number; unnamed: number; auto: number; manual: number }> {
-  const out: Array<{ pack: string; total: number; unnamed: number; auto: number; manual: number }> = [];
-  const seen = new Map<string, { total: number; unnamed: number; auto: number; manual: number }>();
+export function listEmotePacks(): Array<{ pack: string; total: number; unnamed: number; file: number; auto: number; manual: number }> {
+  const out: Array<{ pack: string; total: number; unnamed: number; file: number; auto: number; manual: number }> = [];
+  const seen = new Map<string, { total: number; unnamed: number; file: number; auto: number; manual: number }>();
   for (const row of listEmoteAssets()) {
     for (const pack of new Set(row.emotePack)) {
-      const bucket = seen.get(pack) ?? { total: 0, unnamed: 0, auto: 0, manual: 0 };
+      const bucket = seen.get(pack) ?? { total: 0, unnamed: 0, file: 0, auto: 0, manual: 0 };
       bucket.total += 1;
       if (row.emoteNamedAt === 0) bucket.unnamed += 1;
-      if (row.emoteNameSource === "auto") bucket.auto += 1;
-      if (row.emoteNameSource === "manual") bucket.manual += 1;
+      else if (row.emoteNameSource === "auto") bucket.auto += 1;
+      else if (row.emoteNameSource === "manual") bucket.manual += 1;
+      else bucket.file += 1;
       seen.set(pack, bucket);
     }
   }
@@ -564,8 +573,10 @@ export type AssetQuery = {
   q?: string;
   /** 按文件夹筛；只在有值的时生效。文件夹名不参与语义匹配，但可以是筛选条件。 */
   pack?: string;
-  /** 按命名状态筛：未命名 / AI 命名 / 手动维护。识别进度那一排 chips 用它。 */
+  /** 按命名状态筛：未命名 / 智能识别 / 手动维护。识别进度那一排 chips 用它。 */
   named?: EmoteNamedFilter;
+  /** 只列原图已经不在磁盘上的失效项。 */
+  missing?: boolean;
   limit: number;
   offset: number;
 };
@@ -683,6 +694,7 @@ export function listAssets(query: AssetQuery): {
   }
   const named = query.named ?? "any";
   if (NAMED_CLAUSE[named] !== "") where.push(NAMED_CLAUSE[named]);
+  if (query.missing === true) where.push("missing = 1");
   const q = (query.q ?? "").trim().toLowerCase();
   if (q !== "") {
     // 表情语义的四个可搜字段一起搜：中文名、语义标签、用法说明、别名/句柄。

@@ -7,13 +7,14 @@ import { q, withTx } from "./db.ts";
 import { config } from "./config.ts";
 import { extractMemories, likePattern, recallExplained, recallSmart, recordExtractFailure } from "./memory.ts";
 import { buildSystemPrompt, toChatMessages } from "./persona.ts";
-import { effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolRounds } from "./settings.ts";
+import { loadToolExchanges, planToolReplay, trimToolStore } from "./tool-history.ts";
+import { effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolLoopTurns } from "./settings.ts";
 import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "./model.ts";
 import { appendImageDescriptions, describeChatImages, visionHandlingFor } from "./image-understanding.ts";
 import { executeTool, toolDefsForApi, type ToolContext, type ToolResult } from "./tools.ts";
 import { trimDraftBeforeToolCall } from "./text-tool-calls.ts";
 import { bannedWordsNote, parseBannedWords } from "./banned-words.ts";
-import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, getContact } from "./contacts.ts";
+import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, emoteFrequencyForContact, getContact } from "./contacts.ts";
 import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssistantToActiveProfile, type AssistantPermission } from "./assistant.ts";
 import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "./reply-segmentation.ts";
@@ -22,6 +23,7 @@ import { emitMessage, emitTurn, emitActivity } from "./events.ts";
 import type { MessageAttachmentMeta } from "../shared/api.ts";
 import { getConversation, localConversationId, touchConversation, type Conversation } from "./conversations.ts";
 import { MAX_CHAT_IMAGES } from "../shared/limits.ts";
+import { enqueueAndDeliver } from "./outbound.ts";
 
 export type TurnRow = {
   id: string;
@@ -115,14 +117,20 @@ export function insertMessage(input: {
   reasoning?: string | null;
   /** 工具卡的可展开详情（仅 kind=tool 用；不进上下文回放，滚出窗口即 NULL）。 */
   toolDetail?: string | null;
+  /** 工具往返的结构化存档（仅 kind=tool 用）：历史按协议回放要的就是这三样。 */
+  toolCallId?: string | null;
+  toolName?: string | null;
+  toolArgs?: string | null;
+  toolResult?: string | null;
 }): number {
   const conversationId = input.conversationId || localConversationId(input.contactId);
   const now = Date.now();
   const result = q(
       `INSERT INTO messages
          (channel, role, text, kind, turn_id, contact_id, conversation_id, sender_id, sender_name,
-          source_message_id, reply_to_message_id, at_bot, source_meta, attachments, attachment_meta, reasoning, tool_detail, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          source_message_id, reply_to_message_id, at_bot, source_meta, attachments, attachment_meta, reasoning,
+          tool_detail, tool_call_id, tool_name, tool_args, tool_result, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.channel,
@@ -142,6 +150,10 @@ export function insertMessage(input: {
       input.attachmentMeta && input.attachmentMeta.length > 0 ? JSON.stringify(input.attachmentMeta) : null,
       input.reasoning ?? null,
       input.toolDetail ?? null,
+      input.toolCallId ?? null,
+      input.toolName ?? null,
+      input.toolArgs ?? null,
+      input.toolResult ?? null,
       now,
     );
   touchConversation(conversationId, now);
@@ -157,7 +169,7 @@ export function insertMessage(input: {
  * 思考原文的滚动窗口：每个联系人只留最近 REASONING_WINDOW 条，其余置 NULL。
  * 抄的是调用记录全文那套（logs.ts 的 FULL_TEXT_WINDOW）——**丢的是原文，不是记录**：
  * 气泡本身永远在，滚出窗口后只是折叠条不再出现。
- * 按联系人算而不是全局：切到小猫想看她刚才想过什么，不该被阿米的二十轮挤掉。
+ * 按联系人算而不是全局：切到小猫想看联系人刚才想过什么，不该被阿米的二十轮挤掉。
  */
 export const REASONING_WINDOW = 20;
 
@@ -255,7 +267,7 @@ export function recentMessages(
   const live = `contact_id = ? AND conversation_id = ? AND superseded_at IS NULL AND kind != 'tool'`;
   const cap = upToMessageId === undefined || upToMessageId === null ? "" : " AND id <= ?";
   const capArgs: number[] = cap === "" ? [] : [upToMessageId as number];
-  // attachment_meta 随行：她自己的图不回放原图，meta.label 是历史标记里"发过哪张"的唯一线索。
+  // attachment_meta 随行：联系人自己的图不回放原图，meta.label 是历史标记里"发过哪张"的唯一线索。
   const cols = `id, role, text, attachments, attachment_meta, turn_id, sender_id, sender_name, at_bot`;
   const boundary = turns === ALL_TURNS ? undefined : q(`SELECT id FROM messages WHERE ${live}${cap} AND role = 'user' ORDER BY id DESC LIMIT 1 OFFSET ?`)
     .get(contactId, conversationId, ...capArgs, Math.max(1, turns) - 1) as { id: number } | undefined;
@@ -439,7 +451,7 @@ export function sweepStaleTurns(): number {
 }
 
 /** 状态页用的：最近若干条处理单，用于发现"卡住的处理"和"失败的处理"。offset 供翻页。 */
-/** 某条消息属于哪个联系人（撤回/删除回执要按该联系人的性别说话）。找不到返回 null。 */
+/** 某条消息属于哪个联系人。找不到返回 null。 */
 export function contactOfMessage(messageId: number): string | null {
   const row = q("SELECT contact_id FROM messages WHERE id = ?").get(messageId) as { contact_id: string | null } | undefined;
   return row?.contact_id ?? null;
@@ -516,10 +528,10 @@ export function turnStats(): TurnStats {
 }
 
 /**
- * 他上一次说话是什么时候——主动性闸门用它算"静默时长"。
+ * 用户上一次说话是什么时候——主动性闸门用它算"静默时长"。
  *
  * 必须排除失效消息：如果你把"我今天在忙"编辑成了别的话，
- * 那句被改掉的话不该继续影响"她该不该主动找你"的判断。
+ * 那句被改掉的话不该继续影响"联系人该不该主动找你"的判断。
  */
 export function lastUserMessageAt(contactId: string, conversationId = localConversationId(contactId)): number | null {
   const row = q(
@@ -530,8 +542,8 @@ export function lastUserMessageAt(contactId: string, conversationId = localConve
 }
 
 /**
- * 跨会话口径的「他上次说话是什么时候」。
- * 「该不该主动开口」判断的是这个人，不是某段会话：他在 QQ 私聊里一分钟前刚说过话，
+ * 跨会话口径的「用户上次说话是什么时候」。
+ * 「该不该主动开口」判断的是这个人，不是某段会话：用户在 QQ 私聊里一分钟前刚说过话，
  * 静默时长就不该按本机会话算成"三天没聊"——那个数会直接进主动判断的提示词。
  * 「说什么」仍按目标会话取（见 recentMessages 的 conversationId），两层口径各管各的。
  */
@@ -587,7 +599,7 @@ const IMAGE_TOKENS = 1000;
 const DESCRIPTION_TOKENS = 700;
 
 /**
- * 「输入上限」没填时的保守估算。往低了估是故意的：估低了只是少带几轮历史（她说话照样
+ * 「输入上限」没填时的保守估算。往低了估是故意的：估低了只是少带几轮历史（联系人说话照样
  * 连贯），估高了会直接 400 发不出去。主流云端模型普遍 ≥128K，而且这类档一般会填上限，
  * 32K 不会误伤它们；真正需要被保护的是没填上限的本地小窗口模型。
  */
@@ -675,9 +687,14 @@ export function inputBudget(settings: { maxInputTokens: number }): {
 /** 一次对话请求会发出去的全部内容，各占多少 token。 */
 export type ContextParts = { system: number; memory: number; tools: number; history: number; images: number };
 
-/** 合并后的模型消息取回纯文本，供 token 估算——估算必须和真发出去的形状一致。 */
+/** 合并后的模型消息取回纯文本，供 token 估算——估算必须和真发出去的形状一致。
+ *  工具往返的 arguments 也算进去：参数（尤其是 web_fetch 的 url、generate_image 的 prompt）
+ *  同样是发出去的字，漏算会让圆环比真实请求小一截。 */
 function textsOf(msgs: ChatMessage[]): Array<{ text: string }> {
-  return msgs.map((m) => ({ text: typeof m.content === "string" ? m.content : "" }));
+  return msgs.map((m) => ({
+    text: (typeof m.content === "string" ? m.content : "")
+      + (m.tool_calls === undefined ? "" : m.tool_calls.map((call) => call.function.arguments).join("")),
+  }));
 }
 
 /**
@@ -713,7 +730,7 @@ export function contextTotal(parts: ContextParts): number {
 }
 
 /**
- * 丢掉最旧的一轮（轮以 user 消息为边界，连同她随后的回复与工具往返）。
+ * 丢掉最旧的一轮（轮以 user 消息为边界，连同联系人随后的回复与工具往返）。
  * 返回 null = 只剩本轮，丢无可丢。
  * 切点一定落在 user 消息上，所以 assistant 的 tool_calls 与对应的 tool 结果不会被拆散。
  */
@@ -793,9 +810,9 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
   const includeNow = getContact(cid)?.features?.clock !== false;
   const bare = buildSystemPrompt([], { character: card, lastUserAt: lastAt, companion, includeNow });
   // 观测路径用 recallExplained（不写 last_used_at）：圆环随消息轮询刷新，
-  // 走真实 recall 会把「近 7 天被想起」统计刷成"用户打开了页面"，而不是"她想起过"。
+  // 走真实 recall 会把「近 7 天被想起」统计刷成"用户打开了页面"，而不是"联系人想起过"。
   // 必须带空间：不带 scope 时 memory.ts 完全不过滤，圆环会把别的群、别的成员的记忆
-  // 也算进"她下次会想起"，量出来的记忆项比真实的多一截。
+  // 也算进"联系人下次会想起"，量出来的记忆项比真实的多一截。
   // 群里的下一句由谁说还不知道，所以只收到会话这一层（global + 本群），不猜成员。
   const full = buildSystemPrompt(
     lastUser ? recallExplained(cid, lastUser.text, undefined, { scope: { conversationId: convId } }).events : [],
@@ -822,13 +839,21 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
   const imageTokensOf = (rows: typeof proxied): number =>
     countReplayedImages(rows, directReplay) * IMAGE_TOKENS
     + countReplayedImages(rows, described) * DESCRIPTION_TOKENS;
+  // 工具往返也进历史：圆环量的是"下一次真会发出去的东西"，少算这一段
+  // 就会出现「圆环显示 40%、请求却被判超长」那种对不上的事故。
+  // 端点不支持 tools 时与 respondToTurn 同一口径：只给备注，不给原生往返。
+  const toolExchanges = loadToolExchanges(cid, convId, history.map((row) => row.turn_id));
+  const toolReplayOf = (rows: typeof proxied) =>
+    planToolReplay(rows, toolExchanges, {
+      nativeTurns: toolsOn && !toolsUnsupportedFor(settings) ? config.toolHistoryTurns : 0,
+    });
   const measureParts = (rows: typeof proxied) =>
-    contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(rows)), imageCount: countReplayedImages(rows, directReplay), visionMode, imageTokens: imageTokensOf(rows) });
+    contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(rows, toolReplayOf(rows))), imageCount: countReplayedImages(rows, directReplay), visionMode, imageTokens: imageTokensOf(rows) });
   const { kept, droppedTurns } = trimHistoryToBudget(proxied, (rows) => {
     const q = measureParts(rows);
     return contextTotal(q) <= budget.room && q.history <= histCap;
   });
-  const p = contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(kept)), imageCount: countReplayedImages(kept, directReplay), visionMode, imageTokens: imageTokensOf(kept) });
+  const p = contextParts({ systemBare: bare, systemFull: full, toolsJson, history: textsOf(toChatMessages(kept, toolReplayOf(kept))), imageCount: countReplayedImages(kept, directReplay), visionMode, imageTokens: imageTokensOf(kept) });
   const parts = [
     { key: "system", label: "系统提示词", tokens: p.system },
     { key: "memory", label: "记忆召回", tokens: p.memory },
@@ -843,8 +868,18 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
   const settingTurns = history.filter((m) => m.role === "user").length;
   // 「全部」这一档要能看见代价：整段历史（不受回放窗口限制）按同一套合并口径估的 token。
   // 只算文本，与圆环里的「对话历史」同一口径；图片另有一部分，不受此项影响。
-  const fullHistoryTokens = textsOf(toChatMessages(recentMessages(cid, ALL_TURNS, null, convId)))
-    .reduce((a, m) => a + estimateTokens(m.text) + 2, 0);
+  // 工具往返这里只取窗口内的那几轮：更早的轮次在上下文里只剩一行备注（几十字），
+  // 为它们把整段历史的工具行全捞一遍，等于每刷一次圆环就扫一次全表。
+  const allRows = recentMessages(cid, ALL_TURNS, null, convId);
+  const replayTurns = toolsOn && !toolsUnsupportedFor(settings) ? config.toolHistoryTurns : 0;
+  const tailTurnIds = [...new Set(allRows.map((row) => row.turn_id))]
+    .slice(-Math.max(1, replayTurns))
+    .filter((id): id is string => typeof id === "string");
+  const fullHistoryTokens = textsOf(toChatMessages(allRows, planToolReplay(
+    allRows,
+    loadToolExchanges(cid, convId, tailTurnIds),
+    { nativeTurns: replayTurns },
+  ))).reduce((a, m) => a + estimateTokens(m.text) + 2, 0);
   return {
     model: settings.name,
     limit: budget.limit,
@@ -872,13 +907,14 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
  *
  * 流程：模型若请求工具 → 执行（结果 JSON 回传）→ 模型继续 → 最多 3 轮后强制收口。
  * 循环内的 tool 往返不进下次历史（recentMessages 已排除）；但每次工具执行会
- * 落一张 kind=tool 的**过程卡**——界面能看见她在查，过程不再是黑箱。
- * messages 表里她"说的话"仍然只有最终回复（思考过程依旧不回放）。
+ * 落一张 kind=tool 的**过程卡**——界面能看见联系人在查，过程不再是黑箱。
+ * messages 表里联系人"说的话"仍然只有最终回复（思考过程依旧不回放）。
  *
  * 降级：端点不支持 function calling（第一次调用即 400/422）→ 整轮回退为无工具的单次
  * 生成，并记住降级状态（model.ts 内），后续轮次不再撞墙。echo 模式同理直接单次。
  *
- * 轮数不再是常量：它按「助手 > 联系人覆盖 > 全局」解析（见 settings.resolveToolRounds），
+ * 轮数不再是常量：助手固定 8 轮，普通联系人走全局设置（见 settings.resolveToolLoopTurns）。
+ * 这里的“轮”是一次带工具定义的模型请求，不是一次工具调用；同一请求可发起多个工具。
  * 因为联网这一档的活天然是多步流水，3 轮连一件事都做不完就被强制收口。
  */
 
@@ -997,9 +1033,9 @@ export function toolDetail(name: string, result: unknown): string {
 /**
  * 工具卡上要挂的图（目前只有「图片搜索」这一类）：搜到的候选图直接摆在卡片下面。
  *
- * 为什么挂在**工具卡**上而不是她这条回复的附件上：用户要的是「先看看这几张、再挑一张」。
- * 走附件那条路，8 张候选会变成"她一口气发了 8 张图"，语义完全变了，
- * 而且她真正设好头像那条回复反而看不出差别。
+ * 为什么挂在**工具卡**上而不是联系人这条回复的附件上：用户要的是「先看看这几张、再挑一张」。
+ * 走附件那条路，8 张候选会变成"联系人一口气发了 8 张图"，语义完全变了，
+ * 而且联系人真正设好头像那条回复反而看不出差别。
  *
  * 只认本地 /media：CSP 不放行远端图（见 server.ts），挂上去也只会是裂图。
  * 返回空数组表示这张卡没有可展示的图，调用方据此不写 attachments。
@@ -1075,7 +1111,7 @@ function redactToolArguments(argsJson: string): string {
  * （约两百 token），对着两万字的工具载荷杯水车薪，重试两次后本轮直接失败。
  * 更糟的是多轮累积：8 轮循环各带一份就是十几万字符，中间没有任何一道闸门。
  *
- * 截断时明确告诉她"还有但没给"，别让她以为看到的就是全部——否则她会基于半份资料下结论。
+ * 截断时明确告诉联系人"还有但没给"，别让联系人以为看到的就是全部——否则联系人会基于半份资料下结论。
  */
 const TOOL_RESULT_MAX_CHARS = 4_000;
 
@@ -1125,7 +1161,7 @@ async function runAgentLoop(
   assistantPermissionSnapshot?: AssistantPermission,
 ): Promise<string> {
   const base: ChatMessage[] = [{ role: "system", content: system }, ...history];
-  // 温度：联系人设过就用她的，没设（-1）就留给 model.ts 的全局默认（0.8）。
+  // 温度：联系人设过就用联系人的，没设（-1）就留给 model.ts 的全局默认（0.8）。
   const temp = getContact(turn.contact_id ?? DEFAULT_CONTACT_ID)?.features.temperature ?? -1;
   // 多轮工具调用各自会产出一段推理。已完成轮次固定下来，当前轮跟着流式增量更新，
   // UI 始终拿到「这轮到目前为止」的完整思考，而不是等最终落库才突然出现。
@@ -1182,7 +1218,7 @@ async function runAgentLoop(
   /* 其余三种情况——没有可声明的工具、模型档没开工具调用、端点被探测为不支持 tools——
      从前直接短路成一次 `callModel`，**连工具循环都不进**。可这恰恰是最需要兼容解析的一条路：
      端点没收到 tools 声明，Hermes / Qwen 模板的模型仍会把调用写进正文（见 text-tool-calls.ts），
-     真实表现就是"她说已经搜到 6 张图了"，而工具一次没跑、界面上一张图都没有。
+     真实表现就是"联系人说已经搜到 6 张图了"，而工具一次没跑、界面上一张图都没有。
      现在照常进循环，只是把空清单传下去：callModelWithTools 见到空 tools 会走无工具分支，
      但那一条分支同样会认正文形式的调用。别给端点发 tools: []——部分服务商直接 400。 */
 
@@ -1197,11 +1233,12 @@ async function runAgentLoop(
   const messages: ChatMessage[] = [...base];
   // 让路检查：没传（抽取/主动性那些副通道）就退化成只看 signal。
   const shouldYield = cancelIfAborted ?? ((): boolean => signal?.aborted === true);
-  // 助手放开、联系人可自己设、否则跟全局：见 settings.ts 里那段「为什么它不再是常量」。
-  const maxRounds = resolveToolRounds(isAssistant(contactId), getContact(contactId)?.features.toolRounds ?? 0);
+  // 助手固定 8 轮，普通联系人统一跟全局：见 settings.ts 里「为什么它不再是常量」。
+  // “轮”统计的是带工具定义的模型请求；同一请求里的多个工具调用只算一轮。
+  const maxToolLoopTurns = resolveToolLoopTurns(isAssistant(contactId));
 
   try {
-    for (let round = 0; round < maxRounds; round += 1) {
+    for (let toolLoopTurn = 0; toolLoopTurn < maxToolLoopTurns; toolLoopTurn += 1) {
       // 每轮开工前先让路：用户按了「停止」、或另一个窗口 barge-in 进来了，就停在这一轮开头。
       // 少了这个检查点，取消只会杀死在飞的那一次模型调用，而本轮剩下的工具调用照旧跑完——
       // 包括花钱的 generate_image（十几秒 + 一张配额）和会建真实任务的 schedule_reminder。
@@ -1278,8 +1315,12 @@ async function runAgentLoop(
           else onFiles?.(result.attachments, result.attachmentMeta);
         }
         console.log(`[agent] 工具 ${call.name} → ${result.ok ? "ok" : `失败：${result.error}`}`);
-        // 工具卡实时落库：界面能"看见她在查"，过程不再是黑箱。
-        // kind=tool 的行不进上下文（recentMessages 已排除），只做过程展示。
+        // 回传模型的那份结果与存档的那份必须是**同一个字符串**：历史回放时逐字复现，
+        // 两次各自截断一次就会出现「上一轮看到 4000 字、下一轮回放成 8000 字」的错位。
+        const toolResultText = capToolResult(result.ok ? result.result : { error: result.error }, call.name);
+        // 工具卡实时落库：界面能"看见联系人在查"，过程不再是黑箱。
+        // kind=tool 的行不进 recentMessages（正文回放用它），但工具往返靠这几列单独取——
+        // 历史里要让模型看见真正的 assistant.tool_calls + tool 结果，而不是一句正文占位符。
         insertMessage({
           channel: turn.channel,
           role: "assistant",
@@ -1287,7 +1328,7 @@ async function runAgentLoop(
           turnId: turn.id,
           contactId,
           // 必须跟着这一轮的会话：群轮次的过程卡要留在群里。缺省会落进联系人的主私聊
-          // （见 insertMessage 的 `|| localConversationId`），于是群里看不到她查了什么，
+          // （见 insertMessage 的 `|| localConversationId`），于是群里看不到联系人查了什么，
           // 私聊反倒被外来的卡占满。
           conversationId,
           text: JSON.stringify({
@@ -1297,13 +1338,19 @@ async function runAgentLoop(
             elapsedMs: slot.elapsedMs,
           }),
           toolDetail: result.ok ? (toolDetail(call.name, result.result) || null) : null,
-          // 搜到的候选图挂在这张卡上（不是挂到她的回复上）：见 toolAttachments 的注释。
+          // 搜到的候选图挂在这张卡上（不是挂到联系人的回复上）：见 toolAttachments 的注释。
           attachments: result.ok ? toolAttachments(call.name, result.result) : [],
+          // 结构化往返：调用 id / 名字 / 脱敏后的参数 / 结果。
+          // 参数必须脱敏后再落库——它和回传服务商用的是同一条规则（见 redactToolArguments）。
+          toolCallId: call.id,
+          toolName: call.name,
+          toolArgs: redactToolArguments(call.args),
+          toolResult: toolResultText,
         });
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: capToolResult(result.ok ? result.result : { error: result.error }, call.name),
+          content: toolResultText,
         });
       }
       // 批后让路：已执行的工具产物已挂上（上面的循环），不再进入下一轮模型调用。
@@ -1312,11 +1359,11 @@ async function runAgentLoop(
 
     // 轮数用尽仍没给最终回复：保留全部工具消息，只追加一句收口指令。
     // 以前这里把 role='tool' 和带 tool_calls 的 assistant 消息一起过滤掉，剩下的就是 base——
-    // 等于让她把刚查到的资料全忘掉、重新回答原问题，多轮搜索白做。
+    // 等于让联系人把刚查到的资料全忘掉、重新回答原问题，多轮搜索白做。
     // 不再传 tools（callModel 本来就不带），所以保留工具历史也不会触发新一轮调用。
     messages.push({
       role: "user",
-      content: "（本轮工具调用次数已经用完。请直接根据上面已经拿到的结果回答我，不要再调用工具，也不要说自己没查到。）",
+      content: "（本轮可用于工具调用的模型轮次已经用完。请直接根据上面已经拿到的结果回答我，不要再调用工具，也不要说自己没查到。）",
     });
     return await guardOverflow(messages, () => callModel(messages, options));
   } catch (error) {
@@ -1328,13 +1375,33 @@ async function runAgentLoop(
       && error.code !== "CONTEXT_OVERFLOW"
     ) {
       console.warn("[agent] 端点不支持工具调用，本轮回退为无工具生成");
-      return callModel(base, options);
+      // 历史里可能带着上一轮回放的原生往返（assistant.tool_calls + tool 消息）。
+      // 对不认 tools 的端点，那些消息正是 400 的来源，必须一起剥掉再发一次，
+      // 否则"回退"会在同一个地方再撞一次墙。
+      return callModel(stripToolReplay(base), options);
     }
     throw error;
   }
 }
 
-/** 改她的一条回复文本（不重新生成、不动后续）。返回 false = 这条不存在或不是有效回复。 */
+/** 把历史里的工具往返剥成纯文本：给不认 tools 的端点兜底用（备注与正文都保留）。 */
+function stripToolReplay(messages: ChatMessage[]): ChatMessage[] {
+  const out: ChatMessage[] = [];
+  for (const msg of messages) {
+    if (msg.role === "tool") continue;
+    if (msg.tool_calls === undefined) {
+      out.push(msg);
+      continue;
+    }
+    const text = typeof msg.content === "string" ? msg.content : "";
+    // 只有调用请求、没有正文的那条直接丢掉；有正文的保留正文、去掉 tool_calls。
+    if (text.trim() === "") continue;
+    out.push({ role: msg.role, content: text });
+  }
+  return out;
+}
+
+/** 改联系人的一条回复文本（不重新生成、不动后续）。返回 false = 这条不存在或不是有效回复。 */
 export function updateAssistantText(id: number, text: string): boolean {
   const res = q(
     `UPDATE messages SET text = ? WHERE id = ? AND role = 'assistant' AND kind = 'chat' AND superseded_at IS NULL`,
@@ -1347,7 +1414,7 @@ export function updateAssistantText(id: number, text: string): boolean {
  *
  * 与 editAndRegenerate 的差别就是「重放」那一步 —— 多数人改的是错字，
  * 不该因为改一个字就把后面整段对话抹掉重答。
- * 顺带把处理单上的 text 一起改掉：那一行才是她下次重答这一轮时喂给模型的原文，
+ * 顺带把处理单上的 text 一起改掉：那一行才是联系人下次重答这一轮时喂给模型的原文，
  * 只改 messages 会让界面改对了、重答却按旧话回答。
  */
 export function updateUserMessageText(id: number, text: string): boolean {
@@ -1375,11 +1442,11 @@ function parseImageAttachments(raw: string | null | undefined): string[] {
   return parseAttachments(raw).filter((url) => /\.(png|jpe?g|webp|gif|avif)$/i.test(url));
 }
 
-/** 图片理解能力没配好：她连他这轮刚发的图都看不见。别和"太久了"混为一谈——那是两句不同的实话。 */
-const NO_VISION_REASON = "图片理解能力没配置，你看不到内容——直接告诉他你看不了，别猜也别编";
+/** 图片理解能力没配好：联系人连用户这轮刚发的图都看不见。别和"太久了"混为一谈——那是两句不同的实话。 */
+const NO_VISION_REASON = "图片理解能力没配置，你看不到内容——直接向用户说明你看不了，别猜也别编";
 
-/** 她自己发出的图（画的图/表情包）从不回放：不是太久，是设计如此。标记必须说对原因，
- *  否则她会对着刚发一分钟的图纳闷"这明明刚刚才发"。 */
+/** 联系人自己发出的图（画的图/表情包）从不回放：不是太久，是设计如此。标记必须说对原因，
+ *  否则联系人会对着刚发一分钟的图纳闷"这明明刚刚才发"。 */
 const OWN_IMAGE_REASON = "这是你自己发出的图，原图不回放给你——记住你当时发了什么就行，别装作看得见图里细节";
 
 function imageMark(reason: string, count: number): string {
@@ -1390,13 +1457,13 @@ function imageMark(reason: string, count: number): string {
  * 看不见的图换成一行文字说明；replay 里的图以 base64 真图发出，一个字都不用附。
  * 用户图在 visionOn=true 时先原样保留，由调用方统一生成 alt 描述；绝不写“看不到”占位。
  *
- * 「别猜也别编」不是废话：实测给她一句图片摘要，她会**凭摘要推断出摘要里没有的细节**，
- * 还说成「从图上看」（问「水槽里有没有泡着的碗」，摘要没写，她答「似乎有，还有洗洁精的泡沫」）。
- * 三次收紧提示词都没压住；压住它的是把真图重放给她看。所以看不见的图必须明说看不见，
+ * 「别猜也别编」不是废话：实测给联系人一句图片摘要，联系人会**凭摘要推断出摘要里没有的细节**，
+ * 还说成「从图上看」（问「水槽里有没有泡着的碗」，摘要没写，联系人答「似乎有，还有洗洁精的泡沫」）。
+ * 三次收紧提示词都没压住；压住它的是把真图重放给联系人看。所以看不见的图必须明说看不见，
  * 给二手信息反而不如不给。
  *
  * 导出是为了冒烟能直接断言：这里曾经只处理纯图消息（text === ""），
- * "文字 + 图"的消息会把图**静默丢掉**，她既看不见图也不知道有图。
+ * "文字 + 图"的消息会把图**静默丢掉**，联系人既看不见图也不知道有图。
  */
 export function imageProxiedHistory<T extends { role?: string; text: string; attachments: string | null; attachment_meta?: string | null }>(
   rows: T[],
@@ -1407,7 +1474,7 @@ export function imageProxiedHistory<T extends { role?: string; text: string; att
     const hidden = parseImageAttachments(row.attachments).filter((url) => !replay.has(url));
     if (hidden.length === 0) return row;
     // 自己发的图有专用实话（不回放≠太久）；meta.label 有多少念多少——
-    // 「你发过表情包『在看』」比一张无名图强得多，那是她下一轮唯一的记忆锚点。
+    // 「你发过表情包『在看』」比一张无名图强得多，那是联系人下一轮唯一的记忆锚点。
     if (row.role === "assistant") {
       const labels = ownImageLabels(row.attachment_meta, hidden);
       const reason = labels !== "" ? `你发过的是：${labels}。${OWN_IMAGE_REASON}` : OWN_IMAGE_REASON;
@@ -1436,7 +1503,7 @@ function ownImageLabels(metaRaw: string | null | undefined, urls: string[]): str
 const activeTurns = new Map<string, { turnId: string; controller: AbortController }>();
 
 /**
- * 流式草稿的落点：把「她正在写的这一句」按节流写进 turns.reply，只在这一轮还活着的时候写。
+ * 流式草稿的落点：把「联系人正在写的这一句」按节流写进 turns.reply，只在这一轮还活着的时候写。
  *
  * 为什么是 turns.reply 而不是 messages 行：`/api/messages` 的增量按 `id > since` 取
  * （server.ts:1101），**已经存在的行永远不会被重新下发**——半截话写进消息行界面根本看不见。
@@ -1446,17 +1513,17 @@ const activeTurns = new Map<string, { turnId: string; controller: AbortControlle
  * 更合这套多窗口共库架构的地方（SSE 连接只能绑死在起跑那个进程上）。
  *
  * 交出去的是**本次调用的累计正文**，不是整轮累计：工具轮也常带正文，
- * 把它和最终回复拼成一句会变成她在改口。
+ * 把它和最终回复拼成一句会变成联系人在改口。
  */
 function draftWriter(turnId: string): (text: string) => void {
   let lastWrite = 0;
   return (text) => {
     const now = Date.now();
-    // 流式一帧几十毫秒一片，逐片写库等于给 WAL 一道持续小洪峰；200ms 一次足够看出她在写。
+    // 流式一帧几十毫秒一片，逐片写库等于给 WAL 一道持续小洪峰；200ms 一次足够看出联系人在写。
     if (now - lastWrite < 200) return;
     lastWrite = now;
     // 正文形式的工具调用（见 text-tool-calls.ts）在实时打字时会闪出一整段 XML。
-    // 草稿只留到 <tool_call> 之前：调用块是写给机器的，不该出现在"她正在写"的那口气里。
+    // 草稿只留到 <tool_call> 之前：调用块是写给机器的，不该出现在"联系人正在写"的那口气里。
     const draft = trimDraftBeforeToolCall(text);
     // 条件写：状态一旦离开 running（取消、收尾、被别的进程判死），迟到的帧就写不进去，
     // 不会把草稿复活成"看起来像定稿"。
@@ -1621,6 +1688,7 @@ export async function respondToTurn(
             ...(conversation?.summary ? { conversationSummary: conversation.summary } : {}),
           },
           // [现在] 的硬拼时间行跟「看时间」能力同一开关（工具门控在 tools.visibleTools）
+          emoteFrequency: emoteFrequencyForContact(contactId),
           includeNow: getContact(contactId)?.features?.clock !== false,
         });
     // 预算裁剪（软防线）：装不下就从最旧一轮开始丢，本轮永不丢。
@@ -1647,10 +1715,17 @@ export async function respondToTurn(
     const imageTokensOf = (rows: typeof historyRows): number =>
       countReplayedImages(rows, directReplay) * IMAGE_TOKENS
       + countReplayedImages(rows, described) * DESCRIPTION_TOKENS;
+    // 工具往返：最近若干轮按协议原样回放（assistant.tool_calls → tool 结果），更早的折成一行备注。
+    // 端点被探测为不支持 tools 时只给备注——把 tool_calls 塞给一个不认它的端点，换来的是一句 400。
+    // 一次性取整个窗口的往返，再按候选行算「哪些轮还留在窗口里」：
+    // 裁剪是个反复试的过程，每试一次都去查库既慢又没必要。
+    const toolExchanges = loadToolExchanges(contactId, conversationId, historyRows.map((row) => row.turn_id));
+    const nativeToolTurns = toolsOn && !toolsUnsupportedFor(modelSettings) ? config.toolHistoryTurns : 0;
+    const toolReplayOf = (rows: typeof historyRows) => planToolReplay(rows, toolExchanges, { nativeTurns: nativeToolTurns });
     const { kept: keptRows } = trimHistoryToBudget(historyRows, (rows) => {
       const p = contextParts({
         systemBare: system, systemFull: system, toolsJson,
-        history: textsOf(toChatMessages(rows)),
+        history: textsOf(toChatMessages(rows, toolReplayOf(rows))),
         imageCount: countReplayedImages(rows, directReplay),
         visionMode,
         imageTokens: imageTokensOf(rows),
@@ -1677,7 +1752,7 @@ export async function respondToTurn(
       requestRows = appendImageDescriptions(keptRows, described, descriptions);
       console.log(`[agent] alt 描述已注入 ${describedUrls.length} 张图片`);
     }
-    const history = toChatMessages(requestRows);
+    const history = toChatMessages(requestRows, toolReplayOf(requestRows));
 
     // 主模型自身支持视觉：最多 6 张预算内的图就地变成多模态 parts。
     if (visionMode === "inline" && directReplay.size > 0) {
@@ -1732,12 +1807,12 @@ export async function respondToTurn(
         break;
       }
     }
-    // agent 循环：她可以在回答前调用工具（查时间、查记忆），最多 3 轮。
-    // 上下文里已经注入了环境描述与被动召回的记忆，工具是「她主动去查」的补充——
-    // 不确定几点、想确认记没记过某件事时，她自己决定查不查。
-    // 思考内容：多轮工具调用可能各带一段，按顺序拼起来。它只属于"这一轮她想过什么"，
+    // agent 循环：联系人可以在回答前调用工具（查时间、查记忆），最多 3 轮。
+    // 上下文里已经注入了环境描述与被动召回的记忆，工具是「联系人主动去查」的补充——
+    // 不确定几点、想确认记没记过某件事时，联系人自己决定查不查。
+    // 思考内容：多轮工具调用可能各带一段，按顺序拼起来。它只属于"这一轮联系人想过什么"，
     // 所以只挂在**该轮第一个气泡**上（分条回复也只出现一次），并且绝不回灌进 history——
-    // 否则下一轮她会把推理当成自己说过的话再读一遍，token 翻倍还污染记忆抽取。
+    // 否则下一轮联系人会把推理当成自己说过的话再读一遍，token 翻倍还污染记忆抽取。
     const reasoningParts: string[] = [];
     const producedFiles: string[] = [];
     const producedMeta: MessageAttachmentMeta[] = [];
@@ -1762,7 +1837,7 @@ export async function respondToTurn(
     q(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(reasoning || null, turn.id);
     // 一条回复最多挂一张图：工具描述里已经要求"同一轮最多画一张"，这里再兜一道，
     // 免得 3 轮循环各画一张、气泡上挂出一串画廊。
-    // 名字避开外层那个"本轮入站附件"attachments——那是他发来的图，这是她发出去的。
+    // 名字避开外层那个"本轮入站附件"attachments——那是用户发来的图，这是联系人发出去的。
     const outgoingImages = producedFiles.slice(0, 1);
 
     // 分条发送：按句子切成几个气泡，逐条延迟落库——像人打字，而不是一次性甩一大段。
@@ -1803,13 +1878,16 @@ export async function respondToTurn(
           // 一轮只挂一处：第一条气泡带这段思考与这张图，后面的气泡不重复显示
           ...(i === 0 && reasoning !== "" ? { reasoning } : {}),
           ...(i === 0 && bubbleImages.length > 0 ? { attachments: bubbleImages } : {}),
-          // 表情图带 label、语音带时长与转写：气泡标注 + 历史标记（她下一轮靠它记得发过哪张/说过哪句）都靠它。
+          // 表情图带 label、语音带时长与转写：气泡标注 + 历史标记（联系人下一轮靠它记得发过哪张/说过哪句）都靠它。
           ...(i === 0 && bubbleImages.length > 0 && bubbleMeta.length > 0 ? { attachmentMeta: bubbleMeta } : {}),
         });
       }
     }
     trimReasoningWindow(contactId);
     trimToolDetailWindow(contactId);
+    // 工具往返的载荷同样按轮滚动清理：回放窗口只有几轮，几十轮前的 web_fetch 正文
+    // 留在库里既不会被回放，又会让备份一天天变大（卡片行与工具名仍保留）。
+    trimToolStore(contactId);
     if (cancelIfAborted()) return "";
     q("UPDATE turns SET status = 'done', reply = ?, finished_at = ? WHERE id = ?").run(
       reply,
@@ -1829,39 +1907,40 @@ export async function respondToTurn(
     // 投递的是分好的 parts（气泡序列）而不是整段 reply——"本地几颗气泡，QQ 里几条消息"
     // 从前只是注释里的愿望：传整段出去，官方按 4000 字硬切、OneBot 更是整条一坨。
     if (conversation?.channel === "qq") {
-      void import("./qq.ts")
-        .then(async ({ qq }) => {
-          // 群里文字带引用 @ 的那条；图单独发一条（群图片不必引用原消息）。
-          await qq.deliverToConversation(
-            conversationId,
-            parts,
-            { triggerMessageId: turn.trigger_message_id ?? undefined },
-          );
+      void enqueueAndDeliver({
+        channel: "qq",
+        contactId,
+        conversationId,
+        segments: parts,
+        kind: "chat",
+        sourceMessageId: turn.trigger_message_id ?? undefined,
+      })
+        .then(async () => {
+          // 图单独发一条（群图片不必引用原消息），文字先进入持久队列。
           if (outgoingImages.length > 0) {
+            const { qq } = await import("./qq.ts");
             await qq.deliverMediaToGroup(contactId, conversationId, "", outgoingImages.map((url) => ({ url })));
           }
         })
-        .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
+        .catch(() => { /* 文字失败已落死信队列；媒体失败已落 qq lastError 与 model_calls */ });
     } else {
-      void import("./wechat.ts")
-        .then(({ wechat }) => wechat.deliverToContact(
-          contactId,
-          // 附注措辞跟着产物类型走：出图说"画了图"，语音说"发了语音"——微信两头都发不出去。
-          noted(mediaTypeOfUrl(outgoingImages[0] ?? "") === "audio"
-            ? "（发了条语音，微信发不出去，在这个应用里看）"
-            : "（画了一张图，微信发不出去，在这个应用里看）"),
-        ))
-        .catch(() => { /* 投递失败已落 wechat.links.lastError 与 model_calls */ });
-      void import("./qq.ts")
-        .then(async ({ qq }) => {
-          // 私聊能发媒体：带图就走 文字+图，无图只发文字。同样传 parts 保住气泡节奏。
+      const wechatText = noted(mediaTypeOfUrl(outgoingImages[0] ?? "") === "audio"
+        ? "（发了条语音，微信发不出去，在这个应用里看）"
+        : "（画了一张图，微信发不出去，在这个应用里看）");
+      void enqueueAndDeliver({
+        channel: "wechat", contactId, segments: wechatText, kind: "chat",
+      }).catch(() => { /* 失败已落死信队列与 model_calls */ });
+      void enqueueAndDeliver({
+        channel: "qq", contactId, segments: parts, kind: "chat",
+        sourceMessageId: turn.trigger_message_id ?? undefined,
+      })
+        .then(async () => {
           if (outgoingImages.length > 0) {
-            await qq.deliverMediaToContact(contactId, parts, outgoingImages.map((url) => ({ url })));
-          } else {
-            await qq.deliverToContact(contactId, parts);
+            const { qq } = await import("./qq.ts");
+            await qq.deliverMediaToContact(contactId, "", outgoingImages.map((url) => ({ url })));
           }
         })
-        .catch(() => { /* 投递失败已落 qq 账号 lastError 与 model_calls */ });
+        .catch(() => { /* 文字失败已落死信队列；媒体失败已落 qq lastError 与 model_calls */ });
     }
 
     // 记忆抽取放到回复之后异步做：它失败不能影响这一轮对话，但失败了必须看得见。
@@ -2028,7 +2107,7 @@ function attachMessageToTurn(messageId: number, turnId: string): void {
  */
 function resetTurnForEdit(turnId: string, text: string, attachments: string[]): void {
   // 附件必须跟着一起改：respondToTurn 重放图片读的是 turns.attachments，
-  // 只改消息不改处理单，会出现「气泡里图变了、她看见的还是旧图」。
+  // 只改消息不改处理单，会出现「气泡里图变了、联系人看见的还是旧图」。
   q(
     `UPDATE turns SET status = 'queued', reply = NULL, reasoning_draft = NULL, error = NULL, finished_at = NULL, superseded_at = NULL, text = ?, attachments = ? WHERE id = ?`,
   ).run(text, attachments.length > 0 ? JSON.stringify(attachments) : null, turnId);
@@ -2164,8 +2243,8 @@ export function editAndRegenerate(input: { messageId: number; text: string; atta
 /**
  * 撤回一条消息：从对话上下文里摘除，界面显示成「你撤回了一条消息」。
  *
- * 为什么只撤回**这一条**、不动她的回复：这是 IM 已有的心智——微信里对方撤回一条，
- * 你的回复照样留着。她那句回复确实是她当时说过的话，不该因为你收回了自己那句话而跟着消失。
+ * 为什么只撤回**这一条**、不动联系人的回复：这是 IM 已有的心智——微信里对方撤回一条，
+ * 你的回复照样留着。联系人那句回复确实是联系人当时说过的话，不该因为你收回了自己那句话而跟着消失。
  * （要"这一轮整个作废"那是「删除」，要"换个说法"那是「编辑」。）
  *
  * 与编辑共用 superseded 标记，区别只在 superseded_kind —— 界面按它决定
@@ -2188,8 +2267,8 @@ export function retractMessage(messageId: number): { messageId: number } {
 /**
  * 彻底删除一轮对话：选中那条 + 与它同处理单的其它消息，一起从库里删掉。
  *
- * 为什么按"轮"删而不是按"条"：单独删掉用户那句话、把她的回复留在那儿会得到一句悬空的回应；
- * 单独删掉她的回复，用户的话也失去了着落。一轮本就是一个完整的来回，要清就清干净。
+ * 为什么按"轮"删而不是按"条"：单独删掉用户那句话、把联系人的回复留在那儿会得到一句悬空的回应；
+ * 单独删掉联系人的回复，用户的话也失去了着落。一轮本就是一个完整的来回，要清就清干净。
  * 这也正是它与「撤回」的分工：
  *   撤回 = 我没说过这句（对话历史还在，可回溯）
  *   删除 = 这一轮不存在（真删行，不可恢复）

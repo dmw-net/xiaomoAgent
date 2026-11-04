@@ -147,7 +147,6 @@ async function runConsolidation(
 
   const raw = await callModelJson<ConsolidateOutput>(messages, {
     purpose: "consolidate",
-    maxTokens: 800,
     contactId,
     capability: "memoryExtract",
   });

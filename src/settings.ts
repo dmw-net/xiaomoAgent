@@ -197,7 +197,7 @@ export type ModelProfile = {
 export type CharacterCard = {
   /** 角色名字。出现在界面、系统提示词、主动消息里。 */
   name: string;
-  /** 角色是谁：身份、来路、和用户的关系。这一段决定"她像个什么人"。 */
+  /** 角色是谁：身份、来路、和用户的关系。这一段决定"联系人像个什么人"。 */
   identity: string;
   /** 你们的关系：怎么认识、现在什么阶段、称呼与边界（关系设定的对应物）。 */
   relationship: string;
@@ -218,7 +218,7 @@ export type OwnerProfile = {
   notes: string;
   /** 我的头像（dataURL）。空串 = 没设。 */
   avatar?: string;
-  /** 用户性别：驱动提示词里对用户的代词（他/她/TA）；缺省按传统口径「他」。 */
+  /** 用户指代方式：驱动提示词里的代词；未设置或 other 统一使用中性「TA」。 */
   gender?: "female" | "male" | "other";
 };
 
@@ -236,50 +236,92 @@ export function effectiveRecentTurns(): number {
 }
 
 /**
- * 一轮对话里她最多能调几轮工具。
+ * 一次对话中，工具循环最多向模型发起几次请求。
  *
- * 原来这个数是硬编码的 3，而 3 轮是按"查个时间、翻条记忆"设计的：
+ * 这里的“轮”是模型轮次：一次带工具定义的模型请求算一轮，同一请求内可以包含多个工具调用；
+ * 模型在循环内给出最终文字回复时也会消耗一轮。轮次耗尽后，agent 还会额外做一次无工具收口。
+ *
+ * 原来这个数是硬编码的 3，但「查表情再发送」通常要两次工具轮次，3 轮很快见底：
  * 联网那一档进来之后，「搜图 → 下载 → 建角色 → 写人设 → 设头像」本身就是五步，
- * 三轮做不完一件事，只会让她在半途被强制收口、然后回一句"我还没弄完"。
- * 所以它变成可配：全局一档、联系人可覆盖，助手默认放开。
+ * 三轮做不完一件事，只会让联系人在半途被强制收口、然后回一句"我还没弄完"。
+ * 所以它变成可配：普通联系人统一走全局一档，助手固定 8 轮。
  */
-export const TOOL_ROUNDS_LIMITS = { min: 1, max: 8 };
-export const TOOL_ROUNDS_DEFAULT = 3;
+export const TOOL_LOOP_TURN_LIMITS = { min: 1, max: 16 };
+export const TOOL_LOOP_TURN_DEFAULT = 5;
 /**
- * 助手默认放开到上限：它的活天然是多步配置流水（查状态→建联系人→改人设→搜图→下图→设头像），
- * 而且每一步都要看上一步的回执才能继续。陪聊用不着这么多轮——她说话不该等这么久。
+ * 助手固定 8 轮：它的活天然是多步配置流水（查状态→建联系人→改人设→搜图→下图→设头像），
+ * 每一步都要看上一步的回执；但也别无限放开，否则一次配置可能卡很久。
  */
-export const TOOL_ROUNDS_ASSISTANT = TOOL_ROUNDS_LIMITS.max;
+export const ASSISTANT_TOOL_LOOP_TURNS = 8;
 
-const KV_TOOL_ROUNDS = "agent.tool_rounds";
+const KV_TOOL_LOOP_TURNS = "agent.tool_loop_turns";
+/** 旧版本曾用过这个键；读取时迁移一次，避免用户已保存的值丢失。 */
+const LEGACY_KV_TOOL_ROUNDS = "agent.tool_rounds";
 
-/** 界面写进来的值：非整数或越界一律当"没设过"（回默认 3），不悄悄收紧也不悄悄放开。 */
-export function sanitizeToolRounds(value: unknown): number {
+/**
+ * 全局表情使用倾向——表情能力的唯一开关。
+ * off = 系统提示里不出现表情段、表情工具也不声明（连入口都不留）；
+ * rare/normal/often 只改“主动不主动”，不参与检索与发送决策。
+ */
+export const EMOTE_FREQUENCIES = ["off", "rare", "normal", "often"] as const;
+export type EmoteFrequency = (typeof EMOTE_FREQUENCIES)[number];
+export const EMOTE_FREQUENCY_DEFAULT: EmoteFrequency = "normal";
+const KV_EMOTE_FREQUENCY = "agent.emote_frequency";
+
+export function isEmoteFrequency(value: unknown): value is EmoteFrequency {
+  return typeof value === "string" && (EMOTE_FREQUENCIES as readonly string[]).includes(value);
+}
+
+export function sanitizeEmoteFrequency(value: unknown): EmoteFrequency {
+  return isEmoteFrequency(value) ? value : EMOTE_FREQUENCY_DEFAULT;
+}
+
+/** 全局一档：普通联系人共享；联系人没开表情工具时，提示词不会引用它。 */
+export function globalEmoteFrequency(): EmoteFrequency {
+  const stored = kvGet(KV_EMOTE_FREQUENCY);
+  if (stored === null) return EMOTE_FREQUENCY_DEFAULT;
+  try {
+    return sanitizeEmoteFrequency(JSON.parse(stored));
+  } catch {
+    return EMOTE_FREQUENCY_DEFAULT;
+  }
+}
+
+export function setGlobalEmoteFrequency(value: unknown): void {
+  writeJson(KV_EMOTE_FREQUENCY, sanitizeEmoteFrequency(value));
+}
+
+/** 界面写进来的值：非整数或越界一律当"没设过"（回默认 5），不悄悄收紧也不悄悄放开。 */
+export function sanitizeToolLoopTurns(value: unknown): number {
   const n = Number(value);
-  return Number.isInteger(n) && n >= TOOL_ROUNDS_LIMITS.min && n <= TOOL_ROUNDS_LIMITS.max
+  return Number.isInteger(n) && n >= TOOL_LOOP_TURN_LIMITS.min && n <= TOOL_LOOP_TURN_LIMITS.max
     ? n
-    : TOOL_ROUNDS_DEFAULT;
+    : TOOL_LOOP_TURN_DEFAULT;
 }
 
-/** 全局这一档（kv 里没写过就是默认 3，改了立即生效，不用重启）。 */
-export function globalToolRounds(): number {
-  return sanitizeToolRounds(kvGet(KV_TOOL_ROUNDS));
+/** 全局这一档（kv 里没写过就是默认 5，改了立即生效，不用重启）。 */
+export function globalToolLoopTurns(): number {
+  const stored = kvGet(KV_TOOL_LOOP_TURNS);
+  if (stored !== null) return sanitizeToolLoopTurns(stored);
+  const legacy = kvGet(LEGACY_KV_TOOL_ROUNDS);
+  if (legacy !== null) {
+    const migrated = sanitizeToolLoopTurns(legacy);
+    writeJson(KV_TOOL_LOOP_TURNS, migrated);
+    db.prepare("DELETE FROM kv WHERE k = ?").run(LEGACY_KV_TOOL_ROUNDS);
+    return migrated;
+  }
+  return TOOL_LOOP_TURN_DEFAULT;
 }
 
-export function setGlobalToolRounds(value: unknown): void {
-  writeJson(KV_TOOL_ROUNDS, sanitizeToolRounds(value));
+export function setGlobalToolLoopTurns(value: unknown): void {
+  writeJson(KV_TOOL_LOOP_TURNS, sanitizeToolLoopTurns(value));
 }
 
 /**
- * 这一轮实际允许几轮工具：助手用自己的档，联系人设过就覆盖全局。
- * `contactOverride` 传 0/非法值 = 跟随全局（与温度用 -1、轮数用 0 的"跟随"惯例一致）。
+ * 这一轮实际允许几次工具循环的模型请求：助手固定 8 轮，普通联系人统一走全局设置。
  */
-export function resolveToolRounds(assistant: boolean, contactOverride = 0): number {
-  if (assistant) return TOOL_ROUNDS_ASSISTANT;
-  const n = Number(contactOverride);
-  return Number.isInteger(n) && n >= TOOL_ROUNDS_LIMITS.min && n <= TOOL_ROUNDS_LIMITS.max
-    ? n
-    : globalToolRounds();
+export function resolveToolLoopTurns(assistant: boolean): number {
+  return assistant ? ASSISTANT_TOOL_LOOP_TURNS : globalToolLoopTurns();
 }
 /** 界面上限 1~30 轮；0/非法值一律归 0（= 不覆盖）。 */
 function sanitizeRecentTurns(value: unknown): number {
@@ -354,6 +396,11 @@ export type SettingsSnapshot = {
   model: ModelSettings;
   persona: PersonaSettings;
   defaultRecentTurns: number;
+  /** 全局工具循环的模型轮次上限（普通联系人统一使用它）。 */
+  toolLoopTurns: number;
+  toolLoopTurnLimits: { min: number; max: number };
+  /** 全局表情使用倾向；联系人开启表情工具后，它会被注入系统提示。 */
+  emoteFrequency: EmoteFrequency;
   /** 哪些字段被用户在应用里改过（界面用来标记"已覆盖"）。 */
   overridden: { model: string[]; persona: string[] };
   /** 收藏的模型配置档（密钥只给掩码；active 指出当前生效是哪一份，null=没在用任何档）。 */
@@ -410,9 +457,9 @@ export function defaultPersona(): PersonaSettings {
   return {
     character: {
       name: config.characterName,
-      // 人设（是谁 + 怎么相处），以「我」指用户、「你」指她。
+      // 人设（是谁 + 怎么相处），以「我」指用户、「你」指联系人。
       // 这里刻意不写用户的称呼：提示词层（persona.ts）已经单独注入「你称呼我为「X」」，
-      // 在同一段里既写「他」又写「我」会让她猜「我」和「他」是不是同一个人。
+      // 在同一段里既写「用户」又写「我」会让联系人猜「我」和「用户」是不是同一个人。
       // 也刻意不写「不许用什么」那类禁令：口气由上面的关系决定，禁令只会换来一句机械的「好的」。
       identity: [
         `你是${config.characterName}，一直陪在我身边的人。`,
@@ -570,6 +617,8 @@ export function updatePersona(patch: {
 export function resetAll(): void {
   writeJson(KV_MODEL, {});
   writeJson(KV_PERSONA, {});
+  // 全局 agent 行为也属于“恢复默认”的一部分；只重置当前生效值，不动模型/能力端点收藏。
+  db.prepare("DELETE FROM kv WHERE k IN (?, ?)").run(KV_TOOL_LOOP_TURNS, KV_EMOTE_FREQUENCY);
   // 能力回到「没有生效档」= 语音/绘图未配置、视觉与记忆提取跟随主力。
   for (const name of CAPABILITY_NAMES) kvSet(capActiveOf(name), "");
   // 注意：**不动 profiles，也不动能力端点档**。它们是用户存下来的接口收藏，
@@ -1171,7 +1220,7 @@ export function validatePersona(patch: {
     errors.push("偏好与禁忌最多 2000 个字");
   }
   if (owner.gender !== undefined && !["female", "male", "other"].includes(String(owner.gender))) {
-    errors.push("用户性别只能是 female / male / other");
+    errors.push("用户指代方式只能是 female / male / other");
   }
 
   return errors.length === 0 ? { ok: true } : { ok: false, errors };
@@ -1278,6 +1327,9 @@ export function settingsSnapshot(): SettingsSnapshot {
     persona,
     /** .env / 内置默认的回放轮数——界面用它说明「0=跟随默认」时默认是多少。 */
     defaultRecentTurns: config.recentTurnsInContext,
+    toolLoopTurns: globalToolLoopTurns(),
+    toolLoopTurnLimits: TOOL_LOOP_TURN_LIMITS,
+    emoteFrequency: globalEmoteFrequency(),
     overridden: {
       model: Object.keys(storedModel),
       persona: [

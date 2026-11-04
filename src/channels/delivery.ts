@@ -192,6 +192,11 @@ export function deliveryAllowed(
   return !wantsProactive || target.proactive;
 }
 
+export type DeliveryResult = {
+  ok: boolean;
+  error: string;
+};
+
 /**
  * 一次出站投递的完整流程：分段 → 顺序发送 → 成/败都落到调用方手里。
  * 一段失败就停（后面的段没必要再试），并把第一处错误原样交出去——"哪句话没送出去、为什么"
@@ -205,7 +210,7 @@ export async function deliverOutbound(args: {
   onFailed: (message: string) => void;
   /** raw：发送层挂在错误上的原始响应报文（error.raw），详情弹窗靠它展示"服务商到底回了什么"。 */
   log: (ok: boolean, message: string, elapsedMs: number, raw?: string) => void;
-}): Promise<void> {
+}): Promise<DeliveryResult> {
   let sent = 0;
   try {
     for (const segment of args.segments) {
@@ -214,10 +219,12 @@ export async function deliverOutbound(args: {
     }
     args.onDelivered();
     args.log(true, "", args.elapsed());
+    return { ok: true, error: "" };
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
     const raw = (error as { raw?: unknown }).raw;
     args.onFailed(message);
     args.log(false, message, args.elapsed(), typeof raw === "string" ? raw.slice(0, 2000) : undefined);
+    return { ok: false, error: message };
   }
 }

@@ -1022,6 +1022,24 @@ button.prov-row.on { border-color: var(--border-strong); background: var(--bg-su
   border: 0; background: transparent; cursor: zoom-in;
 }
 .content-shot img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.content-shot.selectable .content-source { left: 38px; max-width: calc(100% - 45px); }
+.content-pick {
+  position: absolute; left: 7px; top: 7px; z-index: 6;
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 24px; height: 24px; border-radius: 7px;
+  background: rgba(17, 17, 16, .72); border: 1px solid rgba(255, 255, 255, .2);
+  cursor: pointer;
+}
+.content-pick input { width: 15px; height: 15px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+.content-cell.selected .content-shot {
+  border-color: var(--accent); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 28%, transparent);
+}
+/* 失效图不走浏览器破图图标：直接说明原图不在了，并保留下方的名称与清理按钮。 */
+.content-missing {
+  width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: var(--space-2);
+  color: var(--text-muted); background: var(--bg-sunken); font-size: var(--text-aux);
+}
+.content-missing svg { color: var(--danger); opacity: .8; }
 .content-video { display: block; width: 100%; height: 100%; object-fit: cover; background: #000; }
 .content-audio {
   width: 100%; height: 100%; padding: var(--space-5); box-sizing: border-box;
@@ -1150,6 +1168,10 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .qq-backend .seg { margin-bottom: 0; align-self: flex-start; }
 .qq-backend-head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
 .qq-backend-label { font-size: var(--text-note); font-weight: 600; color: var(--text-secondary); }
+.qq-backend-scope {
+  padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink);
+  font-size: var(--text-cap); font-weight: 600;
+}
 .qq-backend-note {
   display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap;
   padding: var(--space-2) var(--space-4); border-radius: var(--radius-md);
@@ -1157,16 +1179,29 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
   background: var(--bg-sunken); border: 1px solid var(--border);
 }
 .qq-backend-note.pending { color: var(--warning, #e0a94e); border-color: var(--warning, #e0a94e); }
-/* OneBot 绑定入口的账号确认卡：头像 + 昵称 + 号码 + 一键绑定。 */
+/* OneBot 账号身份行：头像尺寸必须锁死，否则替换元素会按原图尺寸撑满卡片。 */
 .ob-account { display: flex; align-items: center; gap: var(--space-4); flex-wrap: wrap; }
-.ob-account-avatar { width: 40px; height: 40px; border-radius: var(--radius-full, 50%); object-fit: cover; }
+.ob-account-avatar {
+  display: block; width: 40px; height: 40px; min-width: 40px; max-width: 40px; max-height: 40px;
+  flex: 0 0 40px; aspect-ratio: 1 / 1; border-radius: 50%; object-fit: cover; overflow: hidden;
+}
 .ob-account-fallback {
   display: inline-flex; align-items: center; justify-content: center;
   background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-secondary); font-weight: 600;
 }
-.ob-account-meta { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.ob-account-meta { display: flex; flex: 1 1 160px; flex-direction: column; gap: 2px; min-width: 0; }
 .ob-account-name { font-weight: 600; }
 .ob-account-num { font-family: var(--font-mono); font-size: var(--text-note); color: var(--text-muted); }
+/* 登录 QQ 与「我的 QQ」共用身份卡结构：头像 + 两行身份 + 行尾动作。 */
+.ob-account-card {
+  padding: var(--space-3) var(--space-4);
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-sunken);
+}
+.ob-card-action { flex: none; margin-left: auto; }
+.ob-card-actions { display: flex; flex: none; align-items: center; gap: var(--space-2); margin-left: auto; }
+/* 就地编辑：与首次绑定表单同一套字段皮（.qq-creds），标题行说明「这是改，不是绑」。 */
+.ob-edit-head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
+.ob-edit-title { font-weight: 600; font-size: var(--text-note); color: var(--text-secondary); }
 /* OneBot 连接面板：指引 + 地址就地改 + 保存并连接。 */
 /* OneBot 连接面板：一键托管流 + 手动兜底（收起）。 */
 .ob-connect { display: flex; flex-direction: column; gap: var(--space-3); }
@@ -1263,8 +1298,11 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .ch-step-core { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: ch-pulse 1.6s ease-in-out infinite; }
 .ch-step-line { flex: 1; width: 1.5px; min-height: 14px; margin: 2px 0; background: var(--border); }
 .ch-step-done .ch-step-line { background: color-mix(in srgb, var(--success) 55%, var(--border)); }
-.ch-step-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding-bottom: 12px; }
+.ch-step-copy { display: flex; flex: 1; flex-direction: column; gap: 1px; min-width: 0; padding-bottom: 12px; }
 .ch-step:last-child .ch-step-copy { padding-bottom: 2px; }
+.ch-step-action { flex: none; align-self: center; margin-left: auto; padding-bottom: 12px; }
+.ch-step:last-child .ch-step-action { padding-bottom: 2px; }
+.ch-step-action button { padding: 5px 10px; font-size: var(--text-note); }
 .ch-step-copy b { font-size: var(--text-base); font-weight: 550; color: var(--text); line-height: 1.5; }
 .ch-step-current .ch-step-copy b { color: var(--accent); }
 .ch-step-todo .ch-step-copy b { color: var(--text-muted); font-weight: 500; }
@@ -1450,14 +1488,14 @@ button.ctx-btn:hover .ctx-pct { color: var(--text); }
 .chat-map-row-wrap { content-visibility: auto; contain-intrinsic-size: 38px; }
 .chat-map-row { display: flex; width: 100%; padding: 3px 0; border: none; background: transparent; text-align: left; cursor: pointer; }
 .chat-map-row.me { justify-content: flex-end; }
-.chat-map-row.her { justify-content: flex-start; }
+.chat-map-row.contact { justify-content: flex-start; }
 .chat-map-bubble {
   max-width: 78%; min-width: 0; display: inline-flex; align-items: center; gap: 5px;
   padding: 6px 10px; border-radius: var(--radius-xl); border: 1px solid var(--border);
   font-size: var(--text-note); line-height: 1.45; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   transition: border-color var(--dur-fast) var(--ease-out), box-shadow var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
 }
-.chat-map-row.her .chat-map-bubble { background: var(--bg-sunken); color: var(--text-muted); border-bottom-left-radius: var(--radius-xs); }
+.chat-map-row.contact .chat-map-bubble { background: var(--bg-sunken); color: var(--text-muted); border-bottom-left-radius: var(--radius-xs); }
 .chat-map-row.me .chat-map-bubble { background: var(--accent-soft); color: var(--text); border-color: color-mix(in srgb, var(--accent) 25%, var(--border)); border-bottom-right-radius: var(--radius-xs); }
 .chat-map-row.active .chat-map-bubble { border-color: var(--accent-ink); box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 18%, transparent); }
 .chat-map-row:active .chat-map-bubble { scale: .98; }
@@ -2356,6 +2394,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-scroll { display: flex; flex-direction: column; gap: var(--space-2); min-width: 0; }
 .qq-conv-scroll.bounded { max-height: 320px; overflow-y: auto; overscroll-behavior: contain; padding-right: 3px; scrollbar-gutter: stable; }
 .qq-conv-empty { padding: 18px 12px; color: var(--text-muted); font-size: var(--text-note); text-align: center; }
+.qq-conv-item { display: flex; flex-direction: column; min-width: 0; }
 .qq-conv-row {
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
   width: 100%; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
@@ -2369,25 +2408,35 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-title { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--text-md); font-weight: 550; }
 .qq-conv-meta-row { display: flex; align-items: center; gap: 7px; min-width: 0; flex-wrap: wrap; }
 .qq-conv-meta { color: var(--text-muted); font-size: var(--text-note); }
-.qq-conv-clear,
-.qq-conv-remove {
-  display: inline-flex; align-items: center; gap: 3px; padding: 1px 4px; border: 0; border-radius: 5px;
-  background: transparent; color: var(--danger); font-size: var(--text-cap); cursor: pointer;
+.qq-conv-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.qq-conv-more-btn {
+  display: grid; width: 28px; height: 28px; flex: none; place-items: center; padding: 0;
+  border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer;
+  transition: color .16s ease, background .16s ease;
 }
-.qq-conv-clear:hover,
-.qq-conv-remove:hover { background: var(--danger-soft); }
-.qq-conv-proactive {
-  display: inline-flex; align-items: center; gap: 4px; cursor: pointer;
-  color: var(--text-muted); font-size: var(--text-note); user-select: none;
-  padding: 1px 4px; border-radius: 5px;
+.qq-conv-more-btn:hover { color: var(--text); background: var(--bg-hover); }
+.qq-conv-more-btn.open { color: var(--accent-ink); background: var(--accent-soft); }
+.qq-conv-more-panel {
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px;
+  margin: 6px 8px 2px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-sunken);
 }
-.qq-conv-proactive:hover { color: var(--text); background: color-mix(in srgb, var(--bg-hover) 55%, transparent); }
-.qq-conv-proactive input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); }
-.qq-conv-trigger {
-  padding: 1px 4px; border: 0; border-radius: 5px; background: transparent;
-  color: var(--text-muted); font-size: var(--text-cap); cursor: pointer;
+.qq-conv-menu-action,
+.qq-conv-menu-check,
+.qq-conv-menu-danger button {
+  display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px;
+  border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary);
+  font: inherit; font-size: var(--text-note); cursor: pointer;
 }
-.qq-conv-trigger:hover { background: var(--bg-hover); color: var(--text); }
+.qq-conv-menu-action:hover,
+.qq-conv-menu-check:hover { background: var(--bg-hover); color: var(--text); }
+.qq-conv-menu-value { color: var(--text-subtle); font-size: var(--text-cap); }
+.qq-conv-menu-check { user-select: none; }
+.qq-conv-menu-check input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.qq-conv-menu-danger { display: flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 10px; border-left: 1px solid var(--border); }
+.qq-conv-menu-danger button { color: var(--danger); }
+.qq-conv-menu-danger button:hover { background: var(--danger-soft); }
+.qq-conv-menu-danger button:disabled { cursor: default; opacity: .45; background: transparent; }
 .qq-conv-trigger-seg { margin-bottom: 0; }
 .qq-conv-trigger-seg button { padding: 4px 10px; font-size: var(--text-note); }
 .qq-conv-edit-icon {
@@ -2436,6 +2485,65 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-reset:hover, .qq-conv-cancel:hover { background: var(--bg-hover); color: var(--text); }
 .qq-conv-save { border: 1px solid var(--accent); background: var(--accent); color: var(--accent-text); }
 .qq-conv-save:disabled, .qq-conv-rename-actions button:disabled { cursor: default; opacity: .5; }
+
+/* 连接级设置收成一个入口：卡片只露“连接设置”，暂停/主动消息/删除都在弹层里。 */
+.qq-connection-manage {
+  display: flex; align-items: center; gap: var(--space-3); width: 100%;
+  margin-top: var(--space-5); padding: var(--space-3) 0; border: 0; border-top: 1px dashed var(--border);
+  background: transparent; color: var(--text); text-align: left; cursor: pointer;
+}
+.qq-connection-manage:hover { color: var(--accent-ink); }
+/* 整行按钮保留键盘焦点提示，但不要把整张卡描成一圈蓝色大边框。 */
+.qq-connection-manage:focus-visible {
+  outline: none; border-radius: var(--radius-md); background: var(--bg-hover);
+  box-shadow: inset 2px 0 0 var(--focus-ring);
+}
+.qq-connection-manage:focus-visible .qq-connection-manage-icon {
+  background: var(--accent-soft); color: var(--accent-ink);
+}
+.qq-connection-manage-icon {
+  display: grid; width: 30px; height: 30px; flex: none; place-items: center;
+  border-radius: 8px; background: var(--bg-sunken); color: var(--text-muted);
+}
+.qq-connection-manage:hover .qq-connection-manage-icon { background: var(--accent-soft); color: var(--accent-ink); }
+.qq-connection-manage-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.qq-connection-manage-copy strong { color: var(--text); font-size: var(--text-note); font-weight: 600; }
+.qq-connection-manage-copy small { color: var(--text-muted); font-size: var(--text-aux); }
+.qq-connection-manage-arrow { flex: none; color: var(--text-subtle); }
+
+.qq-settings-modal { width: min(440px, calc(100vw - 28px)); padding: 22px 24px; }
+.qq-settings-head { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-4); }
+.qq-settings-title { color: var(--text); font-size: var(--text-xl); font-weight: 650; }
+.qq-settings-sub { margin-top: 4px; color: var(--text-muted); font-size: var(--text-note); line-height: 1.5; }
+.qq-settings-close {
+  flex: none; padding: 3px 6px; border: 0; border-radius: 6px; background: transparent;
+  color: var(--text-muted); font: inherit; font-size: var(--text-note); cursor: pointer;
+}
+.qq-settings-close:hover { background: var(--bg-hover); color: var(--text); }
+.qq-settings-list {
+  display: flex; flex-direction: column; margin-top: var(--space-5); padding: 0 var(--space-4);
+  border: 1px solid var(--border); border-radius: var(--radius-md); background: var(--bg-sunken);
+}
+.qq-setting-row {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  min-height: 62px; padding: var(--space-3) 0;
+}
+.qq-setting-row + .qq-setting-row { border-top: 1px solid var(--border); }
+.qq-setting-copy { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 2px; }
+.qq-setting-copy strong { color: var(--text); font-size: var(--text-note); font-weight: 600; }
+.qq-setting-copy small { color: var(--text-muted); font-size: var(--text-aux); line-height: 1.45; }
+.qq-setting-row input[type="checkbox"] { width: 16px; height: 16px; flex: none; margin: 0; cursor: pointer; accent-color: var(--accent); }
+.qq-setting-action { flex: none; padding: 4px 10px; border-radius: 7px; font-size: var(--text-note); }
+.qq-settings-danger {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-4);
+  margin-top: var(--space-4); padding: var(--space-4); border: 1px solid color-mix(in srgb, var(--danger) 24%, var(--border));
+  border-radius: var(--radius-md); background: color-mix(in srgb, var(--danger-soft) 45%, var(--bg-sunken));
+}
+.qq-settings-danger .wx-danger { flex: none; }
+
+@container (max-width: 420px) {
+  .qq-conv-menu-danger { flex-basis: 100%; margin-left: 0; padding-top: 5px; padding-left: 0; border-top: 1px solid var(--border); border-left: 0; }
+}
 .qq-clear-modal { width: min(420px, calc(100vw - 28px)); padding: 22px 24px; }
 .qq-clear-title { color: var(--text); font-size: var(--text-xl); font-weight: 650; }
 .qq-clear-copy { margin-top: 8px; color: var(--text-muted); font-size: var(--text-note); line-height: 1.7; }

@@ -34,7 +34,7 @@ const shortPreview = (text: unknown, max = 260): string => {
  *  与显示开关外默认全关——新增能力由用户主动开，历史行为保持原样、由用户主动关。 */
 const FEATURE_DEFAULTS: CompanionFeatures = {
   memoryExtract: true, tools: true, clock: true, memorySearch: true,
-  lifeline: false, recap: false, consolidate: false, reminders: false, imageGen: false, emotes: false, voice: false, web: false, toolRounds: 0, bond: false,
+  lifeline: false, recap: false, consolidate: false, reminders: false, imageGen: false, voice: false, web: false, bond: false,
   splitReply: true, turnPct: 0, tokenPct: 0, showThinking: true, showTools: true,
   dailyLimit: 0, temperature: -1, bannedWords: "", schedule: "", lastConsolidatedAt: null,
 };
@@ -64,7 +64,7 @@ const FEATURE_ITEMS: Array<{ key: keyof CompanionFeatures; label: string; hint: 
   { key: "bond", label: "关系温度计", hint: (p) => `亲密度和心情随聊天变化，${p}的语气也跟着变` },
 ];
 
-/** 工具清单：她手上每一个能"做点事"的工具一行。开关都绑到现有 features 字段，不另立真源。 */
+/** 工具清单：联系人手上每一个能"做点事"的工具一行。开关都绑到现有 features 字段，不另立真源。 */
 type ToolRow =
   | { kind: "toggle"; key: keyof CompanionFeatures; label: string; hint: (who: string) => string }
   | { kind: "pointer"; label: string; hint: string };
@@ -75,7 +75,7 @@ const TOOL_ITEMS: ToolRow[] = [
   { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。" },
   { kind: "toggle", key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
   { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。自拍参考图在「人格设定 → 角色形象」。` },
-  { kind: "toggle", key: "emotes", label: "表情包", hint: () => "随手甩个表情（图片表情包 / 内置表情 / 商城动态表情）。是 QQ 通道的能力，没挂 QQ 号的联系人发不出去；素材在 设置 → 媒体与表情 里管，能发哪几种看这位的 QQ 连接卡。默认关，开了才声明工具。" },
+  { kind: "pointer", label: "表情包", hint: "发表情不归这位联系人单独管：唯一开关在 设置 → 媒体与表情 → 发表情频率（关闭 / 少发 / 自然 / 主动），对所有联系人一致生效。素材在同一页管理，能发哪几种看这位的 QQ 连接卡。" },
   { kind: "toggle", key: "voice", label: "发语音", hint: (p) => `${p}可以把想说的话合成一条语音发出去：QQ 里是原生语音条，应用里是可播放的语音气泡。要先在 设置 → 能力模型 → 语音合成 配好 TTS。默认关，开了才声明工具。` },
   { kind: "pointer", label: "技能", hint: "把自定义技能当成一份做法说明书；有可用技能时自动挂载，内容与开关在 设置 → 技能。" },
 ];
@@ -95,7 +95,7 @@ const CHAT_DISPLAY_ITEMS: Array<{ key: "showThinking" | "showTools"; label: stri
 const GENDER_OPTIONS = [
   { key: "female", label: "女" },
   { key: "male", label: "男" },
-  { key: "other", label: "其他" },
+  { key: "other", label: "中性" },
 ] as const;
 
 /** 回放轮数的四种给法：跟随全局 / 固定轮数 / 按这段会话的比例 / 全部。 */
@@ -246,7 +246,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
 }): JSX.Element {
   const isAssistant = mode === "edit" && contactId === "assistant";
   const [draft, setDraft] = useState<Draft>(initialDraft ?? EMPTY_DRAFT);
-  const [gender, setGender] = useState("female");
+  const [gender, setGender] = useState("other");
     const [asMarkdown, setAsMarkdown] = useState(false);
   const [mdDraft, setMdDraft] = useState("");
   const [loaded, setLoaded] = useState(mode === "create");
@@ -309,7 +309,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   const [bond, setBond] = useState<BondState>(EMPTY_BOND);
   const [consBusy, setConsBusy] = useState(false);
   const [consNote, setConsNote] = useState("");
-  // 提示词预览（按此联系人）：还原下一轮发消息 she 实际收到的完整内容
+  // 提示词预览（按此联系人）：还原下一轮发消息时该联系人实际收到的完整内容
   type PreviewData = {
     prompt: string;
     history?: Array<{ role: string; text: string }>;
@@ -361,7 +361,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
         });
         setModelProfile(c.model_profile ?? "");
         setRecentTurns(c.recent_turns ?? 0);
-        setGender(c.gender ?? "female");
+        setGender(c.gender ?? "other");
         setAvatar(c.avatar || "");
         setFaceRef(c.faceRef ?? "");
         setFeatures({ ...FEATURE_DEFAULTS, ...(c.features ?? {}) });
@@ -441,7 +441,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     () => (asMarkdown ? { ...draft, ...parseMd(mdDraft) } : draft),
     [asMarkdown, mdDraft, draft],
   );
-  // 界面文案里指代这位角色一律用「该联系人」——不叫名字（名字已在标题/头像处）、也不用他/她。
+  // 界面文案统一用「该联系人」——不叫名字（名字已在标题/头像处），也不依赖性别指代。
   const who = "该联系人";
   // 三段人设的体量：字符数 + 粗估 token，写进脚注让"每轮都要带的成本"在改之前就看得见。
   const personaChars = effective.background.length + effective.identity.length + effective.relationship.length;
@@ -461,7 +461,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     setAsMarkdown(!asMarkdown);
   };
 
-  /** 按此联系人预览：下一轮发消息 she 实际收到的完整内容（系统提示词 + 回放历史）。 */
+  /** 按此联系人预览：下一轮发消息时该联系人实际收到的完整内容（系统提示词 + 回放历史）。 */
   const runPromptPreview = (): void => {
     setPreviewing(true);
     settingsApi.previewPrompt({
@@ -551,7 +551,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     if (!payload.name) { setError("名称不能为空"); return; }
     // 总量超预算就在界面上拦下，不发请求。后端确实也会砍（sanitizeCharacter 按
     // 背景→人设→关系 的顺序截到合计上限），但那砍法按段序来，被砍中的常常是刚
-    // 手打完的那一段，而人在界面上看不出少了什么——宁可让他自己决定删哪段。
+    // 手打完的那一段，而人在界面上看不出少了什么——宁可让用户自己决定删哪段。
     if (personaOver > 0) {
       setError(`三段人设共 ${personaChars} 字，超出上限 ${PERSONA_TOTAL_MAX} 字（多 ${personaOver} 字）。删到预算内再保存。`);
       return;
@@ -620,7 +620,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   };
 
   /**
-   * 人设换回出厂那份：只动人格三段，名字、头像、性别、能力开关一概不碰
+   * 人设换回出厂那份：只动人格三段，名字、头像、指代方式、能力开关一概不碰
    * （那个按钮说的是「人设」，顺手把别的设置一起改了会让人找不到是哪一步动的）。
    * 与「按模板填写」也不是一回事：那是给人照着改的示例，这里是内置默认那份，直接从后端取。
    *
@@ -748,13 +748,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             onChange={(e) => setDraft({ ...draft, name: e.target.value })}
           />
           {!isAssistant && (
-            <div className="pf-gender" role="radiogroup" aria-label="角色性别">
+            <div className="pf-gender" role="radiogroup" aria-label="联系人的指代方式">
               {GENDER_OPTIONS.map((g) => (
                 <button key={g.key} type="button" role="radio" aria-checked={gender === g.key}
                   className={"pf-gender-btn" + (gender === g.key ? " on" : "")}
                   onClick={() => setGender(g.key)}>{g.label}</button>
               ))}
-              <span className="pf-gender-hint">聊天时怎么指代{who}；不选就用中性的称呼</span>
+              <span className="pf-gender-hint">聊天时怎么指代{who}；默认使用中性称呼</span>
             </div>
           )}
         </div>
@@ -928,7 +928,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           {/* 微信连接放最前：绑不绑通道决定从哪里说话，优先级高于模型参数。 */}
           {!contactId.startsWith("assistant") && <WeChatSection contactId={contactId} who={who} />}
           {/* QQ 跟在微信后面：两条通道各自独立绑定，一张联系人可以两条都开。 */}
-          {!contactId.startsWith("assistant") && <QQSection contactId={contactId} who={who} />}
+          {!contactId.startsWith("assistant") && <QQSection contactId={contactId} />}
           </div>
 
           <div className="pf-settings-pane" hidden={settingsSection !== "context"}>
@@ -1372,8 +1372,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           <div className="del-title">换回默认人设？</div>
           <div className="del-note">
             {mode === "create"
-              ? "背景、人设、与用户关系三段会填成应用出厂那份，名字、头像、性别都不受影响。还没创建，触点底部的「保存」之前都还能改。"
-              : "背景、人设、与用户关系三段立刻换成应用出厂那份并直接保存——这一步不像底部的「保存」那样能不落库地撤掉。名字、头像、性别、陪伴能力开关都不受影响。"}
+              ? "背景、人设、与用户关系三段会填成应用出厂那份，名字、头像、指代方式都不受影响。还没创建，触点底部的「保存」之前都还能改。"
+              : "背景、人设、与用户关系三段立刻换成应用出厂那份并直接保存——这一步不像底部的「保存」那样能不落库地撤掉。名字、头像、指代方式、陪伴能力开关都不受影响。"}
           </div>
           <div className="del-row">
             <button type="button" onClick={() => setConfirmResetCard(false)}>取消</button>

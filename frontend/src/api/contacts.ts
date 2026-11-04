@@ -17,26 +17,22 @@ export type CompanionFeatures = {
    * 关掉后提示词不再硬拼任何时间文本，时间感知整个摘走。
    */
   clock: boolean;
-  /** 翻记忆：search_memory 工具，她可以自己检索关系记忆。默认开（历史行为）；只关"她主动翻"，自动召回不受影响。 */
+  /** 翻记忆：search_memory 工具，联系人可以自己检索关系记忆。默认开（历史行为）；只关"联系人主动翻"，自动召回不受影响。 */
   memorySearch: boolean;
   lifeline: boolean;
   /** 窗口边缘梗概：被挤出回放窗口的对话压成「上次说到」继续带着。 */
   recap: boolean;
   consolidate: boolean;
   reminders: boolean;
-  /** 图像生成：她能画一张发回来（要 设置 → 能力模型 → 图像生成 配好才真生效）。默认关。 */
+  /** 图像生成：联系人能画一张发回来（要 设置 → 能力模型 → 图像生成 配好才真生效）。默认关。 */
   imageGen: boolean;
-  /** 表情包：send_emote 工具（图片表情包 / 内置表情 / 商城动态表情），QQ 通道能力，默认关。 */
-  emotes: boolean;
   /** 发语音：send_voice 工具（TTS 合成语音条/语音气泡），要 设置 → 能力模型 → 语音合成 配好才真生效。默认关。 */
   voice: boolean;
   /**
-   * 联网：web_search / web_fetch 两个工具对她可见。默认关——这是唯一会主动向外发请求的能力，
-   * 且抓回的网页文字会进她的上下文（结果里已强制标注"只当资料"）。设置助手不受这一项影响。
+   * 联网：web_search / web_fetch 两个工具对联系人可见。默认关——这是唯一会主动向外发请求的能力，
+   * 且抓回的网页文字会进联系人的上下文（结果里已强制标注"只当资料"）。设置助手不受这一项影响。
    */
   web: boolean;
-  /** 一轮里最多调几次工具；0 = 跟随全局（默认 3），1~8。助手自己固定放开到 8。 */
-  toolRounds: number;
   bond: boolean;
   /** 分多条回复：按句子切气泡 + 打字节奏。默认开（既有行为），关掉=整条一个气泡。 */
   splitReply: boolean;
@@ -51,7 +47,7 @@ export type CompanionFeatures = {
   dailyLimit: number;
   /** 采样温度：-1 = 跟随全局（0.8），0~2 = 这一位单独设。0 是合法值，所以用 -1 当"跟随"。 */
   temperature: number;
-  /** 禁用词：她的回复里不该出现的词，逗号/顿号/换行分隔（最多 10 个）。 */
+  /** 禁用词：联系人的回复里不该出现的词，逗号/顿号/换行分隔（最多 10 个）。 */
   bannedWords: string;
   schedule: string;
   lastConsolidatedAt: number | null;
@@ -63,12 +59,12 @@ export type ContactDetail = {
   id: string;
   name: string;
   avatar: string;
-  /** 自拍参考图：/media 路径（不是 dataURL）。她画自拍时按这张脸来画。空 = 没存。 */
+  /** 自拍参考图：/media 路径（不是 dataURL）。联系人画自拍时按这张脸来画。空 = 没存。 */
   faceRef?: string;
   model_profile?: string;
   /** 回放轮数覆盖；0/缺省 = 跟随全局。 */
   recent_turns?: number;
-  /** 角色性别：female/male/other，驱动界面代词。 */
+  /** 联系人指代方式：female/male/other，未设置时使用中性指代。 */
   gender?: string;
   card: Record<string, string>;
   features?: CompanionFeatures;
@@ -108,7 +104,7 @@ export function archiveContact(id: string): Promise<unknown> {
   return postJson("/api/contacts/" + encodeURIComponent(id) + "/archive");
 }
 
-/** 人格三段换回出厂那份（名字/头像/性别/能力开关都不动）。 */
+/** 人格三段换回出厂那份（名字/头像/指代方式/能力开关都不动）。 */
 export function resetContactCard(id: string): Promise<{ contact: ContactDetail; note?: string }> {
   return postJson("/api/contacts/" + encodeURIComponent(id) + "/reset-card");
 }

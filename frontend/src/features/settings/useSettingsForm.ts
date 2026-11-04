@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { settingsApi } from "../../api";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
-import type { ModelCaps, SettingsSnapshot, ThinkingModeId, ThinkingParamId } from "../../types";
+import type { EmoteFrequency, ModelCaps, SettingsSnapshot, ThinkingModeId, ThinkingParamId } from "../../types";
 
 type Banner = { kind: string; text: string } | null;
 
@@ -65,6 +65,10 @@ export function useSettingsForm(onChanged: () => void): {
   testProfile: (id: string) => void;
   profileTestResult: Record<string, { kind: "ok" | "bad"; text: string } | undefined>;
   setEchoMode: (on: boolean) => void;
+  /** 保存全局工具循环轮次，返回服务端最终采用的值。 */
+  saveToolLoopTurns: (turns: number) => Promise<number>;
+  /** 保存全局表情使用倾向，返回服务端最终采用的值。 */
+  saveEmoteFrequency: (frequency: EmoteFrequency) => Promise<EmoteFrequency>;
   /** 写接口拿回来的新快照直接灌进表单状态。给不经本 hook 的局部动作（供应商层改名/同步）用。 */
   applySnapshot: (d: SettingsSnapshot) => void;
   saveOwner: () => void;
@@ -80,8 +84,8 @@ export function useSettingsForm(onChanged: () => void): {
   const [oName, setOName] = useState("");
   const [oImpression, setOImpression] = useState("");
   const [oNotes, setONotes] = useState("");
-  // 缺省空 = 没设性别，提示词里对用户的代词走中性「TA」（见后端 ownerPronoun）
-  const [oGender, setOGender] = useState("");
+  // 默认中性指代；提示词里对用户统一走「TA」（见后端 ownerPronoun）
+  const [oGender, setOGender] = useState("other");
 
   const [modelBanner, setModelBanner] = useState<Banner>(null);
   const [personaBanner, setPersonaBanner] = useState<Banner>(null);
@@ -106,7 +110,7 @@ export function useSettingsForm(onChanged: () => void): {
     setOName(owner.name ?? "");
     setOImpression(owner.impression ?? "");
     setONotes(owner.notes ?? "");
-    setOGender(owner.gender ?? "");
+    setOGender(owner.gender ?? "other");
   }, []);
 
   const [reloadNonce, setReloadNonce] = useState(0);
@@ -271,6 +275,20 @@ export function useSettingsForm(onChanged: () => void): {
       .finally(() => setBusy(""));
   };
 
+  const saveToolLoopTurns = (turns: number): Promise<number> =>
+    settingsApi.saveSettings({ toolLoopTurns: turns }).then((d) => {
+      fill(d);
+      onChanged();
+      return d.toolLoopTurns;
+    });
+
+  const saveEmoteFrequency = (frequency: EmoteFrequency): Promise<EmoteFrequency> =>
+    settingsApi.saveSettings({ emoteFrequency: frequency }).then((d) => {
+      fill(d);
+      onChanged();
+      return d.emoteFrequency;
+    });
+
   const saveOwner = (): void => {
     setBusy("owner");
     settingsApi.saveSettings({ owner: collectOwner() })
@@ -331,7 +349,7 @@ export function useSettingsForm(onChanged: () => void): {
   return {
     saved, loadErr, busy, reload, modelBanner, setModelBanner, personaBanner, modelList,
     oName, setOName, oImpression, setOImpression, oNotes, setONotes, oGender, setOGender,
-    testModel, fetchModelList, resetModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode,
+    testModel, fetchModelList, resetModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode, saveToolLoopTurns, saveEmoteFrequency,
     ask, askDangerous, acceptAsk, cancelAsk,
     applySnapshot: fill,
     saveOwner, resetAll, factoryResetAll, saveOwnerAvatar,

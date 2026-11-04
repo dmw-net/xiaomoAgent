@@ -58,6 +58,7 @@ export type StatusData = {
   proactive: GateState;
   wechat?: WeChatSummary;
   qq?: QQSummary;
+  outbound?: OutboundSummary;
   turns?: { total: number; done: number; failed: number; inFlight: number; avgLatencyMs: number; lastFailedAt: number | null };
   uptimeSec?: number;
   time?: string;
@@ -69,13 +70,57 @@ export type StatusData = {
 
 export type DiagnosticLevel = "ok" | "warn" | "bad";
 
+export type OutboundStatus =
+  | "pending"
+  | "in_flight"
+  | "delivered"
+  | "failed"
+  | "dead_letter"
+  | "expired"
+  | "ignored";
+
+export type OutboundSummary = {
+  counts: Record<OutboundStatus, number>;
+  open: number;
+  dead: number;
+  total: number;
+  oldestOpenAt: number | null;
+  oldestDeadAt: number | null;
+};
+
+/** 用户版只拿安全字段；开发模式会多出 id、原始错误、tier 等排障字段。 */
+export type OutboundDeliveryRow = {
+  id?: string;
+  contactId?: string;
+  contactName?: string;
+  conversationId?: string;
+  channel: "qq" | "wechat" | "web";
+  kind: "chat" | "proactive";
+  status: OutboundStatus;
+  text: string;
+  segments?: string[];
+  attempts: number;
+  maxAttempts: number;
+  tier?: string;
+  lastError?: string;
+  reason?: string;
+  sourceMessageId?: string;
+  createdAt: number;
+  scheduledAt?: number;
+  deliveredAt?: number;
+  failedAt?: number;
+  ignoredAt?: number;
+  freshnessAt?: number;
+};
+
+
 export type UserDiagnosticCheck = {
   id: string;
   label: string;
   level: DiagnosticLevel;
   summary: string;
   detail?: string;
-  action?: "backup" | "storage" | "activity" | "settings" | "media";
+  action?: "backup" | "storage" | "activity" | "settings" | "media" | "outbound";
 };
 
 export type UserDiagnostics = {

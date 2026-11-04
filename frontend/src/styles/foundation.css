@@ -236,12 +236,12 @@ input, textarea {
 /* 未读角标：数字从无到有那一下给个回弹，比"啪"地贴上去更像"有新消息到了" */
 @keyframes badgePop { 0% { opacity: 0; scale: .4; } }
 .msg-row.me { align-items: flex-end; }
-.msg-row.her { align-items: flex-start; }
+.msg-row.contact { align-items: flex-start; }
 /* 思考面板的视觉在 experience.css：与普通气泡正文保持明确的主次层级。 */
 
 /* 她的消息（含主动）：头像 + 气泡横排（微信式）；同一组连续发言只在组首显示头像（.gap 标记组首）。
    主动消息不再"去人格化"——她说的话有头像有尾巴，只在行角挂「主动」小徽标。 */
-.msg-row.her { flex-direction: row; align-items: flex-start; position: relative; }
+.msg-row.contact { flex-direction: row; align-items: flex-start; position: relative; }
 /* 首字母头像：全站 10 处做的是同一件事（气泡·侧栏·窄屏·Rail·关于·资料页·
    下拉·页头芯片），此前每处把 display/flex/居中/底色/字色/字重各抄一遍，
    于是字重 600/700 混用、圆角 6/12/14/50% 各表。公共部分一次写定。 */
@@ -265,7 +265,7 @@ input, textarea {
   /* 极淡投影：头像从消息流里轻轻托起来一点点，别做成卡片悬浮 */
   box-shadow: 0 1px 2px rgb(var(--shadow-tint) / .05);
 }
-.msg-row.her.gap { margin-top: var(--space-5); }
+.msg-row.contact.gap { margin-top: var(--space-5); }
 /* 我的消息右侧头像（微信式）。用 --ava-mine 与她的绿区分，纯色不用渐变。 */
 .msg-row.me:not(.proactive) { flex-direction: row; justify-content: flex-end; align-items: flex-start; }
 /* 「我」的三处头像同一个底色：聊天右侧 / 左上角 Rail / 设置「我的资料」。
@@ -299,14 +299,14 @@ input, textarea {
   box-shadow: var(--bubble-shadow);
 }
 .msg-row.me  .bubble { background: var(--bubble-mine); color: var(--bubble-mine-text); }
-.msg-row.her .bubble {
+.msg-row.contact .bubble {
   background: var(--bubble-theirs); color: var(--bubble-theirs-text);
   /* 信纸本身就有边，硬描一圈反而像裁切残留；发丝线只负责收口 */
   border-color: color-mix(in srgb, var(--border) 55%, transparent);
 }
 /* 主动消息用她的常规气泡；--bubble-proactive 令牌保留给真正的系统提示 */
 /* 微信式气泡小尾巴：45° 方块盖住气泡边缘，朝向各自的头像 */
-.msg-row.her .bubble::before {
+.msg-row.contact .bubble::before {
   content: ""; position: absolute; top: 12px; left: -5px; width: 9px; height: 9px;
   background: var(--bubble-theirs);
   border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
@@ -319,8 +319,8 @@ input, textarea {
   transform: rotate(45deg);
 }
 /* 「主动」小徽标：挂在行左上角，说明来源但不抢戏 */
-.msg-row.her.proactive { margin-top: var(--space-7); }
-.msg-row.her.proactive::before {
+.msg-row.contact.proactive { margin-top: var(--space-7); }
+.msg-row.contact.proactive::before {
   content: "主动";
   position: absolute; top: -9px; left: 45px; z-index: var(--z-proactive-badge);
   font-size: var(--text-xs); letter-spacing: .05em; line-height: 14px;
@@ -417,6 +417,12 @@ input, textarea {
               background-color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
 }
 .chip:hover { border-color: var(--border-strong); color: var(--text); }
+.chip.on {
+  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  color: var(--accent-ink); font-weight: 600;
+}
+.chip.on:hover { border-color: var(--accent); color: var(--accent-ink); }
 .chip:active { scale: .97; }
 
 /* 输入区（微信 PC 式）：无边框扁平输入 + 底栏（左快捷键提示，右绿色发送按钮） */
@@ -1356,11 +1362,13 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
   border-radius: var(--radius-2xl); padding: var(--space-7) var(--space-8) var(--space-8); margin: 0; min-width: 0;
   box-shadow: var(--shadow-xs);
 }
-#status .section > h2 {
+#status .section > h2,
+#status .activity-title-row h2 {
   display: flex; align-items: baseline; gap: var(--space-3);
   margin: 0 0 var(--space-5); font-size: var(--text-md); font-weight: 600; color: var(--text);
 }
-#status .section > h2::before {
+#status .section > h2::before,
+#status .activity-title-row h2::before {
   content: ""; align-self: center; width: 3px; height: 13px;
   border-radius: 2px; background: var(--accent); flex: none;
 }
@@ -1480,8 +1488,8 @@ thead th {
 }
 /* 固定列宽：不给它定死，"状态"这种两字列会被挤成竖排 */
 #callsTable th:nth-child(1), #callsTable td:nth-child(1) { width: 72px; }
-#callsTable th:nth-child(2), #callsTable td:nth-child(2) { width: 82px; }
-#callsTable th:nth-child(3), #callsTable td:nth-child(3) { width: 76px; }
+#callsTable th:nth-child(2), #callsTable td:nth-child(2) { width: 108px; }
+#callsTable th:nth-child(3), #callsTable td:nth-child(3) { width: 84px; }
 #callsTable th:nth-child(4), #callsTable td:nth-child(4) { width: 74px; }
 #turnsTable th:nth-child(1), #turnsTable td:nth-child(1) { width: 72px; }
 #turnsTable th:nth-child(2), #turnsTable td:nth-child(2) { width: 76px; }

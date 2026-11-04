@@ -79,7 +79,7 @@ export default function ChatMap({ open, nodes, activeId, onJump, onClose, onOpen
                 <div key={n.id} className="chat-map-row-wrap">
                   {day && <div className="chat-map-day">{day}</div>}
                   <button type="button" data-map-id={n.id}
-                    className={"chat-map-row " + (n.role === "user" ? "me" : "her") + (activeId === n.id ? " active" : "")}
+                    className={"chat-map-row " + (n.role === "user" ? "me" : "contact") + (activeId === n.id ? " active" : "")}
                     title={n.preview} onClick={() => onJump(n.id)}>
                     <span className="chat-map-bubble">
                       {n.hasImage && <span className="chat-map-media">图</span>}

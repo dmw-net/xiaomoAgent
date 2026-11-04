@@ -8,10 +8,10 @@ import type { SettingsForm } from "./useSettingsForm";
 const GENDER_OPTIONS = [
   { key: "female", label: "女" },
   { key: "male", label: "男" },
-  { key: "other", label: "其他" },
+  { key: "other", label: "中性" },
 ] as const;
 
-/** 全局用户资料：头像 + 性别 + 「联系人眼中的你」三字段。联系人各自的设定在编辑资料页。 */
+/** 全局用户资料：头像 + 指代方式 + 「联系人眼中的你」三字段。联系人各自的设定在编辑资料页。 */
 export default function OwnerSection({ form, onOwnerAvatar }: {
   form: SettingsForm;
   onOwnerAvatar: (dataUrl: string) => void;
@@ -106,14 +106,14 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
           <input id="o-name" placeholder="叫我：老板 / 学长 / 阿樟" value={form.oName} onChange={(e) => form.setOName(e.target.value)} />
         </div>
         <div className="field">
-          <label>我的性别</label>
-          <div className="pf-gender" role="radiogroup" aria-label="我的性别">
+          <label>我的指代方式</label>
+          <div className="pf-gender" role="radiogroup" aria-label="我的指代方式">
             {GENDER_OPTIONS.map((g) => (
               <button key={g.key} type="button" role="radio" aria-checked={form.oGender === g.key}
                 className={"pf-gender-btn" + (form.oGender === g.key ? " on" : "")}
                 onClick={() => form.setOGender(g.key)}>{g.label}</button>
             ))}
-            <span className="pf-gender-hint">聊天时怎么指代你；不选就用中性的称呼</span>
+            <span className="pf-gender-hint">聊天时怎么指代你；默认使用中性称呼</span>
           </div>
         </div>
         <div className="field">
@@ -134,7 +134,7 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
             <span className={"owner-see-ava" + (avatar ? " has-img" : "")}>
               {avatar ? <img src={avatar} alt="" /> : ownerName.slice(0, 1)}
             </span>
-            <span><b>{ownerName}</b><small>聊天时会按上面的性别设置指代你</small></span>
+            <span><b>{ownerName}</b><small>聊天时会按上面的指代方式称呼你</small></span>
           </div>
           <div className="owner-see-fields">
             <div><b>印象</b><p>{form.oImpression.trim() || "还没有写，只能从聊天里慢慢认识你。"}</p></div>

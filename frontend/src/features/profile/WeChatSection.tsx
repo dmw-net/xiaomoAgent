@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { MessageCircle } from "lucide-react";
+import { ChevronRight, MessageCircle, Settings2 } from "lucide-react";
 // qrcode 只在「生成绑定二维码」这一步用得到，不该进首屏 chunk。
 import { wechatApi, type WeChatLink } from "../../api";
 import Modal from "../../components/Modal";
@@ -20,6 +20,7 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmOff, setConfirmOff] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
   const pollTimer = useRef<ReturnType<typeof setInterval> | null>(null);
   const alive = useRef(true);
 
@@ -50,7 +51,7 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
   }, [contactId]);
 
   useEffect(() => {
-    setLink(null); setQr(null); setBindHint(""); setErr("");
+    setLink(null); setQr(null); setBindHint(""); setErr(""); setShowSettings(false);
     boundRef.current = false;   // 换联系人：上一个的绑定状态不能带过来
     void refresh();
     // 绑定后的会话凭证与错误来自微信侧事件，卡片开着时轻量刷新。
@@ -87,7 +88,7 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
             stopPoll();
             setQr(null);
             if (st.link) setLink(st.link);
-            setBindHint(`绑定成功。请从微信先给${who}发一条消息，建立会话后${who}才能回话。`);
+            setBindHint(`微信绑定成功。接下来从微信给${who}发一条消息；建立会话后机器人才能回复。`);
           } else if (st.status === "scanned") {
             setQr((prev) => (prev ? { ...prev, status: "scanned" } : prev));
           } else if (st.status === "expired" || st.status === "gone" || st.status === "error") {
@@ -129,7 +130,7 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
     setBusy(true); setErr("");
     try {
       await wechatApi.disconnectWeChat(contactId);
-      if (alive.current) { setLink(null); setConfirmOff(false); setBindHint(""); }
+      if (alive.current) { setLink(null); setConfirmOff(false); setShowSettings(false); setBindHint(""); }
     } catch (e: unknown) {
       setErr(e instanceof Error ? e.message : String(e));
     } finally {
@@ -151,8 +152,7 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
         <div>
           <div className="pf-set-title">微信连接</div>
           <div className="pf-model-hint">
-            绑定后，{who}在对话里说出的每句话都会同步到这个联系人的微信；
-            从微信发来的消息也会进入这段对话。
+            从微信和{who}聊天，消息与上下文同步到本机同一段对话。
           </div>
         </div>
         <ChannelBadge tone={badgeTone} label={badgeLabel}
@@ -163,9 +163,8 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
         /* 未连接空态：从前只有一枚孤零零的按钮，先讲清楚绑定能得到什么，再给唯一的下一步。 */
         <div className="ch-empty">
           <div className="ch-empty-points">
-            <span>{who}说的话会同步到这个联系人的微信</span>
-            <span>微信里回的消息也会进入这段对话，上下文共用</span>
-            <span>要不要让{who}主动发微信，绑完后随时可开关</span>
+            <span>扫码后，先从微信发一条消息激活会话</span>
+            <span>连接后可随时暂停或关闭主动发送</span>
           </div>
           <div className="wx-actions">
             <button type="button" className="primary sm" disabled={busy} onClick={() => { void startBind(); }}>
@@ -175,46 +174,72 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
         </div>
       )}
 
-      {link && !link.hasContext && (
-        <ChannelNote tone="info">还没有微信会话：请先在微信里给{who}发一条消息，建立会话后{who}才能回复。</ChannelNote>
+      {link && !link.hasContext && bindHint === "" && (
+        <ChannelNote tone="info">还差一步：请先在微信里给{who}发一条消息，建立会话后机器人才能回复。</ChannelNote>
       )}
       {link && link.status === "attention" && link.lastError !== "" && (
         <ChannelNote tone="error">{link.lastError}</ChannelNote>
       )}
-      {bindHint !== "" && <ChannelNote tone="success">{bindHint}</ChannelNote>}
+      {bindHint !== "" && !link?.hasContext && <ChannelNote tone="success">{bindHint}</ChannelNote>}
 
-      {link && (
-        <div className="wx-controls">
-          <label className="wx-check">
-            <input
-              type="checkbox"
-              checked={link.enabled}
-              disabled={busy}
-              onChange={(e) => { void patchFlags({ enabled: e.target.checked }); }}
-            />
-            启用连接
-          </label>
-          <label className="wx-check" title={`开启后，${who}主动说的那句也会发到微信`}>
-            <input
-              type="checkbox"
-              checked={link.proactive}
-              disabled={busy}
-              onChange={(e) => { void patchFlags({ proactive: e.target.checked }); }}
-            />
-            允许主动触达
-          </label>
-        </div>
-      )}
       {err !== "" && <ChannelNote tone="error">{err}</ChannelNote>}
 
-      {/* 危险操作单独分层：停用开关是日常操作，解绑是不可逆动作，不该和开关挤在同一行。 */}
       {link && (
-        <div className="ch-danger-row">
-          <button type="button" className="pf-ghost wx-danger" disabled={busy} onClick={() => setConfirmOff(true)}>
-            解除绑定
-          </button>
-          <span className="ch-danger-hint">解绑后微信不再收发消息，对话记录保留，可重新扫码绑定。</span>
-        </div>
+        <button type="button" className="qq-connection-manage" onClick={() => setShowSettings(true)}>
+          <span className="qq-connection-manage-icon"><Settings2 size={16} strokeWidth={1.8} /></span>
+          <span className="qq-connection-manage-copy">
+            <strong>连接设置</strong>
+            <small>
+              {wechatApi.WECHAT_STATUS_LABEL[link.status]}
+              {link.proactive ? " · 主动发送：允许" : " · 主动发送：关闭"}
+            </small>
+          </span>
+          <ChevronRight size={16} strokeWidth={1.8} className="qq-connection-manage-arrow" />
+        </button>
+      )}
+
+      {showSettings && link && (
+        <Modal onClose={() => { if (!busy) setShowSettings(false); }} label="微信连接设置"
+          className="qq-settings-modal" placement="center"
+          head={<div className="qq-settings-head">
+            <div>
+              <div className="qq-settings-title">连接设置</div>
+              <div className="qq-settings-sub">操作即时生效。</div>
+            </div>
+            <button type="button" className="qq-settings-close" disabled={busy}
+              onClick={() => setShowSettings(false)}>关闭</button>
+          </div>}>
+          <div className="qq-settings-list">
+            <div className="qq-setting-row">
+              <span className="qq-setting-copy">
+                <strong>{link.enabled ? "暂停连接" : "恢复连接"}</strong>
+                <small>{link.enabled ? "保留绑定与聊天记录。" : "恢复后将重新收发。"}</small>
+              </span>
+              <button type="button" className="pf-ghost qq-setting-action" disabled={busy}
+                onClick={() => { void patchFlags({ enabled: !link.enabled }); }}>
+                {link.enabled ? "暂停" : "恢复"}
+              </button>
+            </div>
+            <label className="qq-setting-row">
+              <span className="qq-setting-copy">
+                <strong>允许主动发送</strong>
+                <small>已有微信会话时，提醒和主动关心会发到微信。</small>
+              </span>
+              <input type="checkbox" checked={link.proactive} disabled={busy}
+                onChange={(e) => { void patchFlags({ proactive: e.target.checked }); }} />
+            </label>
+          </div>
+          <div className="qq-settings-danger">
+            <div className="qq-setting-copy">
+              <strong>解除绑定</strong>
+              <small>停止微信收发；聊天记录保留。</small>
+            </div>
+            <button type="button" className="pf-ghost wx-danger" disabled={busy}
+              onClick={() => { setShowSettings(false); setConfirmOff(true); }}>
+              解除绑定
+            </button>
+          </div>
+        </Modal>
       )}
 
       {qr && (

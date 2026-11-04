@@ -53,20 +53,36 @@ export async function upload(file: File, label?: string): Promise<{ url: string 
   }
 }
 
-/** 目录批量导入：把本地文件夹里的图片一键入库（按内容 md5 去重，重扫不重复），归入同名文件夹。 */
-export function importDir(dir: string): Promise<{ added: number; skipped: number; total: number }> {
-  return postJson<{ ok: true; added: number; skipped: number; total: number }>("/api/emotes/import", { dir });
+/** 目录批量导入：把本地文件夹里的图片一键入库（按内容 md5 去重，重扫不重复），归入同名文件夹。
+ *  skippedFiles 给出每张没进来的文件叫什么、为什么（超上限 / 读不出是图片 / 库里有同一张）。 */
+export function importDir(dir: string): Promise<{
+  added: number;
+  skipped: number;
+  total: number;
+  skippedFiles: Array<{ name: string; reason: string }>;
+}> {
+  return postJson<{
+    ok: true;
+    added: number;
+    skipped: number;
+    total: number;
+    skippedFiles: Array<{ name: string; reason: string }>;
+  }>("/api/emotes/import", { dir });
 }
 
-/** 自动采集开关：他发来的图片是否顺手入库。 */
+/** 自动采集开关：用户发来的图片是否顺手入库。 */
 export function setAutoCapture(on: boolean): Promise<{ autoCapture: boolean }> {
   return postJson<{ ok: true; autoCapture: boolean }>("/api/emotes/preferences", { autoCapture: on });
 }
 
 // ── 智能识别：把库里的表情逐张看一遍，补上中文名与用法 ──────────────
 
-/** 一轮作业里每张图的结局：识别成功给名字，失败给人话原因。 */
-export type NamingResult = { id: string; file: string; name: string; error: string };
+/** 一轮作业里每张图的结局：识别成功给名字与写回的用法，失败给人话原因。 */
+export type NamingResult = {
+  id: string; file: string; name: string; error: string;
+  /** 成功时写回的用法与标签：弹窗里那颗「智能识别」原地回填读的就是这一行。 */
+  caption: string; tags: string[];
+};
 
 export type NamingJob = {
   running: boolean;
@@ -90,25 +106,24 @@ export type NamingStatus = {
   naming: NamingStats;
 };
 
-/** 起作业（后台跑，立刻返回）。started=false 时也带着当前 job：界面接着轮询那一个就行，
+/** 排进队列的结果：整库、勾选的几张、弹窗里那一张都走这一个入口。
+ *  作业已经在跑就是往里追加（started 仍为 true，queued 是这次新加进去的张数）。
+ *  started=false 时也带着当前 job：界面接着轮询那一个就行，
  *  不用靠比中文提示文案判断「是不是已经有人在跑了」。 */
-export function startNaming(options: { force?: boolean; only?: string[] } = {}): Promise<{
-  ok: boolean; started: boolean; reason?: string; total: number;
-  job: NamingJob; naming: NamingStats;
-}> {
-  return postJson<{
-    ok: boolean; started: boolean; reason?: string; total: number;
-    job: NamingJob; naming: NamingStats;
-  }>("/api/emotes/naming", options);
+export type NamingStart = {
+  ok: boolean;
+  started: boolean;
+  reason?: string;
+  total: number;
+  queued: number;
+  job: NamingJob;
+  naming: NamingStats;
+};
+
+export function startNaming(options: { force?: boolean; only?: string[] } = {}): Promise<NamingStart> {
+  return postJson<NamingStart>("/api/emotes/naming", options);
 }
 
 export function namingStatus(): Promise<NamingStatus> {
   return getJson<NamingStatus>("/api/emotes/naming");
-}
-
-/** 重认这一张（名字不满意，重新识别）。 */
-export function renameOne(id: string): Promise<
-  { ok: true; name: string; caption: string; tags: string[] } | { ok: false; error?: string }
-> {
-  return postJson<{ ok: true; name: string; caption: string; tags: string[] } | { ok: false; error?: string }>("/api/emotes/naming/one", { id });
 }

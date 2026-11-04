@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { contactsApi, settingsApi, usageApi } from "../../api";
 import { fmtInt, fmtTokens } from "../../lib/format";
 import { profileTitle } from "../../lib/providers";
-import { PURPOSE_LABEL } from "./constants";
+import { purposeLabel } from "./constants";
 import type { UsageBucket, UsageStats } from "../../types";
 import type { PanelAria } from "../../components/Tabs";
 
@@ -123,7 +123,7 @@ export default function UsageSection({ panel, refreshNonce = 0 }: {
                 calls: r.calls, fail: r.fail, tokens: r.totalTokens,
               }))
                 : usage.byPurpose.map((p) => ({
-                  key: p.purpose, label: PURPOSE_LABEL[p.purpose] ?? p.purpose, calls: p.calls, fail: null, tokens: p.totalTokens,
+                  key: p.purpose, label: purposeLabel(p.purpose), calls: p.calls, fail: null, tokens: p.totalTokens,
                 }));
         // 四个维度共用一套翻页手感：默认 7 行，「加载更多」每次再放 7 行。
         // 后端已把「最该先看的」排在第一行：按日=最近一天在前，其余=调用数降序。

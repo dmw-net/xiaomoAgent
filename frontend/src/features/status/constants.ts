@@ -10,12 +10,19 @@ export const PURPOSE_LABEL: Record<string, string> = {
   proactive: "主动判断",
   recap: "近况整理",
   imageGen: "画图",
+  image_understanding: "图片理解",
+  emote_naming: "智能识别",
   asr: "语音识别",
   tts: "语音合成",
   ping: "连通测试",
   wechat: "微信出站",
   qq: "QQ 出站",
 };
+
+/** 用户端统一使用人能看懂的名字；内部 purpose 不直接出界面。 */
+export function purposeLabel(purpose: string): string {
+  return PURPOSE_LABEL[purpose] ?? "其他活动";
+}
 
 /** 主动性「为什么没说」的四道判断，名字说人话（用户看到的是"这次为什么没开口"）。 */
 export const GATE_DEFS = [

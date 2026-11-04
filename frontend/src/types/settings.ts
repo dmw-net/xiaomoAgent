@@ -22,6 +22,9 @@ export type ThinkingParamId = "effort" | "templateKw" | "thinkingType";
 /** 思考开关意图：auto 跟随模型不发送字段 / on 开 / off 关；"" 仅为兼容老配置。 */
 export type ThinkingModeId = "" | "auto" | "on" | "off";
 
+/** 全局表情使用倾向；off = 整条能力关闭（工具与提示词一起下线）。 */
+export type EmoteFrequency = "off" | "rare" | "normal" | "often";
+
 /** 模型档/当前生效配置上的能力元数据字段（两处共用）。 */
 export type ModelMeta = {
   caps?: ModelCaps;
@@ -92,6 +95,11 @@ export type SettingsSnapshot = {
   };
   /** .env / 内置默认的回放轮数（0 = 跟随默认时界面用来显示）。 */
   defaultRecentTurns?: number;
+  /** 全局工具循环的模型轮次上限：普通联系人统一使用它。 */
+  toolLoopTurns: number;
+  toolLoopTurnLimits: { min: number; max: number };
+  /** 全局表情使用倾向；仅在联系人开启表情工具时进入系统提示。 */
+  emoteFrequency: EmoteFrequency;
   overridden: { model: string[]; persona: string[] };
   profiles: ProfileItem[];
   activeProfileId: string | null;
@@ -122,7 +130,7 @@ export type { ExtensionSnapshot, ExtensionSnapshotEntry, ExtensionDiagnostic, Ex
 
 /**
  * 技能写入口（新建 / 覆盖 / 删除）的回包：整份清单 + 刚落盘那一份的扫描结果。
- * saved.valid 才是"她看不看得见"，ok 只表示字落盘了——界面据此决定收起编辑器还是接着改。
+ * saved.valid 才是"联系人看不看得见"，ok 只表示字落盘了——界面据此决定收起编辑器还是接着改。
  */
 export type SkillWriteResult = { dir: string; skills: SkillEntry[]; saved?: SkillEntry; deleted?: string };
 

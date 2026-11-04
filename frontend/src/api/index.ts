@@ -10,6 +10,7 @@ export * as extensionsApi from "./extensions";
 export * as proactiveApi from "./proactive";
 export * as usageApi from "./usage";
 export * as diagnosticsApi from "./diagnostics";
+export * as outboundApi from "./outbound";
 export * as mediaApi from "./media";
 export * as storageApi from "./storage";
 export * as assistantApi from "./assistant";

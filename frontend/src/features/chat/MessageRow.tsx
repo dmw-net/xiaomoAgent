@@ -23,7 +23,6 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   ownerName: string;
   ownerAvatar: string;
   contactAvatar: string;
-  /** 该联系人的中文代词（她/他/TA）。 */
   onContextMenu: (m: MessageRow, x: number, y: number) => void;
   onLongPress: (m: MessageRow, x: number, y: number) => void;
   onImageClick?: (url: string) => void;
@@ -42,7 +41,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   ttsBusy?: boolean;
   onPlayTts?: (m: MessageRow) => void;
 }): JSX.Element {
-  const cls = "msg-row " + (m.role === "user" ? "me" : "her") + (m.kind === "proactive" ? " proactive" : "")
+  const cls = "msg-row " + (m.role === "user" ? "me" : "contact") + (m.kind === "proactive" ? " proactive" : "")
     + (gap ? " gap" : "") + (enter ? " msg-enter" : "");
   const touch = useLongPress((x, y) => onLongPress(m, x, y));
   // 键盘通道不在每一行上：整个消息区只占一个 Tab 停靠点，↑↓ 走位 + 回车开菜单
@@ -73,7 +72,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
       </div>
     );
   }
-  // 思考只属于她的回答；默认收起，展开后由面板自己承接长文本滚动，不把正文顶出屏幕。
+  // 思考只属于联系人的回答；默认收起，展开后由面板自己承接长文本滚动，不把正文顶出屏幕。
   const thinking = showThinking && m.role === "assistant" && typeof m.reasoning === "string" && m.reasoning !== ""
     ? <ThinkingBlock reasoning={m.reasoning} open={thinkingOpen} persistKey={m.turn_id ?? undefined}
         onOpenChange={(open) => { if (m.turn_id) onThinkingOpenChange?.(m.turn_id, open); }} />
@@ -116,7 +115,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   return (
     <div className={cls} data-id={m.id} style={enterStyle} {...handlers}>
       {failMark}
-      {/* 主动消息也是"她说的话：给头像、用常规气泡，只在角落挂一个「主动」小徽标。 */}
+      {/* 主动消息也是"联系人说的话：给头像、用常规气泡，只在角落挂一个「主动」小徽标。 */}
       {m.role !== "user" && (
         <Avatar className={"msg-ava" + (gap ? "" : " ava-hidden")} src={contactAvatar || undefined} name={characterName}
           style={avatarToneStyle(characterName)} />

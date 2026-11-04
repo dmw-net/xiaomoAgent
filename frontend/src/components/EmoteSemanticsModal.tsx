@@ -7,7 +7,7 @@ import type { Asset } from "../api";
  * 一张表情的语义卡：名称、适用场景、检索标签、文件夹归属。
  *
  * 为什么值得给一个弹窗（而不是像以前那样在网格里直接改标签文本框）：
- * 名称是这套系统的检索入口，改错了就等于把这张图从她手里藏起来——需要一个能看清整张图
+ * 名称是这套系统的检索入口，改错了就等于把这张图从联系人手里藏起来——需要一个能看清整张图
  * 再决定的地方。所以左边是真图，右边是几个字段，输入全部受控（失焦才提交那种写法在这里会
  * 让人以为已经保存了）。
  *
@@ -26,7 +26,7 @@ const DEFAULT_FOLDER = "默认";
 export type RenameOutcome = { label: string; caption: string; tags: string[] };
 
 export default function EmoteSemanticsModal({
-  asset, folders, onSave, onRename, onClose,
+  asset, folders, onSave, onRename, onClose, queueLine = "",
 }: {
   asset: Asset;
   /** 库里现有的文件夹名清单（全库级，不随当前筛选变）。 */
@@ -36,6 +36,8 @@ export default function EmoteSemanticsModal({
   /** 让模型再看这一张；返回写回的字段给弹窗原地展示。 */
   onRename: () => Promise<RenameOutcome | null>;
   onClose: () => void;
+  /** 队列里的进度文本，来自 MediaLibrary 的 queueLine 状态。 */
+  queueLine?: string;
 }): JSX.Element {
   const [label, setLabel] = useState(asset.emoteLabel);
   const [caption, setCaption] = useState(asset.emoteCaption);
@@ -88,6 +90,8 @@ export default function EmoteSemanticsModal({
       if (r !== null) {
         setLabel(r.label); setCaption(r.caption); setTags(r.tags);
         setResult(`识别完成，写了名称「${r.label}」——不满意直接改，改完算手动维护；确认无误点「保存」。`);
+      } else {
+        // onRename 抛错：note 会写，但 renaming 要在最后关掉
       }
     } catch (error) {
       setNote(error instanceof Error ? error.message : String(error));
@@ -159,9 +163,11 @@ export default function EmoteSemanticsModal({
 
           <div className="row2">
             <button type="button" className="btn sm" onClick={onClose}>取消</button>
-            <button type="button" className="btn sm" disabled={busy || renaming} onClick={() => { void renote(); }}
-              title="调用图片理解，按画面重写名称、适用场景与标签（会覆盖你刚改的内容）">
-              <Sparkles size={13} className={renaming ? "esem-spin" : undefined} /> {renaming ? "识别中…" : "智能识别"}
+            <button type="button" className="btn sm" disabled={busy || renaming}
+              onClick={() => { void renote(); }}
+              title="调用图片理解，按画面重写名称、适用场景与标签（会覆盖你刚改的内容）；已经排进当前队列的就看进度条">
+              <Sparkles size={13} className={renaming ? "esem-spin" : undefined} />
+              {renaming ? (queueLine ?? "排队中") : "智能识别"}
             </button>
             <button type="button" className="primary sm" disabled={busy || renaming} onClick={() => { void save(); }}>保存</button>
           </div>

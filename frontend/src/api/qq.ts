@@ -47,21 +47,23 @@ export function fetchQQBinding(contactId: string): Promise<{ binding: QQBindingV
   return getJson(`/api/contacts/${encodeURIComponent(contactId)}/qq`);
 }
 
-/** 当前 QQ 后端选型（official/onebot）。资料页据此分流：官方走扫码/凭据，OneBot 走「填真实 QQ 号」。
- *  saved 是界面里选过、写在库里的渠道；与运行中的 backend 不同即「已切换待重启」。 */
+/** 当前联系人实际使用的 QQ 后端（official/onebot）。资料页据此分流：
+ *  官方走扫码/凭据，OneBot 走「填真实 QQ 号」。saved=该联系人是否单独保存过覆盖值。 */
 export type QQBackendInfo = {
   backend: "official" | "onebot";
   saved: "official" | "onebot" | null;
+  contactId?: string | null;
   restartPending: boolean;
   onebotReady: boolean;
 };
-export function fetchQQBackend(): Promise<QQBackendInfo> {
-  return getJson("/api/qq/backend");
+export function fetchQQBackend(contactId?: string): Promise<QQBackendInfo> {
+  const query = contactId ? "?contactId=" + encodeURIComponent(contactId) : "";
+  return getJson("/api/qq/backend" + query);
 }
 
-/** 切换 QQ 接入渠道：后端当场热切（旧渠道收线、新渠道上线），返回 applied=true 即已生效。 */
-export function setQQBackend(backend: "official" | "onebot"): Promise<{ ok: boolean; backend: "official" | "onebot"; applied: boolean }> {
-  return postJson("/api/qq/backend", { backend });
+/** 切换当前联系人的 QQ 接入方式；省略 contactId 时修改全局默认值（兼容旧调用）。 */
+export function setQQBackend(backend: "official" | "onebot", contactId?: string): Promise<{ ok: boolean; backend: "official" | "onebot"; applied: boolean }> {
+  return postJson("/api/qq/backend", contactId ? { backend, contactId } : { backend });
 }
 
 /** 探测 OneBot 协议端并读出它当前登录的账号（绑定入口用：头像 + 昵称 + 一键绑定）。 */
@@ -78,9 +80,9 @@ export type NapcatStatus = {
 export function fetchNapcatStatus(): Promise<NapcatStatus> {
   return getJson("/api/qq/napcat");
 }
-/** 安装（下载解压，较慢）/ 启动（拉起+配置+等登录，最长约 3 分钟）。
- *  这两个动作天然慢，必须放宽前端 10 秒默认超时，否则按钮永远"请求超时"。 */
-export function napcatAction(action: "install" | "start"): Promise<{ ok: boolean; error: string; needsQr?: boolean }> {
+/** 安装 / 启动 / 切换登录 QQ。前两项较慢，切换会重启 NapCat 并等新二维码。
+ *  这些动作天然慢，必须放宽前端 10 秒默认超时，否则按钮永远"请求超时"。 */
+export function napcatAction(action: "install" | "start" | "relogin"): Promise<{ ok: boolean; error: string; needsQr?: boolean }> {
   return postJson("/api/qq/napcat", { action }, 240_000);
 }
 
@@ -94,8 +96,8 @@ export function saveOneBotSettings(patch: { httpBase?: string; wsUrl?: string; t
   return postJson("/api/qq/onebot/settings", patch);
 }
 
-/** OneBot 模式：把「真实 QQ 号」绑到这位联系人。协议端侧登录，这里只存映射。
- *  ownerQq 可选：主人的真实 QQ 号，群聊里据此把主人从群成员里认出来。 */
+/** OneBot 模式：把协议端登录的「真实 QQ 号」绑到这位联系人，这里只存映射。
+ *  ownerQq 是私聊投递目标，也用于群聊里把主人从群成员里认出来；未设置时私聊无法投递。 */
 export function bindQQOneBot(
   contactId: string,
   patch: { qqNumber: string; ownerQq?: string; enabled?: boolean; proactive?: boolean },

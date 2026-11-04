@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import { Loader2, X } from "lucide-react";
+import { Fragment, useCallback, useEffect, useRef, useState } from "react";
+import { CheckCircle2, ChevronRight, Loader2, X, XCircle } from "lucide-react";
 import Tabs, { panelAria, type PanelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import Modal from "../../components/Modal";
@@ -8,34 +8,32 @@ import LoadingSkeleton from "../../components/LoadingSkeleton";
 import { getJson, settingsApi } from "../../api";
 import { cachedStatus, loadStatus, resetCounters as resetCountersStore } from "../../lib/statusStore";
 import { cachedCaps, loadCaps, type Caps } from "../../lib/capsStore";
-import { clockOf } from "../../lib/datetime";
+import { clockOf, dayLabel, dayOf } from "../../lib/datetime";
 import { copyText } from "../../lib/clipboard";
 import OverviewSection from "./OverviewSection";
 import UsageSection from "./UsageSection";
 import RecallSection from "./RecallSection";
+import OutboundQueueSection from "./OutboundQueueSection";
 import type { SettingsTab } from "../settings/SettingsView";
-import { PURPOSE_LABEL, TURN_LABEL } from "./constants";
+import { purposeLabel, TURN_LABEL } from "./constants";
 import { usePagedList } from "../../hooks/usePagedList";
 import ListPager from "../../components/ListPager";
 import type { StatusData, ModelCallRow, InflightCall, StatusTurnRow } from "../../types";
 
 type PingOut = { cls: string; text: string } | null;
 type Tab = "overview" | "usage" | "activity" | "recall";
-type ActivityView = "calls" | "turns";
+type ActivityView = "calls" | "turns" | "queue";
 
-/** 调用记录的筛选芯片：失败与用途互斥地组合成一条 WHERE，服务端算 total。 */
-type CallFilterDef = { id: string; label: string; failed?: boolean; purpose?: string; scope?: "model" | "channel" };
-/** 默认那一档：只列模型调用。每个筛选都显式带 scope，漏写一个，
-    「只看失败」就会把 QQ 失败也捞进来——那正是要择开的东西。 */
-const MODEL_CALLS: CallFilterDef = { id: "all", label: "模型调用", scope: "model" };
-const CALL_FILTERS: CallFilterDef[] = [
-  MODEL_CALLS,
-  { id: "failed", label: "只看失败", failed: true, scope: "model" },
-  { id: "chat", label: "回消息", purpose: "chat", scope: "model" },
-  { id: "extract", label: "记忆整理", purpose: "extract", scope: "model" },
-  { id: "proactive", label: "主动判断", purpose: "proactive", scope: "model" },
-  // 通道投递（QQ / 微信）打的不是模型，只是记在同一张表里。默认视图把它们择开，
-  // 想看投递成没成再到这一档——否则列表前十几行全是 qq，模型调用被挤到看不见。
+/** 用户端活动分类。失败状态与类型分开，允许组合成「记忆整理 + 只看失败」。 */
+type ActivityFilterDef = { id: string; label: string; purposes?: string[]; scope?: "model" | "channel" };
+const DEFAULT_ACTIVITY: ActivityFilterDef = { id: "all", label: "全部活动", scope: "model" };
+const ACTIVITY_FILTERS: ActivityFilterDef[] = [
+  DEFAULT_ACTIVITY,
+  { id: "chat", label: "回消息", purposes: ["chat"] },
+  { id: "memory", label: "记忆整理", purposes: ["extract", "consolidate", "recap"] },
+  { id: "proactive", label: "主动判断", purposes: ["proactive"] },
+  { id: "media", label: "图片与语音", purposes: ["imageGen", "image_understanding", "emote_naming", "asr", "tts"] },
+  // 通道投递记录混在同一张表里；默认不展开，避免一次发送的多个步骤淹没主要活动。
   { id: "channel", label: "通道投递", scope: "channel" },
 ];
 
@@ -63,6 +61,8 @@ const SUCCESS_SUMMARY: Record<string, string> = {
   proactive: "主动判断完成",
   recap: "近况整理完成",
   imageGen: "图片已生成",
+  image_understanding: "图片理解完成",
+  emote_naming: "智能识别完成",
   asr: "语音已识别",
   tts: "语音已生成",
   ping: "连接正常",
@@ -94,7 +94,7 @@ function prettyJson(raw: string): string {
 function rawCopyPayload(call: ModelCallRow): string {
   const meta = [
     `时间：${new Date(call.created_at).toLocaleString()}`,
-    `用途：${PURPOSE_LABEL[call.purpose] ?? call.purpose}`,
+    `用途：${purposeLabel(call.purpose)}`,
     `结果：${call.ok ? "成功" : `失败${call.code ? `（${call.code}）` : ""}`}`,
     call.status != null ? `HTTP 状态：${call.status}` : "",
     `模型：${call.model || "未记录"}`,
@@ -155,8 +155,9 @@ export default function StatusView({ active = true, contactId, contactName, cont
   const [pingOut, setPingOut] = useState<PingOut>(null);
   const [busy, setBusy] = useState("");
   const [diag, setDiag] = useState<"idle" | "busy" | "ok" | "bad">("idle");
-  /** 调用记录的筛选：全部 / 只看失败 / 按用途。total 也跟着这条筛走，见 CALL_FILTERS。 */
+  /** 活动类型与失败状态是两个维度，可以组合筛选。 */
   const [callFilter, setCallFilter] = useState("all");
+  const [callFailed, setCallFailed] = useState(false);
 
   useEffect(() => {
     setVisitedTabs((prev) => prev.has(tab) ? prev : new Set(prev).add(tab));
@@ -181,16 +182,16 @@ export default function StatusView({ active = true, contactId, contactName, cont
   }, [active, tab, capsNonce]);
 
   // ── 两张翻页表：统一走 usePagedList，每页条数取「界面 → 列表每页」那一档 ──
-  const filterDef = CALL_FILTERS.find((f) => f.id === callFilter) ?? MODEL_CALLS;
+  const filterDef = ACTIVITY_FILTERS.find((f) => f.id === callFilter) ?? DEFAULT_ACTIVITY;
   const fetchCalls = useCallback((limit: number, offset: number) =>
     getJson<{ calls: ModelCallRow[]; total: number }>(
       `/api/logs?limit=${limit}&offset=${offset}`
-      + (filterDef.failed ? "&failed=1" : "")
-      + (filterDef.purpose ? "&purpose=" + filterDef.purpose : "")
+      + (callFailed ? "&failed=1" : "")
+      + (filterDef.purposes?.length ? "&purposes=" + encodeURIComponent(filterDef.purposes.join(",")) : "")
       + (filterDef.scope ? "&scope=" + filterDef.scope : ""),
-    ).then((d) => ({ rows: d.calls, total: d.total })), [filterDef]);
+    ).then((d) => ({ rows: d.calls, total: d.total })), [filterDef, callFailed]);
   const callsPage = usePagedList<ModelCallRow>(fetchCalls, {
-    key: "calls|" + callFilter,
+    key: `calls|${callFilter}|${callFailed ? "failed" : "all"}`,
     enabled: active && tab === "activity" && activityView === "calls",
   });
 
@@ -246,6 +247,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
       `近 24 小时：${status?.recent ? `${status.recent.calls} 次调用 / ${status.recent.fail} 次失败` : "未知"}`,
       `通道：${status?.channels?.join("、") || "未知"}`,
       `处理单：${status?.turns ? `总 ${status.turns.total}，失败 ${status.turns.failed}，进行中 ${status.turns.inFlight}` : "未知"}`,
+      `投递队列：${status?.outbound ? `待处理 ${status.outbound.open}，死信 ${status.outbound.dead}，已送达 ${status.outbound.counts.delivered}` : "未知"}`,
       `最近错误：${latestError ? `${latestError.code || "ERROR"} ${latestError.message || ""}`.slice(0, 300) : "无"}`,
       statusErr ? `状态页读取错误：${statusErr}` : "",
     ].filter(Boolean).join("\n");
@@ -336,6 +338,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
   /** 当前分区根元素上的 ARIA：把面板回指到选中的 tab。 */
   const panelFor = (key: Tab): PanelAria => panelAria("st", key);
   const list = tab === "activity" ? (activityView === "calls" ? callsPage : turnsPage) : null;
+  const callRows = callsPage.page?.rows ?? [];
   const tabs: Array<{ key: Tab; label: string }> = [
     { key: "overview", label: "概览" },
     { key: "usage", label: "模型用量" },
@@ -352,7 +355,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
   const TAB_DESC: Record<Tab, string> = {
     overview: "先看健康结论，再看模型、能力、通道与运行详情。这里只读；要修改时从对应卡片进入设置。",
     usage: "模型用了多少、哪个模型用得多、和谁聊的；统计近 30 天。",
-    activity: "回消息、整理记忆、主动判断和通道投递都记在这里；失败的任务也能看到原因和耗时。",
+    activity: "查看最近的消息回复、记忆整理、主动判断与媒体处理；投递队列可查看自动重试和死信。",
     recall: "输入一句话，看联系人能从中想起哪些记忆。",
   };
 
@@ -365,6 +368,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
         <div className="preset-row" style={{ flex: "none" }}>
           <DiagnosticsButton className="refresh" onAction={(action) => {
             if (action === "activity") { setTab("activity"); setActivityView("calls"); }
+            else if (action === "outbound") { setTab("activity"); setActivityView("queue"); }
             else if (action === "backup" || action === "storage" || action === "settings") goSettings("system");
           }} />
           <button type="button" className="refresh" disabled={diag === "busy"} onClick={() => void copyDiagnostics()}>
@@ -388,6 +392,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
               onOpenContacts={onOpenContacts}
               notice={statusErr !== "" ? `刷新失败：${statusErr}（下面显示的是上次的结果）` : undefined}
               goSettings={goSettings} goTab={() => { setActivityView("calls"); setTab("activity"); }}
+              goQueue={() => { setActivityView("queue"); setTab("activity"); }}
               actions={<>
                 <button type="button" className="primary" id="pingBtn" disabled={busy !== ""} onClick={ping}>
                   {busy === "ping" ? "测试中…" : "实测模型连通"}
@@ -413,76 +418,115 @@ export default function StatusView({ active = true, contactId, contactName, cont
 
       {tab === "activity" && (
         <TabPanel active={tab === "activity"} aria={panelFor("activity")}>
-          <div className="activity-subnav">
+          <div className="activity-subnav set-subnav">
             <Tabs base="st-activity" value={activityView} onChange={setActivityView}
-              tabs={[{ key: "calls", label: "模型与通道" }, { key: "turns", label: "回复任务" }]} />
+              tabs={[
+                { key: "calls", label: "活动明细" },
+                { key: "turns", label: "回复任务" },
+                { key: "queue", label: "投递队列" },
+              ]} />
           </div>
 
-          {activityView === "calls" ? (
+          {activityView === "queue" ? (
+            <OutboundQueueSection active={active && tab === "activity"} devMode={devMode} onChanged={refreshStatus} />
+          ) : activityView === "calls" ? (
             <div className="section" id="callsTable">
               <div className="activity-title-row">
                 <div>
-                  <h2>{filterDef.scope === "channel" ? "通道投递记录" : "活动记录"}</h2>
-                  <p className="hint">回消息、整理记忆、主动判断与通道投递都在这里；失败项可展开详情。</p>
+                  <h2>{filterDef.scope === "channel" ? "通道投递" : "近期活动"}</h2>
+                  <p className="hint">
+                    {filterDef.scope === "channel"
+                      ? "查看 QQ、微信消息的实际投递结果；失败时会说明原因。"
+                      : "按时间查看最近发生了什么；点开任一条可以查看结果和失败原因。"}
+                  </p>
                 </div>
               </div>
-              <div className="preset-row" role="group" aria-label="活动记录筛选">
-                {CALL_FILTERS.map((f) => (
-                  <button key={f.id} type="button" className={"chip" + (callFilter === f.id ? " on" : "")}
-                    onClick={() => setCallFilter(f.id)}>{f.label}</button>
-                ))}
+              <div className="activity-toolbar">
+                <div className="activity-filter-group" role="group" aria-label="活动类型">
+                  <span className="activity-filter-label">类型</span>
+                  {ACTIVITY_FILTERS.map((f) => (
+                    <button key={f.id} type="button" className={"chip" + (callFilter === f.id ? " on" : "")}
+                      aria-pressed={callFilter === f.id}
+                      onClick={() => setCallFilter(f.id)}>{f.label}</button>
+                  ))}
+                </div>
+                <button type="button" className={"chip activity-failed-toggle" + (callFailed ? " on" : "")}
+                  aria-pressed={callFailed} onClick={() => setCallFailed((v) => !v)}>
+                  <XCircle size={12} />只看失败
+                </button>
               </div>
               <div className="table-wrap">
                 <table>
                   <thead>
-                    <tr><th>时间</th><th>用途</th><th>结果</th><th>耗时</th><th>信息</th></tr>
+                    <tr><th>时间</th><th>活动</th><th>结果</th><th>耗时</th><th>说明</th></tr>
                   </thead>
                   <tbody id="callsBody">
                     {inflight.map((c) => (
                       <tr key={"live-" + c.id} className="row-live">
                         <td className="num">{clockOf(c.startedAt)}</td>
-                        <td>{PURPOSE_LABEL[c.purpose] ?? c.purpose}</td>
-                        <td className="state"><span className="live-mark"><Loader2 size={12} className="spin" />进行中</span></td>
+                        <td className="activity-name">{purposeLabel(c.purpose)}</td>
+                        <td className="state">
+                          <span className="activity-status live"><Loader2 size={12} className="spin" />进行中</span>
+                        </td>
                         <td className="num">{(c.elapsedMs / 1000).toFixed(1)}s</td>
                         <td><span className="msg">{c.turnText ? `正在回复「${c.turnText.slice(0, 40)}${c.turnText.length > 40 ? "…" : ""}」` : "正在处理…"}</span></td>
                       </tr>
                     ))}
                     {callsPage.page === null ? (
                       <tr><td colSpan={5} className="empty">读取中…</td></tr>
-                    ) : callsPage.page.rows.length === 0 && inflight.length === 0 ? (
+                    ) : callRows.length === 0 && inflight.length === 0 ? (
                       <tr><td colSpan={5} className="empty">
                         {callsPage.error !== "" ? "读取失败：" + callsPage.error
-                          : filterDef.id === "all" ? "还没有活动记录" : "这个筛选下没有记录"}
+                          : callFailed ? "没有符合条件的失败记录"
+                            : filterDef.id === "all" ? "还没有活动记录" : "这个分类下没有记录"}
                       </td></tr>
-                    ) : callsPage.page.rows.map((c, i) => {
+                    ) : callRows.map((c, i) => {
                       const failed = c.ok === 0;
-                      // 普通用户只看失败摘要；完整请求/响应只留给开发模式。
-                      const canOpen = devMode;
+                      const prev = i > 0 ? callRows[i - 1] : undefined;
+                      const showDay = prev === undefined || dayOf(prev.created_at) !== dayOf(c.created_at);
                       return (
-                        <tr key={c.id ?? i}
-                          className={(failed ? "row-failed" : "") + (canOpen ? " row-clickable" : "")}
-                          onClick={canOpen ? () => openRaw(c.id) : undefined}
-                          title={canOpen ? "查看这次活动的详情" : undefined}>
-                          <td className="num">{clockOf(c.created_at)}</td>
-                          <td>{PURPOSE_LABEL[c.purpose] ?? c.purpose}</td>
-                          <td className="state">{failed
-                            ? <span className="bad-mark">未完成</span>
-                            : <span className="ok-mark">成功</span>}</td>
-                          <td className="num">{fmtMs(c.elapsed_ms)}</td>
-                          <td>
-                            <span className="msg">
-                              {failed ? friendlyFailure(c.code, c.message)
-                                : devMode && c.message ? String(c.message).slice(0, 90)
-                                : successSummary(c)}
-                              {devMode && c.code ? <span className="code-tag">{c.code}</span> : null}
-                            </span>
-                            {canOpen && (
-                              <button type="button" className="raw-hint"
-                                aria-label={"查看 " + clockOf(c.created_at) + " 这次活动的详情"}
-                                onClick={(ev) => { ev.stopPropagation(); openRaw(c.id); }}>详情</button>
-                            )}
-                          </td>
-                        </tr>
+                        <Fragment key={c.id ?? i}>
+                          {showDay && (
+                            <tr className="activity-day-row">
+                              <td colSpan={5}>{dayLabel(c.created_at)}</td>
+                            </tr>
+                          )}
+                          <tr
+                            className={failed ? "row-failed row-clickable" : "row-clickable"}
+                            tabIndex={0}
+                            onClick={() => openRaw(c.id)}
+                            onKeyDown={(ev) => {
+                              if (ev.target !== ev.currentTarget) return;
+                              if (ev.key === "Enter" || ev.key === " ") {
+                                ev.preventDefault();
+                                openRaw(c.id);
+                              }
+                            }}
+                            title="查看这次活动的详情">
+                            <td className="num">
+                              <time dateTime={new Date(c.created_at).toISOString()}>{clockOf(c.created_at)}</time>
+                            </td>
+                            <td className="activity-name">{purposeLabel(c.purpose)}</td>
+                            <td className="state">
+                              {failed
+                                ? <span className="activity-status bad"><XCircle size={12} />失败</span>
+                                : <span className="activity-status ok"><CheckCircle2 size={12} />成功</span>}
+                            </td>
+                            <td className="num">{fmtMs(c.elapsed_ms)}</td>
+                            <td>
+                              <div className="activity-copy">
+                                <span className="msg">
+                                  {failed ? friendlyFailure(c.code, c.message) : successSummary(c)}
+                                </span>
+                                <button type="button" className="raw-hint"
+                                  aria-label={`查看 ${dayLabel(c.created_at)} ${clockOf(c.created_at)} 的活动详情`}
+                                  onClick={(ev) => { ev.stopPropagation(); openRaw(c.id); }}>
+                                  详情<ChevronRight size={13} />
+                                </button>
+                              </div>
+                            </td>
+                          </tr>
+                        </Fragment>
                       );
                     })}
                   </tbody>
@@ -561,7 +605,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
               <div className="modal-title">活动详情</div>
               {rawCall && (
                 <div className="raw-sub">
-                  {clockOf(rawCall.created_at)} · {PURPOSE_LABEL[rawCall.purpose] ?? rawCall.purpose} ·{" "}
+                  {dayLabel(rawCall.created_at)} {clockOf(rawCall.created_at)} · {purposeLabel(rawCall.purpose)} ·{" "}
                   {rawCall.ok ? "成功" : <span className="bad-mark">{friendlyFailure(rawCall.code, rawCall.message)}</span>} · {fmtMs(rawCall.elapsed_ms)}
                   {rawCall.total_tokens != null ? ` · ${rawCall.total_tokens} token` : ""}
                 </div>
@@ -570,7 +614,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
             <div className="raw-actions">
               {rawCall !== null && (
                 <button type="button" className="btn sm" onClick={() => void copyRawCall()}>
-                  {rawCopy === "ok" ? "已复制" : rawCopy === "bad" ? "复制失败" : "复制排错信息"}
+                  {rawCopy === "ok" ? "已复制" : rawCopy === "bad" ? "复制失败" : "复制诊断信息"}
                 </button>
               )}
               <button type="button" className="raw-close" aria-label="关闭" onClick={closeRaw}><X size={15} /></button>
@@ -587,7 +631,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
                 <pre className="raw-body">{prettyJson(rawCall.res_full ?? rawCall.detail ?? "")}</pre>
                 {rawCall.req_full && (
                   <>
-                    <div className="raw-sec-label">开发者原文 · 请求体 · {rawCall.req_full.length} 字</div>
+                    <div className="raw-sec-label">请求内容 · {rawCall.req_full.length} 字</div>
                     <pre className="raw-body">{prettyJson(rawCall.req_full)}</pre>
                   </>
                 )}
@@ -598,14 +642,17 @@ export default function StatusView({ active = true, contactId, contactName, cont
                   <b>{rawCall.ok ? "这次活动已完成" : friendlyFailure(rawCall.code, rawCall.message)}</b>
                   <span>模型 {rawCall.model || "未记录"} · 耗时 {fmtMs(rawCall.elapsed_ms)}{rawCall.total_tokens != null ? ` · ${rawCall.total_tokens} token` : ""}</span>
                 </div>
-                <details className="activity-tech">
-                  <summary>查看服务商返回（技术详情）</summary>
-                  <pre>{prettyJson(rawCall.res_full ?? rawCall.detail ?? "")}</pre>
-                </details>
+                {(rawCall.message || !rawCall.ok) && (
+                  <div className="activity-detail-note">
+                    {rawCall.message
+                      ? String(rawCall.message)
+                      : "可以稍后重试；如果持续失败，再到设置里检查连接与密钥。"}
+                  </div>
+                )}
               </div>
             )
           )}
-          <div className="raw-note">完整请求与响应只作为排障信息保存，仅保留最近若干次调用；日常结果以短摘要展示。</div>
+          <div className="raw-note">日常只需要看结果摘要；需要排查时，可以复制这条记录用于定位。</div>
         </Modal>
       )}
     </div>

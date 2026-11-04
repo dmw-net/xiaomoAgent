@@ -256,7 +256,7 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
   };
 
   // 从上下文圆环点「去设置」过来：直接把正在生效的那档打开。
-  // 停在列表页等于把人领到门口又让他自己找门——高级参数还藏在折叠区里。
+  // 停在列表页等于把人领到门口又让用户自己找门——高级参数还藏在折叠区里。
   const revealConsumed = useRef(false);
   useEffect(() => {
     if (revealAdvanced !== true || revealConsumed.current) return;
@@ -291,10 +291,10 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
 
   const save = async (): Promise<void> => {
     if (!draft) return;
-    // 往已有的一家下面加模型：不需要名字，档名就等于模型名（供应商名在右栏那一栏管）。
+    // 往已有的一家下面加模型：配置名留空时默认取模型名前 24 字，避免超长模型名被 400 拒绝。
     // 新建一家的显示名允许留空，保存时用预设名或域名兜底，不再拿一个命名问题挡路。
     const label = draft.underProvider
-      ? draft.name.trim()
+      ? (draft.label.trim() || draft.name.trim().slice(0, 24))
       : (draft.label.trim() || draft.name.trim() || fallbackProviderName(draft.baseUrl));
     if (label === "") {
       form.setModelBanner({ kind: "bad", text: draft.underProvider ? "模型名不能为空" : "给这一家起个名字" });
@@ -701,12 +701,19 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
                     </div>
                   </div>
 
-                  {draft.id !== null && (
+                  {(draft.id !== null || draft.underProvider) && (
                     <div className="field ml-profile-name-field">
                       <label htmlFor="ml-profile-label">配置名 <span className="ml-optional">可选</span></label>
-                      <input id="ml-profile-label" maxLength={24} placeholder={draft.name.trim() || "默认使用模型名"}
+                      <input id="ml-profile-label" maxLength={24}
+                        placeholder={draft.underProvider
+                          ? `留空默认用「${draft.name.trim().slice(0, 24) || "模型名前 24 字"}」`
+                          : (draft.name.trim() || "默认使用模型名")}
                         value={draft.label} onChange={(e) => set({ label: e.target.value })} />
-                      <div className="hint">同一家下挂多个模型时，用它区分用途，比如「日常聊天」「便宜备用」。</div>
+                      <div className="hint">
+                        {draft.underProvider
+                          ? "留空自动用模型名前 24 字；同一家下多个模型时，填个短名更好认，比如「日常聊天」「便宜备用」。"
+                          : "同一家下挂多个模型时，用它区分用途，比如「日常聊天」「便宜备用」。"}
+                      </div>
                     </div>
                   )}
 

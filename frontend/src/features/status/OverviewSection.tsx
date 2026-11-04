@@ -91,7 +91,7 @@ const CHANNEL_LABEL: Record<string, string> = { web: "网页", wechat: "微信" 
  * 记忆条数、微信绑定都在各联系人的资料页里，总览按联系人显示等于随机挑一位。
  * 提醒条同理只收真会坏事的：按设计如此的静默/配额不该天天报警。
  */
-export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, onOpenContacts, panel }: {
+export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, goQueue, onOpenContacts, panel }: {
   panel: PanelAria;
   d: StatusData;
   /** 能力就绪状态由父级与 /api/status 并行取；null = 一次都还没拉到过。 */
@@ -103,13 +103,14 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   actions: ReactNode;
   goSettings: (tab: "model" | "capability") => void;
   goTab: (tab: "activity") => void;
+  goQueue: () => void;
   onOpenContacts: () => void;
 }): JSX.Element {
   const now = Date.now();
   const recent = d.recent ?? { calls: 0, fail: 0 };
   const errAge = d.lastModelError?.at ? now - Date.parse(d.lastModelError.at) : null;
   const errRecent = errAge !== null && errAge < DAY;
-  // 「跳转」在正文里做成链接：让人当场就知道去哪一步看明细，而不是只告诉他有事发生。
+  // 「跳转」在正文里做成链接：让人当场就知道去哪一步看明细，而不是只告诉用户有事发生。
   const link = (label: string, on: () => void): ReactNode =>
     <button type="button" className="ov-link" onClick={on}>{label}</button>;
 
@@ -210,8 +211,26 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   const turnFailRecent = !!t?.lastFailedAt && now - t.lastFailedAt < DAY;
   const extractSamples = d.memoryExtractSamples ?? 0;
   const extractEmptyPct = d.memoryExtractEmptyRate == null ? null : Math.round(d.memoryExtractEmptyRate * 100);
+  const outbound = d.outbound;
   const runRows: Row[] = [
     { led: "ok", k: "已运行", silent: true, v: uptimeText(d.uptimeSec ?? 0) },
+    ...(outbound ? [{
+      led: (outbound.dead > 0 ? "bad" : outbound.open > 0 ? "warn" : "ok") as Led,
+      k: "消息投递",
+      silent: outbound.dead === 0 && outbound.open === 0,
+      note: outbound.dead > 0
+        ? `${outbound.dead} 条消息进入死信队列`
+        : outbound.open > 0
+          ? `${outbound.open} 条消息仍在等待投递`
+          : undefined,
+      v: <>待处理 {outbound.open} · 死信 {outbound.dead} · 已送达 {outbound.counts.delivered}</>,
+      fix: outbound.dead > 0
+        ? <>{link("查看投递队列", goQueue)}，可重试或忽略不再需要的消息</>
+        : outbound.open > 0
+          ? <>{link("查看投递队列", goQueue)}，自动重试仍在进行</>
+          : undefined,
+      action: outbound.dead > 0 || outbound.open > 0 ? { label: "查看队列", on: goQueue } : undefined,
+    } as Row] : []),
     {
       led: (d.proactive.enabled ? "ok" : "warn") as Led, k: "主动性",
       silent: !!d.proactive.enabled,

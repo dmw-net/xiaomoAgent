@@ -19,6 +19,7 @@ function actionLabel(action: UserDiagnosticCheck["action"]): string {
   if (action === "activity") return "查看活动";
   if (action === "settings") return "去设置";
   if (action === "media") return "查看并清理";
+  if (action === "outbound") return "查看投递队列";
   return "";
 }
 

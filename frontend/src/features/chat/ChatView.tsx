@@ -209,7 +209,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 时间轴就是自增 id：上一帧见过的最大 id 与这一帧的差值，正是"刚追加进来"的那几条。
    * 首帧（含切联系人重挂载）只把最大 id 记成基线、一条都不动 —— 否则一屏几百条会集体弹一下；
    * 往前翻历史拿到的是更小的 id，同样落在判定之外。
-   * 只给她的回复/主动消息做入场：我自己那句话的入场由乐观气泡（pending）负责，
+   * 只给联系人的回复/主动消息做入场：我自己那句话的入场由乐观气泡（pending）负责，
    * 真消息认领回来时再播一遍就是同一个位置闪两下。
    */
   const seenMaxIdRef = useRef<number | null>(null);
@@ -244,10 +244,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const { notices, addNotice, dropNotices } = useNotices();
   const [typing, setTyping] = useState(false);
   /**
-   * 流式草稿：她正在写的这一句（后端把累计正文按 200ms 节流写进 turns.reply，
+   * 流式草稿：联系人正在写的这一句（后端把累计正文按 200ms 节流写进 turns.reply，
    * 这一拍本来就随 watch 的 /api/turn 轮询回来，不额外发请求）。
    * 空串=没有草稿，气泡维持三个点：echo 模式、非流式回退、工具轮都是这一支。
-   * 名字别叫 draft——那是输入框里**他**的草稿（见下面 line 160）。
+   * 名字别叫 draft——那是输入框里**用户**的草稿（见下面 line 160）。
    */
   const [streamText, setStreamText] = useState("");
   /** 这一轮的实时思考草稿：与正文分两列落库，确保思考先到、正文开始时也不会被抹掉。 */
@@ -535,7 +535,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [zoom, setZoom] = useState<string | null>(null);
   useDismiss(!!zoom, () => { setZoom(null); });
 
-  // 微信式的会话状态：她在忙什么就说什么，连接信息退到异常时才出现。
+  // 微信式的会话状态：联系人在忙什么就说什么，连接信息退到异常时才出现。
   const chatStatus = useMemo<{ text: string; tone: string }>(() => {
     if (recSec !== null) return { text: "正在录音…", tone: "typing" };
     if (voiceBusy) return { text: "正在准备语音消息…", tone: "typing" };
@@ -580,7 +580,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const pendingTurnRef = useRef<string | null>(null);
   const stickRef = useRef(true);
   /**
-   * 用户「亲手」往上翻了没有。翻了就停止自动追底，直到他回到真正的底部（±2px）才交还。
+   * 用户「亲手」往上翻了没有。翻了就停止自动追底，直到用户回到真正的底部（±2px）才交还。
    * 只靠 onScroll 里的 nearBottom 判定不够：我们自己每拍写的 scrollTop 也触发它，
    * 而那个判定有 120px 宽限——用户拖不到 120px 就被下一拍拽回去，
    * 手感就是「滚不动、气泡一直往上顶」。
@@ -704,7 +704,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     let tries = 0;
     let failDelay = 1200;
     watchStopRef.current = (): void => { stopped = true; };
-    // 新一轮开始：先把上一轮残留的草稿摘掉，否则这 900ms 里她"正在写"的是旧话。
+    // 新一轮开始：先把上一轮残留的草稿摘掉，否则这 900ms 里联系人"正在写"的是旧话。
     retireDraft();
     const redraw = (): Promise<void> =>
       Promise.resolve(opts.fullRedraw ? pullAllRef.current?.() : pullRef.current?.());
@@ -764,7 +764,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             // 真气泡可能永远不来，必须当场撤，不能交给 draftHasBubble 判。
             void redraw().then(async () => {
               // done 但一轮下来连一条回复气泡都没有（模型回了空、或收尾时产物被清）：
-              // 界面上就是"她没说话"，必须留一句提示 + 重答入口，不能无声无息。
+              // 界面上就是"联系人没说话"，必须留一句提示 + 重答入口，不能无声无息。
               // 只查 reply 为空的 done 轮——正常完成时气泡必然随 redraw 落地，不多打这一发。
               if (finished && !turn.reply) {
                 const rows = await pullTurnRef.current?.(turnId);
@@ -872,10 +872,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 为什么必须查：typing/busy/pendingTurnRef 全在这个组件实例里，而会话页按联系人
    * `key` 挂载 —— 重答跑了一半你切走再回来，人还在答，界面却已经"在线"了，
    * 连「停止」都够不到（实测：切回时顶栏=在线、无停止钮、气泡数比离开时少两条）。
-   * 顺带覆盖另一条此前没人接的路：她从微信/别的窗口回话，这边同样该显示在忙。
+   * 顺带覆盖另一条此前没人接的路：联系人从微信/别的窗口回话，这边同样该显示在忙。
    *
    * 只置 typing 不置 busy —— 与 `send()` 同一套：busy 会把发送键锁成"发送中"，
-   * 而"她还在回话时发新的一句 = 打断重来"是设计好的 barge-in，不能被恢复状态杀掉。
+   * 而"联系人还在回话时发新的一句 = 打断重来"是设计好的 barge-in，不能被恢复状态杀掉。
    */
   const checkTurnState = useCallback(async (): Promise<void> => {
     // 空闲与否要在**请求前**定格：await 期间用户可能 barge-in 发了新句、pendingTurnRef
@@ -1014,7 +1014,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     (turnId ? pullTurnRef.current?.(turnId) : pullAllRef.current?.()) ?? Promise.resolve(), []);
 
   /**
-   * 归档：不弹"你确定吗"——她只是从列表挪进「已归档」，对话与记忆一个字都不动，
+   * 归档：不弹"你确定吗"——联系人只是从列表挪进「已归档」，对话与记忆一个字都不动，
    * 所以直接做掉，落到列表后给 5 秒撤销（撤销就是 unarchive）。
    */
   const archiveNow = useCallback((): void => {
@@ -1057,7 +1057,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     let interrupted: string | null = null;
     if (pendingTurnRef.current) {
       interrupted = pendingTurnRef.current;
-      // barge-in：她还在回上一条时发这句 = 打断旧轮、按新的一句重来（后端每联系人单飞）。
+      // barge-in：联系人还在回上一条时发这句 = 打断旧轮、按新的一句重来（后端每联系人单飞）。
       // 旧轮不插任何气泡，给一句轻提示说明它去哪了——免得"回复消失了"变成悬案。
       addNotice("已停止上一条回复，按你这句重来", { info: true });
       // 旧草稿当场退场：从现在到 watch() 接手之间隔着 say() 的往返，不清的话
@@ -1066,7 +1066,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       retireDraft();
     }
     stickRef.current = true;
-    userHoldRef.current = false;   // 自己发了一句 = 明确要看她的回答，把自动跟随收回来
+    userHoldRef.current = false;   // 自己发了一句 = 明确要看联系人的回答，把自动跟随收回来
     idleTicksRef.current = 0;
 
     const localId = globalThis.crypto?.randomUUID?.() ?? (Math.random().toString(36).slice(2) + Date.now().toString(36));
@@ -1452,7 +1452,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     let stale: MessageRow[] = [];
     // 作废的那一段折在哪儿：只有**被编辑那一轮的重新回答**排在它上面（那条回复是
     // 新起的行号，按 id 会落到废弃尾巴之后，不挪就把新回复挤到折叠组下面，看着像
-    // 她在回答那堆已作废的话）。判据只用轮号：轮号等于折叠组上面那条现有消息的，
+    // 联系人在回答那堆已作废的话）。判据只用轮号：轮号等于折叠组上面那条现有消息的，
     // 才是"取代它的内容"。从前这里比的是生成时刻，于是编辑之后继续聊的每一条都算
     // "更新"，折叠组被一路推到底——所有「已被编辑取代」都沉到聊天框底部。
     let lastLiveTurn: string | null = null;
@@ -1464,8 +1464,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       if (m.superseded_at !== null && m.superseded_kind !== "retract") { stale.push(m); continue; }
       if (stale.length > 0 && m.turn_id !== lastLiveTurn) flushStale();
       if (m.kind === "tool") {
-        // 关掉「工具调用过程」只是不想看她查了什么；卡片上挂着的候选图是**用户要的产出**
-        // （搜图本来就是为了挑一张）。跟着一起吞掉，就会出现「她说图已经显示在界面上、
+        // 关掉「工具调用过程」只是不想看联系人查了什么；卡片上挂着的候选图是**用户要的产出**
+        // （搜图本来就是为了挑一张）。跟着一起吞掉，就会出现「联系人说图已经显示在界面上、
         // 界面上却什么都没有」——图明明在库里，只是被这条显示开关拦掉了。
         if (!showTools && (m.attachments ?? []).length === 0) continue;
         // 工具卡也算"一天里的话"：跨天落在工具卡上时同样要出日分隔，
@@ -1533,7 +1533,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     if (atBottom) bottomIdRef.current = lastIdRef.current;
   }, [atBottom, msgs]);
 
-  /** 离开底部之后又进来的行数（她回的话、主动说的话）：贴底时恒为 0。 */
+  /** 离开底部之后又进来的行数（联系人回的话、主动说的话）：贴底时恒为 0。 */
   const newBelow = atBottom ? 0 : msgs.reduce((n, m) => (m.id > bottomIdRef.current ? n + 1 : n), 0);
 
   // 占位气泡过期回收
@@ -1649,7 +1649,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       const row = logRef.current?.querySelector<HTMLElement>(`[data-id="${focusMessageId}"]`);
       if (!row) return false;
       stickRef.current = false;          // 别在跳完之后又把人拽回底部
-      userHoldRef.current = true;        // 这一路都当是他主动在上翻，直到他回到底部
+      userHoldRef.current = true;        // 这一路都当是用户主动在上翻，直到用户回到底部
       row.scrollIntoView({ block: "center", behavior: "smooth" });
       row.classList.add("flash");
       window.setTimeout(() => row.classList.remove("flash"), 1800);
@@ -1681,8 +1681,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   }, [paused]);
 
   /**
-   * 事件总线：服务端推下来的「她那边有新动静」——空闲（没有在飞处理单、页面可见）时
-   * 立刻做**增量**拉取，把「她回的话 / 主动说的话」从 2.5~10s 的轮询退避提前到事件到达。
+   * 事件总线：服务端推下来的「联系人那边有新动静」——空闲（没有在飞处理单、页面可见）时
+   * 立刻做**增量**拉取，把「联系人回的话 / 主动说的话」从 2.5~10s 的轮询退避提前到事件到达。
    * 一轮在飞时由 watch 那拍负责消息列表，这里整拍跳过，避免两个轮询者打架。
    * 只拉自己这一屏的联系人（作用域与 send/读光口同一套 cid ?? msgScope）；
    * 全量重绘仍归 watch / 编辑那些显式动作，总线只补增量那一小块。
@@ -2366,19 +2366,19 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           <summary>{n.items.length} 条已被编辑取代 · 展开</summary>
           <div className="body">
             {n.items.map((m) => (
-              <div key={m.id} className={"msg-row " + (m.role === "user" ? "me" : "her") + " gap"}>
+              <div key={m.id} className={"msg-row " + (m.role === "user" ? "me" : "contact") + " gap"}>
                 <div className="bubble">{m.text}</div>
               </div>
             ))}
           </div>
         </details>
       );
-      /* 她正在写的这一句。按纯文本渲染、不走 Markdown：半截的 ** 或代码围栏解析出来
+      /* 联系人正在写的这一句。按纯文本渲染、不走 Markdown：半截的 ** 或代码围栏解析出来
          就是乱码，定稿那一拍由真气泡按 Markdown 重画。光标一直在：轮询是一跳一跳的，
          没有它每次跳完就是 1 秒死区，看着像卡住。本轮气泡一上屏（draftRetired）草稿就
          退场，剩下的"还有话要来"回到三个点。位置见 nodes：跟着它那一轮走。 */
       case "draft": return (
-        <div key="draft" className="msg-row her gap" id="typingRow">
+        <div key="draft" className="msg-row contact gap" id="typingRow">
           <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} />
           <div className="bubble">
             {streamReasoning !== "" && (
@@ -2468,7 +2468,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             /* 头像列照常渲染：编辑框是「顶替这一条气泡」的，缺了头像列就会
                比周围气泡横移半个头像宽，看起来像跳了一格。
                data-id 也不能少——进入编辑态要靠它把这一条滚进视口。 */
-            <div key={m.id} className={"msg-row editing gap " + (mine ? "me" : "her")} data-id={m.id}>
+            <div key={m.id} className={"msg-row editing gap " + (mine ? "me" : "contact")} data-id={m.id}>
               {!mine && <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} />}
               <div className="editbox">
                 <div className="editbox-head">
@@ -2570,7 +2570,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             <div className="who">{characterName}</div>
             <div className="sub">
               <span className={"dot " + chatStatus.tone} id="dot" />
-              {/* 演示模式是首启用户第一眼看到的状态——不给出口，他就只能去翻文档。
+              {/* 演示模式是首启用户第一眼看到的状态——不给出口，用户就只能去翻文档。
                   who-wrap 整块是 pointer-events:none（居中标题不吃点击），所以这里单独放开这一行。 */}
               {modelReady === false && onOpenModelSettings ? (
                 <button type="button" className="ctx-link stat-link" id="stat" onClick={onOpenModelSettings}>
@@ -2679,7 +2679,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             <span className="lb"><FileDown size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />导出人格文档</span>
             <span className="nt">导出一个文件</span>
           </button>
-          {/* 内置小茉也能归档（她要删得先走这一步冷却期）；只有助手的工作区不该出现这个入口——
+          {/* 内置小茉也能归档（联系人要删得先走这一步冷却期）；只有助手的工作区不该出现这个入口——
               后端也拒，但那是一句点了才看得到的报错。 */}
           {!(String(msgScope ?? "").startsWith("assistant")) && (
             <button type="button" className="danger" onClick={(e) => {
@@ -2763,7 +2763,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         )}
       </div>
 
-      {/* 回到消息底部：往上翻历史时她回了一句，从前没有任何信号——人得自己滚下来找。
+      {/* 回到消息底部：往上翻历史时联系人回了一句，从前没有任何信号——人得自己滚下来找。
           带条数就是微信那个「↓ 1 条新消息」的手感。 */}
       {!atBottom && loaded && msgs.length > 0 && (
         <button type="button" className="to-bottom" aria-label="回到最新消息" title="回到最新消息"
@@ -2845,7 +2845,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               e.preventDefault();
               // 与「发送」按钮同一道闸门（disabled={busy || transcribing}）：撤回/删除/编辑
               // 进行中不该并发再发一条，转写没回来时也不该把草稿清掉。
-              // 注意这里**故意不管 typing**：她还在回话时按 Enter = barge-in 打断重来，
+              // 注意这里**故意不管 typing**：联系人还在回话时按 Enter = barge-in 打断重来，
               // 那是设计好的行为（见 send() 里 pendingTurnRef 那段），别顺手加进来把它杀掉。
               if (busy || transcribing || voiceBusy) return;
               submitDraft();
@@ -3083,7 +3083,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                       <b>{Math.round((c.used / c.limit) * 100)}%</b>
                       <span>已使用 {fmtTokens(c.used)} / {fmtTokens(c.limit)}</span>
                     </div>
-                    {/* 轮不是条：一轮 = 他问一次 + 她答一次（可能分好几条气泡）。
+                    {/* 轮不是条：一轮 = 用户问一次 + 联系人答一次（可能分好几条气泡）。
                         总量与"当前带入"分开给，截断/丢弃才看得明白。 */}
                     <div className="ctx-pop-turns">
                       一共聊了 {c.totalTurns ?? "—"} 轮 · 带上最近 {c.turns ?? "—"} 轮

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { AudioLines, ChevronDown, File, Film, FolderInput, FolderOpen, Image as ImageIcon, MessageCircle, Pencil, Search, Shapes, Smile, Sparkles, Star, Trash2, Upload, User, X } from "lucide-react";
+import { AudioLines, ChevronDown, File, Film, FolderInput, FolderOpen, Image as ImageIcon, ImageOff, MessageCircle, Pencil, Search, Shapes, Smile, Sparkles, Star, Trash2, Upload, User, X } from "lucide-react";
 import { artifactApi, assetsApi, contactsApi, emotesApi, type Asset, type AssetKindFilter, type AssetView, type EmoteNamedFilter, type EmotePackCount, type NamingJob, type NamingStats } from "../api";
 import { pickDirectory } from "../lib/native-dialog";
 import EmoteSemanticsModal from "./EmoteSemanticsModal";
@@ -13,7 +13,7 @@ import { useDismiss } from "../hooks/useDismiss";
 import type { PanelAria } from "./Tabs";
 
 /**
- * 媒体库：她有过、收到过、画过的东西都在这一页。
+ * 媒体库：联系人有过、收到过、画过的东西都在这一页。
  *
  * 这一页取代了原来那两处内容浏览实现（设置里「表情」的网格、联系人页的「媒体」面板）。
  * 它们本来就在做同一件事——列一批 /media 文件、能搜能筛能预览能删——只是各写了一遍，
@@ -53,8 +53,9 @@ const baseName = (path: string): string => path.trim().split(/[\\/]/).filter(Boo
 /** 命名状态筛选。计数的真源是 /api/assets 的 naming，不在前端另算一遍。 */
 const NAMED_FILTERS: Array<{ key: EmoteNamedFilter; label: string; hint: string }> = [
   { key: "unnamed", label: "未命名", hint: "还没有名称，对话中检索不到这些" },
-  { key: "auto", label: "智能命名", hint: "由图片理解模型识别出来的名字" },
-  { key: "manual", label: "手动维护", hint: "你自己写或改过的名字（重新识别会覆盖它们）" },
+  { key: "file", label: "文件命名", hint: "导入文件夹时从文件名直接读取，没有调用图片理解模型" },
+  { key: "auto", label: "智能识别", hint: "由图片理解模型识别出来的名字" },
+  { key: "manual", label: "手动维护", hint: "你在语义卡里手写或改过的名字（重新识别会覆盖它们）" },
 ];
 
 /** 来源的中文说法。unclaimed 不叫「未知」——对用户来说它是「还没归类的东西」，别用系统词。 */
@@ -98,6 +99,74 @@ function emptyCopyFor(view: AssetView, kind: AssetKindFilter, who: string): stri
   return "这里还是空的。收到过的、画出的、发过的图都会按时间出现在这一页。";
 }
 
+type FilterMenuOption<T extends string> = {
+  value: T;
+  label: string;
+  count?: number;
+  disabled?: boolean;
+};
+
+/** 统一的自定义下拉：不用原生 select，箭头、文字和计数各有自己的位置。 */
+function FilterMenu<T extends string>({
+  label, value, options, onChange, className = "",
+}: {
+  label: string;
+  value: T;
+  options: FilterMenuOption<T>[];
+  onChange: (value: T) => void;
+  className?: string;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  const [placement, setPlacement] = useState<{ horizontal: "left" | "right"; vertical: "down" | "up" }>({
+    horizontal: "left", vertical: "down",
+  });
+  const rootRef = useRef<HTMLDivElement>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  useDismiss(open, () => setOpen(false), rootRef);
+  const current = options.find((option) => option.value === value);
+
+  const toggle = (): void => {
+    if (open) { setOpen(false); return; }
+    const rect = buttonRef.current?.getBoundingClientRect();
+    if (rect !== undefined) {
+      const popupWidth = 230;
+      const popupHeight = Math.min(300, options.length * 34 + 12);
+      setPlacement({
+        horizontal: rect.left + popupWidth > window.innerWidth - 12 ? "right" : "left",
+        vertical: window.innerHeight - rect.bottom < popupHeight + 12 && rect.top > popupHeight + 12 ? "up" : "down",
+      });
+    }
+    setOpen(true);
+  };
+
+  return (
+    <div className={("ml-menu " + className).trim()} ref={rootRef}>
+      <button ref={buttonRef} type="button" className={"ml-select ml-menu-btn" + (open ? " open" : "")}
+        aria-haspopup="listbox" aria-expanded={open}
+        aria-label={`${label}筛选，当前${current?.label ?? "全部"}`}
+        onClick={toggle}>
+        <span className="ml-menu-label">{label}</span>
+        <span className="ml-menu-value">{current?.label ?? "全部"}</span>
+        {current?.count !== undefined && <span className="content-count">{current.count}</span>}
+        <ChevronDown size={12} className="ml-menu-caret" aria-hidden="true" />
+      </button>
+      {open && (
+        <div className={"ml-menu-pop " + placement.horizontal + " " + placement.vertical} role="listbox" aria-label={label}>
+          {options.map((option) => (
+            <button key={option.value} type="button" role="option" aria-selected={option.value === value}
+              className={"ml-menu-opt" + (option.value === value ? " on" : "")}
+              disabled={option.disabled === true}
+              onClick={() => { if (option.disabled === true) return; onChange(option.value); setOpen(false); }}>
+              <span className="ml-menu-opt-label">{option.label}</span>
+              {option.count !== undefined && <span className="content-count">{option.count}</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function MediaLibrary({
   active = true, contactId = "", who = "该联系人", faceRef = "", onFaceRefChanged, panel, initialView = "all", title, refreshKey = 0,
 }: {
@@ -118,6 +187,16 @@ export default function MediaLibrary({
   const [kind, setKind] = useState<AssetKindFilter>("all");
   const [pack, setPack] = useState("");
   const [named, setNamed] = useState<EmoteNamedFilter>("any");
+  const [missingOnly, setMissingOnly] = useState(false);
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectingAll, setSelectingAll] = useState(false);
+  const [bulkBusy, setBulkBusy] = useState<"" | "star" | "moveEmote">("");
+  const [bulkDone, setBulkDone] = useState(0);
+  const [bulkMoveOpen, setBulkMoveOpen] = useState(false);
+  const [bulkMoveTarget, setBulkMoveTarget] = useState("");
+  const [bulkMoveQuery, setBulkMoveQuery] = useState("");
+  const selectionSeqRef = useRef(0);
   const [packOpen, setPackOpen] = useState(false);
   const [packUp, setPackUp] = useState(false);
   const [packQuery, setPackQuery] = useState("");
@@ -135,7 +214,7 @@ export default function MediaLibrary({
   const [kindCounts, setKindCounts] = useState<Record<AssetKindFilter, number>>({
     all: 0, image: 0, video: 0, audio: 0, file: 0,
   });
-  const [naming, setNaming] = useState<NamingStats>({ total: 0, named: 0, auto: 0, manual: 0 });
+  const [naming, setNaming] = useState<NamingStats>({ total: 0, named: 0, auto: 0, manual: 0, file: 0 });
   const [packs, setPacks] = useState<EmotePackCount[]>([]);
   const [mediaDir, setMediaDir] = useState("");
   const [broken, setBroken] = useState(0);
@@ -145,8 +224,28 @@ export default function MediaLibrary({
   const [confirmDel, setConfirmDel] = useState<Asset | null>(null);
   useDismiss(!!zoom, () => setZoom(null));
 
+  // 选择模式是一个显式状态：浏览时不铺满复选框，退出时一次收起。
+  useEffect(() => {
+    if (!selectionMode) return;
+    const onKey = (event: KeyboardEvent): void => {
+      if (event.key !== "Escape") return;
+      setSelected(new Set());
+      setSelectionMode(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [selectionMode]);
+
+  // 筛选条件一换，旧选择就不该继续偷偷参与批量操作；正在跑的全选请求也一并作废。
+  useEffect(() => {
+    selectionSeqRef.current += 1;
+    setSelected(new Set());
+    setSelectionMode(false);
+    setSelectingAll(false);
+  }, [contactId, view, kind, pack, named, missingOnly, query]);
+
   const fetchPage = useCallback((limit: number, offset: number) =>
-    assetsApi.listAssets({ view, kind, q: query, pack, named, contactId, limit, offset }).then((d) => {
+    assetsApi.listAssets({ view, kind, q: query, pack, named, missing: missingOnly, contactId, limit, offset }).then((d) => {
       setCounts(d.counts);
       setKindCounts(d.kindCounts);
       setNaming(d.naming);
@@ -154,9 +253,9 @@ export default function MediaLibrary({
       setMediaDir(d.mediaDir);
       setBroken(d.stats.broken ?? 0);
       return { rows: d.items, total: d.total };
-    }), [view, kind, query, pack, named, contactId]);
+    }), [view, kind, query, pack, named, missingOnly, contactId]);
   const list = usePagedList<Asset>(fetchPage, {
-    key: contactId + ":" + view + ":" + kind + ":" + pack + ":" + named + ":" + query + ":" + refreshKey,
+    key: contactId + ":" + view + ":" + kind + ":" + pack + ":" + named + ":" + missingOnly + ":" + query + ":" + refreshKey,
     enabled: active,
   });
 
@@ -167,7 +266,7 @@ export default function MediaLibrary({
     if (wake) list.reset();
   }, [active, list]);
 
-  const chooseView = (next: AssetView): void => { setView(next); setKind("all"); setPack(""); setNamed("any"); setNotice(""); setErr(""); setPackOpen(false); };
+  const chooseView = (next: AssetView): void => { setView(next); setKind("all"); setPack(""); setNamed("any"); setMissingOnly(false); setNotice(""); setErr(""); setPackOpen(false); };
   const chooseKind = (next: AssetKindFilter): void => { setKind(next); setNotice(""); setErr(""); };
 
   // 下拉最高约 400px（搜索框 + 260px 列表 + 说明）：下方放不下且上方放得下就向上翻，
@@ -184,6 +283,22 @@ export default function MediaLibrary({
   // 作业在后端跑（一次图片理解调用一张），界面只轮询这一个状态；跑完把列表拉新，
   // 因为名称是这批作业唯一的产出，不拉新就等于让人以为没变。
   const [polling, setPolling] = useState(false);
+
+  // 页面重新打开时先把后台任务接回来：运行中继续轮询，已结束也保留上一轮结果。
+  useEffect(() => {
+    if (!active) return;
+    let cancelled = false;
+    emotesApi.namingStatus()
+      .then((d) => {
+        if (cancelled) return;
+        setJob(d.job);
+        setNaming(d.naming);
+        if (d.job.running) setPolling(true);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [active]);
+
   useEffect(() => {
     if (!polling) return;
     const timer = window.setInterval(() => {
@@ -192,9 +307,11 @@ export default function MediaLibrary({
           setJob(d.job); setNaming(d.naming);
           if (!d.job.running) {
             setPolling(false);
-            // 跑完就把「已开始识别…」那条撤掉：概览条已经写着上一轮结果，
-            // 留着启动文案会让人以为还在跑（用户截图里就是这条没消失）。
-            setNotice("");
+            // 用完成回执替换启动文案；切到别的视角时也能知道后台任务已经结束。
+            const handled = d.job.named + d.job.failed;
+            setNotice(handled > 0
+              ? `智能识别完成：成功 ${d.job.named} 张${d.job.failed > 0 ? `，失败 ${d.job.failed} 张` : ""}。`
+              : "");
           }
         })
         .catch(() => setPolling(false));
@@ -220,15 +337,19 @@ export default function MediaLibrary({
 
   const runNaming = async (options: { force?: boolean; only?: string[] } = {}): Promise<void> => {
     setErr(""); setNotice("");
+    // 起跑前是否在跑，决定这句回执怎么说：往正在跑的作业后面追加，不该报成「新起了一轮」。
+    const wasRunning = job?.running === true;
     try {
       const d = await emotesApi.startNaming(options);
       setJob(d.job);
       setNaming(d.naming);
       if (d.job.running) {
         setPolling(true);
-        setNotice(d.started
-          ? `已开始识别，共 ${d.job.total} 张（后台运行）。`
-          : `识别正在进行，共 ${d.job.total} 张。`);
+        setNotice(!wasRunning
+          ? `已开始智能识别，共 ${d.job.total} 张（后台运行）。`
+          : d.queued > 0
+            ? `已排进当前任务，队列里共 ${d.job.total} 张。`
+            : "这些张已经在队列里了，不重复识别。");
       } else if (!d.started) {
         setNotice(d.reason ?? "任务未启动。");
       }
@@ -255,7 +376,7 @@ export default function MediaLibrary({
     if (file === undefined) return;
     setAdding("upload");
     emotesApi.upload(file)
-      .then(() => { setNotice("已加入。这张还未命名——点「智能识别」补个名字，她才能在对话里找到它。"); list.reset(); })
+      .then(() => { setNotice("已加入。这张还未命名——点「智能识别」补个名字，聊天时才能找到它。"); list.reset(); })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => { setAdding(""); if (fileRef.current) fileRef.current.value = ""; });
   };
@@ -266,7 +387,15 @@ export default function MediaLibrary({
     setAdding("import");
     emotesApi.importDir(picked.path)
       .then((r) => {
-        setNotice(`已导入 ${r.added} 张到「${baseName(picked.path)}」${r.skipped > 0 ? `，跳过 ${r.skipped} 张重复` : ""}。未命名的点「智能识别」补名。`);
+        const folder = baseName(picked.path);
+        const dropped = r.skippedFiles.slice(0, 3).map((f) => `${f.name}（${f.reason}）`).join("、");
+        const tail = r.skipped > 0
+          ? `；${r.skipped} 张没进来${dropped === "" ? "" : `：${dropped}${r.skippedFiles.length > 3 ? "…" : ""}`}`
+          : "";
+        // 少图是要人逐条核对的（超上限、格式读不出都得看见文件名），走 warn 那一档多停 2 秒；
+        // 但文案先讲"已导入"，不把部分成功渲染成故障。
+        if (r.skipped > 0) setErr(`已导入 ${r.added} 张到「${folder}」${tail}。`);
+        else setNotice(`已导入 ${r.added} 张到「${folder}」。未命名的点「智能识别」补名。`);
         list.reset();
       })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
@@ -314,14 +443,42 @@ export default function MediaLibrary({
     list.reset();
   };
 
-  /** 弹窗里的单张识别：不关窗、把写回的字段交还弹窗原地展示（识别完就消失会让人以为没发生）。 */
-  const renameOne = async (): Promise<{ label: string; caption: string; tags: string[] } | null> => {
-    if (edit === null) return null;
-    const r = await emotesApi.renameOne(edit.id);
-    if (r.ok !== true) throw new Error(r.error ?? "这一张识别失败");
-    list.reset();
-    return { label: r.name, caption: r.caption, tags: r.tags };
-  };
+/** 弹窗里那颗「智能识别」：排进当前队列，等这一张的结果行出现（不另起一条作业，
+ *  所以整库跑着时它排在后面，进度条和「查看进度」都看得见它）。
+ *  关窗不打断——作业在后台跑，状态条接着显示；这里只是不再回填。 */
+const jobRef = useRef<NamingJob | null>(null);
+useEffect(() => { jobRef.current = job; }, [job]);
+const [renameHint, setRenameHint] = useState("");
+const renameOne = async (): Promise<{ label: string; caption: string; tags: string[] } | null> => {
+  if (edit === null) return null;
+  const id = edit.id;
+  let running = true;
+  try {
+    const d = await emotesApi.startNaming({ only: [id], force: true });
+    setJob(d.job); setNaming(d.naming);
+    if (!d.started) throw new Error(d.reason ?? "任务未启动。");
+    running = d.job.running;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      const j = await emotesApi.namingStatus();
+      setJob(j.job); setNaming(j.naming);
+      running = j.job.running;
+      const line = j.job.results.find((r) => r.id === id);
+      if (line !== undefined) {
+        if (line.error !== "") throw new Error(line.error);
+        list.reset();
+        return { label: line.name, caption: line.caption, tags: line.tags };
+      }
+      if (!j.job.running) throw new Error("这一张没有识别结果，再点一次「智能识别」。");
+      const ahead = Math.max(0, j.job.total - j.job.done - 1);
+      setRenameHint(ahead > 0 ? `排队中，前面还有 ${ahead} 张` : `正在识别这一张（${j.job.done}/${j.job.total}）`);
+    }
+  } catch (error) {
+    throw error instanceof Error ? error : String(error);
+  } finally {
+    if (running) setPolling(true); else setRenameHint("");
+  }
+};
 
   /** 一次动作：乐观失败要如实显示，不静默。 */
   const act = async (a: Asset, op: "markEmote" | "unmarkEmote" | "dropMissing" | "star" | "unstar"): Promise<void> => {
@@ -374,26 +531,159 @@ export default function MediaLibrary({
   };
 
   const rows = list.page?.rows ?? [];
+  const selectedIds = [...selected];
+  const totalInScope = list.page?.total ?? 0;
+  const allFilteredSelected = totalInScope > 0 && selected.size === totalInScope;
+  const toggleSelected = (id: string): void => {
+    setSelected((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+  /** 全选不是只选屏幕上的 25 张：按当前筛选翻完接口，拿到全部 id 后再一次选中。 */
+  const selectAllFiltered = async (): Promise<void> => {
+    if (totalInScope === 0 || selectingAll) return;
+    setSelectionMode(true);
+    const seq = selectionSeqRef.current;
+    setSelectingAll(true);
+    setErr("");
+    try {
+      const ids = new Set<string>();
+      for (let offset = 0; offset < totalInScope; offset += 100) {
+        const d = await assetsApi.listAssets({
+          view, kind, q: query, pack, named, missing: missingOnly, contactId, limit: 100, offset,
+        });
+        for (const a of d.items) ids.add(a.id);
+        if (d.items.length === 0) break;
+      }
+      if (selectionSeqRef.current !== seq) return;
+      setSelected(ids);
+      setNotice(`已选中当前筛选下的全部 ${ids.size} 张。`);
+    } catch (error) {
+      if (selectionSeqRef.current === seq) setErr(error instanceof Error ? error.message : String(error));
+    } finally {
+      if (selectionSeqRef.current === seq) setSelectingAll(false);
+    }
+  };
+  const runSelectedNaming = async (): Promise<void> => {
+    if (selectedIds.length === 0) return;
+    // only 已经限定到勾选集合；force 让已有点击名也能重认，否则后台会按「已命名」跳过。
+    await runNaming({ only: selectedIds, force: true });
+  };
+
+  /** 收藏/移动是本地资产操作：分小批并发，522 张也不会一次性打满服务端。 */
+  const runBulkAssetAction = async (
+    op: "star" | "moveEmote",
+    extra?: { pack?: string[] },
+  ): Promise<void> => {
+    const ids = [...selected];
+    if (ids.length === 0 || bulkBusy !== "") return;
+    setBulkBusy(op);
+    setBulkDone(0);
+    setErr("");
+    const failed: string[] = [];
+    const chunkSize = 12;
+    try {
+      for (let offset = 0; offset < ids.length; offset += chunkSize) {
+        const chunk = ids.slice(offset, offset + chunkSize);
+        const results = await Promise.allSettled(
+          chunk.map((id) => assetsApi.assetAction(op, id, extra)),
+        );
+        results.forEach((result, index) => {
+          if (result.status === "rejected" || result.value.ok === false) failed.push(chunk[index]!);
+        });
+        setBulkDone(Math.min(ids.length, offset + chunk.length));
+      }
+      list.reset();
+      if (failed.length > 0) {
+        setSelected(new Set(failed));
+        setSelectionMode(true);
+        setErr(`${ids.length - failed.length} 张已处理，${failed.length} 张失败。失败项已保留选中。`);
+      } else {
+        const target = extra?.pack?.[0] ?? "";
+        setSelected(new Set());
+        setSelectionMode(false);
+        setNotice(op === "star"
+          ? `已收藏 ${ids.length} 张表情。`
+          : `已把 ${ids.length} 张表情移到「${target}」。`);
+      }
+    } catch (error) {
+      setErr(error instanceof Error ? error.message : String(error));
+    } finally {
+      setBulkBusy("");
+    }
+  };
+
+  const openBulkMove = (): void => {
+    const firstOther = packs.find((p) => p.pack !== pack)?.pack;
+    setBulkMoveTarget(firstOther ?? packs[0]?.pack ?? "默认");
+    setBulkMoveQuery("");
+    setBulkMoveOpen(true);
+  };
   const activeView = VIEWS.find((v) => v.key === view) ?? VIEWS[0]!;
   // 选中文件夹时，命名状态 chips 的数字跟着文件夹走：全库数字不随筛选变，
   // 会被读成「筛选坏了」（2026-11-02 用户实测：未命名 0 × 鲸鱼娘·静态 89 → 空网格 + 数字不动）。
   const packRow = pack === "" ? undefined : packs.find((p) => p.pack === pack);
   const scopeCounts = packRow === undefined
-    ? { unnamed: naming.total - naming.named, auto: naming.auto, manual: naming.manual }
-    : { unnamed: packRow.unnamed, auto: packRow.auto, manual: packRow.manual };
+    ? { unnamed: naming.total - naming.named, file: naming.file, auto: naming.auto, manual: naming.manual }
+    : { unnamed: packRow.unnamed, file: packRow.file, auto: packRow.auto, manual: packRow.manual };
+  const scopeTotal = packRow?.total ?? naming.total;
+  const namedOptions: FilterMenuOption<EmoteNamedFilter>[] = [
+    { value: "any", label: "全部", count: scopeTotal },
+    ...NAMED_FILTERS.map((f) => ({
+      value: f.key,
+      label: f.label,
+      count: f.key === "unnamed" ? scopeCounts.unnamed
+        : f.key === "file" ? scopeCounts.file
+          : f.key === "auto" ? scopeCounts.auto : scopeCounts.manual,
+    })),
+  ];
+  const kindOptions: FilterMenuOption<AssetKindFilter>[] = KINDS.map((f) => ({
+    value: f.key,
+    label: f.label,
+    count: kindCounts[f.key] ?? 0,
+    disabled: f.key !== "all" && (kindCounts[f.key] ?? 0) === 0,
+  }));
+  const moveFolders = Array.from(new Set(["默认", ...packs.map((p) => p.pack)])).filter(Boolean);
   const activeFilters: string[] = [];
   if (query.trim() !== "") activeFilters.push(`“${query.trim()}”`);
   if (view === "emote" && named !== "any") {
     activeFilters.push(NAMED_FILTERS.find((f) => f.key === named)?.label ?? named);
   }
   if (view === "emote" && pack !== "") activeFilters.push(`文件夹「${pack}」`);
+  if (view === "emote" && missingOnly) activeFilters.push("仅失效");
   if (kind !== "all") activeFilters.push(KIND_LABELS[kind as Asset["kind"]] ?? kind);
+  const activeFilterChips: Array<{ key: string; label: string; clear: () => void }> = [];
+  if (view === "emote" && named !== "any") {
+    activeFilterChips.push({
+      key: "named",
+      label: NAMED_FILTERS.find((f) => f.key === named)?.label ?? named,
+      clear: () => setNamed("any"),
+    });
+  }
+  if (view === "emote" && pack !== "") {
+    activeFilterChips.push({ key: "pack", label: `文件夹：${pack}`, clear: () => setPack("") });
+  }
+  if (view === "emote" && missingOnly) {
+    activeFilterChips.push({ key: "missing", label: "仅失效", clear: () => setMissingOnly(false) });
+  }
+  if (kind !== "all") {
+    activeFilterChips.push({ key: "kind", label: KIND_LABELS[kind as Asset["kind"]] ?? kind, clear: () => setKind("all") });
+  }
+  const unnamedCount = Math.max(0, naming.total - naming.named);
+  const namingProgress = job !== null && job.total > 0
+    ? Math.min(100, Math.round((job.done / job.total) * 100))
+    : 0;
   // 旧后端可能不带 results 字段：读不到就当空，别让一个可选字段把整页渲染崩掉。
   const jobResults = job?.results ?? [];
+  const failedResults = jobResults.filter((r) => r.error !== "");
+  const successResults = jobResults.filter((r) => r.error === "");
+  const showNamingStatus = view === "emote" || job?.running === true;
   const EmptyIcon = kind === "audio" ? AudioLines : kind === "video" ? Film : view === "chat" ? MessageCircle : ImageIcon;
 
   return (
-    <div className="card card-pad media-library" {...panel}>
+    <div className={"card card-pad media-library" + (view === "emote" ? " media-library-emote" : "")} {...panel}>
       {title !== undefined && (
         <>
           <div className="pf-set-title"><span>{title}</span></div>
@@ -405,208 +695,211 @@ export default function MediaLibrary({
         </>
       )}
 
-      <div className="content-filters" role="group" aria-label="视角">
-        {VIEWS.map((v) => (
-          <button key={v.key} type="button" className={"chip" + (view === v.key ? " on" : "")}
-            title={v.hint} aria-pressed={view === v.key} onClick={() => chooseView(v.key)}>
-            {v.label}<span className="content-count">{counts[v.key] ?? 0}</span>
-          </button>
-        ))}
+      <div className="ml-view-row">
+        <div className="ml-views" role="tablist" aria-label="媒体视角">
+          {VIEWS.map((v) => (
+            <button key={v.key} type="button" role="tab" className={"ml-view-tab" + (view === v.key ? " on" : "")}
+              title={v.hint} aria-selected={view === v.key} onClick={() => chooseView(v.key)}>
+              <span>{v.label}</span>
+              <span className="ml-view-count">{counts[v.key] ?? 0}</span>
+            </button>
+          ))}
+        </div>
+        {view === "emote" && contactId === "" && (
+          <div className="ml-add-actions">
+            <button type="button" className="btn sm" disabled={adding !== ""} onClick={() => fileRef.current?.click()}>
+              <Upload size={13} /> {adding === "upload" ? "上传中…" : "上传图片"}
+            </button>
+            <button type="button" className="btn sm" disabled={adding !== ""} onClick={() => { void onImportDir(); }}>
+              <FolderInput size={13} /> {adding === "import" ? "导入中…" : "导入文件夹"}
+            </button>
+            <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden
+              onChange={(e) => onPickFile(e.target.files?.[0])} />
+          </div>
+        )}
       </div>
 
-      {/* 搜索框单独一行：它和类型 chips 挤在同一条横向滚动带里时，窄屏上会被卷掉半个
-          （实测 420px 下输入框左边缘在 -1px，主控件看不见也没法点）。 */}
-      <div className="content-search-row">
-        <span className="emote-search media-search">
+      <div className="ml-tools">
+        <span className="emote-search media-search ml-search">
           <Search size={14} style={{ flexShrink: 0, opacity: 0.5 }} />
-          {/* 占位文案要短：这一行还要放类型 chips，写长了会被截断成半句话。 */}
           <input value={query} onChange={(e) => setQuery(e.target.value)}
-            placeholder={`搜${activeView.label}`} title={`按名字或标签搜索${activeView.label}`}
+            placeholder="搜索名字、标签或文件夹" title={`按名字或标签搜索${activeView.label}`}
             aria-label={`搜索${activeView.label}`} />
           {query !== "" && (
-            <button type="button" className="emote-search-clear" aria-label="清除" onClick={() => setQuery("")}>×</button>
+            <button type="button" className="emote-search-clear" aria-label="清除搜索" onClick={() => setQuery("")}>×</button>
           )}
         </span>
+
+        {view === "emote" ? (
+          <>
+            <FilterMenu label="命名" value={named} options={namedOptions}
+              onChange={(next) => { setMissingOnly(false); setNamed(next); }} />
+
+            <div className="ml-pack-picker" ref={packRef}>
+              <button type="button" className={"ml-select ml-pack-btn" + (pack !== "" ? " on" : "")}
+                aria-expanded={packOpen} aria-haspopup="listbox"
+                title="按文件夹筛选；每个文件夹都能直接在文件管理器里打开"
+                onClick={togglePack}>
+                <FolderOpen size={13} aria-hidden="true" />
+                <span className="ml-pack-name">{pack === "" ? "全部文件夹" : pack}</span>
+                <span className="content-count">{pack === "" ? naming.total : (packs.find((p) => p.pack === pack)?.total ?? 0)}</span>
+                <ChevronDown size={12} className={"ml-pack-caret" + (packOpen ? " on" : "")} aria-hidden="true" />
+              </button>
+              {packOpen && (
+                <div className={"ml-pack-pop" + (packUp ? " up" : "")}>
+                  <input value={packQuery} onChange={(e) => setPackQuery(e.target.value)}
+                    placeholder="搜文件夹名" aria-label="搜文件夹名" />
+                  <button type="button" className={"ml-pack-opt" + (pack === "" ? " on" : "")}
+                    onClick={() => { setPack(""); setMissingOnly(false); setPackOpen(false); }}>
+                    <span className="ml-pack-name">全部文件夹</span>
+                    <span className="content-count">{naming.total}</span>
+                  </button>
+                  <div className="ml-pack-list" role="listbox" aria-label="文件夹列表">
+                    {packs.filter((p) => packQuery.trim() === "" || p.pack.includes(packQuery.trim())).map((p) => (
+                      <div key={p.pack} className="ml-pack-row">
+                        <button type="button" className={"ml-pack-opt" + (pack === p.pack ? " on" : "")}
+                          title={p.unnamed > 0 ? `${p.pack}：${p.total} 张，其中 ${p.unnamed} 张未命名` : `${p.pack}：${p.total} 张`}
+                          onClick={() => { setPack(pack === p.pack ? "" : p.pack); setMissingOnly(false); setPackOpen(false); }}>
+                          <span className="ml-pack-name">{p.pack}</span>
+                          <span className="content-count">{p.total}</span>
+                        </button>
+                        {DESKTOP && (
+                          <button type="button" className="art-act ml-pack-open"
+                            aria-label={`在文件管理器中打开 ${p.pack}`}
+                            title={`在文件管理器中打开「${p.pack}」文件夹`}
+                            onClick={() => openFolderNamed(`${EMOTE_ROOT}/${p.pack}`)}>
+                            <FolderOpen size={13} strokeWidth={1.9} />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {broken > 0 && (
+              <button type="button" className={"chip ml-broken-chip" + (missingOnly ? " on" : "")}
+                aria-pressed={missingOnly}
+                title="只显示原图已不在磁盘上的表情；把文件放回原文件夹会自动恢复"
+                onClick={() => {
+                  const next = !missingOnly;
+                  setMissingOnly(next);
+                  if (next) { setNamed("any"); setPack(""); setQuery(""); }
+                }}>
+                失效<span className="content-count">{broken}</span>
+              </button>
+            )}
+
+            {selectionMode && (
+              <button type="button" className="chip ml-select-all-btn"
+                title="勾选当前筛选下的全部素材，不受已加载页数限制"
+                disabled={rows.length === 0 || selectingAll || list.refreshing}
+                onClick={() => { if (allFilteredSelected) setSelected(new Set()); else void selectAllFiltered(); }}>
+                {selectingAll ? "选择中…" : list.refreshing ? "更新中…" : allFilteredSelected ? "取消全选" : `全选 ${totalInScope}`}
+              </button>
+            )}
+
+            <button type="button" className={"chip ml-select-mode" + (selectionMode ? " on" : "")}
+              aria-pressed={selectionMode}
+              onClick={() => {
+                if (selectionMode) { setSelected(new Set()); setSelectionMode(false); }
+                else setSelectionMode(true);
+              }}>
+              {selectionMode ? "完成" : "选择"}
+            </button>
+          </>
+        ) : (
+          <FilterMenu label="类型" value={kind} options={kindOptions} onChange={chooseKind} />
+        )}
       </div>
 
-      {/* 类型筛选只在非表情视角出现：表情包全是图片，那一排「视频 0 / 语音 0 / 文件 0」
-          在这个视角里是纯噪声，还会和命名状态、文件夹挤成三排 chips。 */}
-      {view !== "emote" && (
-        <div className="content-filters content-kind-filters" role="group" aria-label="类型">
-          {KINDS.map((f) => {
-            const count = kindCounts[f.key] ?? 0;
-            return (
-              <button key={f.key} type="button" className={"chip" + (kind === f.key ? " on" : "")}
-                title={f.hint} disabled={f.key !== "all" && count === 0} aria-pressed={kind === f.key}
-                onClick={() => chooseKind(f.key)}>
-                {f.key === "image" && <ImageIcon size={13} />}
-                {f.key === "video" && <Film size={13} />}
-                {f.key === "audio" && <AudioLines size={13} />}
-                {f.key === "file" && <File size={13} />}
-                {f.label}<span className="content-count">{count}</span>
-              </button>
-            );
-          })}
+      {activeFilterChips.length > 0 && (
+        <div className="ml-active-filters" aria-label="已启用筛选">
+          <span className="ml-active-label">筛选</span>
+          {activeFilterChips.map((f) => (
+            <button key={f.key} type="button" className="ml-filter-chip" onClick={f.clear}>
+              {f.label}<X size={11} aria-hidden="true" />
+            </button>
+          ))}
+          <button type="button" className="ml-clear-filters"
+            onClick={() => { setNamed("any"); setPack(""); setMissingOnly(false); setKind("all"); }}>
+            清除
+          </button>
         </div>
       )}
 
       {list.error !== "" && <div className="pf-error">{list.error}</div>}
 
-      {/* 表情视角特有的两块：识别进度 + 文件夹筛选。别的视角不放，因为它们管的就是表情包。 */}
-      {view === "emote" && (
-        <div className="ml-naming">
-          <div className="ml-naming-copy">
-            <Sparkles size={14} aria-hidden="true" />
-            {naming.total === 0 ? (
-              <span>还没有可识别的表情。在任意视角点卡片上的笑脸，把要用的图加进来。</span>
-            ) : (
-              <span>
-                共 <b>{naming.total}</b> 张：智能命名 <b>{naming.auto}</b> · 手动维护 <b>{naming.manual}</b>
-                {naming.total - naming.named > 0
-                  ? <> · <b className="warn">{naming.total - naming.named} 张未命名</b>（未命名的在对话中检索不到）</>
-                  : "（都已命名）"}
-                {broken > 0
-                  ? <> · <b className="warn">失效 {broken}</b>（原图不在盘上，放回文件夹即恢复）</>
-                  : ""}
-              </span>
-            )}
-            {job !== null && job.running && (
-              <span className="ml-naming-progress">
-                识别中 {job.done}/{job.total}
-                {job.failed > 0 ? ` · ${job.failed} 张失败` : ""}
-                {job.throttleMs > 0 ? " · 服务商限流，已自动降速" : ""}
-                {job.current !== "" ? ` · 当前 ${job.current}` : ""}
-              </span>
-            )}
-            {job !== null && !job.running && job.total > 0 && (
-              <button type="button" className="ml-naming-toggle" aria-expanded={showResults}
-                onClick={() => setShowResults((v) => !v)}>
-                上一轮结果：成功 {job.named} / 共 {job.total}{job.failed > 0 ? ` · 失败 ${job.failed}` : ""}
-              </button>
-            )}
-          </div>
-          <div className="ml-naming-acts">
-            {contactId === "" && (
-              <>
-                <button type="button" className="btn sm" disabled={adding !== ""} onClick={() => fileRef.current?.click()}>
-                  <Upload size={13} /> {adding === "upload" ? "上传中…" : "上传图片"}
-                </button>
-                <button type="button" className="btn sm" disabled={adding !== ""} onClick={() => { void onImportDir(); }}>
-                  <FolderInput size={13} /> {adding === "import" ? "导入中…" : "导入文件夹"}
-                </button>
-                <input ref={fileRef} type="file" accept="image/png,image/jpeg,image/webp,image/gif" hidden
-                  onChange={(e) => onPickFile(e.target.files?.[0])} />
-              </>
-            )}
-            {naming.total > 0 && (
-              <button type="button" className="btn sm" disabled={job !== null && job.running}
-                title="打开识别结果与文件夹管理：看每张识别成了什么、哪几张要重试"
-                onClick={() => { setShowResults((v) => !v); }}>
-                识别详情
-              </button>
-            )}
-            {naming.named < naming.total && (
-              <button type="button" className="primary sm" disabled={job !== null && job.running}
-                title="逐张调用图片理解模型，生成名称、适用场景与标签并写入库；只处理未命名的那些，中断后可继续"
-                onClick={() => { void runNaming(); }}>
-                <Sparkles size={13} /> {job !== null && job.running ? "识别中" : "智能识别"}
-              </button>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* 识别详情：本轮逐张结果（失败的排前面，能直接只重试那几张）+ 文件夹管理。
-          这两个都是「机器做过的事要能被查、能被改」的那一半——没有它们，
-          用户只能看到一排名字，不知道哪些是猜的、哪些没猜动。 */}
-      {view === "emote" && showResults && jobResults.length > 0 && (
-        <div className="ml-results">
-          <div className="ml-results-head">
-            <span>上一轮逐张结果（{jobResults.length} 条，失败的排在前面）</span>
-            {job !== null && job.failed > 0 && (
-              <button type="button" className="btn sm" disabled={job.running}
-                onClick={() => { void retryFailed(); }}>只重试失败的 {job.failed} 张</button>
-            )}
-          </div>
-          <ul className="ml-results-list">
-            {jobResults.slice(0, 60).map((r) => (
-              <li key={r.id + r.file} className={r.error !== "" ? "bad" : ""}>
-                <code>{r.file}</code>
-                {r.error !== ""
-                  ? <span className="ml-result-reason">{r.error}</span>
-                  : <span className="ml-result-name">{r.name}</span>}
-              </li>
-            ))}
-          </ul>
-        </div>
-      )}
-
-      {/* 表情包视角的筛选收成一行：命名状态（3 个值，用 chips）+ 文件夹（几十个值，用下拉）。
-          文件夹曾经是一整面 chips 墙，和类型、状态混在一起分不清哪个是分类哪个是标签——
-          维度多的筛选就该收进一个控件里，而不是摊在页面上。 */}
-      {view === "emote" && (
-        <div className="ml-toolbar">
-          <div className="ml-toolbar-chips" role="group" aria-label="命名状态">
-            {NAMED_FILTERS.map((f) => (
-              <button key={f.key} type="button" className={"chip" + (named === f.key ? " on" : "")}
-                aria-pressed={named === f.key} title={f.hint} onClick={() => setNamed(named === f.key ? "any" : f.key)}>
-                {f.label}
-                <span className="content-count">
-                  {f.key === "unnamed" ? scopeCounts.unnamed : f.key === "auto" ? scopeCounts.auto : scopeCounts.manual}
+      {showNamingStatus && (
+        <>
+          <div className="ml-status" role="status">
+            <div className="ml-status-main">
+              <Sparkles size={13} aria-hidden="true" />
+              {naming.total === 0 ? (
+                <span>还没有可识别的表情。上传或导入后，可以在这里让模型补名称。</span>
+              ) : (
+                <>
+                  <span><b>{naming.total}</b> 张表情</span>
+                  <span className="ml-status-sep">·</span>
+                  <span>{naming.named} 已命名</span>
+                  {unnamedCount > 0 && <span className="ml-status-warn">{unnamedCount} 张未命名</span>}
+                  {broken > 0 && (
+                    <button type="button" className="ml-status-warn ml-linkish"
+                      title="只显示原图已不在磁盘上的表情"
+                      onClick={() => { setMissingOnly(true); setNamed("any"); setPack(""); setQuery(""); }}>
+                      失效 {broken}
+                    </button>
+                  )}
+                </>
+              )}
+              {job !== null && job.running && (
+                <span className="ml-status-running">
+                  智能识别中 {job.done}/{job.total}
+                  {job.failed > 0 ? ` · 失败 ${job.failed}` : ""}
+                  {job.throttleMs > 0 ? " · 已自动降速" : ""}
+                  {job.current !== "" && <> · <span className="ml-status-current" title={job.current}>{job.current}</span></>}
                 </span>
-              </button>
-            ))}
-          </div>
-          <div className="ml-pack-picker" ref={packRef}>
-            <button type="button" className={"chip ml-pack-btn" + (pack !== "" ? " on" : "")}
-              aria-expanded={packOpen} aria-haspopup="listbox"
-              title="按文件夹筛选；每个文件夹都能直接在文件管理器里打开"
-              onClick={togglePack}>
-              <FolderOpen size={13} aria-hidden="true" />
-              {pack === "" ? "全部文件夹" : pack}
-              <span className="content-count">{pack === "" ? naming.total : (packs.find((p) => p.pack === pack)?.total ?? 0)}</span>
-              <ChevronDown size={12} className={"ml-pack-caret" + (packOpen ? " on" : "")} aria-hidden="true" />
-            </button>
-            {packOpen && (
-              <div className={"ml-pack-pop" + (packUp ? " up" : "")}>
-                <input value={packQuery} onChange={(e) => setPackQuery(e.target.value)}
-                  placeholder="搜文件夹名" aria-label="搜文件夹名" />
-                <button type="button" className={"ml-pack-opt" + (pack === "" ? " on" : "")}
-                  onClick={() => { setPack(""); setPackOpen(false); }}>
-                  <span className="ml-pack-name">全部文件夹</span>
-                  <span className="content-count">{naming.total}</span>
+              )}
+              {job !== null && !job.running && job.named + job.failed > 0 && (
+                <span className={job.failed > 0 ? "ml-status-warn" : "ml-status-done"}>
+                  上次智能识别 {job.named}/{job.total}
+                  {job.failed > 0 ? ` · 失败 ${job.failed}` : " · 完成"}
+                </span>
+              )}
+            </div>
+            <div className="ml-status-actions">
+              {job !== null && !job.running && job.failed > 0 && (
+                <button type="button" className="ml-status-warn ml-linkish" onClick={() => { void retryFailed(); }}>
+                  失败 {job.failed} 张 · 重试
                 </button>
-                <div className="ml-pack-list" role="listbox" aria-label="文件夹列表">
-                  {packs.filter((p) => packQuery.trim() === "" || p.pack.includes(packQuery.trim())).map((p) => (
-                    <div key={p.pack} className="ml-pack-row">
-                      <button type="button" className={"ml-pack-opt" + (pack === p.pack ? " on" : "")}
-                        title={p.unnamed > 0 ? `${p.pack}：${p.total} 张，其中 ${p.unnamed} 张未命名` : `${p.pack}：${p.total} 张`}
-                        onClick={() => { setPack(pack === p.pack ? "" : p.pack); setPackOpen(false); }}>
-                        <span className="ml-pack-name">{p.pack}</span>
-                        <span className="content-count">{p.total}</span>
-                      </button>
-                      {DESKTOP && (
-                        <button type="button" className="art-act ml-pack-open"
-                          aria-label={`在文件管理器中打开 ${p.pack}`}
-                          title={`在文件管理器中打开「${p.pack}」文件夹`}
-                          onClick={() => openFolderNamed(`${EMOTE_ROOT}/${p.pack}`)}>
-                          <FolderOpen size={13} strokeWidth={1.9} />
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+              )}
+              {contactId === "" && (
+                <label className="ml-capture-compact" title="聊天中收到的图片是否自动存入表情库">
+                  <input type="checkbox" checked={autoCapture} disabled={adding !== ""}
+                    onChange={(e) => { toggleCapture(e.target.checked); }} />
+                  自动收录
+                </label>
+              )}
+              {(naming.total > 0 || job !== null) && (
+                <button type="button" className={"ml-naming-detail" + (job?.running === true ? " live" : "")}
+                  aria-expanded={showResults} onClick={() => setShowResults(true)}>
+                  {job?.running === true ? "查看进度" : "识别详情"}
+                </button>
+              )}
+              {unnamedCount > 0 && job?.running !== true && (
+                <button type="button" className="primary sm"
+                  title="逐张调用图片理解模型，生成名称、适用场景与标签并写入库"
+                  onClick={() => { void runNaming(); }}>
+                  <Sparkles size={13} /> 智能识别
+                </button>
+              )}
+            </div>
           </div>
-        </div>
-      )}
-      {view === "emote" && contactId === "" && (
-        <label className="cap-enable ml-capture">
-          <input type="checkbox" checked={autoCapture} disabled={adding !== ""}
-            onChange={(e) => { toggleCapture(e.target.checked); }} />
-          自动收录聊天中收到的图片
-        </label>
+          {job !== null && job.running && (
+            <div className="ml-progress" aria-hidden="true"><span style={{ width: `${namingProgress}%` }} /></div>
+          )}
+        </>
       )}
 
       {list.page !== null && rows.length === 0 && (
@@ -619,7 +912,7 @@ export default function MediaLibrary({
                 条件叠加后为空不代表库是空的——换个条件，或者清掉筛选。
               </p>
               <button type="button" className="btn sm"
-                onClick={() => { setQuery(""); setPack(""); setNamed("any"); setKind("all"); }}>
+                onClick={() => { setQuery(""); setPack(""); setNamed("any"); setMissingOnly(false); setKind("all"); }}>
                 清除筛选
               </button>
             </>
@@ -629,7 +922,7 @@ export default function MediaLibrary({
         </div>
       )}
 
-      <div className="content-grid">
+      <div className={"content-grid" + (view === "emote" ? " content-grid-emote" : "")}>
         {rows.map((a) => {
           const isImage = a.kind === "image";
           const title2 = titleOf(a);
@@ -638,13 +931,26 @@ export default function MediaLibrary({
           // 把 heart-hands 当名字摊给用户看只会让人问「这是什么」。
           const unnamed = a.usableAsEmote && a.emoteLabel === "";
           return (
-            <figure key={a.id} className={"content-cell kind-" + a.kind}>
-              <div className={"content-shot kind-" + a.kind}>
-                {isImage && (
-                  <button type="button" className="content-open" onClick={() => setZoom(a.url)} aria-label={"放大查看" + title2}>
+            <figure key={a.id} className={"content-cell kind-" + a.kind + (selected.has(a.id) ? " selected" : "")}>
+              <div className={"content-shot kind-" + a.kind + (selectionMode ? " selecting" : "")}>
+                {view === "emote" && selectionMode && (
+                  <label className="content-pick" title={"选中 " + (unnamed ? "未命名" : title2) + " 用于批量操作"}>
+                    <input type="checkbox" checked={selected.has(a.id)} onChange={() => toggleSelected(a.id)}
+                      aria-label={"选择 " + (unnamed ? "未命名" : title2)} />
+                  </label>
+                )}
+                {isImage && (a.missing ? (
+                  <div className="content-missing" role="img" aria-label={title2 + "已失效"}>
+                    <ImageOff size={24} strokeWidth={1.6} />
+                    <span>原图不在盘上</span>
+                  </div>
+                ) : (
+                  <button type="button" className="content-open"
+                    onClick={() => { if (selectionMode) toggleSelected(a.id); else setZoom(a.url); }}
+                    aria-label={selectionMode ? `选择 ${title2}` : `放大查看${title2}`}>
                     <img src={a.url} alt={title2} loading="lazy" />
                   </button>
-                )}
+                ))}
                 {a.kind === "video" && (
                   <video className="content-video" src={a.url} controls playsInline preload="metadata" aria-label={title2} />
                 )}
@@ -658,7 +964,7 @@ export default function MediaLibrary({
                 {a.kind === "file" && (
                   <div className="content-file"><File size={30} strokeWidth={1.5} /><b>{a.url.split("/").pop()}</b></div>
                 )}
-                <span className="content-source">{SOURCE_LABELS[a.source] ?? a.source}</span>
+                {view !== "emote" && <span className="content-source">{SOURCE_LABELS[a.source] ?? a.source}</span>}
                 {a.detail.withReference && <span className="content-badge ref"><Shapes size={11} />带参考</span>}
                 {a.usableAsEmote && view !== "emote" && <span className="content-badge face">表情包</span>}
                 {a.missing && <span className="content-badge broken">已失效</span>}
@@ -669,32 +975,12 @@ export default function MediaLibrary({
                   </span>
                 )}
                 {faceRef !== "" && faceRef === a.url && <span className="content-badge face">自拍参考</span>}
-              </div>
-              <figcaption>
-                <span className={"content-title" + (unnamed ? " muted" : "")} title={title2}>
-                  {unnamed ? "未命名" : title2}
-                  {!unnamed && view === "emote" && (
-                    /* 名字是谁给的要能一眼看出来：机器起的要抽查，人写的别再被覆盖。 */
-                    <span className="content-name-src"
-                      title={a.emoteNameSource === "manual" ? "这个名字是你写的/改过的" : "由智能识别生成，可修改"}>
-                      {a.emoteNameSource === "manual" ? "手动" : "AI"}
-                    </span>
-                  )}
-                </span>
-                {view === "emote" && a.emoteCaption !== "" && (
-                  <span className="content-sub" title={a.emoteCaption}>{a.emoteCaption}</span>
-                )}
-                <span className="content-meta">
-                  {whenOf(a.createdAt)}{duration !== "" ? " · " + duration : ""}{a.detail.shape !== "" ? " · " + a.detail.shape : ""}
-                </span>
-                <span className="content-acts">
+                <span className="content-acts" onClick={(e) => e.stopPropagation()}>
                   {isImage && (
                     <button type="button" className="art-act" aria-pressed={a.usableAsEmote} disabled={busyId === a.id}
                       aria-label={a.usableAsEmote ? "移出表情包" : "加入表情包"}
                       title={a.usableAsEmote ? "聊天时不再使用这张" : "让聊天时能用上这张"}
                       onClick={() => { void act(a, a.usableAsEmote ? "unmarkEmote" : "markEmote"); }}>
-                      {/* 不用 fill=currentColor：笑脸是圆脸，一填就糊成一坨实心圆，认不出是表情。
-                          点亮状态靠描边加粗表达。 */}
                       <Smile size={14} strokeWidth={a.usableAsEmote ? 2.8 : 1.8} />
                     </button>
                   )}
@@ -735,6 +1021,21 @@ export default function MediaLibrary({
                     </button>
                   )}
                 </span>
+              </div>
+              <figcaption>
+                <span className={"content-title" + (unnamed ? " muted" : "")} title={title2}>
+                  {unnamed ? "未命名" : title2}
+                  {!unnamed && view === "emote" && a.emoteNameSource === "manual" && (
+                    <span className="content-name-src" title="这个名字是你写的或改过的">手动</span>
+                  )}
+                </span>
+                {view === "emote" && a.emoteCaption !== "" && (
+                  <span className="content-sub" title={a.emoteCaption}>{a.emoteCaption}</span>
+                )}
+                <span className="content-meta">
+                  {view === "emote" && a.emotePack[0] !== undefined ? a.emotePack[0] + " · " : ""}
+                  {whenOf(a.createdAt)}{duration !== "" ? " · " + duration : ""}{a.detail.shape !== "" ? " · " + a.detail.shape : ""}
+                </span>
               </figcaption>
             </figure>
           );
@@ -743,12 +1044,159 @@ export default function MediaLibrary({
 
       <ListPager page={list.page} busy={list.busy} refreshing={list.refreshing} onMore={list.more} />
 
-      {zoom !== null && (
+      {view === "emote" && showResults && (
+        <Modal onClose={() => setShowResults(false)} label="智能识别详情" className="ml-results-modal">
+          <div className="ml-results-head">
+            <span>{job === null
+              ? "还没有运行过智能识别"
+              : job.running
+                ? `识别进行中 · ${job.done}/${job.total}`
+                : `上次智能识别 · 共 ${job.total} 张`}</span>
+            {job !== null && job.failed > 0 && !job.running && (
+              <button type="button" className="btn sm" onClick={() => { void retryFailed(); }}>
+                只重试失败的 {job.failed} 张
+              </button>
+            )}
+          </div>
+
+          {job !== null && job.total > 0 && (
+            <div className="ml-results-summary">
+              <span><b>{job.total}</b><small>总数</small></span>
+              <span className="ok"><b>{job.named}</b><small>成功</small></span>
+              <span className={job.failed > 0 ? "bad" : ""}><b>{job.failed}</b><small>失败</small></span>
+            </div>
+          )}
+
+          {job !== null && job.running && (
+            <div className="ml-results-current">
+              {job.current !== "" ? `正在识别 ${job.current}` : "正在准备第一张…"}
+              {job.failed > 0 ? ` · 已失败 ${job.failed} 张` : ""}
+              {job.throttleMs > 0 ? ` · 已自动降速 ${job.throttleMs}ms` : ""}
+            </div>
+          )}
+
+          {job === null || jobResults.length === 0 ? (
+            <div className="ml-results-empty">
+              {job !== null && job.running
+                ? "识别刚开始，逐张结果会实时出现在这里。"
+                : job !== null && job.total > 0
+                  ? "上次任务已经结束，但没有留下逐张结果。可以重新运行一次。"
+                  : "还没有逐张识别记录。选中素材后点「智能识别」或「智能识别选中」，或直接点「智能识别」。"}
+            </div>
+          ) : (
+            <div className="ml-result-groups">
+              {failedResults.length > 0 && (
+                <section className="ml-result-group">
+                  <div className="ml-result-group-head bad">
+                    <span>需要处理</span><span>{failedResults.length} 张</span>
+                  </div>
+                  <ul className="ml-results-list">
+                    {failedResults.slice(0, 60).map((r) => (
+                      <li key={r.id + r.file} className="bad">
+                        <code>{r.file}</code>
+                        <span className="ml-result-reason">{r.error}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+              {successResults.length > 0 && (
+                <section className="ml-result-group">
+                  <div className="ml-result-group-head">
+                    <span>已完成</span><span>{successResults.length} 张</span>
+                  </div>
+                  <ul className="ml-results-list">
+                    {successResults.slice(0, 60).map((r) => (
+                      <li key={r.id + r.file}>
+                        <code>{r.file}</code>
+                        <span className="ml-result-name">{r.name}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </section>
+              )}
+            </div>
+          )}
+        </Modal>
+      )}
+      {view === "emote" && selected.size > 0 && createPortal(
+        <div className="ml-bulk-fixed" role="region" aria-label="批量操作" aria-busy={bulkBusy !== "" || job?.running === true}>
+          <span className="ml-bulk-count">
+            {bulkBusy !== ""
+              ? <>处理中 {bulkDone}/{selected.size}</>
+              : <>已选 <b>{selected.size}</b> 张</>}
+          </span>
+          <button type="button" className="primary sm"
+            disabled={bulkBusy !== "" || job?.running === true}
+            title="对选中素材逐张调用图片理解模型；已有名称也会被覆盖"
+            onClick={() => { void runSelectedNaming(); }}>
+            <Sparkles size={13} /> {job?.running === true ? "智能识别中" : "智能识别"}
+          </button>
+          <button type="button" className="btn sm"
+            disabled={bulkBusy !== "" || job?.running === true}
+            title="把选中的表情加入收藏"
+            onClick={() => { void runBulkAssetAction("star"); }}>
+            <Star size={13} /> 收藏
+          </button>
+          <button type="button" className="btn sm"
+            disabled={bulkBusy !== "" || job?.running === true}
+            title="把选中的表情移动到另一个文件夹"
+            onClick={openBulkMove}>
+            <FolderInput size={13} /> 移动
+          </button>
+          <button type="button" className="btn sm ml-bulk-exit"
+            disabled={bulkBusy !== ""} title="退出选择" aria-label="退出选择"
+            onClick={() => { setSelected(new Set()); setSelectionMode(false); }}>
+            <X size={13} aria-hidden="true" />
+            <span className="ml-bulk-exit-label">退出选择</span>
+          </button>
+        </div>,
+        document.body,
+      )}
+
+      {bulkMoveOpen && (
+        <Modal onClose={() => setBulkMoveOpen(false)} label="移动到文件夹" className="ml-move-modal">
+          <p className="ml-lead">把选中的 {selected.size} 张表情移动到：</p>
+          <input className="ml-move-search" value={bulkMoveQuery} onChange={(e) => setBulkMoveQuery(e.target.value)}
+            placeholder="搜索文件夹" aria-label="搜索目标文件夹" />
+          <div className="ml-move-list" role="listbox" aria-label="目标文件夹">
+            {moveFolders.filter((folder) => bulkMoveQuery.trim() === "" || folder.includes(bulkMoveQuery.trim())).map((folder) => (
+              <button key={folder} type="button" role="option" aria-selected={bulkMoveTarget === folder}
+                className={"ml-move-opt" + (bulkMoveTarget === folder ? " on" : "")}
+                onClick={() => setBulkMoveTarget(folder)}>
+                <FolderOpen size={14} aria-hidden="true" />
+                <span>{folder}</span>
+                {bulkMoveTarget === folder && <span className="ml-move-check">已选</span>}
+              </button>
+            ))}
+            {moveFolders.every((folder) => bulkMoveQuery.trim() !== "" && !folder.includes(bulkMoveQuery.trim())) && (
+              <div className="ml-move-empty">没有匹配的文件夹</div>
+            )}
+          </div>
+          <div className="row2">
+            <button type="button" className="btn sm" onClick={() => setBulkMoveOpen(false)}>取消</button>
+            <button type="button" className="primary sm" disabled={bulkMoveTarget === "" || selected.size === 0}
+              onClick={() => {
+                const target = bulkMoveTarget;
+                setBulkMoveOpen(false);
+                void runBulkAssetAction("moveEmote", { pack: [target] });
+              }}>
+              移动 {selected.size} 张
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {/* 大图要看的是"我点的那张"，所以必须挂在 body 上：壁纸（玻璃）模式下这张卡带
+          backdrop-filter，会成为 position:fixed 后代的包含块——留在这里的话遮罩只盖住卡片，
+          图被居中到整张三千像素高的卡片中间，人得往下滑才找得到它。 */}
+      {zoom !== null && createPortal(
         <div className="img-zoom" onClick={() => setZoom(null)} role="dialog" aria-modal="true"
           aria-label="大图" data-keep-menu>
           <img src={zoom} alt="大图" onClick={(e) => e.stopPropagation()} />
           <button type="button" aria-label="关闭" onClick={() => setZoom(null)}><X size={18} /></button>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {confirmDel !== null && (
@@ -775,7 +1223,7 @@ export default function MediaLibrary({
       )}
       {edit !== null && (
         <EmoteSemanticsModal asset={edit} folders={packs.map((p) => p.pack)}
-          onSave={saveSemantics} onRename={renameOne} onClose={() => setEdit(null)} />
+          onSave={saveSemantics} onRename={renameOne} onClose={() => setEdit(null)} queueLine={renameHint} />
       )}
 
       {/* 动作反馈与聊天同一套轻提示浮层；portal 到 body，免得按带 transform 的祖先定位。

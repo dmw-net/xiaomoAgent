@@ -7,6 +7,7 @@ import AboutBody from "../../components/AboutBody";
 import ModelSection from "./ModelSection";
 import CapabilitySection from "./CapabilitySection";
 import SkillSection from "./SkillSection";
+import ToolLoopSection from "./ToolLoopSection";
 import ExtensionSection from "./ExtensionSection";
 import MediaSection from "./MediaSection";
 import OwnerSection from "./OwnerSection";
@@ -64,9 +65,11 @@ type SearchEntry = {
 
 /** 设置搜索只索引“用户能认出的对象”，不把控件名和解释堆成一张完整目录。 */
 const SEARCH_ENTRIES: SearchEntry[] = [
-  { group: "owner", title: "我的资料", meta: "头像、称呼、性别、印象与备注", anchor: "settings-owner", keywords: "名字 昵称 头像 QQ 个人 人设 我" },
+  { group: "owner", title: "我的资料", meta: "头像、称呼、指代方式、印象与备注", anchor: "settings-owner", keywords: "名字 昵称 头像 QQ 个人 人设 我" },
   { group: "model", modelTab: "model", title: "主对话模型", meta: "供应商、接口地址、API Key、模型列表", anchor: "settings-models", keywords: "模型 大模型 接口 密钥 供应商 deepseek 火山 ollama 思考 参数" },
   { group: "model", modelTab: "capability", title: "能力模型", meta: "看图、听音、说话、画图、记忆检索", anchor: "settings-capabilities", keywords: "视觉 语音 识别 合成 图像 生成 向量 能力" },
+  { group: "model", modelTab: "skill", title: "工具循环轮次", meta: "全局模型轮次、自定义与速度取舍", anchor: "settings-tool-loop", keywords: "工具 调用 轮次 循环 模型请求 上限 重试 多步 超时" },
+  { group: "media", title: "发表情频率", meta: "自然、少发或主动，只影响聊天表达倾向", anchor: "settings-emote-frequency", keywords: "表情 表情包 发表情 频率 主动 少发 接梗 情绪" },
   { group: "model", modelTab: "skill", title: "技能", meta: "SKILL.md、技能目录、重新扫描", anchor: "settings-skills", keywords: "技能 skill 提示词 工具 目录" },
   { group: "model", modelTab: "skill", title: "扩展与 MCP", meta: "MCP、Webhook、JS 工具、脚本许可", anchor: "settings-extensions", keywords: "扩展 mcp webhook 脚本 js 插件 工具" },
   { group: "media", title: "媒体与表情", meta: "图片、视频、语音，以及表情包", anchor: "settings-media", keywords: "表情 表情包 emoji sticker 素材 采集 导入 相册 图片 视频 语音 文件 媒体 接梗 反应 内容库" },
@@ -284,6 +287,7 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
       ) : null}
       {visitedModelTabs.has("skill") || modelTab === "skill" ? (
         <TabPanel active={modelTab === "skill"} aria={panelAria("set-model", "skill")}>
+          <ToolLoopSection form={form} />
           <SkillSection ask={form.askDangerous} />
           <ExtensionSection ask={form.askDangerous} />
         </TabPanel>
@@ -334,7 +338,7 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
           )}
         </div>
       ) : (
-        <div className="settings-layout">
+        <div className={"settings-layout" + (group === "media" ? " settings-layout-media" : "")}>
           {!narrow && nav}
           <div className="set-body">
             {groupPanel("owner", <OwnerSection form={form} onOwnerAvatar={onOwnerAvatar} />)}
@@ -342,7 +346,7 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
             {(visitedGroups.has("model") || group === "model") && groupPanel("model", modelContent)}
 
             {(visitedGroups.has("media") || group === "media") && groupPanel("media",
-              <MediaSection active={group === "media"} />,
+              <MediaSection active={group === "media"} form={form} />,
             )}
 
             {(visitedGroups.has("experience") || group === "experience") && groupPanel("experience",

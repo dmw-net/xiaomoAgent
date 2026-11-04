@@ -24,7 +24,7 @@ const TOOL_LABEL: Record<string, string> = {
   set_contact_avatar: "设了头像",
 };
 
-/** 工具调用卡：紧凑一行，展示"她在查什么"而不是甩 JSON；有详情时可点开回看。 */
+/** 工具调用卡：紧凑一行，展示"联系人在查什么"而不是甩 JSON；有详情时可点开回看。 */
 function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imagesOnly = false }: {
   m: MessageRow; contactAvatar?: string; contactName?: string;
   /** 点图放大：搜到的候选图跟气泡里的图走同一条灯箱通道（ChatView 的 openZoom）。 */
@@ -60,7 +60,7 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   // 只留候选图：不加头像列，也不给卡片留空壳，图本身就是这一行的全部内容。
   if (imagesOnly) {
     return (
-      <div className="msg-row her gap" data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
+      <div className="msg-row contact gap" data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
         <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} />
         <div className="tool-wrap">
           <div className="tool-imgs">
@@ -76,7 +76,7 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   }
 
   return (
-    <div className={"msg-row her gap"} data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
+    <div className={"msg-row contact gap"} data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
       <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} />
       <div className={"tool-wrap" + (ok ? "" : " bad")}>
         {expandable ? (

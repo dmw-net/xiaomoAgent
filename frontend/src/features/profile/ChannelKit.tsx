@@ -50,10 +50,10 @@ export function ChannelNote({ tone = "info", children }: { tone?: NoteTone; chil
 }
 
 /** 步骤条单行：done=已完成（✓）、current=当前这步（实心点 + 高亮）、todo=还没到（空心圈）。 */
-export type ChannelStep = { label: string; state: "done" | "current" | "todo"; hint?: string };
+export type ChannelStep = { label: string; state: "done" | "current" | "todo"; hint?: string; action?: ReactNode };
 
 /**
- * 纵向步骤条：QQ 官方（建凭据 → 绑定 → 发消息激活）与 OneBot（装 → 启动 → 扫码 → 绑号）
+ * 纵向步骤条：QQ 官方（创建机器人 → 绑定你的 QQ）与 OneBot（装 → 启动 → 扫码 → 绑号）
  * 都是多步流程，从前靠条件渲染的碎片拼出来，人不知道自己走到第几步。
  */
 export function ChannelSteps({ steps, label }: { steps: ChannelStep[]; label: string }): JSX.Element {
@@ -71,6 +71,7 @@ export function ChannelSteps({ steps, label }: { steps: ChannelStep[]; label: st
             <b>{s.label}</b>
             {s.hint && <small>{s.hint}</small>}
           </span>
+          {s.action && <span className="ch-step-action">{s.action}</span>}
         </li>
       ))}
     </ol>

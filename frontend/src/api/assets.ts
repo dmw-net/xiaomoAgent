@@ -38,7 +38,7 @@ export type Asset = {
   /** 文件夹层：单一归属，恒为单元素数组（导入→源文件夹名，其余→「默认」）。 */
   emotePack: string[];
   emoteNamedAt: number;
-  /** 名字是谁给的：auto＝智能识别，manual＝人写的或改过的，空＝还没名字。 */
+  /** 名字是谁给的：auto＝智能识别，manual＝用户手改，file＝导入文件名，空值按文件命名兜底。 */
   emoteNameSource: string;
   emoteUseCount: number;
   /** 文件在媒体目录里的相对位置（表情包/<文件夹>/x.gif 或 图片/x.jpg）；桌面端「在文件管理器中显示」用它。 */
@@ -52,12 +52,12 @@ export type Asset = {
   detail: AssetDetail;
 };
 
-export type EmotePackCount = { pack: string; total: number; unnamed: number; auto: number; manual: number };
+export type EmotePackCount = { pack: string; total: number; unnamed: number; file: number; auto: number; manual: number };
 
 /** 识别进度与来源分布：概览条那一行数字读它。 */
-export type NamingStats = { total: number; named: number; auto: number; manual: number };
+export type NamingStats = { total: number; named: number; auto: number; manual: number; file: number };
 
-export type EmoteNamedFilter = "any" | "unnamed" | "auto" | "manual";
+export type EmoteNamedFilter = "any" | "unnamed" | "file" | "auto" | "manual";
 
 export type AssetListResult = {
   ok: boolean;
@@ -82,8 +82,10 @@ export type AssetQuery = {
   q?: string;
   /** 按文件夹筛（文件夹名不参与语义匹配，但可以是筛选条件）。 */
   pack?: string;
-  /** 按命名状态筛：未命名 / AI 命名 / 手动维护。 */
+  /** 按命名状态筛：未命名 / 智能识别 / 手动维护。 */
   named?: EmoteNamedFilter;
+  /** 只列原图已经不在磁盘上的失效项。 */
+  missing?: boolean;
   /** 给了就是「和某人」视角；不给是全库。注意不要走 cq——它会无条件带上当前联系人。 */
   contactId?: string;
   limit: number;
@@ -101,11 +103,12 @@ export function listAssets(query: AssetQuery): Promise<AssetListResult> {
   const pack = (query.pack ?? "").trim();
   if (pack !== "") p.set("pack", pack);
   if (query.named !== undefined && query.named !== "any") p.set("named", query.named);
+  if (query.missing === true) p.set("missing", "1");
   if (query.contactId !== undefined && query.contactId !== "") p.set("contactId", query.contactId);
   return getJson<AssetListResult>("/api/assets?" + p.toString());
 }
 
-export type AssetAction = "markEmote" | "unmarkEmote" | "editEmote" | "probeMissing" | "dropMissing" | "star" | "unstar";
+export type AssetAction = "markEmote" | "unmarkEmote" | "editEmote" | "moveEmote" | "probeMissing" | "dropMissing" | "star" | "unstar";
 
 /** 只动资产自己的标记；文件本体归媒体清理那条线。 */
 export function assetAction(

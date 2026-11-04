@@ -42,4 +42,8 @@ export type QQBindingView = {
   createdAt: string;
   /** 这位机器人名下的 QQ 群会话；QQ 私聊已并入联系人主私聊。 */
   conversations: QQConversationView[];
+  /** 主人的真实 QQ 号（仅 OneBot 渠道回传；私聊投递目标，群聊里据此把主人从群成员里认出来）。官方渠道靠 userOpenId 对比，无此字段。 */
+  ownerQq?: string;
+  /** OneBot 渠道专属：完整绑定的真实 QQ 号（userOpenId 在视图里是脱敏的，编辑表单需要原值回填）。 */
+  qqNumber?: string;
 };

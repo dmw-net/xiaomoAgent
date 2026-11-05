@@ -18,8 +18,15 @@ export type QQSummary = {
   max: number;
   active: number;
   proactive: number;
-  trouble: Array<{ contactId: string; name: string; lastError: string }>;
+  /** at：这条提示发生的时间戳（毫秒）。旧后端没有这个字段。 */
+  trouble: Array<{ contactId: string; name: string; lastError: string; at?: number }>;
 };
+
+/** 清掉「一次发送失败」留下的通道提示：只抹状态页的红字，不删活动记录。
+ *  带 contactId 时只清某位联系人，省略则清全部 QQ 绑定。 */
+export function clearQQErrors(contactId?: string): Promise<{ ok: boolean; cleared: number; message: string }> {
+  return postJson("/api/qq/clear-errors", contactId ? { contactId } : {});
+}
 
 /**
  * 开始扫码建机器人：返回的 qrContent 是一个 https 链接（不是图片），

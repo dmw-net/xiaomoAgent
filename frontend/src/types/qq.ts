@@ -37,6 +37,8 @@ export type QQBindingView = {
   /** 还在被动回复窗口内：这几句能直接送出；过了窗口就依赖平台侧的「主动消息」权限。 */
   hasReplyWindow: boolean;
   lastError: string;
+  /** 这条提示发生的时间戳（毫秒）；旧后端没有这个字段。 */
+  lastErrorAt?: number;
   lastReceivedAt: string;
   lastSentAt: string;
   createdAt: string;

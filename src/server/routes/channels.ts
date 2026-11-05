@@ -79,6 +79,30 @@ export const qqCredentialsRoute: Route = async ({ res, url, path, method, req })
   return false;
 };
 
+/**
+ * POST /api/qq/clear-errors：清掉「一次发送失败」留下的通道提示。
+ * 只抹状态页那条红字，活动记录里的失败记录一条不删；下次真失败会重新写一条。
+ * 带 contactId 时只清这位联系人（官方 + OneBot 两套绑定都覆盖），否则清全部。
+ */
+const qqClearErrorsRoute: Route = async ({ req, res, url, path, method }) => {
+  if (!(method === "POST" && path === "/api/qq/clear-errors")) return false;
+  const body = await readJson<Record<string, unknown>>(req).catch(() => ({}) as Record<string, unknown>);
+  const raw = typeof body.contactId === "string" ? body.contactId : url.searchParams.get("contactId") ?? "";
+  const contactId = raw.trim();
+  if (contactId !== "" && getContact(contactId) === null) {
+    sendJson(res, 404, { ok: false, error: "联系人不存在" });
+    return true;
+  }
+  const cleared = qq.clearErrors(contactId === "" ? undefined : contactId);
+  sendJson(res, 200, {
+    ok: true, cleared,
+    message: cleared > 0
+      ? `已清除 ${cleared} 条通道提示，历史记录仍可在「活动记录」里查看`
+      : "没有需要清除的提示",
+  });
+  return true;
+};
+
 /** /api/qq/qr：扫码拿凭据（官方推荐，不用手抄 AppID/AppSecret）。 */
 export const qqQrRoute: Route = async ({ res, url, path, method, req }) => {
   if (!(path === "/api/qq/qr" && method === "POST")) return false;
@@ -299,6 +323,7 @@ export const routes: Route[] = [
   qqOneBotSettingsRoute,
   qqNapcatRoute,
   qqCredentialsRoute,
+  qqClearErrorsRoute,
   qqQrRoute,
   qqQrPollRoute,
   qqContactRoute,

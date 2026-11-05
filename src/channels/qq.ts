@@ -94,7 +94,7 @@ export type QQBindingView = {
   id: string; contactId: string; userOpenId: string; enabled: boolean; proactive: boolean;
   /** 是否已认领到真实 openid。凭据配好但没绑定时为 false——UI 据此显示「去绑定」入口。 */
   hasUserOpenId: boolean;
-  status: QQStatus; hasReplyWindow: boolean; lastError: string; lastReceivedAt: string;
+  status: QQStatus; hasReplyWindow: boolean; lastError: string; lastErrorAt: number; lastReceivedAt: string;
   lastSentAt: string; createdAt: string; conversations: QQConversationView[];
   /** OneBot 渠道专属：主人的真实 QQ 号（私聊投递目标；群聊里据此把主人从群成员里认出来）。官方渠道靠 userOpenId 对比，不设此字段。 */
   ownerQq?: string;
@@ -104,7 +104,8 @@ export type QQBindingView = {
 type StoredAccount = {
   id: string; contactId: string; appId: string; clientSecret: string; enabled: boolean; proactive: boolean;
   userOpenId: string; recentMessageIds: string[]; replyMessageId: string; replyMessageAt: number;
-  lastError: string; lastReceivedAt: string; lastSentAt: string; createdAt: string;
+  /** 通道级提示只在一段时间内有效：一次发送失败不该在状态页挂几个月。0 = 没有/旧数据。 */
+  lastError: string; lastErrorAt: number; lastReceivedAt: string; lastSentAt: string; createdAt: string;
 };
 type BindWindow = { id: string; contactId: string; expiresAt: number; status: "open" | "claimed"; error: string };
 type QQSocket = {
@@ -191,7 +192,8 @@ function parseAccounts(raw: string | null): StoredAccount[] {
       userOpenId: asText(row.userOpenId),
       recentMessageIds: (Array.isArray(row.recentMessageIds) ? row.recentMessageIds : []).map((key) => asText(key)).filter((key) => key !== "").slice(-SEEN_LIMIT),
       replyMessageId: asText(row.replyMessageId), replyMessageAt: Number(row.replyMessageAt ?? 0) || 0,
-      lastError: asText(row.lastError), lastReceivedAt: asText(row.lastReceivedAt), lastSentAt: asText(row.lastSentAt),
+      lastError: asText(row.lastError), lastErrorAt: Number(row.lastErrorAt ?? 0) || 0,
+      lastReceivedAt: asText(row.lastReceivedAt), lastSentAt: asText(row.lastSentAt),
       createdAt: asText(row.createdAt),
     });
   }
@@ -216,7 +218,8 @@ function parseLegacy(): StoredAccount[] {
     enabled: creds.enabled && row.enabled !== false, proactive: row.proactive === true, userOpenId: asText(row.userOpenId),
     recentMessageIds: Array.isArray(row.recentMessageIds) ? row.recentMessageIds.map(asText).filter(Boolean).slice(-SEEN_LIMIT) : [],
     replyMessageId: asText(row.replyMessageId), replyMessageAt: Number(row.replyMessageAt ?? 0) || 0,
-    lastError: asText(row.lastError), lastReceivedAt: asText(row.lastReceivedAt), lastSentAt: asText(row.lastSentAt),
+    lastError: asText(row.lastError), lastErrorAt: Number(row.lastErrorAt ?? 0) || 0,
+    lastReceivedAt: asText(row.lastReceivedAt), lastSentAt: asText(row.lastSentAt),
     createdAt: asText(row.createdAt) || new Date().toISOString(),
   }));
 }
@@ -377,6 +380,23 @@ export function createQQService(deps: {
   /** 每个账号最近一次"取访问凭证失败"的明确原因（区分凭据真坏 / 临时不可用）。探活据此升级状态。 */
   const credentialFaults = new Map<string, string>();
 
+  /**
+   * 通道级提示的时效：一次「某条图发不出去」不是通道坏了，24 小时后自动不再报警。
+   * 老库里只有 lastError、没有 lastErrorAt 的（例如 850019 的历史残留）按已过期处理，
+   * 免得升级后还把几个月前的一次失败当成当前故障常驻在状态页。
+   */
+  const QQ_ERROR_VISIBLE_MS = 24 * 60 * 60 * 1000;
+  const noteError = (account: StoredAccount, message: string): void => {
+    const text = message.slice(0, 300);
+    if (text === "") return;
+    account.lastError = text; account.lastErrorAt = clock(); persist();
+  };
+  const clearError = (account: StoredAccount): void => { account.lastError = ""; account.lastErrorAt = 0; };
+  /** 只有带时间戳、且还在时效内的错误才当作「现在需要处理」。 */
+  const freshError = (account: StoredAccount): string =>
+    account.lastError !== "" && account.lastErrorAt > 0 && clock() - account.lastErrorAt < QQ_ERROR_VISIBLE_MS
+      ? account.lastError : "";
+
   const persist = (): void => kvSet(KV_ACCOUNTS, JSON.stringify({ version: 2, accounts }));
   const hydrate = (): void => {
     if (hydrated) return;
@@ -400,7 +420,7 @@ export function createQQService(deps: {
   const noteProblem = (account: StoredAccount, error: unknown): void => {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
     if (message === "") return;
-    account.lastError = message; problem = message; persist();
+    noteError(account, message); problem = message;
     console.warn(`[qq] ${account.contactId}: ${message}`);
   };
 
@@ -730,11 +750,11 @@ export function createQQService(deps: {
     for (const ref of media) {
       try {
         await sendMedia(account, "private", "", ref, refMsgId);
-        account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist();
+        account.lastSentAt = new Date(clock()).toISOString(); clearError(account); persist();
         outcome.sent += 1;
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
-        account.lastError = message; persist();
+        noteError(account, message);
         outcome.failed += 1; outcome.lastError = message;
         console.warn(`[qq] 媒体投递失败（${contactId}）：${message}`);
       }
@@ -760,8 +780,8 @@ export function createQQService(deps: {
         const startedAt = clock();
         await deliverOutbound({
           segments, send: (segment) => sendGroup(account, conv.external_id, segment, ""), elapsed: () => clock() - startedAt,
-          onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
-          onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 群媒体文字失败（${conv.id}）：${message}`); },
+          onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); clearError(account); persist(); },
+          onFailed: (message) => { noteError(account, message); console.warn(`[qq] 群媒体文字失败（${conv.id}）：${message}`); },
           log: (ok, message, elapsedMs, raw) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), ...(raw ? { resRaw: raw } : {}), contactId: account.contactId }),
         });
       }
@@ -769,11 +789,11 @@ export function createQQService(deps: {
     for (const ref of media) {
       try {
         await sendMedia(account, "group", conv.external_id, ref, "");
-        account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist();
+        account.lastSentAt = new Date(clock()).toISOString(); clearError(account); persist();
         outcome.sent += 1;
       } catch (error) {
         const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
-        account.lastError = message; persist();
+        noteError(account, message);
         outcome.failed += 1; outcome.lastError = message;
         console.warn(`[qq] 群媒体投递失败（${conv.id}）：${message}`);
       }
@@ -844,8 +864,8 @@ export function createQQService(deps: {
     const startedAt = clock();
     return await deliverOutbound({
       segments, send: (segment) => sendPrivate(account, segment, opts.msgId ?? ""), elapsed: () => clock() - startedAt,
-      onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
-      onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 投递失败（${account.contactId}）：${message}`); },
+      onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); clearError(account); persist(); },
+      onFailed: (message) => { noteError(account, message); console.warn(`[qq] 投递失败（${account.contactId}）：${message}`); },
       log: (ok, message, elapsedMs, raw) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/users/{openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), ...(raw ? { resRaw: raw } : {}), contactId: account.contactId }),
     });
   };
@@ -872,8 +892,8 @@ export function createQQService(deps: {
     const startedAt = clock();
     return await deliverOutbound({
       segments, send: (segment) => sendGroup(account, conv.external_id, segment, opts.triggerMessageId ?? ""), elapsed: () => clock() - startedAt,
-      onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); account.lastError = ""; persist(); },
-      onFailed: (message) => { account.lastError = message; persist(); console.warn(`[qq] 群投递失败（${conv.id}）：${message}`); },
+      onDelivered: () => { account.lastSentAt = new Date(clock()).toISOString(); clearError(account); persist(); },
+      onFailed: (message) => { noteError(account, message); console.warn(`[qq] 群投递失败（${conv.id}）：${message}`); },
       log: (ok, message, elapsedMs, raw) => logModelCall({ purpose: "qq", ok, model: "qqbot", url: "/v2/groups/{group_openid}/messages", elapsedMs, ...(message === "" ? {} : { message }), ...(raw ? { resRaw: raw } : {}), contactId: account.contactId }),
     });
   };
@@ -882,11 +902,11 @@ export function createQQService(deps: {
   const claimBinding = async (window: BindWindow, account: StoredAccount, openId: string, messageId: string): Promise<void> => {
     for (const other of accounts) if (other.id !== account.id && other.userOpenId === openId) other.userOpenId = "";
     account.userOpenId = openId; account.replyMessageId = messageId; account.replyMessageAt = clock();
-    account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
+    account.lastReceivedAt = new Date(clock()).toISOString(); clearError(account);
     window.status = "claimed"; persist();
     ensureLocalConversation(account.contactId);
     try { await sendPrivate(account, "已连接到这位联系人。之后你发给我的消息都会进这段私聊。", messageId); }
-    catch (error) { account.lastError = (error instanceof Error ? error.message : String(error)).slice(0, 300); persist(); }
+    catch (error) { noteError(account, error instanceof Error ? error.message : String(error)); }
   };
 
   const receivePrivate = async (account: StoredAccount, message: Record<string, unknown>): Promise<void> => {
@@ -910,7 +930,7 @@ export function createQQService(deps: {
     const media = await saveInboundMedia(account, message);
     const conv = ensureLocalConversation(account.contactId);
     account.replyMessageId = messageId; account.replyMessageAt = clock();
-    account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
+    account.lastReceivedAt = new Date(clock()).toISOString(); clearError(account);
     seen.remember(key); account.recentMessageIds = seen.toArray(); persist();
     const channel = getChannel("web"); if (channel === undefined) return;
     channel.receive(withMentions(text, message), account.contactId, media.urls.length > 0 ? media.urls : undefined, "qq", undefined, {
@@ -941,7 +961,7 @@ export function createQQService(deps: {
     if (adoptable !== null) adoptGroupConversation(adoptable.id, groupOpenId, account.id);
     const conv = ensureConversation({ contactId: account.contactId, channel: "qq", kind: "group", externalId: groupOpenId, accountId: account.id, title: asText(message.group_name) });
     if (conv.left_at !== null || !conv.enabled) return;
-    account.lastReceivedAt = new Date(clock()).toISOString(); account.lastError = "";
+    account.lastReceivedAt = new Date(clock()).toISOString(); clearError(account);
     seen.remember(key); account.recentMessageIds = seen.toArray(); persist();
     const channel = getChannel("web"); if (channel === undefined) return;
     const media = await saveInboundMedia(account, message);
@@ -982,7 +1002,8 @@ export function createQQService(deps: {
     id: account.id, contactId: account.contactId, userOpenId: redact(account.userOpenId), enabled: account.enabled,
     proactive: account.proactive, hasUserOpenId: account.userOpenId !== "", status: statusOf(account),
     hasReplyWindow: account.replyMessageId !== "" && clock() - account.replyMessageAt < REPLY_WINDOW_MS,
-    lastError: account.lastError, lastReceivedAt: account.lastReceivedAt, lastSentAt: account.lastSentAt,
+    lastError: freshError(account), lastErrorAt: account.lastErrorAt,
+    lastReceivedAt: account.lastReceivedAt, lastSentAt: account.lastSentAt,
     createdAt: account.createdAt, conversations: conversationsFor(account.contactId),
   });
 
@@ -996,14 +1017,14 @@ export function createQQService(deps: {
     let account = byContact(contactId); const oldWorker = account ? workers.get(account.id) : undefined;
     if (oldWorker) { oldWorker.gateway.close(); oldWorker.gateway.forget(); oldWorker.token.invalidate(); workers.delete(account!.id); }
     if (account === null) {
-      account = { id: shortId(), contactId, appId: "", clientSecret: "", enabled: false, proactive: false, userOpenId: "", recentMessageIds: [], replyMessageId: "", replyMessageAt: 0, lastError: "", lastReceivedAt: "", lastSentAt: "", createdAt: new Date(clock()).toISOString() };
+      account = { id: shortId(), contactId, appId: "", clientSecret: "", enabled: false, proactive: false, userOpenId: "", recentMessageIds: [], replyMessageId: "", replyMessageAt: 0, lastError: "", lastErrorAt: 0, lastReceivedAt: "", lastSentAt: "", createdAt: new Date(clock()).toISOString() };
       accounts.push(account);
     }
     const nextAppId = patch.appId !== undefined ? asText(patch.appId) : account.appId;
     const nextSecret = patch.clientSecret !== undefined && !asText(patch.clientSecret).includes("••") ? asText(patch.clientSecret) : account.clientSecret;
     if (nextAppId !== account.appId) { account.userOpenId = ""; account.replyMessageId = ""; account.replyMessageAt = 0; }
     account.appId = nextAppId; account.clientSecret = nextSecret;
-    account.enabled = patch.enabled !== undefined ? patch.enabled === true : account.enabled; account.lastError = "";
+    account.enabled = patch.enabled !== undefined ? patch.enabled === true : account.enabled; clearError(account);
     credentialFaults.delete(account.id); // 换了凭据：旧的探活故障作废，交给下一轮探活重新判
     if (accounts.length > ACCOUNT_CAP) accounts = accounts.slice(-ACCOUNT_CAP);
     persist(); if (configured(account) && account.enabled) void getWorker(account).gateway.open();
@@ -1049,13 +1070,35 @@ export function createQQService(deps: {
     persist(); return true;
   };
 
-  const summary = (): { configured: boolean; appId: string; status: QQStatus; lastError: string; bindings: number; max: number; active: number; proactive: number; trouble: Array<{ contactId: string; name: string; lastError: string }> } => {
-    hydrate(); const trouble: Array<{ contactId: string; name: string; lastError: string }> = [];
+  type TroubleItem = { contactId: string; name: string; lastError: string; at: number };
+  /**
+   * 只报「现在还值得处理」的事：过期或没有时间戳的历史错误不进 trouble，
+   * 也不再变成状态页那条一直挂着的红字。停用的绑定仍然列出（不带错误）。
+   */
+  const summary = (): { configured: boolean; appId: string; status: QQStatus; lastError: string; bindings: number; max: number; active: number; proactive: number; trouble: TroubleItem[] } => {
+    hydrate(); const trouble: TroubleItem[] = [];
     for (const account of accounts) {
-      if ((account.lastError !== "" || !account.enabled) && trouble.length < 3) trouble.push({ contactId: account.contactId, name: getContact(account.contactId)?.name || account.contactId, lastError: account.lastError });
+      const error = freshError(account);
+      if ((error !== "" || !account.enabled) && trouble.length < 3)
+        trouble.push({ contactId: account.contactId, name: getContact(account.contactId)?.name || account.contactId, lastError: error, at: account.lastErrorAt });
     }
     const first = accounts[0];
-    return { configured: accounts.some((a) => configured(a)), appId: first?.appId ? redact(first.appId) : "", status: gatewayStatus(), lastError: problem !== "" ? problem : trouble[0]?.lastError ?? "", bindings: accounts.length, max: ACCOUNT_CAP, active: accounts.filter((a) => configured(a) && a.enabled).length, proactive: accounts.filter((a) => a.proactive && a.enabled).length, trouble };
+    const firstError = trouble.find((t) => t.lastError !== "")?.lastError ?? "";
+    return { configured: accounts.some((a) => configured(a)), appId: first?.appId ? redact(first.appId) : "", status: gatewayStatus(), lastError: problem !== "" ? problem : firstError, bindings: accounts.length, max: ACCOUNT_CAP, active: accounts.filter((a) => configured(a) && a.enabled).length, proactive: accounts.filter((a) => a.proactive && a.enabled).length, trouble };
+  };
+
+  /** 手动清除通道提示：只抹掉状态页那条红字，活动记录里的失败记录一条不删；
+   *  下次真的再失败会重新写一条带新时间戳的。带 contactId 时只清这位联系人。 */
+  const clearErrors = (contactId?: string): number => {
+    hydrate(); let cleared = 0;
+    for (const account of accounts) {
+      if (contactId !== undefined && account.contactId !== contactId) continue;
+      if (account.lastError === "" && account.lastErrorAt === 0) continue;
+      clearError(account); cleared += 1;
+    }
+    if (cleared > 0) persist();
+    if (contactId === undefined) problem = "";
+    return cleared;
   };
 
   const platformCall = async (path: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> => {
@@ -1122,7 +1165,7 @@ export function createQQService(deps: {
         await getWorker(account).token.get(true); // 强制重取，绕过 TTL 缓存
         const hadFault = credentialFaults.has(account.id);
         credentialFaults.delete(account.id);
-        if (hadFault) { account.lastError = ""; persist(); } // 只清凭据故障本身留下的错误，别的提示（如未绑 openid）不动
+        if (hadFault) { clearError(account); persist(); } // 只清凭据故障本身留下的错误，别的提示（如未绑 openid）不动
       } catch {
         // 失败原因已在 makeWorker 里写进 credentialFaults；这里把网关状态一并拉成 attention，
         // 让用户在状态页一眼看到"凭据出问题了"，而不是等某条消息报错。
@@ -1147,7 +1190,7 @@ export function createQQService(deps: {
   return {
     deliverToContact, deliverToConversation,
     deliverMediaToContact, deliverMediaToGroup, deliverMediaToConversation,
-    deliverEmote, beginBind, pollBind, snapshotFor, summary,
+    deliverEmote, beginBind, pollBind, snapshotFor, summary, clearErrors,
     setCredentials, beginCredentialQr, pollCredentialQr, setFlags, setFlagsByContact, disconnect,
     disconnectByContact: (contactId: string): boolean => { const account = byContact(contactId); return account === null ? false : disconnect(account.id); },
     startAll, stopAll,
@@ -1245,6 +1288,8 @@ export const qq: QQService = {
   startAll: () => { officialService.startAll(); onebot().startAll(); },
   stopAll: () => { officialService.stopAll(); onebotService?.stopAll(); },
   dispose: () => { officialService.dispose(); onebotService?.dispose(); },
+  /** 两套适配器可能同时有绑定，清除提示要一次覆盖完，返回实际清掉的条数。 */
+  clearErrors: (contactId?: string): number => officialService.clearErrors(contactId) + onebot().clearErrors(contactId),
   clearAll: () => { officialService.clearAll(); onebot().clearAll(); },
   gatewayStatus: (contactId) => contactId !== undefined
     ? serviceForContact(contactId).gatewayStatus(contactId)

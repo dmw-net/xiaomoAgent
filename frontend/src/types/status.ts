@@ -35,7 +35,8 @@ export type QQSummary = {
   max: number;
   active: number;
   proactive: number;
-  trouble: Array<{ contactId: string; name: string; lastError: string }>;
+  /** at 是错误时间戳（毫秒）；旧后端没有这个字段。 */
+  trouble: Array<{ contactId: string; name: string; lastError: string; at?: number }>;
 };
 
 export type StatusData = {

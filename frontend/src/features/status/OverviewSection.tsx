@@ -1,4 +1,4 @@
-import { ReactNode } from "react";
+import { ReactNode, useState } from "react";
 import { relTime, whenText } from "../../lib/datetime";
 import CheckRow from "./CheckRow";
 import { qqApi } from "../../api";
@@ -91,9 +91,11 @@ const CHANNEL_LABEL: Record<string, string> = { web: "网页", wechat: "微信" 
  * 记忆条数、微信绑定都在各联系人的资料页里，总览按联系人显示等于随机挑一位。
  * 提醒条同理只收真会坏事的：按设计如此的静默/配额不该天天报警。
  */
-export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, goQueue, onOpenContacts, panel }: {
+export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, goQueue, onOpenContacts, onRefresh, panel }: {
   panel: PanelAria;
   d: StatusData;
+  /** 清除通道提示后重新拉一次 /api/status，让红字当场消失。 */
+  onRefresh: () => void;
   /** 能力就绪状态由父级与 /api/status 并行取；null = 一次都还没拉到过。 */
   caps: Caps | null;
   capsErr: string;
@@ -113,6 +115,23 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   // 「跳转」在正文里做成链接：让人当场就知道去哪一步看明细，而不是只告诉用户有事发生。
   const link = (label: string, on: () => void): ReactNode =>
     <button type="button" className="ov-link" onClick={on}>{label}</button>;
+
+  /** 一次投递失败只是历史：状态页给一个当场清除的出口，别让那条红字一直挂着。 */
+  const [qqClearBusy, setQqClearBusy] = useState(false);
+  const [qqClearMsg, setQqClearMsg] = useState("");
+  const clearQqErrors = async (): Promise<void> => {
+    setQqClearBusy(true); setQqClearMsg("");
+    try {
+      const out = await qqApi.clearQQErrors();
+      setQqClearMsg(out.message);
+      onRefresh();
+    } catch (e) {
+      setQqClearMsg(e instanceof Error ? `清除失败：${e.message}` : "清除失败");
+    } finally { setQqClearBusy(false); }
+  };
+  const clearQqButton: ReactNode = <button type="button" className="chip" disabled={qqClearBusy}
+    title="只清除这条提示，不删活动记录里的历史"
+    onClick={() => void clearQqErrors()}>{qqClearBusy ? "清除中…" : "清除提示"}</button>;
 
   const modelRows: Row[] = [
     d.modelReady
@@ -189,7 +208,13 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
     // QQ 与微信差在凭据是全局一份：没配凭据时不存在"某条连接断了"，只有"这个通道还没接上"。
     (() => {
       const q = d.qq;
-      const qTrouble = q ? q.trouble.filter((t) => t.lastError !== "").length : 0;
+      // 后端只把「带时间戳且还在时效内」的错误放进 trouble：一次失败不会永远挂在这里。
+      const qErrors = q ? q.trouble.filter((t) => t.lastError !== "") : [];
+      const qTrouble = qErrors.length;
+      const errorLine = qErrors.map((x) =>
+        `${x.name}：${x.lastError.slice(0, 40)}${x.at ? `（${when(x.at)}）` : ""}`).join("；");
+      const withClear = (content: ReactNode): ReactNode =>
+        <>{content} {clearQqButton}{qqClearMsg && <> · {qqClearMsg}</>}</>;
       return {
         led: (qTrouble > 0 || (q && q.status === "attention") ? "bad" : "ok") as Led,
         k: "QQ",
@@ -198,10 +223,10 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
           : q.bindings === 0 ? "凭据已配 · 还没有联系人绑定 QQ"
             : <>共 {q.bindings} 条 · {qqApi.QQ_STATUS_LABEL[q.status]} · 启用 {q.active}</>,
         fix: q && q.status === "attention" && q.lastError !== ""
-          ? <>{q.lastError.slice(0, 90)}（沙箱/未发布要去开放平台把机器人发布后再连）</>
-          : q && qTrouble > 0
-            ? <>{q.trouble.filter((t) => t.lastError !== "").map((x) => x.name + "：" + x.lastError.slice(0, 40)).join("；")}</>
-            : undefined,
+          ? withClear(<>{q.lastError.slice(0, 90)}（沙箱/未发布要去开放平台把机器人发布后再连）</>)
+          : qTrouble > 0
+            ? withClear(<>{errorLine}</>)
+            : qqClearMsg !== "" ? <>{qqClearMsg}</> : undefined,
         action: q && (q.status === "attention" || qTrouble > 0) ? { label: "去处理", on: onOpenContacts } : undefined,
       };
     })(),

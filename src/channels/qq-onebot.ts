@@ -39,7 +39,9 @@ type OneBotAccount = {
   /** 主人的真实 QQ 号：私聊的出站目标，也是群聊里识别「主人」的唯一依据。 */
   ownerQq: string;
   enabled: boolean; proactive: boolean;
-  lastError: string; lastReceivedAt: string; lastSentAt: string; createdAt: string;
+  /** 通道提示只在一段时间内有效：一次失败不该在状态页挂几个月。0 = 没有/旧数据。 */
+  lastError: string; lastErrorAt: number;
+  lastReceivedAt: string; lastSentAt: string; createdAt: string;
 };
 
 type OneBotSegment = Record<string, unknown>;
@@ -131,7 +133,8 @@ function parseOb(raw: string | null): OneBotAccount[] {
         id: asText(row.id) || randomUUID().slice(0, 10), contactId, qqNumber: asText(row.qqNumber),
         ownerQq: asText(row.ownerQq),
         enabled: row.enabled !== false, proactive: row.proactive === true,
-        lastError: asText(row.lastError), lastReceivedAt: asText(row.lastReceivedAt),
+        lastError: asText(row.lastError), lastErrorAt: Number(row.lastErrorAt ?? 0) || 0,
+        lastReceivedAt: asText(row.lastReceivedAt),
         lastSentAt: asText(row.lastSentAt), createdAt: asText(row.createdAt) || new Date().toISOString(),
       });
     }
@@ -141,12 +144,24 @@ function parseOb(raw: string | null): OneBotAccount[] {
 function hydrate(): void { if (accounts === null) accounts = parseOb(kvGet(KV_OB)); }
 function persist(): void { if (accounts !== null) kvSet(KV_OB, JSON.stringify({ version: 1, accounts })); }
 
+/** 与官方后端同一套时效口径：24 小时后自动不再报警；老库没有时间戳的历史错误按已过期处理。 */
+const QQ_ERROR_VISIBLE_MS = 24 * 60 * 60 * 1000;
+function noteError(acc: OneBotAccount, message: string): void {
+  const text = message.slice(0, 300);
+  if (text === "") return;
+  acc.lastError = text; acc.lastErrorAt = Date.now(); persist();
+}
+function clearError(acc: OneBotAccount): void { acc.lastError = ""; acc.lastErrorAt = 0; }
+function freshError(acc: OneBotAccount): string {
+  return acc.lastError !== "" && acc.lastErrorAt > 0 && Date.now() - acc.lastErrorAt < QQ_ERROR_VISIBLE_MS ? acc.lastError : "";
+}
+
 /** 注入/更新一个真实 QQ 号到联系人的映射。仅 OneBot 后端有意义。 */
 export function upsertOneBotAccount(contactId: string, qqNumber: string, patch: { enabled?: boolean; proactive?: boolean; ownerQq?: string } = {}): OneBotAccount {
   hydrate();
   let acc = (accounts ?? []).find((a) => a.contactId === contactId) ?? null;
   if (acc === null) {
-    acc = { id: randomUUID().slice(0, 10), contactId, qqNumber, ownerQq: "", enabled: true, proactive: false, lastError: "", lastReceivedAt: "", lastSentAt: "", createdAt: new Date().toISOString() };
+    acc = { id: randomUUID().slice(0, 10), contactId, qqNumber, ownerQq: "", enabled: true, proactive: false, lastError: "", lastErrorAt: 0, lastReceivedAt: "", lastSentAt: "", createdAt: new Date().toISOString() };
     accounts?.push(acc);
   }
   if (qqNumber !== "") acc.qqNumber = qqNumber;
@@ -547,15 +562,15 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
     if (text !== "") segments.push(obText(text));
     segments.push(...media);
     if (segments.length === 0) return false;
-    if (targetId === "" && scope === "private") { acc.lastError = "没有设置主人 QQ 号，无法发送私聊"; persist(); return false; }
+    if (targetId === "" && scope === "private") { noteError(acc, "没有设置主人 QQ 号，无法发送私聊"); return false; }
     try {
       const params: Record<string, unknown> = scope === "private" ? { user_id: targetId, message: segments } : { group_id: targetId, message: segments };
       await obAction(scope === "private" ? "send_private_msg" : "send_group_msg", params);
-      acc.lastSentAt = new Date().toISOString(); acc.lastError = ""; persist();
+      acc.lastSentAt = new Date().toISOString(); clearError(acc); persist();
       return true;
     } catch (error) {
       const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
-      acc.lastError = message; persist();
+      noteError(acc, message);
       console.warn(`[qq/onebot] ${scope} 投递失败（${acc.contactId}）：${message}`);
       return false;
     }
@@ -629,7 +644,7 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
       contactId = acc.contactId;
       ownerQq = acc.ownerQq;
       conv = ensureLocalConversation(contactId);
-      acc.lastReceivedAt = new Date().toISOString(); acc.lastError = ""; persist();
+      acc.lastReceivedAt = new Date().toISOString(); clearError(acc); persist();
     }
     if (conv.left_at !== null || !conv.enabled) return;
     // 过了所有闸门才取字节：未绑定的号、没开收到的群，一条都不该落盘。
@@ -676,7 +691,8 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
   const viewOf = (acc: OneBotAccount): QQBindingView => ({
     id: acc.id, contactId: acc.contactId, userOpenId: redact(acc.qqNumber),
     enabled: acc.enabled, proactive: acc.proactive, hasUserOpenId: acc.qqNumber !== "", status: statusOf(),
-    hasReplyWindow: false, lastError: acc.lastError, lastReceivedAt: acc.lastReceivedAt,
+    hasReplyWindow: false, lastError: freshError(acc), lastErrorAt: acc.lastErrorAt,
+    lastReceivedAt: acc.lastReceivedAt,
     lastSentAt: acc.lastSentAt, createdAt: acc.createdAt, conversations: convsFor(acc.contactId),
     ownerQq: acc.ownerQq, qqNumber: acc.qqNumber,
   });
@@ -690,7 +706,7 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
     if (segments.length === 0) return { ok: false, error: "没有可发送的文字" };
     for (const segment of segments) {
       if (!(await sendOut(acc, "private", privateTarget(acc), segment, []))) {
-        return { ok: false, error: acc.lastError || "OneBot 私聊投递失败" };
+        return { ok: false, error: freshError(acc) || "OneBot 私聊投递失败" };
       }
     }
     return { ok: true, error: "" };
@@ -706,7 +722,7 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
       if (segments.length === 0) return { ok: false, error: "没有可发送的文字" };
       for (const segment of segments) {
         if (!(await sendOut(acc, "group", conv.external_id, segment, []))) {
-          return { ok: false, error: acc.lastError || "OneBot 群投递失败" };
+          return { ok: false, error: freshError(acc) || "OneBot 群投递失败" };
         }
       }
       return { ok: true, error: "" };
@@ -782,12 +798,12 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
       const acc = primaryAccount();
       if (acc === null || !acc.enabled) return { ok: false, native: false, via: "skipped", detail: "没有可用的 OneBot 账号" };
       const sent = await sendOut(acc, "group", conv.external_id, "", render.segments);
-      if (!sent) return { ok: false, native: false, via: "skipped", detail: acc.lastError || "协议端发送失败" };
+      if (!sent) return { ok: false, native: false, via: "skipped", detail: freshError(acc) || "协议端发送失败" };
     } else {
       const acc = byContact(conv.contact_id);
       if (acc === null || !acc.enabled) return { ok: false, native: false, via: "skipped", detail: "联系人没有绑定 OneBot 账号" };
       const sent = await sendOut(acc, "private", privateTarget(acc), "", render.segments);
-      if (!sent) return { ok: false, native: false, via: "skipped", detail: acc.lastError || "协议端发送失败" };
+      if (!sent) return { ok: false, native: false, via: "skipped", detail: freshError(acc) || "协议端发送失败" };
     }
     return { ok: true, native: render.native, via: "native" };
   };
@@ -811,7 +827,10 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
     summary: () => {
       const list = (accounts ?? []);
       const primary = list.find((a) => a.enabled) ?? list[0];
-      const trouble = list.filter((a) => a.lastError !== "").slice(0, 3).map((a) => ({ contactId: a.contactId, name: getContact(a.contactId)?.name || a.contactId, lastError: a.lastError }));
+      const trouble = list
+        .map((a) => ({ a, error: freshError(a) }))
+        .filter((x) => x.error !== "").slice(0, 3)
+        .map(({ a, error }) => ({ contactId: a.contactId, name: getContact(a.contactId)?.name || a.contactId, lastError: error, at: a.lastErrorAt }));
       return {
         configured: list.length > 0,
         appId: primary !== undefined && primary.qqNumber !== "" ? redact(primary.qqNumber) : "",
@@ -852,6 +871,17 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
     startAll: (): void => { void probe(); openWs(); },
     stopAll: (): void => { closeWs(); },
     dispose: (): void => { disposed = true; closeWs(); },
+    /** 只抹掉状态页那条红字，活动记录里的失败记录一条不删；带 contactId 时只清这位联系人。 */
+    clearErrors: (contactId?: string): number => {
+      hydrate(); let cleared = 0;
+      for (const acc of accounts ?? []) {
+        if (contactId !== undefined && acc.contactId !== contactId) continue;
+        if (acc.lastError === "" && acc.lastErrorAt === 0) continue;
+        clearError(acc); cleared += 1;
+      }
+      if (cleared > 0) persist();
+      return cleared;
+    },
     clearAll: (): void => { closeWs(); accounts = []; reachable = false; persist(); },
     gatewayStatus: (_contactId?: string): QQStatus => statusOf(),
     lastGatewayError: (): string => reachable ? "" : "OneBot 协议端连不上",

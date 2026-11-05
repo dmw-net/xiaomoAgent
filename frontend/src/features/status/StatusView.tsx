@@ -390,6 +390,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
               d={status}
               caps={caps} capsErr={capsErr} onRetryCaps={() => setCapsNonce((n) => n + 1)}
               onOpenContacts={onOpenContacts}
+              onRefresh={refreshStatus}
               notice={statusErr !== "" ? `刷新失败：${statusErr}（下面显示的是上次的结果）` : undefined}
               goSettings={goSettings} goTab={() => { setActivityView("calls"); setTab("activity"); }}
               goQueue={() => { setActivityView("queue"); setTab("activity"); }}

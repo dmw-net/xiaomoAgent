@@ -648,7 +648,6 @@ fn start_sidecar(app: &tauri::AppHandle, tx: Sender<BootOutcome>) -> Result<(), 
             // echo 模式开箱即用；用户后续在应用内配置模型。
             "MODEL_MODE": "echo",
             "PROACTIVE_ENABLED": "true",
-            "PROACTIVE_INTERVAL_MINUTES": "30",
             "PROACTIVE_IDLE_MINUTES": "120",
             "QUIET_HOURS": "23-8",
             "CHARACTER_NAME": "小茉",

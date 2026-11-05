@@ -66,7 +66,8 @@ export const proactiveTasksListRoute: Route = ({ res, url, path, method }) => {
   return true;
 };
 
-/** POST /api/proactive/tasks：用户自己立一条计划（到点不立刻发，落在下一次检查）。 */
+/** POST /api/proactive/tasks：用户自己立一条计划。到点由调度器准时唤醒：
+ *  reminder 在那一刻原样发出，care 在那一刻判断该不该开口（见 mind/proactive.ts）。 */
 export const proactiveTasksCreateRoute: Route = async ({ req, res, url, path, method }) => {
   if (!(method === "POST" && path === "/api/proactive/tasks")) return false;
   const contactId = strictContactId(url, res);

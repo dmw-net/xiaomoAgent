@@ -120,12 +120,12 @@ function AddTaskForm({ contactId, who, onClose, onAdded }: {
         )}
         <div className="hint">
           {Number.isFinite(dueAt()) && dueAt() > Date.now()
-            ? `${new Date(dueAt()).toLocaleString("zh-CN")} · ${clockOf(dueAt())} 前后`
+            ? `${new Date(dueAt()).toLocaleString("zh-CN")} · 到点发出`
             : "选好时间后这里显示具体时刻"}
         </div>
       </div>
 
-      <div className="hint">「到点」不精确到分钟：前后一小会儿内发出，落在免打扰时段会顺延。</div>
+      <div className="hint">闹钟会在那一分钟把你叫醒，到点就说；只有落在免打扰时段才会顺延到时段结束。</div>
       {err !== "" && <div className="onb-msg bad" role="alert">{err}</div>}
       <div className="actions">
         <button type="button" className="primary" disabled={busy} onClick={() => void submit()}>
@@ -254,6 +254,17 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
             <button type="button" className="btn sm" onClick={() => setAdding(true)}>＋ 添加计划</button>
             <span className="hint">到点必达 = 一定送到；到点想一想 = 到时候判断该不该开口。</span>
           </div>
+          {/* 联系人自己定的节奏不在「计划」里（那是一行状态，不是队列里的条目）：
+              用户仍然想知道「它下次什么时候会想起我」，所以单独列一张卡。 */}
+          {next?.source === "schedule" && (
+            <div className="list-card next-task">
+              <div className="list-row">
+                <b>下一次主动判断</b>
+                <div className="focus">{next.focus}</div>
+                <div className="due">{whenText(next.due_at)} · {clockOf(next.due_at)}（节奏由{who}自己定）</div>
+              </div>
+            </div>
+          )}
           <div className="list-card" {...panelAria("pnl", "pending")}>
             {pending.length === 0 && (
               <div className="empty">还没有待执行的计划。点上面「添加计划」自己立一条，或等{who}自己生出打算。</div>
@@ -266,7 +277,10 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
                       {t.kind === "reminder" && <span className="pend-kind">到点必达</span>}
                       {t.focus}
                     </div>
-                    <div className="due">{whenText(t.due_at)}（{clockOf(t.due_at)} 前后检查）</div>
+                    <div className="due">
+                      {whenText(t.due_at)} · {clockOf(t.due_at)}
+                      {t.kind === "reminder" ? " 到点发出" : " 到时判断"}
+                    </div>
                   </div>
                   <button type="button" onClick={() => cancel(t)}>取消</button>
                 </div>
@@ -308,10 +322,11 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
             <div className="list-card">
               {GATE_DEFS.map((def, i) => {
                 const info = gateMap[def.key] ?? { passed: true, detail: "" };
-                let cls = "passed";
-                let verdict = "通过";
+                // 判定必须认 info.passed：从前只看 blockedAt，于是「今天说够了」
+                // 即使配额已满也渲染成「通过」，底下还总结「全部检查项通过」。
+                let cls = info.passed ? "passed" : "none";
+                let verdict = info.passed ? "通过" : "未通过";
                 if (blockedAt !== null && def.key === blockedAt) { cls = "blocked"; verdict = "卡在这里"; }
-                else if (blockedAt !== null && info.passed === false) { cls = "none"; verdict = "未评估"; }
                 return (
                   <div key={def.key} className={"list-row gate " + cls}>
                     <span className="idx">{i + 1}</span>
@@ -341,7 +356,10 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
                 <div className="list-row">
                   <b>下一次主动消息计划</b>
                   <div className="focus">{next.focus}</div>
-                  <div className="due">{whenText(next.due_at)}（{clockOf(next.due_at)} 前后检查）</div>
+                  <div className="due">
+                    {whenText(next.due_at)} · {clockOf(next.due_at)}
+                    {next.source === "schedule" ? "（节奏由 TA 自己定）" : (next.kind === "reminder" ? " 到点发出" : " 到时判断")}
+                  </div>
                 </div>
               ) : (
                 <div className="empty">还没有待执行的计划。</div>

@@ -43,7 +43,7 @@ export function relTime(ts: number): string {
 /** 未来时间：即将检查 / N 分钟后 / 约 N 小时后 / 约 N 天后。 */
 export function whenText(ts: number): string {
   const mins = Math.round((ts - Date.now()) / 60_000);
-  if (mins <= 0) return "即将检查";
+  if (mins <= 0) return "马上";
   if (mins < 60) return mins + " 分钟后";
   const hours = Math.round(mins / 60);
   if (hours < 36) return "约 " + hours + " 小时后";

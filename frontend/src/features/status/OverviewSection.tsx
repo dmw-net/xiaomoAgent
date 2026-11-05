@@ -235,7 +235,9 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
       led: (d.proactive.enabled ? "ok" : "warn") as Led, k: "主动性",
       silent: !!d.proactive.enabled,
       note: d.proactive.enabled ? undefined : "主动性总开关关着，不会主动找你",
-      v: d.proactive.enabled ? `开着，每 ${d.proactive.intervalMinutes ?? 30} 分钟看看要不要说话` : "总开关关着：不会主动找你",
+      v: d.proactive.enabled
+        ? (d.proactive.nextWakeAt ? `开着，${whenText(d.proactive.nextWakeAt)}再判断要不要开口` : "开着，等下一条由头再说")
+        : "总开关关着：不会主动找你",
       fix: d.proactive.enabled
         ? undefined
         : <>总开关在配置文件里改；免打扰与每天说几次在各联系人的「主动性」里配</>,

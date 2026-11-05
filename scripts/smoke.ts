@@ -468,6 +468,57 @@ try {
     await free.json().catch(() => undefined);
   }
 
+  console.log("\n[7b] 到点提醒不排在别人的判断后面（一趟唤醒是两段：先发全体提醒，再逐个判断 care）");
+  // 断言方式不依赖模型快慢、也不需要人为延时：把「该判断的人」排在前面、「该收提醒的人」
+  // 排在后面，看消息 id 的先后。旧实现逐联系人「先提醒后判断」，后排那人的提醒会被插到
+  // 前排那人的判断之后；两段式下，全体提醒必然先落库。
+  // 位置选在这里是有意的：[20] 之后全局模型换成了真端点（会被 401），care 就不再是
+  // echo 那句必然开口的话了；这一段之前它还是演示模式。
+  {
+    const { db: orderDb } = await import("../src/core/db.ts");
+    const mkContact = async (name: string): Promise<string> => {
+      const res = await fetch(`${BASE}/api/contacts`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }),
+      });
+      return String(((await res.json()).contact ?? {}).id ?? "");
+    };
+    const earlier = await mkContact("顺序验证·先判断的");
+    // 留一点时间差：listContacts 按 created_at 升序，同一毫秒建出来顺序不定，断言就没意义了。
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const later = await mkContact("顺序验证·后到点的");
+    check("两个用于顺序验证的联系人已建好", earlier !== "" && later !== "");
+    const due = Date.now() + 1_000;
+    // earlier：节拍到点（直接写状态行，模拟「这一趟它也该开口」）
+    orderDb.prepare(
+      `INSERT INTO proactive_state (contact_id, next_check_at, focus, updated_at) VALUES (?, ?, ?, ?)
+       ON CONFLICT(contact_id) DO UPDATE SET next_check_at = excluded.next_check_at,
+         focus = excluded.focus, updated_at = excluded.updated_at`,
+    ).run(earlier, due, "问问他昨晚睡好没", Date.now());
+    // later：到点必达的提醒（这一条不该等 earlier 的判断跑完）
+    const latePost = await fetch(`${BASE}/api/proactive/tasks?contactId=${later}`, {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ kind: "reminder", focus: "顺序验证：这条必须准点", dueAt: due }),
+    });
+    check("后到点的那条提醒已立项", latePost.status === 200, `status=${latePost.status}`);
+    // 这一进程只起了 HTTP 服务，没有租约、没有闹钟：等它们到期后直接跑一趟唤醒函数。
+    await new Promise((resolve) => setTimeout(resolve, 1_500));
+    const { runWake } = await import("../src/mind/proactive.ts");
+    await runWake("timer");
+    const rows = orderDb.prepare(
+      `SELECT id, contact_id FROM messages
+       WHERE kind = 'proactive' AND contact_id IN (?, ?) ORDER BY id ASC`,
+    ).all(earlier, later) as Array<{ id: number; contact_id: string }>;
+    const careId = rows.find((r) => r.contact_id === earlier)?.id ?? 0;
+    const reminderId = rows.find((r) => r.contact_id === later)?.id ?? 0;
+    check("排在前面那个联系人确实开口了（控制组：说明这一趟真的判断过）", careId > 0);
+    check("后排那个的提醒也送达了", reminderId > 0);
+    check(
+      "提醒先于别人的判断送出（没有谁的一句话挡着别人的承诺）",
+      reminderId > 0 && careId > 0 && reminderId < careId,
+      `reminder#${reminderId} care#${careId}`,
+    );
+  }
+
   console.log("\n[8] 失败轮次的重试（不重复写用户消息）");
   const failSay = await (
     await fetch(`${BASE}/api/say`, {
@@ -1637,18 +1688,36 @@ try {
     "已执行的任务带结果说明（未到期时直接跳过、不再刷流水）",
     doneTasks.length >= 1 && doneTasks.every((t) => (t.result ?? "") !== ""),
   );
-  const pendingTasks = tasks.filter((t) => t.status === "pending");
-  check("判断后生成了下一次的打算（pending）", pendingTasks.length >= 1);
+  // 节拍不再借 pending 任务表达：判断完写的是 proactive_state 的一行
+  // （「下次什么时候想、想什么」是状态，不是待办），这里直接读那行验收。
+  const { db: stateDb } = await import("../src/core/db.ts");
+  const careState = stateDb
+    .prepare(`SELECT next_check_at, focus FROM proactive_state WHERE contact_id = 'default'`)
+    .get() as { next_check_at: number; focus: string } | undefined;
   check(
-    "打算带着具体的关注点而不是空话",
-    pendingTasks.every((t) => (t.focus ?? "").trim().length > 0),
-    pendingTasks[0]?.focus ?? "",
+    "判断后写下了下一次的节拍（状态行，不再占任务队列）",
+    careState !== undefined && Number(careState.next_check_at) > Date.now(),
+    JSON.stringify(careState ?? null),
+  );
+  check("节拍带着具体的关注点而不是空话", (careState?.focus ?? "").trim().length > 0, careState?.focus ?? "");
+  const pendingBoard = (await (await fetch(`${BASE}/api/proactive/tasks?limit=50&state=pending`)).json()).tasks as
+    Array<{ kind: string }>;
+  check(
+    "自动节拍不再往「待执行」里堆假计划（队列里只剩用户立的）",
+    pendingBoard.every((t) => t.kind === "reminder"),
+    `${pendingBoard.length} 条 pending`,
   );
 
   const statusNow = await (await fetch(`${BASE}/api/proactive/status`)).json();
   check("状态页能看到「她接下来的打算」", statusNow.nextTask && typeof statusNow.nextTask.focus === "string");
+  check("这条打算标明来自节拍而不是队列", statusNow.nextTask?.source === "schedule", String(statusNow.nextTask?.source));
 
-  const cancelTarget = pendingTasks[0];
+  // 取消要有一条真实的 pending 才验得了：自己立一条（不再指望自动生成的那条）。
+  const cancelSeed = await (await fetch(`${BASE}/api/proactive/tasks`, {
+    method: "POST", headers: { "content-type": "application/json" },
+    body: JSON.stringify({ focus: "待会儿问问他到家没", dueAt: Date.now() + 45 * 60_000 }),
+  })).json();
+  const cancelTarget: { id: number } = cancelSeed.task;
   const cancelOk = await fetch(`${BASE}/api/proactive/tasks/${cancelTarget.id}/cancel`, { method: "POST" });
   check("待执行的任务可以取消", cancelOk.status === 200);
   const cancelAgain = await fetch(`${BASE}/api/proactive/tasks/${cancelTarget.id}/cancel`, { method: "POST" });
@@ -2129,6 +2198,30 @@ try {
     readSrc("src/mind/persona.ts", "utf8").includes("一轮最多 3 张")
     && readSrc("src/mind/tools.ts", "utf8").includes("最多 3 张"));
   check("展示侧上限同步提到 3 张", readSrc("src/chat/agent.ts", "utf8").includes("MAX_REPLY_IMAGES = 3"));
+
+  // [2e] 展示侧三条附件队列：2026-11-05「一轮发了 3 张表情、气泡却只挂 1 张」的回归。
+  // 当时应用端表情混进 producedFiles，被出图的「一轮一张」slice(0,1) 砍掉后两张。
+  const threeApp = agentMod.replyAttachmentBuckets({
+    producedFiles: [], appEmoteFiles: ["/media/a.png", "/media/b.png", "/media/c.png"], channelDeliveredFiles: [],
+  });
+  check("应用端一轮 3 张表情，气泡 3 张都挂上", threeApp.bubbleImages.length === 3, JSON.stringify(threeApp));
+  check("应用端表情没进过渠道，镜像投递要带上 3 张", threeApp.deliveryImages.length === 3);
+  const threeNative = agentMod.replyAttachmentBuckets({
+    producedFiles: [], appEmoteFiles: [], channelDeliveredFiles: ["/media/a.png", "/media/b.png", "/media/c.png"],
+  });
+  check("QQ 原生已发的 3 张只挂气泡、绝不重发",
+    threeNative.bubbleImages.length === 3 && threeNative.deliveryImages.length === 0);
+  const threeGenerated = agentMod.replyAttachmentBuckets({
+    producedFiles: ["/media/a.png", "/media/b.png", "/media/c.png"], appEmoteFiles: [], channelDeliveredFiles: [],
+  });
+  check("出图仍按一轮一张，没被表情改动放宽",
+    threeGenerated.bubbleImages.length === 1 && threeGenerated.deliveryImages.length === 1);
+  check("表情卡摘要带上名字，不再和标签念成两遍",
+    agentMod.toolSummary("send_emote", { via: "app-attachment", label: "海底摸鱼", native: false }) === "「海底摸鱼」");
+  const agentSrc = readSrc("src/chat/agent.ts", "utf8");
+  check("应用端表情在工具循环里被分到独立队列",
+    agentSrc.includes("onAppEmoteFiles?.(result.attachments")
+    && agentSrc.includes("replyAttachmentBuckets({"));
 
   // 图片回收：此前 releaseMediaFiles 的 SQL 非法（LIMIT 写在 UNION ALL 之前），每次调用都抛错，
   // 而 deleteMessage 没兜异常——「删掉一条带图消息」会在事务提交后报 500，图片永久泄漏在磁盘上。

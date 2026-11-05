@@ -24,12 +24,14 @@ export function purposeLabel(purpose: string): string {
   return PURPOSE_LABEL[purpose] ?? "其他活动";
 }
 
-/** 主动性「为什么没说」的四道判断，名字说人话（用户看到的是"这次为什么没开口"）。 */
+/** 主动性「为什么没说」的判断项，名字说人话（用户看到的是"这次为什么没开口"）。 */
 export const GATE_DEFS = [
   { key: "enabled", name: "主动性开关" },
   { key: "quiet", name: "免打扰时段" },
   { key: "idle", name: "安静够久" },
   { key: "daily", name: "今天说够了" },
+  // 演示模式不是"卡住"（照样会开口），但用户有权知道这句是谁说的。
+  { key: "model", name: "模型就绪" },
 ];
 
 export const TURN_LABEL: Record<string, string> = {

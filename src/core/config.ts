@@ -155,7 +155,9 @@ export const config = Object.freeze({
   }),
   proactive: Object.freeze({
     enabled: bool("PROACTIVE_ENABLED", true),
-    intervalMinutes: int("PROACTIVE_INTERVAL_MINUTES", 30),
+    // 从前这里有 intervalMinutes（固定 30 分钟的轮询节拍）：到点提醒最晚会迟到半小时，
+    // 免打扰里还得靠一次次顺延凑过去。现在节拍由联系人自己判断（next_check_minutes），
+    // 调度器只负责在最近的那个时刻醒一次，所以这个旋钮已经不存在了。
     idleMinutes: int("PROACTIVE_IDLE_MINUTES", 120),
     quietHours: str("QUIET_HOURS", "23-8"),
     /** 每联系人每天主动发言的默认上限（联系人功能开关里的 dailyLimit>0 时优先）。 */

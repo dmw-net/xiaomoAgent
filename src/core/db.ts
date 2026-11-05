@@ -169,6 +169,21 @@ CREATE TABLE IF NOT EXISTS proactive_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_proactive_due ON proactive_tasks (status, due_at);
 
+-- 主动性节拍（2026-11-05）：care 的「下次什么时候想、想什么」是一行状态，不是队列里的一条任务。
+--
+-- 为什么单列一张表：从前把它实现成「每轮插一条 pending 任务」，于是调度与台账共用一张表，
+-- 需要 PENDING_CAP、启动去重、四处 kind 特判三套补丁来维持，而且自动清理会误伤用户手建的计划。
+-- 现在职责分开：
+--   proactive_state  = care 自己的节拍（每联系人一行，由模型决定下次几分钟后）
+--   proactive_tasks  = 必须兑现的承诺（reminder）、用户手建的计划、执行留痕
+-- 调度器只认两者的最小值 —— 见 mind/proactive.ts 的 nextWakeAt()。
+CREATE TABLE IF NOT EXISTS proactive_state (
+  contact_id    TEXT PRIMARY KEY,
+  next_check_at INTEGER NOT NULL,            -- 下次想这件事的时间戳（免打扰在排期时一次跳过）
+  focus         TEXT    NOT NULL DEFAULT '', -- 下次想关注什么（上一轮判断留下的观察）
+  updated_at    INTEGER NOT NULL
+);
+
 -- 联系人：一个联系人 = 一段独立的关系（人格 + 记忆 + 对话完全隔离）。
 -- type 留 group 口子（群聊：一个会话多个参与者），当前只实现 single。
 CREATE TABLE IF NOT EXISTS contacts (

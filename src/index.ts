@@ -16,7 +16,8 @@ import { registerChannel } from "./channels/types.ts";
 import { webChannel } from "./channels/web.ts";
 import { createHttpServer } from "./server.ts";
 import * as lan from "./core/lan.ts";
-import { startProactiveLoop, runProactiveCheck, pruneProactiveBacklog, pruneFinishedTasks } from "./mind/proactive.ts";
+import { startProactiveLoop, stopProactiveLoop, runProactiveCheck, pruneProactiveBacklog, pruneFinishedTasks } from "./mind/proactive.ts";
+import { maybeRunConsolidation } from "./chat/consolidate.ts";
 import { sweepStaleTurns } from "./chat/agent.ts";
 import { backfillMemoryEmbeddings } from "./mind/memory.ts";
 import { isChatModelId, listModels, pingChat } from "./settings/model.ts";
@@ -77,11 +78,16 @@ if (!weHoldLease) {
  * 每个都先判空再赋值，重复调用不会起出第二个定时器。
  */
 const MAINTENANCE_MS = 6 * 3_600_000;
-let proactiveTimer: NodeJS.Timeout | null = null;
+// 主动性不再是「一个固定间隔的定时器」：它内部是单个闹钟，睡到最早到期时刻才醒。
+// 这里只需要记「起没起」，停下由 stopProactiveLoop 负责（它会顺手清掉闹钟）。
+let proactiveStarted = false;
 let maintenanceTimer: NodeJS.Timeout | null = null;
 
 function beginDuty(): void {
-  if (proactiveTimer === null) proactiveTimer = startProactiveLoop();
+  if (!proactiveStarted) {
+    proactiveStarted = true;
+    startProactiveLoop();
+  }
   // 出站队列同一时间只允许一个当家进程消费。
   startOutboundLoop();
   // 微信通道：恢复已绑定链接的收件长轮询（未绑定时无操作）。
@@ -100,7 +106,7 @@ function beginDuty(): void {
 }
 
 function endDuty(): void {
-  if (proactiveTimer !== null) { clearInterval(proactiveTimer); proactiveTimer = null; }
+  if (proactiveStarted) { stopProactiveLoop(); proactiveStarted = false; }
   if (maintenanceTimer !== null) { clearInterval(maintenanceTimer); maintenanceTimer = null; }
   stopOutboundLoop();
   wechat.stopAll();
@@ -115,9 +121,9 @@ if (weHoldLease) beginDuty();
 // 中途补位的场景下前任可能只是短暂停摆，它的在飞轮次不该被我们判死。
 const staleTurns = weHoldLease ? sweepStaleTurns() : 0;
 if (staleTurns > 0) console.log(`[startup] 清扫 ${staleTurns} 条因重启中断的处理单（已标记失败，可重试）`);
-const pruned = weHoldLease ? pruneProactiveBacklog() : { orphans: 0, deduped: 0 };
-if (pruned.orphans + pruned.deduped > 0) {
-  console.log(`[startup] 主动性任务修复：孤儿清理 ${pruned.orphans} 条、堆积合并 ${pruned.deduped} 条`);
+const pruned = weHoldLease ? pruneProactiveBacklog() : { orphans: 0, folded: 0 };
+if (pruned.orphans + pruned.folded > 0) {
+  console.log(`[startup] 主动性修复：孤儿清理 ${pruned.orphans} 条、旧任务并入节拍 ${pruned.folded} 条`);
 }
 // 存量数据迁移（幂等，kv 标记防重跑）：工具调用能力从「元数据」升格为「硬闸」的这一版，
 // 把老数据里从未勾选过的 false 翻正，否则联系人设置里的工具开关全部失效。
@@ -191,7 +197,7 @@ server.listen(lan.effectivePort(), lan.bindHost(), () => {
   console.log(
     `  模型：${modelReadyNow() ? modelConfig().name : "echo（未配置密钥，先跑通链路）"}`,
   );
-  console.log(`  主动性：${config.proactive.enabled ? `每 ${config.proactive.intervalMinutes} 分钟判断` : "关闭"}`);
+  console.log(`  主动性：${config.proactive.enabled ? "开（节奏由联系人自己定，到点由闹钟唤醒）" : "关闭"}`);
   console.log(`  设置：/settings（在应用里改模型与角色卡）`);
   console.log("──────────────────────────────────────────");
   void selfCheck();
@@ -291,6 +297,9 @@ function maintenance(): void {
   try {
     pruneModelCalls();
     const tasks = pruneFinishedTasks();
+    // 记忆整理曾经搭在「每 30 分钟检查一次主动性」那趟车上；现在主动性按需唤醒，
+    // 这里才是它该待的地方（内部仍按 CONSOLIDATE_INTERVAL_DAYS 节流，6 小时看一眼足够）。
+    maybeRunConsolidation();
     const media = purgeExpiredMediaTrash();
     // 回收站过期真删之后对账一次：文件从盘上消失，资产行也该跟着销账。
     reconcileAssets();

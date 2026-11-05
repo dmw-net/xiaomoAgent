@@ -26,6 +26,7 @@ import { SKILL_TOOL, usableSkills } from "./skills.ts";
 import { WEB_TOOLS } from "./search.ts";
 import { extensionToolDefs } from "./extensions.ts";
 import { takeReminderSlot, REMINDERS_PER_TURN } from "../core/reminder-slot.ts";
+import { requestWake } from "../core/wake-hub.ts";
 import { db } from "../core/db.ts";
 import { getContact } from "../chat/contacts.ts";
 import { emoteCapabilities, resolveFace, type QqEmoteIntent } from "../emote/qq-emote.ts";
@@ -182,6 +183,7 @@ const TOOLS: ToolDef[] = [
     name: "schedule_reminder",
     description:
       "给自己立一条「到点必须说」的提醒任务（用户说「明晚九点提醒我吃药」「半小时后提醒我开会」时用）。" +
+      "到点由闹钟在那个时刻唤醒，精确到分钟；只有落在免打扰时段才会顺延到时段结束。" +
       "to_local 用本地时间格式 YYYY-MM-DD HH:MM（按当前日期推算清楚绝对时间）；" +
       "或 in_minutes 给从现在起多少分钟后（两者给一个即可，in_minutes 优先）。" +
       "text 是一句话提醒内容（≤60 字，写清楚提醒的是什么）。",
@@ -232,6 +234,8 @@ const TOOLS: ToolDef[] = [
           `INSERT INTO proactive_tasks (contact_id, focus, due_at, kind, conversation_id, created_at) VALUES (?, ?, ?, 'reminder', ?, ?)`,
         )
         .run(context.contactId, text, due, context.conversationId ?? null, Date.now());
+      // 新的承诺可能比闹钟当前排的时刻更早：立刻让调度器重排，别等下个分片。
+      requestWake();
       return { ok: true, id: Number(inserted.lastInsertRowid), due_at: new Date(due).toISOString(), text };
     },
   },
@@ -427,8 +431,10 @@ const TOOLS: ToolDef[] = [
       }
 
       // 渠道分流：QQ 会话走原生表情投递（face/mface/image 段）；
-      // 应用端（web/local 频道）没有原生 QQ 表情，图片表情走 files 挂成本条回复的气泡附件
-      // （跟 generate_image 出图同一条路），内置/商城表情降级成 emoji 文字。
+      // 应用端（web/local 频道）没有原生 QQ 表情，图片表情走 files 挂成本条回复的气泡附件，
+      // 内置/商城表情降级成 emoji 文字。
+      // 注意：应用端虽然和 generate_image 一样交 files，但它不是「出图」——agent 侧按工具名
+      // 分到 appEmote 队列，不受出图「一轮一张」裁剪，也不该被当成画出来的图写附注。
       const { getConversation } = await import("../chat/conversations.ts");
       const conv = getConversation(conversationId);
       const isQq = conv !== null && conv.channel === "qq";
@@ -441,13 +447,18 @@ const TOOLS: ToolDef[] = [
             return { ok: false, error: `应用端发不了外链表情「${intent.url}」，换成表情包素材里的 /media 图片（用 emote_search 查）` };
           }
           if (emoteAssetId !== "") bumpEmoteUse(emoteAssetId);
+          // 带上名字：工具卡摘要才不会和标签一起念成「发了张表情 · 发了张表情」，
+          // 历史标记也靠 meta.label 让联系人记得这轮甩的是哪张（QQ 原生分支早就有）。
+          const emoteLabel = label !== "" ? label : (intent.label ?? "");
           return {
             files: [intent.url],
             result: {
               via: "app-attachment",
               native: false,
+              ...(emoteLabel !== "" ? { label: emoteLabel } : {}),
               note: "当前是应用端会话，表情包已作为图片附在这条回复上发出去了",
             },
+            meta: [{ url: intent.url, kind: "image" as const, ...(emoteLabel !== "" ? { label: emoteLabel } : {}) }],
           };
         }
         // face / mface 是 QQ 私有概念，应用端没有原生渲染通道。给模型一个 hint：让它在自己的回复里用 emoji 代替。

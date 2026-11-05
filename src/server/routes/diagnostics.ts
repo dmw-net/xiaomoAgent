@@ -129,7 +129,7 @@ const statusRoute: Route = ({ res, url, path, method }) => {
     ...view,
     /** 近 24 小时的调用/失败数：健康信号要时间窗，累计值会把多年前的失败一直挂着。 */
     recent: modelCallWindow(24),
-    proactive: { ...inspectGates(contactId), enabled: config.proactive.enabled, intervalMinutes: config.proactive.intervalMinutes },
+    proactive: { ...inspectGates(contactId), enabled: config.proactive.enabled },
     turns: turnStats(),
     channels: listChannels(),
     /** 通道是全局资产（一个联系人一条链接），总览按整体报，不按当前会话那位报。 */

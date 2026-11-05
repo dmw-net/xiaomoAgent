@@ -5,9 +5,11 @@ import type { QQStatus } from "./qq";
 export type GateState = {
   blockedAt: string | null;
   gates: Record<string, { passed: boolean; detail: string }>;
-  nextTask?: { focus: string; due_at: number } | null;
+  /** source：task = 队列里的一条计划/提醒；schedule = 联系人自己定的下次判断节拍。 */
+  nextTask?: { focus: string; due_at: number; kind?: "care" | "reminder"; source?: "task" | "schedule" } | null;
+  /** 调度器下一次真正会醒的时刻（不发消息时只是去看一眼）。 */
+  nextWakeAt?: number | null;
   enabled?: boolean;
-  intervalMinutes?: number;
 };
 
 /** 全局微信连接概况（一个联系人至多一条链接，各自一条轮询）。 */

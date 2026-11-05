@@ -932,7 +932,7 @@ export function toolSummary(name: string, result: unknown): string {
     // 没拆的分支（业务失败 / 只回候选）也一起认，别把任何一种甩成 JSON。
     const r = result as {
       ok?: boolean; error?: string; sent?: boolean; candidates?: unknown[];
-      via?: string; native?: boolean; note?: string;
+      via?: string; native?: boolean; note?: string; label?: string;
     } | null;
     if (r?.ok === false) return `表情没发出去：${r.error ?? "原因不明"}`;
     // keyword 不够确定时工具没有发图，只列候选让模型挑——不算失败，但别说成「发了」。
@@ -942,6 +942,9 @@ export function toolSummary(name: string, result: unknown): string {
     }
     if (r?.via === "native" || r?.via === "media") return "把表情发到 QQ 了";
     if (r?.via === "app-emoji-fallback") return "用 emoji 回了个表情";
+    // 卡片标签本来就写着「发了张表情」，摘要再说一遍就成了「发了张表情 · 发了张表情」。
+    // 有名字时把名字摆出来，用户/模型都能记住这轮到底甩了哪张。
+    if (typeof r?.label === "string" && r.label.trim() !== "") return `「${r.label.trim().slice(0, 20)}」`;
     return "发了张表情";
   }
   if (name === "app_status") return "读取了应用当前配置状态";
@@ -1027,6 +1030,30 @@ const TOOL_DETAIL_MAX_CHARS = 1500;
  * 真正的「整轮门控」在 tools.ts:executeTool，这里只负责展示侧不再硬砍到一张。
  */
 export const MAX_REPLY_IMAGES = 3;
+
+/**
+ * 三种「工具带回来的图」要分开算，混在一起就会丢表情：
+ * - produced：generate_image / send_voice 自己产出的媒体，工具描述约定一轮一张，投递也只带一张；
+ * - appEmote：应用端 send_emote 挂的气泡附件（via=app-attachment），整轮门控已限 3 张，
+ *   这里不该再被「一轮一张」砍一刀；它们没进 QQ，镜像投递时要带上；
+ * - channelDelivered：QQ 会话里 send_emote 已原生发出，只挂气泡，绝不重发。
+ *
+ * 2026-11-05 翻车现场：一轮发了 3 张表情，工具卡 3 次「发了张表情」，气泡却只有 1 张图——
+ * 因为 app-attachment 走的是 produced 队列，被 slice(0, 1) 砍掉了后两张。
+ * 返回值：bubbleImages 是展示侧附件，deliveryImages 是要镜像发进渠道的那批。
+ */
+export function replyAttachmentBuckets(input: {
+  producedFiles: string[];
+  appEmoteFiles: string[];
+  channelDeliveredFiles: string[];
+}): { bubbleImages: string[]; deliveryImages: string[] } {
+  const outgoingImages = input.producedFiles.slice(0, 1);
+  const appEmoteImages = input.appEmoteFiles.slice(0, MAX_REPLY_IMAGES);
+  return {
+    bubbleImages: [...outgoingImages, ...appEmoteImages, ...input.channelDeliveredFiles].slice(0, MAX_REPLY_IMAGES),
+    deliveryImages: [...outgoingImages, ...appEmoteImages].slice(0, MAX_REPLY_IMAGES),
+  };
+}
 
 export function toolDetail(name: string, result: unknown): string {
   const r = (result ?? {}) as Record<string, unknown>;
@@ -1169,6 +1196,12 @@ async function runAgentLoop(
   onFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
   /** 工具已自行发进渠道的文件出口（send_emote 原生表情）：挂气泡用，但通道投递要跳过，防同一张图发两遍。 */
   onChannelDeliveredFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
+  /**
+   * 应用端表情附件出口（send_emote via=app-attachment）。工具已经把图挂到这条回复上，
+   * 但它不是「出图」：整轮最多 3 张由 tools.ts 的门控负责，这里不能再用出图的一轮一张裁剪。
+   * 与 onChannelDeliveredFiles 的区别：应用端图没进 QQ，镜像投递时仍要带走它们。
+   */
+  onAppEmoteFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
   /**
    * 流式草稿出口。**只有陪聊这一路会传**（抽取/主动性/整理都不传），
    * 于是也只有它们会向服务商要 `stream: true` —— 那些调用要的是结构不是过程，
@@ -1333,9 +1366,11 @@ async function runAgentLoop(
         const call = slot.call;
         const result = slot.result as ToolResult;
         // 工具产物（出图）当场交出去挂到这条回复上。已画出的图即使在飞中被取消也不丢。
-        // 工具标记 deliveredToChannel 的（send_emote 已原生发进 QQ）：挂气泡但不进通道投递序列。
+        // 三条队列各走各的（见 replyAttachmentBuckets）：QQ 原生已发的不重发；应用端表情
+        // 单独一队，别混进出图队列被「一轮一张」砍掉；其余才是出图/语音。
         if (result.ok && result.attachments && result.attachments.length > 0) {
           if (result.deliveredToChannel === true) onChannelDeliveredFiles?.(result.attachments, result.attachmentMeta);
+          else if (call.name === "send_emote") onAppEmoteFiles?.(result.attachments, result.attachmentMeta);
           else onFiles?.(result.attachments, result.attachmentMeta);
         }
         console.log(`[agent] 工具 ${call.name} → ${result.ok ? "ok" : `失败：${result.error}`}`);
@@ -1852,6 +1887,8 @@ export async function respondToTurn(
     const producedMeta: MessageAttachmentMeta[] = [];
     const channelDeliveredFiles: string[] = [];
     const channelDeliveredMeta: MessageAttachmentMeta[] = [];
+    const appEmoteFiles: string[] = [];
+    const appEmoteMeta: MessageAttachmentMeta[] = [];
     const reply = await runAgentLoop(turn, system, history, controller.signal,
       (text) => { if (text.trim() !== "") reasoningParts.push(text.trim()); },
       reasoningDraftWriter(turn.id),
@@ -1859,10 +1896,15 @@ export async function respondToTurn(
         producedFiles.push(...urls);
         if (metas !== undefined) producedMeta.push(...metas);
       },
-      // 已由工具发进渠道的表情图：只挂气泡（带 label 元数据），绝不进 outgoingImages（否则 QQ 会再收一遍）。
+      // 已由工具发进渠道的表情图：只挂气泡（带 label 元数据），绝不进 deliveryImages（否则 QQ 会再收一遍）。
       (urls, metas) => {
         channelDeliveredFiles.push(...urls);
         if (metas !== undefined) channelDeliveredMeta.push(...metas);
+      },
+      // 应用端 send_emote 挂上来的表情：不受出图的「一轮一张」限制，一轮最多 3 张。
+      (urls, metas) => {
+        appEmoteFiles.push(...urls);
+        if (metas !== undefined) appEmoteMeta.push(...metas);
       },
       draftWriter(turn.id), cancelIfAborted, assistantPermissionSnapshot);
     if (cancelIfAborted()) return "";
@@ -1870,9 +1912,11 @@ export async function respondToTurn(
     // 收尾补最后一拍：节流器可能吃掉最后一段，定稿前必须让草稿与最终 reasoning 完全一致。
     q(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(reasoning || null, turn.id);
     // 出图/语音仍按「一轮一张」投递：工具描述就是这么约定的，放宽会让一轮甩 3 张图到 QQ。
-    // 表情是 send_emote 自己逐条发进渠道的，通道那边本来就是 N 条，不走这里。
-    // 名字避开外层那个"本轮入站附件"attachments——那是用户发来的图，这是联系人发出去的。
-    const outgoingImages = producedFiles.slice(0, 1);
+    // 应用端表情是第三类（见 replyAttachmentBuckets）：不是出图，一轮 3 张由门控管，
+    // 展示和镜像投递都得带上；QQ 会话里已原生发出的那批则只挂气泡、绝不重发。
+    const { bubbleImages, deliveryImages } = replyAttachmentBuckets({
+      producedFiles, appEmoteFiles, channelDeliveredFiles,
+    });
 
     // 分条发送：按句子切成几个气泡，逐条延迟落库——像人打字，而不是一次性甩一大段。
     // Markdown 内容（列表/代码块）由分割器保证整条不拆。turn 在最后一条落库后才 done，
@@ -1880,12 +1924,10 @@ export async function respondToTurn(
     // 联系人可以把这套节奏关掉（回复方式=单条整段）：整条一个气泡、不等待。
     // 这一组气泡同时就是**通道出站的消息序列**：本地几颗气泡，微信/QQ 里就几条消息；
     // 重答旧轮是整条写回原来那颗气泡，那种情况仍按一条算。
-    // 气泡是纯展示层：出图 ∪ 已进渠道的表情都挂上，最多 MAX_REPLY_IMAGES 张，
-    // 与 QQ 侧实际收到的表情条数对齐；达到阈值后前端会收成一张卡片。
-    const bubbleImages = [...outgoingImages, ...channelDeliveredFiles].slice(0, MAX_REPLY_IMAGES);
-    // 气泡附件的元数据（表情的 label / 语音的时长与转写）：来源两条——已进渠道的表情、
-    // 本地产出的语音（send_voice 应用端路径）。按挂上气泡的 URL 过滤，别把没挂的带下去。
-    const bubbleMeta = [...channelDeliveredMeta, ...producedMeta].filter((m) => bubbleImages.includes(m.url));
+    // 气泡是纯展示层：出图 ∪ 应用端表情 ∪ 已进渠道的表情都挂上，最多 MAX_REPLY_IMAGES 张。
+    // 气泡附件的元数据（表情的 label / 语音的时长与转写）：三条来源都算，
+    // 按挂上气泡的 URL 过滤，别把没挂的带下去。
+    const bubbleMeta = [...channelDeliveredMeta, ...appEmoteMeta, ...producedMeta].filter((m) => bubbleImages.includes(m.url));
     const parts = collapseIntoId !== null || getContact(contactId)?.features.splitReply === false
       ? [reply]
       : segmentReply(reply);
@@ -1934,7 +1976,7 @@ export async function respondToTurn(
 
     // 附注跟在最后一颗气泡后面：分条时不能每颗都挂一遍。
     const noted = (note: string): string[] =>
-      outgoingImages.length === 0
+      deliveryImages.length === 0
         ? parts
         : parts.map((part, i) => (i === parts.length - 1 ? `${part}\n${note}` : part));
     // 通道投递：QQ 群按群回复，绝不把群回复镜像到联系人私聊；
@@ -1952,16 +1994,20 @@ export async function respondToTurn(
       })
         .then(async () => {
           // 图单独发一条（群图片不必引用原消息），文字先进入持久队列。
-          if (outgoingImages.length > 0) {
+          if (deliveryImages.length > 0) {
             const { qq } = await import("../channels/qq.ts");
-            await qq.deliverMediaToGroup(contactId, conversationId, "", outgoingImages.map((url) => ({ url })));
+            await qq.deliverMediaToGroup(contactId, conversationId, "", deliveryImages.map((url) => ({ url })));
           }
         })
         .catch(() => { /* 文字失败已落死信队列；媒体失败已落 qq lastError 与 model_calls */ });
     } else {
-      const wechatText = noted(mediaTypeOfUrl(outgoingImages[0] ?? "") === "audio"
-        ? "（发了条语音，微信发不出去，在这个应用里看）"
-        : "（画了一张图，微信发不出去，在这个应用里看）");
+      // 应用端表情不是「画了张图」，别再拿出图那句附注糊过去。
+      const wechatNote = appEmoteFiles.length > 0 && producedFiles.length === 0
+        ? "（发了表情，微信发不出去，在这个应用里看）"
+        : mediaTypeOfUrl(deliveryImages[0] ?? "") === "audio"
+          ? "（发了条语音，微信发不出去，在这个应用里看）"
+          : "（画了一张图，微信发不出去，在这个应用里看）";
+      const wechatText = noted(wechatNote);
       void enqueueAndDeliver({
         channel: "wechat", contactId, segments: wechatText, kind: "chat",
       }).catch(() => { /* 失败已落死信队列与 model_calls */ });
@@ -1970,9 +2016,9 @@ export async function respondToTurn(
         sourceMessageId: turn.trigger_message_id ?? undefined,
       })
         .then(async () => {
-          if (outgoingImages.length > 0) {
+          if (deliveryImages.length > 0) {
             const { qq } = await import("../channels/qq.ts");
-            await qq.deliverMediaToContact(contactId, "", outgoingImages.map((url) => ({ url })));
+            await qq.deliverMediaToContact(contactId, "", deliveryImages.map((url) => ({ url })));
           }
         })
         .catch(() => { /* 文字失败已落死信队列；媒体失败已落 qq lastError 与 model_calls */ });

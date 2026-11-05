@@ -28,7 +28,7 @@ if (PHASE === "1") {
     // ① image + /media → 挂附件。
     const r1 = await executeTool(
       "send_emote",
-      JSON.stringify({ url: "/media/abc123.gif" }),
+      JSON.stringify({ url: "/media/abc123.gif", label: "摸鱼" }),
       { contactId: "web-emote-test", conversationId: conv.id, turnId: null },
     );
     assert.strictEqual(r1.ok, true, "image 意图不拒");
@@ -36,6 +36,10 @@ if (PHASE === "1") {
       Array.isArray(r1.attachments) && r1.attachments.includes("/media/abc123.gif"),
       "应用端 image 挂成气泡附件：" + JSON.stringify(r1),
     );
+    // 应用端表情也要带 label：工具卡摘要据此显示名字（不再和标签重复成两遍「发了张表情」），
+    // 历史标记靠 meta.label 记住这轮甩的是哪张图。
+    assert.strictEqual(r1.result.label, "摸鱼", "应用端表情回执带上名字：" + JSON.stringify(r1.result));
+    assert.strictEqual(r1.attachmentMeta?.[0]?.label, "摸鱼", "附件元数据带上表情名：" + JSON.stringify(r1));
 
     // ② face → 降级 emoji 提示（ok，非 files，payload 拍平在 result 里）。
     const r2 = await executeTool(

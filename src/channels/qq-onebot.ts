@@ -738,12 +738,19 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
     for (const segment of obTextSegments(text)) {
       const sent = await sendOut(acc, "private", privateTarget(acc), segment, []);
       if (sent) outcome.sent += 1;
-      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+      else { outcome.failed += 1; outcome.lastError = freshError(acc); }
     }
     if (media.length > 0) {
-      const sent = await sendOut(acc, "private", privateTarget(acc), "", media.map(obMediaSegment));
-      if (sent) outcome.sent += 1;
-      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+      // 逐张独立投递：一张媒体一条 QQ 消息，不整批叠进同一条气泡（与官方渠道、send_emote 单发同口径）。
+      // 节奏对齐 agent.ts 气泡 450~1200ms 的"像人打字"间隔，避免瞬时连发被折叠/限流。
+      let idx = 0;
+      for (const ref of media) {
+        if (idx > 0) await new Promise((r) => setTimeout(r, 450 + Math.floor(Math.random() * 750)));
+        const sent = await sendOut(acc, "private", privateTarget(acc), "", [obMediaSegment(ref)]);
+        if (sent) outcome.sent += 1;
+        else { outcome.failed += 1; outcome.lastError = freshError(acc); }
+        idx += 1;
+      }
     }
     return outcome;
   };
@@ -756,12 +763,18 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
     for (const segment of obTextSegments(text)) {
       const sent = await sendOut(acc, "group", conv.external_id, segment, []);
       if (sent) outcome.sent += 1;
-      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+      else { outcome.failed += 1; outcome.lastError = freshError(acc); }
     }
     if (media.length > 0) {
-      const sent = await sendOut(acc, "group", conv.external_id, "", media.map(obMediaSegment));
-      if (sent) outcome.sent += 1;
-      else { outcome.failed += 1; outcome.lastError = acc.lastError; }
+      // 与私聊同口径：逐张独立投递，一张媒体一条群消息，不整批叠进同一条气泡。
+      let idx = 0;
+      for (const ref of media) {
+        if (idx > 0) await new Promise((r) => setTimeout(r, 450 + Math.floor(Math.random() * 750)));
+        const sent = await sendOut(acc, "group", conv.external_id, "", [obMediaSegment(ref)]);
+        if (sent) outcome.sent += 1;
+        else { outcome.failed += 1; outcome.lastError = freshError(acc); }
+        idx += 1;
+      }
     }
     return outcome;
   };

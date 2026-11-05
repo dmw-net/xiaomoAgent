@@ -17,20 +17,20 @@ import {
   settingsSnapshot,
   defaultPersona,
   type ModelSettings,
-} from "../settings.ts";
+} from "../settings/settings.ts";
 import {
   DEFAULT_CONTACT_ID,
   ASSISTANT_CONTACT_ID,
   defaultPersonaIsDefault,
   getContact,
-} from "../contacts.ts";
-import { isAssistantThreadContactId } from "../assistant.ts";
-import { contactModelSettings } from "../model.ts";
-import { ensureLocalConversation, getConversation } from "../conversations.ts";
+} from "../chat/contacts.ts";
+import { isAssistantThreadContactId } from "../mind/assistant.ts";
+import { contactModelSettings } from "../settings/model.ts";
+import { ensureLocalConversation, getConversation } from "../chat/conversations.ts";
 import { SettingsBodyError, sendJson } from "./http.ts";
 import type { MessageAttachmentMeta } from "../../shared/api.ts";
 import { MAX_CHAT_IMAGES } from "../../shared/limits.ts";
-import { mediaTypeOfUrl } from "../media.ts";
+import { mediaTypeOfUrl } from "../media/media.ts";
 
 /** 从 query 取联系人：不存在或没传一律回落默认联系人（无状态 API，前端负责记住当前选中）。
  *  助手工作区的派生 id（assistant:<线程>）不是联系人，按注册表放行。 */

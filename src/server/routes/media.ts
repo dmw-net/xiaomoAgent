@@ -8,8 +8,8 @@ import {
   saveAudio,
   saveImage,
   saveWallpaper,
-} from "../../media.ts";
-import { friendlyModelError, synthesizeSpeech, transcribeAudio } from "../../model.ts";
+} from "../../media/media.ts";
+import { friendlyModelError, synthesizeSpeech, transcribeAudio } from "../../settings/model.ts";
 import {
   MAX_AUDIO_BODY_BYTES,
   readBinary,

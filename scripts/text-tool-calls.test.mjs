@@ -11,7 +11,7 @@
  */
 import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
-import { parseTextToolCalls, trimDraftBeforeToolCall } from "../src/text-tool-calls.ts";
+import { parseTextToolCalls, trimDraftBeforeToolCall } from "../src/core/text-tool-calls.ts";
 
 // 1) Hermes 模板：<function=name> + <parameter=k>v</parameter>（本机真实抓到的原文）
 const hermes = `好的，我来搜一下“deepseek 大肥鱼 鲸鱼娘”相关的图片，你挑一张满意的就行。
@@ -71,7 +71,7 @@ assert.equal(trimDraftBeforeToolCall("没有调用块的正文"), "没有调用�
 // 7) 接线：解析必须同时接在「有 tools 的路径」和「端点没启用 tools 的路径」上。
 // 后者才是本机踩到的那个坑——Agnes 档没勾工具能力，请求里根本没有 tools 字段，
 // 只接一处等于什么都没修。
-const modelSource = readFileSync("src/model.ts", "utf8");
+const modelSource = readFileSync("src/settings/model.ts", "utf8");
 assert.equal(
   (modelSource.match(/parseTextToolCalls\(/g) ?? []).length,
   2,
@@ -81,7 +81,7 @@ assert(
   /if \(tools\.length === 0 \|\| toolSettings\.caps\.tools !== true/.test(modelSource),
   "tools 为空也必须走无工具分支：agent 在没有可声明工具时仍会进循环认正文调用，而给端点发 tools: [] 有些服务商直接 400",
 );
-const agentSource = readFileSync("src/agent.ts", "utf8");
+const agentSource = readFileSync("src/chat/agent.ts", "utf8");
 assert(/trimDraftBeforeToolCall\(text\)/.test(agentSource), "流式草稿写入前要截掉正文里的调用块，不能实时闪一段 XML");
 // 这条是真踩到的第二个坑：门控在 runAgentLoop 里又短路了一次，`declaredTools.length === 0`
 // 直接 return callModel，于是 callModelWithTools 里的兼容解析根本轮不到执行。

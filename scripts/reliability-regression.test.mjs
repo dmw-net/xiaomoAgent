@@ -9,7 +9,7 @@
  */
 
 const { strict: assert } = await import("node:assert");
-import { RETRYABLE_MODEL_CODES, classifyModelFailure, backoffDelay, withRetry, initQuotaGate, deliveryExpiry } from "../src/reliability.ts";
+import { RETRYABLE_MODEL_CODES, classifyModelFailure, backoffDelay, withRetry, initQuotaGate, deliveryExpiry } from "../src/core/reliability.ts";
 
 console.log("=== 可靠性内核回归测试 ===\n");
 

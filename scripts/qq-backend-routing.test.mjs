@@ -18,12 +18,12 @@ process.env.DB_PATH = join(tempRoot, "test.db");
 process.env.MEDIA_DIR = join(tempRoot, "media");
 process.env.QQ_BACKEND = "official";
 
-const dbModule = await import("../src/db.ts");
-const contacts = await import("../src/contacts.ts");
-const conversations = await import("../src/conversations.ts");
-const onebot = await import("../src/qq-onebot.ts");
-const qqModule = await import("../src/qq.ts");
-const emotes = await import("../src/qq-emote.ts");
+const dbModule = await import("../src/core/db.ts");
+const contacts = await import("../src/chat/contacts.ts");
+const conversations = await import("../src/chat/conversations.ts");
+const onebot = await import("../src/channels/qq-onebot.ts");
+const qqModule = await import("../src/channels/qq.ts");
+const emotes = await import("../src/emote/qq-emote.ts");
 
 const contactA = contacts.createContact({ name: "OneBot 联系人" });
 const contactB = contacts.createContact({ name: "官方联系人" });

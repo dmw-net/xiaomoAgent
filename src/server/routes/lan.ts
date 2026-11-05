@@ -5,8 +5,8 @@
 //   那样远程访客就能读到访问码、关掉开关、改端口。
 // - 绑监听地址要先让这次响应写完，再动 socket（否则 closeAllConnections 会把这条响应一起掐掉）。
 
-import * as lan from "../../lan.ts";
-import { config } from "../../config.ts";
+import * as lan from "../../core/lan.ts";
+import { config } from "../../core/config.ts";
 import { lanSummary, probePort, isLocalMachineHost } from "../guard.ts";
 import { sendJson, readJson } from "../http.ts";
 import { sendLanLogin } from "../lan-login-page.ts";

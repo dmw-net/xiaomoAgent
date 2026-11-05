@@ -18,13 +18,13 @@
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import {
   ensureDefaultContact,
-} from "./contacts.ts";
+} from "./chat/contacts.ts";
 import {
   ensureDefaultConversations,
-} from "./conversations.ts";
+} from "./chat/conversations.ts";
 import {
   ensureAssistantContact,
-} from "./assistant.ts";
+} from "./mind/assistant.ts";
 import {
   SettingsBodyError,
   markGzip,
@@ -36,7 +36,7 @@ import {
   isLocalMachineHost,
   isTrustedExternalHost,
 } from "./server/guard.ts";
-import * as lan from "./lan.ts";
+import * as lan from "./core/lan.ts";
 import { dispatch } from "./server/router.ts";
 
 export { SettingsBodyError };

@@ -7,9 +7,9 @@
 // 纪律（与全表一致）：用 Ctx.path（不含 query）匹配、url.searchParams 取参数；
 // 所有 /api/* 返回 JSON 且永远带 ok 字段，前端只靠 ok 判断成败。
 
-import { emoteNamingStats, isHumanName } from "../../assets.ts";
-import { namingJobStatus, startNamingJob } from "../../emote-naming.ts";
-import { MAX_IMAGE_BYTES, saveImage, sniffImageMime } from "../../media.ts";
+import { emoteNamingStats, isHumanName } from "../../media/assets.ts";
+import { namingJobStatus, startNamingJob } from "../../emote/emote-naming.ts";
+import { MAX_IMAGE_BYTES, saveImage, sniffImageMime } from "../../media/media.ts";
 import {
   emoteAutoCapture,
   emoteCapabilities,
@@ -19,8 +19,8 @@ import {
   registerEmoteAsset,
   removeEmoteAsset,
   setEmoteAutoCapture,
-} from "../../qq-emote.ts";
-import { qqBackend, qqBackendFor } from "../../qq.ts";
+} from "../../emote/qq-emote.ts";
+import { qqBackend, qqBackendFor } from "../../channels/qq.ts";
 import { readBinary, readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 

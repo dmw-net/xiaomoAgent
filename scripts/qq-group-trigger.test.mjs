@@ -17,8 +17,8 @@ process.env.DB_PATH = join(dir, "test.db");
 process.env.MEDIA_DIR = join(dir, "media");
 process.env.DATA_DIR = dir;
 
-const { obGroupAccepted } = await import("../src/qq-onebot.ts");
-const { normalizeQQGroupTriggerKeywords } = await import("../src/conversations.ts");
+const { obGroupAccepted } = await import("../src/channels/qq-onebot.ts");
+const { normalizeQQGroupTriggerKeywords } = await import("../src/chat/conversations.ts");
 
 try {
   // ① 默认档：不 @ 的日常 chatter 一律不放行（改完接受方式也必须保持）。

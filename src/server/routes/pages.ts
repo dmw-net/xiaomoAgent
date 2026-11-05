@@ -6,9 +6,9 @@
 
 import { createReadStream, existsSync } from "node:fs";
 import { join as joinPath, resolve } from "node:path";
-import { mediaFileInfo, readMedia, releaseMediaFiles } from "../../media.ts";
-import { describeWebFailure, downloadImageToMedia } from "../../search.ts";
-import { linkPreviewFor } from "../../link-preview.ts";
+import { mediaFileInfo, readMedia, releaseMediaFiles } from "../../media/media.ts";
+import { describeWebFailure, downloadImageToMedia } from "../../mind/search.ts";
+import { linkPreviewFor } from "../../mind/link-preview.ts";
 import {
   IMMUTABLE,
   sendFile,

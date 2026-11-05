@@ -11,8 +11,8 @@ process.env.DB_PATH = join(root, "test.db");
 process.env.MEDIA_DIR = join(root, "media");
 process.env.DEV_MODE = "0";
 
-const dbModule = await import("../src/db.ts");
-const queue = await import("../src/dqueue.ts");
+const dbModule = await import("../src/core/db.ts");
+const queue = await import("../src/core/dqueue.ts");
 const { createHttpServer } = await import("../src/server.ts");
 
 queue.enqueue("dead-1", {

@@ -12,7 +12,7 @@ const OPTIONS: Array<{ value: EmoteFrequency; name: string; hint: string }> = [
   { value: "off", name: "关闭", hint: "不发表情：表情工具和表情提示一起下线" },
   { value: "rare", name: "少发", hint: "只在情绪非常明显、确实贴切时偶尔发" },
   { value: "normal", name: "自然", hint: "闲聊、接梗、庆祝或安慰时顺手发，认真时少发" },
-  { value: "often", name: "主动", hint: "轻松聊天里更主动，通常每两三条回复可发一张" },
+  { value: "often", name: "主动", hint: "轻松聊天里更主动，每两三条回复一次，一次最多 3 张" },
 ];
 
 export default function EmoteFrequencySection({ form }: { form: SettingsForm }): JSX.Element {

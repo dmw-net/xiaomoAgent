@@ -5,8 +5,8 @@ import {
   getArtifact,
   listArtifacts,
   setArtifactStarred,
-} from "../../artifacts.ts";
-import { updateContact } from "../../contacts.ts";
+} from "../../media/artifacts.ts";
+import { updateContact } from "../../chat/contacts.ts";
 import {
   clampInt,
   LIST_LIMIT_DEFAULT,

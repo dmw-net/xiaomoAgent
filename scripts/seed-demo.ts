@@ -13,13 +13,13 @@ process.env.DB_PATH = process.env.DB_PATH ?? "./data/xiaomo.db";
 
 const reset = process.argv.includes("--reset");
 
-const { db } = await import("../src/db.ts");
-const { addMemoryEvent } = await import("../src/memory.ts");
-const { insertMessage } = await import("../src/agent.ts");
+const { db } = await import("../src/core/db.ts");
+const { addMemoryEvent } = await import("../src/mind/memory.ts");
+const { insertMessage } = await import("../src/chat/agent.ts");
 
 // 记忆与消息都按联系人隔离（每条都带 contact_id），所以先把默认联系人准备好——
 // 空库上直接写 messages / memory_events 会因为没有归属人而绑参失败。
-const { DEFAULT_CONTACT_ID, ensureDefaultContact } = await import("../src/contacts.ts");
+const { DEFAULT_CONTACT_ID, ensureDefaultContact } = await import("../src/chat/contacts.ts");
 
 if (reset) {
   db.exec("DELETE FROM messages; DELETE FROM memory_events; DELETE FROM turns; DELETE FROM kv;");

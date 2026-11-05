@@ -26,17 +26,17 @@ process.env.MEDIA_DIR = "./data/tool-history-regression-media";
 for (const suffix of ["", "-wal", "-shm"]) rmSync(`data/tool-history-regression.db${suffix}`, { force: true });
 rmSync("data/tool-history-regression-media", { recursive: true, force: true });
 
-const { q } = await import("../src/db.ts");
-const { toChatMessages } = await import("../src/persona.ts");
-const { insertMessage, recentMessages } = await import("../src/agent.ts");
-const { DEFAULT_CONTACT_ID } = await import("../src/contacts.ts");
+const { q } = await import("../src/core/db.ts");
+const { toChatMessages } = await import("../src/mind/persona.ts");
+const { insertMessage, recentMessages } = await import("../src/chat/agent.ts");
+const { DEFAULT_CONTACT_ID } = await import("../src/chat/contacts.ts");
 const {
   loadToolExchanges,
   planToolReplay,
   purgeToolHistory,
   trimToolStore,
   TOOL_STORE_TURNS,
-} = await import("../src/tool-history.ts");
+} = await import("../src/chat/tool-history.ts");
 
 // ── 1) 不给工具回放：与从前完全一致 ────────────────────────────
 const rows = [

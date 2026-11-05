@@ -9,8 +9,8 @@ import { join } from "node:path";
 const root = mkdtempSync(join(tmpdir(), "xiaomo-outbound-"));
 process.env.DB_PATH = join(root, "test.db");
 
-const dbModule = await import("../src/db.ts");
-const queue = await import("../src/dqueue.ts");
+const dbModule = await import("../src/core/db.ts");
+const queue = await import("../src/core/dqueue.ts");
 
 try {
   queue.enqueue("d1", {

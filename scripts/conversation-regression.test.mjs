@@ -46,10 +46,10 @@ for (const suffix of ["", "-wal", "-shm"]) {
 }
 process.env.DB_PATH = testDb;
 
-const { db, kvGet } = await import("../src/db.ts");
-const { createContact, markConversationRead, unreadCount } = await import("../src/contacts.ts");
-const { clearQQGroupHistory, ensureConversation, ensureDefaultConversations, ensureLocalConversation, getConversation, removeQQGroupConversation, renameQQGroupConversation, setConversationEnabled, setConversationMembership } = await import("../src/conversations.ts");
-const { addMemoryEvent } = await import("../src/memory.ts");
+const { db, kvGet } = await import("../src/core/db.ts");
+const { createContact, markConversationRead, unreadCount } = await import("../src/chat/contacts.ts");
+const { clearQQGroupHistory, ensureConversation, ensureDefaultConversations, ensureLocalConversation, getConversation, removeQQGroupConversation, renameQQGroupConversation, setConversationEnabled, setConversationMembership } = await import("../src/chat/conversations.ts");
+const { addMemoryEvent } = await import("../src/mind/memory.ts");
 
 const contact = createContact({ name: "未读回归" });
 const local = ensureLocalConversation(contact.id, contact.name);

@@ -219,15 +219,15 @@ globalThis.fetch = mockFetch;
 const { registerChannel } = await import("../src/channels/types.ts");
 const { webChannel } = await import("../src/channels/web.ts");
 const { createHttpServer, isLocalMachineHost, isTrustedExternalHost } = await import("../src/server.ts");
-const { addMemoryEvent, recall, memoryCount, listMemoryEvents, memoryStats, listMemoryEventsFiltered } = await import("../src/memory.ts");
-const { db } = await import("../src/db.ts");
-const { walkMediaTree: smokeWalkMediaTree } = await import("../src/media-layout.ts");
+const { addMemoryEvent, recall, memoryCount, listMemoryEvents, memoryStats, listMemoryEventsFiltered } = await import("../src/mind/memory.ts");
+const { db } = await import("../src/core/db.ts");
+const { walkMediaTree: smokeWalkMediaTree } = await import("../src/media/media-layout.ts");
 /** 媒体按类型分目录，测试统一按递归媒体树判断“文件是否真的在盘上”。 */
 const mediaFileOnDisk = (url: string): boolean => {
   const name = url.slice(url.lastIndexOf("/") + 1);
   return name !== "" && smokeWalkMediaTree().some((entry) => entry.name === name);
 };
-const { ModelError, friendlyModelError } = await import("../src/model.ts");
+const { ModelError, friendlyModelError } = await import("../src/settings/model.ts");
 
 registerChannel(webChannel);
 const server = createHttpServer();
@@ -454,7 +454,7 @@ try {
   // 从前这条不看租约，于是桌面端 + 终端里一句 proactive:once（或两个窗口各点一次）
   // 会都通过 spokenCountToday()===0 的门，同一句话投递两遍、日配额翻倍。
   {
-    const { db: smokeDb } = await import("../src/db.ts");
+    const { db: smokeDb } = await import("../src/core/db.ts");
     // 冒充"另一个进程"：写一行新鲜的租约，id 不是本进程的。
     smokeDb.prepare(
       `INSERT INTO instance_lease (k, id, pid, at) VALUES ('primary', 'other-proc-999', 999, ?)
@@ -542,7 +542,7 @@ try {
     && (p1.total < 2 || (p2.calls.length === 1 && p2.calls[0].id < p1.calls[0].id)), `total=${p1.total}`);
   // 普通模式（DEV_MODE 关闭）：请求和响应原文都不落库，也不从单行详情出口。
   // 开发模式保留最近若干次（DEV_LOG_KEEP）的环形窗口由 scripts/storage-cleanup-regression.test.mjs 覆盖。
-  const logsRing = await import("../src/logs.ts");
+  const logsRing = await import("../src/core/logs.ts");
   for (let i = 0; i < 12; i += 1) {
     logsRing.logModelCall({
       purpose: "chat", ok: true, elapsedMs: 1, message: `ring-${i}`, detail: `d${i}`,
@@ -743,7 +743,7 @@ try {
       && defaultCard.card.relationship === cardAfter.card.relationship);
 
   // 内置小茉的头像兜底：库里那列是空的，发给界面时才换成默认头像路径（不把几十 KB 内联进每次轮询）
-  const { db: db0 } = await import("../src/db.ts");
+  const { db: db0 } = await import("../src/core/db.ts");
   const rawAvatar = (db0.prepare(`SELECT avatar FROM contacts WHERE id = 'default'`).get() as { avatar: string }).avatar;
   // 控制组：另建一位没设头像的联系人，证明那条路径只给内置小茉（不是所有人共脸）。
   const ctrl = await (await fetch(`${BASE}/api/contacts`, {
@@ -1009,7 +1009,7 @@ try {
     })
   ).json();
   check("联系人轮数越界被拒", ctBad.ok === false, ctBad.error);
-  const { recentMessages: rmCov } = await import("../src/agent.ts");
+  const { recentMessages: rmCov } = await import("../src/chat/agent.ts");
   const covWin = rmCov("default");
   check("覆盖生效：该联系人窗口按 3 轮截断",
     covWin.filter((m) => m.role === "user").length <= 3, String(covWin.filter((m) => m.role === "user").length));
@@ -1020,7 +1020,7 @@ try {
 
   // 未设置联系人指代方式时必须走中性，不再默认成女性。
   const gNeutral = await (await fetch(`${BASE}/api/contacts/default`)).json();
-  const { pronounOf, formatBondLine } = await import("../src/contacts.ts");
+  const { pronounOf, formatBondLine } = await import("../src/chat/contacts.ts");
   check("联系人缺省指代为中性", gNeutral.contact?.gender === "other" && pronounOf(undefined) === "TA",
     `gender=${gNeutral.contact?.gender} pronoun=${pronounOf(undefined)}`);
   const neutralBond = formatBondLine({ stage: "熟悉", warmth: 60, mood: "轻松", updated_at: null });
@@ -1056,7 +1056,7 @@ try {
     })
   ).json();
   check("用户性别保存并回显", oPut.ok === true && oPut.persona.owner.gender === "female", JSON.stringify(oPut.persona?.owner?.gender));
-  const { buildOwnerSection } = await import("../src/persona.ts");
+  const { buildOwnerSection } = await import("../src/mind/persona.ts");
   const ownerF = buildOwnerSection({ name: "阿樟", impression: "", notes: "", gender: "female" });
   const ownerD = buildOwnerSection({ name: "阿樟", impression: "", notes: "" });
   check("提示词代词跟随性别（缺省中性 TA，不再默认成男性）",
@@ -1075,8 +1075,8 @@ try {
   });
 
   // 后台副通道（抽取/整理）的提示词代词同样跟随双方性别，不再硬编码
-  const { buildExtractSystem, buildExtractInput: extractIn } = await import("../src/memory.ts");
-  const { buildConsolidateSystem } = await import("../src/consolidate.ts");
+  const { buildExtractSystem, buildExtractInput: extractIn } = await import("../src/mind/memory.ts");
+  const { buildConsolidateSystem } = await import("../src/chat/consolidate.ts");
   const exMale = buildExtractSystem(true, "他", "她");
   const exDft = buildExtractSystem(true);
   check("抽取提示词代词跟随性别",
@@ -1088,7 +1088,7 @@ try {
   check("整理提示词代词跟随性别",
     buildConsolidateSystem("他", "她").includes("以「你」指他、「她」指用户")
     && buildConsolidateSystem("她", "他").includes("以「你」指她、「他」指用户"));
-  const { buildDecideSystem } = await import("../src/proactive.ts");
+  const { buildDecideSystem } = await import("../src/mind/proactive.ts");
   check("主动性提示词代词跟用户性别",
     buildDecideSystem("她").includes("主动给她发一条消息") && !buildDecideSystem("她").includes("他"));
 
@@ -1153,7 +1153,7 @@ try {
   check("提示词含记忆与时间段", promptPreview.prompt.includes("[记忆]") && promptPreview.prompt.includes("[现在]"));
 
   // 角色卡要真的进 system prompt（不是只存了库）
-  const { buildSystemPrompt } = await import("../src/persona.ts");
+  const { buildSystemPrompt } = await import("../src/mind/persona.ts");
   const promptNow = buildSystemPrompt([]);
   check("实际 system prompt 用了新角色卡", promptNow.includes("阿离") && promptNow.includes("高中同桌"));
   check("system prompt 含「她眼中的你」", promptNow.includes("大魔王") && promptNow.includes("不吃香菜"));
@@ -1259,7 +1259,7 @@ try {
 
   // 核心断言：上下文截断必须真的发生在地基层。
   // 只改文本、不在 recentMessages 里过滤的话，界面看着改了，模型照样看得见旧内容。
-  const { recentMessages } = await import("../src/agent.ts");
+  const { recentMessages } = await import("../src/chat/agent.ts");
   const contextText = recentMessages("default", 50)
     .map((row) => row.text)
     .join("\n");
@@ -1434,7 +1434,7 @@ try {
   );
   check("她针对这句的回复仍然有效", herReply !== undefined && herReply.superseded_at === null);
 
-  const { recentMessages: ctxOf } = await import("../src/agent.ts");
+  const { recentMessages: ctxOf } = await import("../src/chat/agent.ts");
   const retractCtx = ctxOf("default", 50);
   /* 只按 role='user' 精确断言。不能直接对整段上下文做字符串匹配——
      echo 模式（以及真实模型下她也可能复述）会把这句话回显进回复里，
@@ -1752,12 +1752,12 @@ try {
 
   console.log("\n[22] Agent 能力：环境感知 + 工具层");
 
-  const { buildSystemPrompt: systemWithEnv } = await import("../src/persona.ts");
+  const { buildSystemPrompt: systemWithEnv } = await import("../src/mind/persona.ts");
   const envPrompt = systemWithEnv([], { lastUserAt: Date.now() - 600_000 });
   check("系统提示词包含时间段语义（不再只是一串数字）", envPrompt.includes("现在是"));
   check("系统提示词包含他最后说话的间隔", envPrompt.includes("10 分钟前说过话"));
 
-  const { executeTool, toolDefsForApi } = await import("../src/tools.ts");
+  const { executeTool, toolDefsForApi } = await import("../src/mind/tools.ts");
   check("工具声明符合 OpenAI tools 协议", toolDefsForApi().every(
     (d) => d.type === "function" && typeof d.function.name === "string" && typeof d.function.parameters === "object",
   ));
@@ -1795,7 +1795,7 @@ try {
   // 工具硬闸（模型档 caps.tools）的缺省语义与存量迁移：
   // 缺省按支持处理（端点不兼容有运行时探测兜底），显式 false 保留（否则界面永远关不掉），
   // 存量「从没勾过」的 false 由一次性迁移翻正——不翻的话联系人设置里的工具开关全部失效。
-  const capsMod = await import("../src/settings.ts");
+  const capsMod = await import("../src/settings/settings.ts");
   check("caps 缺省按支持工具处理", capsMod.sanitizeModelCaps({}).tools === true);
   check("caps 显式 false 保留（取消勾选不会被读回 true）", capsMod.sanitizeModelCaps({ tools: false }).tools === false);
   check("能力通道的 caps 仍是全关（视觉/语音档不声明工具）", capsMod.emptyModelCaps().tools === false);
@@ -1803,7 +1803,7 @@ try {
   check("存量迁移可重入（第二次跑不再改动）", mig.profiles === 0 && mig.model === false);
 
   console.log("\n[23] 回复分条 + 工具过程卡");
-  const seg = await import("../src/reply-segmentation.ts");
+  const seg = await import("../src/core/reply-segmentation.ts");
   const parts = seg.segmentReply("今天好累啊。不过想到你就好多了！晚上吃什么呢？");
   check("中文按句子切成多个气泡", parts.length === 3 && parts[0] === "今天好累啊。" && parts[2] === "晚上吃什么呢？", parts.join(" | "));
   const md = seg.segmentReply("清单如下：\n- 第一项\n- 第二项\n完事");
@@ -1817,15 +1817,15 @@ try {
   check("空白回复回落为原文单条", empty.length === 1);
 
   // 工具卡行不进上下文
-  const { respondToTurn } = await import("../src/agent.ts");
-  const { insertMessage: ins } = await import("../src/agent.ts");
+  const { respondToTurn } = await import("../src/chat/agent.ts");
+  const { insertMessage: ins } = await import("../src/chat/agent.ts");
   ins({ channel: "web", role: "assistant", kind: "tool", text: JSON.stringify({ tool: "get_current_time", ok: true, summary: "2026-09-19 13:00", elapsedMs: 3 }), contactId: "default" });
-  const { recentMessages: recentCtx } = await import("../src/agent.ts");
+  const { recentMessages: recentCtx } = await import("../src/chat/agent.ts");
   const ctxRows = recentCtx("default");
   check("kind=tool 的过程卡不进模型上下文", !ctxRows.some((m) => m.text.includes("get_current_time") && m.text.includes("elapsedMs")));
 
   // [2b] 工具卡详情：摘要/详情都渲染人话不吐 JSON、落库、不进上下文、只留最近 10 轮
-  const agentMod = await import("../src/agent.ts");
+  const agentMod = await import("../src/chat/agent.ts");
   check("toolSummary 联网搜索不再吐原始 JSON",
     !agentMod.toolSummary("web_search", { ok: true, kind: "web", query: "特斯拉 消息", count: 3, hits: [] }).includes("{")
     && agentMod.toolSummary("web_search", { ok: true, kind: "web", query: "特斯拉 消息", count: 3, hits: [] }).includes("找到 3 条"));
@@ -1845,6 +1845,59 @@ try {
     agentMod.toolSummary("get_current_time", { text: "2026-10-23 周五 16:30；现在是下午", weekday: "周五" }).startsWith("2026-10-23 周五 16:30"));
   check("toolSummary 切模型读 activated 里的档名",
     agentMod.toolSummary("activate_model", { ok: true, activated: "DeepSeek-V4", note: "已启用" }) === "已启用模型「DeepSeek-V4」");
+  // 表情工具没登记时，结果 {via,native,note} 曾被整串 JSON 甩到卡片上：
+  // 「做了点事 · {"via":"native","native":true,"note":"…"}」。各分支都要说人话。
+  check("toolSummary 发表情不吐原始 JSON",
+    agentMod.toolSummary("send_emote", { via: "native", native: true, note: "表情已经发到 QQ 了" }) === "把表情发到 QQ 了"
+    && agentMod.toolSummary("send_emote", { via: "app-attachment", native: false, note: "已附上" }) === "发了张表情"
+    && agentMod.toolSummary("send_emote", { via: "app-emoji-fallback", native: false, note: "用 emoji 代替" }) === "用 emoji 回了个表情");
+  check("toolSummary 表情没发出去 / 只给候选都说人话",
+    agentMod.toolSummary("send_emote", { ok: false, error: "没有可用的会话" }).includes("没发出去")
+    && agentMod.toolSummary("send_emote", { sent: false, reason: "候选接近", candidates: [{}, {}], note: "" }) === "挑了 2 张候选，没替你定");
+  check("toolSummary 翻表情库报候选数",
+    agentMod.toolSummary("emote_search", { candidates: [{}, {}, {}], note: "选一张" }) === "翻了翻表情库，挑出 3 张候选"
+    && agentMod.toolSummary("emote_search", { candidates: [], note: "没找到" }) === "翻了翻表情库，没找到贴切的");
+  // 以后新增工具忘了登记，也不能再把给模型看的载荷糊到聊天里。
+  check("toolSummary 未登记工具兜底不吐 JSON",
+    !/[{}]/.test(agentMod.toolSummary("some_future_tool", { via: "native", native: true, note: "内部提示" })));
+  // [2c] 入站 QQ 表情解析：群里甩一个黄脸过来，界面和模型都要看得懂是哪一个表情，
+  // 而不是只剩三个字「[表情]」。编号查 QFace 全量名称表（QQNT / NapCat 同源），
+  // 认不出的 id 仍留占位，纯表情消息不能在闸门处蒸发。
+  const onebotText = await import("../src/channels/qq-onebot.ts");
+  const qqEmoteMod = await import("../src/emote/qq-emote.ts");
+  const qqFaceNames = await import("../src/emote/qq-face-names.generated.ts");
+  check("表情名称表来自 QFace 全量索引，不再用手写 16 条",
+    Object.keys(qqFaceNames.QQ_FACE_NAMES).length > 300
+    && qqFaceNames.QQ_FACE_SYNCED_AT !== ""
+    && qqEmoteMod.describeFace(14)?.keyword === "微笑"
+    && qqEmoteMod.describeFace(1)?.keyword === "撇嘴"
+    && qqEmoteMod.describeFace(18)?.keyword === "抓狂"
+    && qqEmoteMod.describeFace(9999) === null);
+  check("入站 face 段按全量表解析成具体表情",
+    onebotText.obInboundText([{ type: "face", data: { id: "14" } }]) === "[微笑]🙂"
+    && onebotText.obInboundText([{ type: "face", data: { id: "1" } }]) === "[撇嘴]😖");
+  // 真机事件核对过：NapCat 报的就是 QFace 的 emojiId，且 faceType=2 直接给 raw.faceText。
+  check("协议端 faceText 优先于查表（新版表情名字最准）",
+    onebotText.obInboundText([{ type: "face", data: { id: "325", raw: { faceIndex: 325, faceText: "[惊吓]", faceType: 2 } } }]) === "[惊吓]");
+  check("名称表缺号时 faceText 仍能解析，不再退化成占位",
+    onebotText.obInboundText([{ type: "face", data: { id: "17", raw: { faceText: "[冷汗]", faceType: 1 } } }]) === "[冷汗]😰");
+  check("入站 mface 段取协议端 summary",
+    onebotText.obInboundText([{ type: "text", data: { text: "早" } }, { type: "mface", data: { summary: "[微笑]" } }]) === "早[微笑]");
+  check("字符串消息的 CQ 表情码同样解析（含转义）",
+    onebotText.obInboundText("[CQ:face,id=14]好") === "[微笑]🙂好"
+    && onebotText.obInboundText("[CQ:mface,summary=&#91;微笑&#93;]") === "[微笑]");
+  check("image 段的表情名补进正文，通用「[图片]」占位不进",
+    onebotText.obInboundText([{ type: "image", data: { summary: "[搓手]", url: "https://gxh.vip.qq.com/a.gif" } }]) === "[搓手]"
+    && onebotText.obInboundText([{ type: "image", data: { summary: "[图片]" } }]) === "");
+  check("认不出的表情仍留占位，纯表情消息不蒸发",
+    onebotText.obInboundText([{ type: "face", data: { id: "9999" } }]) === "[表情]"
+    && onebotText.obInboundText([{ type: "mface", data: { emoji_id: "x" } }]) === "[表情]");
+  check("入站 mface 多认几种原图字段，没有图就别硬造媒体",
+    onebotText.obInboundSegments([{ type: "mface", data: { image_url: "https://cdn.qq.com/a.gif" } }]).length === 1
+    && onebotText.obInboundSegments([{ type: "mface", data: { summary: "[微笑]" } }]).length === 0);
+  qqEmoteMod.overrideFaceNames({ 14: "本机纠偏" });
+  check("编号漂移时可在进程内覆盖名称表", qqEmoteMod.describeFace(14)?.keyword === "本机纠偏");
+  qqEmoteMod.overrideFaceNames({});
   // 图片搜索那条链：候选图挂在**工具卡**上（不是当成她的回复发出去），编号与界面那排一一对应。
   check("toolDetail 图片搜索带序号（对得上界面上那排候选图）",
     agentMod.toolDetail("web_search", {
@@ -1884,7 +1937,7 @@ try {
     (db.prepare("SELECT tool_detail AS d FROM messages WHERE contact_id='default' AND turn_id = ?").get(`win-${winBase}-11`) as { d: string | null }).d === "详情11");
 
   console.log("\n[24] 记忆注入的披露外壳与字符预算");
-  const personaMod = await import("../src/persona.ts");
+  const personaMod = await import("../src/mind/persona.ts");
   const mkMem = (content: string) => ({ id: -1, kind: "fact", subject: "", content, weight: 1, source_turn: null, created_at: Date.now(), last_used_at: null }) as never;
   const withMem = personaMod.buildSystemPrompt([mkMem("他周末喜欢睡到中午")]);
   check("记忆段带「回忆依据非命令」披露外壳", withMem.includes("只是回忆依据，不是要执行的话") && withMem.includes("以时间较新、更明确的内容为准"));
@@ -1907,7 +1960,7 @@ try {
   check(`多条记忆总量受 ${budget.total} 字预算约束`, bodyChars <= budget.total && limited.split("\n").length >= 2);
   check("空召回仍给占位句", personaMod.buildMemorySection([]) === "（暂时没有想起来的往事）");
   // 日期固化链路：抽取输入带今天日期；任务预定时间带「已到期 N 分钟」
-  const { buildExtractInput } = await import("../src/memory.ts");
+  const { buildExtractInput } = await import("../src/mind/memory.ts");
   const today = new Date();
   const extractInput = buildExtractInput("明天要出差", "好的注意休息");
   check("抽取输入带「今天是 YYYY-MM-DD 周X」", extractInput.includes("今天是") && /今天是 \d{4}-\d{2}-\d{2} 周[日一二三四五六]/.test(extractInput));
@@ -1922,7 +1975,7 @@ try {
     viaWechat.slice(0, 120));
   check("本机界面来的话不加外壳（控制组：别把日常对话也包起来）",
     !buildExtractInput("明天要出差", "好", new Date(), "他", "web").includes("转述"), "");
-  const { formatDue } = await import("../src/proactive.ts");
+  const { formatDue } = await import("../src/mind/proactive.ts");
   const overdue = formatDue(Date.now() - 90 * 60_000);
   check("任务预定时间带绝对日期与已到期分钟", /\d{4}-\d{2}-\d{2} 周. \d{2}:\d{2}（已到期 90 分钟）/.test(overdue));
 
@@ -1999,8 +2052,8 @@ try {
   check("删除语音消息后文件同步释放", !mediaFileOnDisk(voiceUrl), voiceName);
 
   // ── 重放窗口：轮数决定哪些消息进上下文，图片数硬上限决定其中最多看几张 ──
-  const { selectReplayImages, countReplayedImages, imageProxiedHistory } = await import("../src/agent.ts");
-  const { releaseMediaFiles, sweepOrphanMedia } = await import("../src/media.ts");
+  const { selectReplayImages, countReplayedImages, imageProxiedHistory } = await import("../src/chat/agent.ts");
+  const { releaseMediaFiles, sweepOrphanMedia } = await import("../src/media/media.ts");
   const { existsSync } = await import("node:fs");
   const up2 = ((await (await fetch(`${BASE}/api/media`, { method: "POST", headers: { "content-type": "image/png" }, body: png })).json()).url) as string;
   const replayRows = [
@@ -2031,7 +2084,7 @@ try {
   const pendingAlt = imageProxiedHistory([{ text: "", attachments: JSON.stringify([up.url]) }], new Set<string>(), true);
   check("超过 6 张、但会生成 alt 的图片不写“看不到”占位", pendingAlt[0]!.text === "", pendingAlt[0]!.text);
   check("真正看不到时仍带「别猜也别编」", noVision[0]!.text.includes("别猜也别编"));
-  const { appendImageDescriptions } = await import("../src/image-understanding.ts");
+  const { appendImageDescriptions } = await import("../src/mind/image-understanding.ts");
   const bothKept = appendImageDescriptions(
     imageProxiedHistory([{ role: "user", text: "你看这个", attachments: JSON.stringify([up.url]) }], new Set<string>(), true),
     new Set([up.url]),
@@ -2040,6 +2093,42 @@ try {
   check("文字 + 图 → 文字保留且图片换成 alt 描述", bothKept[0]!.text === "你看这个\n[图片：一张示意图]", bothKept[0]!.text);
   check("重放的真图一个字都不附（她已经看得见）", imageProxiedHistory([{ text: "看这个", attachments: JSON.stringify([up2]) }], new Set([up2]), true)[0]!.text === "看这个");
   check("无图消息原样不动", imageProxiedHistory([{ text: "纯文字", attachments: null }], new Set<string>(), true)[0]!.text === "纯文字");
+  // 自己发的图曾把一整段系统备注拼进 assistant 正文，模型下一轮照抄成台词
+  // （回复里原样冒出「[图片：这是你自己发出的图…别装作看得见图里细节]」）。
+  const ownWithText = imageProxiedHistory(
+    [{ role: "assistant", text: "喏，发了。", attachments: JSON.stringify([up2]) }], new Set<string>(), true)[0]!.text;
+  check("自己发的图不再把系统备注塞进正文", ownWithText === "喏，发了。" && !ownWithText.includes("原图不回放"), ownWithText);
+  const ownBare = imageProxiedHistory(
+    [{ role: "assistant", text: "", attachments: JSON.stringify([up2]) }], new Set<string>(), true)[0]!.text;
+  check("纯图消息只留极短锚点，不出现提示词",
+    ownBare !== "" && !ownBare.includes("原图不回放") && !ownBare.includes("别装作看得见"), ownBare);
+  check("私聊回放不带发言人昵称前缀",
+    (await import("node:fs")).readFileSync("src/chat/agent.ts", "utf8").includes("sender_name: null"));
+  // [2d] 表情整轮门控：借鉴 AstrBot「一轮只判一次 + 整轮上限 + 失败不补发」。
+  const toolsMod = await import("../src/mind/tools.ts");
+  const gateCtx = (id: string) => ({ lastUserAt: null, contactId: "default", conversationId: id, turnId: id });
+  const c1 = gateCtx("gate-limit-" + Date.now());
+  check("门控：一轮前 3 张放行", toolsMod.emoteGate(c1) === null);
+  toolsMod.recordEmoteTurn(c1, { via: "native", native: true, note: "" });
+  toolsMod.recordEmoteTurn(c1, { files: ["/media/a.png"], result: {} });
+  toolsMod.recordEmoteTurn(c1, { via: "app-attachment", native: false, note: "" });
+  check("第 4 张被整轮上限拦下", String(toolsMod.emoteGate(c1) ?? "").includes("最多发 3 张"));
+  const c2 = gateCtx("gate-fail-" + Date.now());
+  toolsMod.recordEmoteTurn(c2, { ok: false, deliveryFail: true, error: "表情没发出去：渠道拒发" });
+  check("投递失败后本轮封死，不再补发", String(toolsMod.emoteGate(c2) ?? "").includes("别再重试"));
+  const c4 = gateCtx("gate-miss-" + Date.now());
+  toolsMod.recordEmoteTurn(c4, { ok: false, keywordMiss: true, error: "没找到" });
+  check("keyword 没命中一次不封轮，模型还能按候选 id 补发", toolsMod.emoteGate(c4) === null);
+  toolsMod.recordEmoteTurn(c4, { ok: false, keywordMiss: true, error: "没找到" });
+  check("连续两次没命中才封轮", String(toolsMod.emoteGate(c4) ?? "").includes("别再重试"));
+  const c3 = gateCtx("gate-cand-" + Date.now());
+  toolsMod.recordEmoteTurn(c3, { sent: false, candidates: [], note: "" });
+  check("只回候选不算发送也不算失败，模型还能带 id 再挑", toolsMod.emoteGate(c3) === null);
+  const { readFileSync: readSrc } = await import("node:fs");
+  check("提示词与工具描述都写明一轮最多 3 张",
+    readSrc("src/mind/persona.ts", "utf8").includes("一轮最多 3 张")
+    && readSrc("src/mind/tools.ts", "utf8").includes("最多 3 张"));
+  check("展示侧上限同步提到 3 张", readSrc("src/chat/agent.ts", "utf8").includes("MAX_REPLY_IMAGES = 3"));
 
   // 图片回收：此前 releaseMediaFiles 的 SQL 非法（LIMIT 写在 UNION ALL 之前），每次调用都抛错，
   // 而 deleteMessage 没兜异常——「删掉一条带图消息」会在事务提交后报 500，图片永久泄漏在磁盘上。
@@ -2062,7 +2151,7 @@ try {
   // 搜图候选挂在**工具卡**上（kind=tool 的 attachments）——对账同样得认它。
   // 漏了这一处，用户正对着那排头像说"就要第 3 张"，24 小时后它已经被当孤儿删掉了。
   const candUrl = ((await (await fetch(`${BASE}/api/media`, { method: "POST", headers: { "content-type": "image/png" }, body: png })).json()).url) as string;
-  const { insertMessage: insCand } = await import("../src/agent.ts");
+  const { insertMessage: insCand } = await import("../src/chat/agent.ts");
   insCand({
     channel: "web", role: "assistant", kind: "tool", turnId: "cand-" + Date.now(), contactId: "default",
     text: JSON.stringify({ tool: "web_search", ok: true, summary: "搜了图" }), attachments: [candUrl],
@@ -2137,9 +2226,9 @@ try {
   cSnap = await contactGet();
   check("绑定读回为档 id", cSnap.contact.model_profile === bindId);
 
-  const { contactModelProfile } = await import("../src/contacts.ts");
+  const { contactModelProfile } = await import("../src/chat/contacts.ts");
   check("运行时解析拿到绑定的档 id", contactModelProfile(bindCid) === bindId);
-  const { contactModelSettings } = await import("../src/model.ts");
+  const { contactModelSettings } = await import("../src/settings/model.ts");
   const bound = contactModelSettings(bindCid);
   check("绑定档的联系人调用配置指向档", bound !== null && bound.name === "bind-model" && bound.baseUrl === "https://api.bind.test/v1");
   check("未绑定联系人不产生绑定配置", contactModelSettings("default") === null);
@@ -2170,8 +2259,8 @@ try {
   {
     // 思考参数到底往请求体里塞了什么。三种形态各一条，外加"关"必须真发得出去——
     // 从前模板系硬编码 enable_thinking:true，而火山系连形态都没有，默认开思考的模型关不掉。
-    const { applyThinkingParams } = await import("../src/model.ts");
-    const { modelConfig: cfgNow, sanitizeThinkingParam, sanitizeThinkingMode } = await import("../src/settings.ts");
+    const { applyThinkingParams } = await import("../src/settings/model.ts");
+    const { modelConfig: cfgNow, sanitizeThinkingParam, sanitizeThinkingMode } = await import("../src/settings/settings.ts");
     const base = cfgNow();
     const send = (over: Record<string, unknown>) => {
       const body: Record<string, unknown> = {};
@@ -2197,11 +2286,11 @@ try {
   }
   check("token 上限原样保存", capProf.maxInputTokens === 131072 && capProf.maxOutputTokens === 8192);
   await jsonPost("/api/settings/profiles/activate", { id: capProf.id });
-  const { modelConfig, capabilityReady } = await import("../src/settings.ts");
+  const { modelConfig, capabilityReady } = await import("../src/settings/settings.ts");
   const live = modelConfig();
   check("应用档把能力元数据拷进当前生效", live.caps.vision === true && live.thinkingLevel === "high" && live.maxOutputTokens === 8192);
   check("勾了图片输入 → 视觉回落主力模型就绪", capabilityReady("imageVision") === true);
-  const { activeProfileId } = await import("../src/settings.ts");
+  const { activeProfileId } = await import("../src/settings/settings.ts");
   check("改能力元数据不挤掉在用档判定（只比连接字段）", activeProfileId() === capProf.id);
   await jsonPost("/api/settings/profiles", {
     id: capProf.id, label: "能力档", mode: "openai", baseUrl: "https://api.caps.test/v1",
@@ -2214,7 +2303,7 @@ try {
   check("恢复默认后视觉回落不再就绪（未勾图片输入）", capabilityReady("imageVision") === false);
 
   console.log("\n[28] 模型用量归属：按联系人 / 按模型档");
-  const { logModelCall, usageStats } = await import("../src/logs.ts");
+  const { logModelCall, usageStats } = await import("../src/core/logs.ts");
   logModelCall({
     purpose: "chat", ok: true, elapsedMs: 10, model: "usage-model",
     contactId: "default", profileId: "prof-usage-probe",
@@ -2230,7 +2319,7 @@ try {
 
   // 「重新计数」：失败读数只算水印之后，记录本身一条不删
   {
-    const { modelFailureCount, modelCallWindow, countModelCalls } = await import("../src/logs.ts");
+    const { modelFailureCount, modelCallWindow, countModelCalls } = await import("../src/core/logs.ts");
     logModelCall({ purpose: "chat", ok: false, code: "SMOKE_FAIL", elapsedMs: 7, model: "usage-model", message: "冒烟：故意记一条失败" });
     const beforeReset = modelFailureCount();
     const rowsBefore = countModelCalls();
@@ -2332,7 +2421,7 @@ try {
     label: "助手配的", baseUrl: "https://api.assistant.test/v1", apiKey: "sk-assistant-probe-123", model: "assist-model", vision: true,
   }), A);
   check("configure_model 建档并启用", confR.ok === true && (confR.result as { ok?: boolean; activated?: boolean }).activated === true);
-  const { activeProfileId: aidNow, listProfiles: profsNow } = await import("../src/settings.ts");
+  const { activeProfileId: aidNow, listProfiles: profsNow } = await import("../src/settings/settings.ts");
   const assistProf = profsNow().find((p) => p.label === "助手配的");
   check("生效配置指向助手建的档且带视觉声明", aidNow() === assistProf?.id && assistProf?.caps.vision === true);
   const ccR = await executeTool("create_contact", JSON.stringify({ name: "助手建的", identity: "测试占位" }), A);
@@ -2349,8 +2438,8 @@ try {
   check("普通联系人用不了助手工具（未知工具）", crossUse.ok === false);
   const selfBind = await executeTool("bind_contact_model", JSON.stringify({ contact: "assistant", model: "助手配的" }), A);
   check("助手拒绝改自己的模型绑定", selfBind.ok === true && (selfBind.result as { ok?: boolean }).ok === false);
-  const { pinAssistantToActiveProfile, ASSISTANT_CONTACT_ID: ACID } = await import("../src/assistant.ts");
-  const { contactModelProfile: cmpA } = await import("../src/contacts.ts");
+  const { pinAssistantToActiveProfile, ASSISTANT_CONTACT_ID: ACID } = await import("../src/mind/assistant.ts");
+  const { contactModelProfile: cmpA } = await import("../src/chat/contacts.ts");
   pinAssistantToActiveProfile();
   check("助手首次开口把自己钉在当前生效档", cmpA(ACID) === assistProf?.id);
   const archiveAssistant = await fetch(`${BASE}/api/contacts/assistant/archive`, { method: "POST" });
@@ -2432,7 +2521,7 @@ try {
 
   console.log("\n[32b] 助手工作区：清空消息（工作区保留 / 图片回收 / 通用也能清）");
   {
-    const { insertMessage: insClear } = await import("../src/agent.ts");
+    const { insertMessage: insClear } = await import("../src/chat/agent.ts");
     const png1 = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
     const onDiskClear = mediaFileOnDisk;
 
@@ -2468,7 +2557,7 @@ try {
   console.log("\n[33] 微信通道（iLink 假端点）：绑定 → 收件 → 镜像投递 → 开关 → 解绑");
   {
     // [31] 留下的假模型档会把后续对话 turn 打成 failed（没有回复可镜像），先切回 echo。
-    const { updateModel } = await import("../src/settings.ts");
+    const { updateModel } = await import("../src/settings/settings.ts");
     updateModel({ mode: "echo" });
     const wxContact = (await (await fetch(`${BASE}/api/contacts`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "微信测试客" }),
@@ -2597,7 +2686,7 @@ try {
     await sleep(1000);
     const bound2 = await delWxApi(`/bind/${encodeURIComponent(String(bind2.attemptId))}`);
     check("第二位联系人绑定成功", bound2.status === "confirmed", String(bound2.error ?? ""));
-    const { wechat } = await import("../src/wechat.ts");
+    const { wechat } = await import("../src/channels/wechat.ts");
     check("删除前绑定查得到", wechat._linkFor(delWx.id) !== null);
     await fetch(`${BASE}/api/contacts/${encodeURIComponent(delWx.id)}/archive`, { method: "POST" });
     const delWxRes = await (await fetch(`${BASE}/api/contacts/${encodeURIComponent(delWx.id)}`, { method: "DELETE" })).json();
@@ -2650,7 +2739,7 @@ try {
     check("工具总开关默认开（历史行为，关掉才是变更）", d0.features.tools === true);
     check("温度计初始为空形状", d0.bond.stage === "" && d0.bond.warmth === 50);
 
-    const { toolDefsForApi } = await import("../src/tools.ts");
+    const { toolDefsForApi } = await import("../src/mind/tools.ts");
     const namesOff = toolDefsForApi(c5).map((t) => t.function.name);
     check("提醒默认关 → schedule_reminder 不向模型声明", !namesOff.includes("schedule_reminder"));
 
@@ -2696,8 +2785,8 @@ try {
     });
     const namesNoClock = toolDefsForApi(c5).map((t) => t.function.name);
     check("关看时间/翻记忆 → 两个工具不再声明", !namesNoClock.includes("get_current_time") && !namesNoClock.includes("search_memory"));
-    const { buildSystemPrompt: buildPrompt } = await import("../src/persona.ts");
-    const { getContact } = await import("../src/contacts.ts");
+    const { buildSystemPrompt: buildPrompt } = await import("../src/mind/persona.ts");
+    const { getContact } = await import("../src/chat/contacts.ts");
     const offCard = getContact(c5);
     const promptOff = buildPrompt([], {
       character: offCard?.card, lastUserAt: Date.now(),
@@ -2713,7 +2802,7 @@ try {
 
     // 工具落任务（确定性本地操作，echo 模式也能验证）。
     // 注意 executeTool 的双层结构：外层 ok 表示"执行没炸"，业务成败在 result 里（模型看到的就是它）。
-    const { executeTool } = await import("../src/tools.ts");
+    const { executeTool } = await import("../src/mind/tools.ts");
     const bad = await executeTool("schedule_reminder", JSON.stringify({ text: "交周报", to_local: "2020-01-01 08:00" }),
       { contactId: c5, lastUserAt: null });
     const badResult = (bad.ok === false ? { ok: false, error: bad.error } : bad.result) as { ok?: boolean; error?: string };
@@ -2747,10 +2836,10 @@ try {
     // 从前是「一次生成、到处群发」，群记忆还会漏进主动召回——这里把目标选择与召回收窄一起钉住。
     {
       const { ensureConversation, setConversationEnabled, setConversationGroupProactive, localConversationId } =
-        await import("../src/conversations.ts");
-      const { insertMessage, lastUserMessageAtAnyConversation } = await import("../src/agent.ts");
-      const pro = await import("../src/proactive.ts");
-      const { addMemoryEvent, recall } = await import("../src/memory.ts");
+        await import("../src/chat/conversations.ts");
+      const { insertMessage, lastUserMessageAtAnyConversation } = await import("../src/chat/agent.ts");
+      const pro = await import("../src/mind/proactive.ts");
+      const { addMemoryEvent, recall } = await import("../src/mind/memory.ts");
       type Task = Parameters<typeof pro.resolveProactiveTarget>[1];
       const taskOf = (kind: "care" | "reminder", conversationId: string | null): Task =>
         ({ id: 0, contact_id: c5, focus: "", kind, due_at: 0, status: "pending", postpone_count: 0, result: null, error: null, created_at: 0, finished_at: null, conversation_id: conversationId }) as unknown as Task;
@@ -2806,8 +2895,8 @@ try {
 
     // 记忆提取这张卡是只读的：唯一的操作是「单独启用」= 挑一份「主对话模型」里存好的档。
     // 卡上不再有地址/密钥/模型名，所以手填值、候选档、整套档三条路都不能碰到它。
-    const { capabilityExplicit } = await import("../src/settings.ts");
-    const { callSettings: csMemory } = await import("../src/model.ts");
+    const { capabilityExplicit } = await import("../src/settings/settings.ts");
+    const { callSettings: csMemory } = await import("../src/settings/model.ts");
     const s0 = await settings();
     check("设置快照包含记忆抽取能力档", s0.capabilities?.memoryExtract !== undefined);
     // 这张卡没单独启用时就是「跟随主力」，就绪与否必须和主力一致。
@@ -2922,7 +3011,7 @@ try {
       // 正在用的就是这家的档 → 同步地址后当前生效配置必须跟着搬，否则界面显示新地址、跑的还是旧端点
       await jsonPost("/api/settings/profiles/activate", { id: a1 });
       await provApi({ op: "sync", baseUrl: "https://prov2.test/v1", toBaseUrl: "https://prov3.test/v1", apiKey: "" });
-      const { modelConfig, activeProfileId } = await import("../src/settings.ts");
+      const { modelConfig, activeProfileId } = await import("../src/settings/settings.ts");
       const nowProfiles = (await settings()).profiles as Array<{ id: string }>;
       check("同步密钥留空 = 保持原样；改地址后在用徽标仍然认得这份档",
         modelConfig().baseUrl === "https://prov3.test/v1" && activeProfileId() === a1
@@ -2971,8 +3060,8 @@ try {
     // 能力通道必须继承档上的 token 上限：从前 callSettings 给能力硬写 maxOutputTokens=0，
     // resolveMaxTokens 就兜底成 1024 —— 于是**那一轮只要带了图，她的回复被截到 1024 token**，
     // 用户在模型档上设的输出上限对带图对话完全失效，而界面上看不出任何区别。
-    const { updateModel, modelConfig } = await import("../src/settings.ts");
-    const { callSettings } = await import("../src/model.ts");
+    const { updateModel, modelConfig } = await import("../src/settings/settings.ts");
+    const { callSettings } = await import("../src/settings/model.ts");
     const prevOut = modelConfig().maxOutputTokens;
     updateModel({ maxOutputTokens: 65536 });
     const visOn = await capJson({
@@ -2988,7 +3077,7 @@ try {
     check("未走能力时仍是主力档本身", callSettings({}).name !== "vision-test");
 
     // 提示词注入：三段素材按开关注入，方括号纪律不破
-    const { buildSystemPrompt } = await import("../src/persona.ts");
+    const { buildSystemPrompt } = await import("../src/mind/persona.ts");
     const injected = buildSystemPrompt([], {
       character: { name: "能力客", identity: "x", background: "", relationship: "" },
       companion: { schedule: "早九晚六", lifeline: "他这周在赶项目", bondLine: "阶段「熟悉」·亲密度 60" },
@@ -3034,11 +3123,11 @@ try {
 
   console.log("\n[36] 图像生成：能力闸门 / 每日配额 / 画出的图挂在回复上");
   {
-    const { capabilityReady, deleteCapabilityProfile, listCapabilityProfiles } = await import("../src/settings.ts");
-    const { IMAGE_DAILY_LIMIT, imagesToday } = await import("../src/model.ts");
-    const { executeTool, toolDefsForApi } = await import("../src/tools.ts");
-    const { db: dbImg } = await import("../src/db.ts");
-    const { buildDecideSystem } = await import("../src/proactive.ts");
+    const { capabilityReady, deleteCapabilityProfile, listCapabilityProfiles } = await import("../src/settings/settings.ts");
+    const { IMAGE_DAILY_LIMIT, imagesToday } = await import("../src/settings/model.ts");
+    const { executeTool, toolDefsForApi } = await import("../src/mind/tools.ts");
+    const { db: dbImg } = await import("../src/core/db.ts");
+    const { buildDecideSystem } = await import("../src/mind/proactive.ts");
     const { existsSync } = await import("node:fs");
     const nap = () => new Promise((r) => setTimeout(r, 100));
     // 1x1 PNG：假端点就回这份，断言只看它落到哪、形状对不对，不看像素。
@@ -3243,7 +3332,7 @@ try {
         (dbImg.prepare("SELECT COUNT(*) c FROM messages WHERE turn_id=?").get(sayNew.turnId) as { c: number }).c > 0);
 
       // ── 产物台账：画成功那一刻就该有记录，不等消息落地 ──────────────
-      const { listArtifacts, getArtifact, deleteArtifact } = await import("../src/artifacts.ts");
+      const { listArtifacts, getArtifact, deleteArtifact } = await import("../src/media/artifacts.ts");
       // cidFace 先后画过两张：先自拍（带参考、竖构图）、后方图。按 with_reference 取自拍那条，
       // 别按 id 取最新——最新的是后跑的那张方图。
       const art = dbImg.prepare("SELECT id, url, with_reference, shape, prompt FROM artifacts WHERE contact_id=? AND with_reference=1 ORDER BY id DESC LIMIT 1")
@@ -3305,7 +3394,7 @@ try {
       await fetch(`${BASE}/api/contacts/${cidSweep}`, {
         method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ faceRef: keep.url }),
       });
-      const { sweepOrphanMedia } = await import("../src/media.ts");
+      const { sweepOrphanMedia } = await import("../src/media/media.ts");
       const swept = sweepOrphanMedia(0);
       const inMedia = (u: string) => mediaFileOnDisk(String(u));
       check("孤儿清理不删 contacts.face_ref 指向的参考图", inMedia(keep.url), keep.url);
@@ -3320,8 +3409,8 @@ try {
 
   console.log("\n[37] 生成设置：联系人级温度覆盖 / 禁用词约束注入");
   {
-    const { parseBannedWords, bannedWordsNote, MAX_BANNED_WORDS } = await import("../src/banned-words.ts");
-    const { sanitizeFeatures } = await import("../src/contacts.ts");
+    const { parseBannedWords, bannedWordsNote, MAX_BANNED_WORDS } = await import("../src/core/banned-words.ts");
+    const { sanitizeFeatures } = await import("../src/chat/contacts.ts");
     check("分隔符认中英文逗号、顿号、分号、换行并去重",
       JSON.stringify(parseBannedWords("宝贝,亲爱的、喵;喵\n宝贝")) === JSON.stringify(["宝贝", "亲爱的", "喵"]),
       JSON.stringify(parseBannedWords("宝贝,亲爱的、喵;喵\n宝贝")));
@@ -3363,7 +3452,7 @@ try {
   // 把 fetch 换成一个内存里造好的 Response，这些全测不到，等于没测。
   {
     const { createServer } = await import("node:http");
-    const { updateModel } = await import("../src/settings.ts");
+    const { updateModel } = await import("../src/settings/settings.ts");
     const MOCK_PORT = 8797;
     const mockBase = `http://127.0.0.1:${MOCK_PORT}/v1`;
     /** 每个请求实际收到的 stream 字段，用来证明「问过、被记下来、之后不再问」。 */
@@ -3589,8 +3678,8 @@ try {
       //    放在最后做、跑完立刻解绑：embedding 生效会影响其它段落的召回排序。
       console.log("\n[流式同块] 记忆向量化（语义召回）");
       {
-        const { saveCapabilityProfile, activateCapabilityProfile } = await import("../src/settings.ts");
-        const mem = await import("../src/memory.ts");
+        const { saveCapabilityProfile, activateCapabilityProfile } = await import("../src/settings/settings.ts");
+        const mem = await import("../src/mind/memory.ts");
         check("embedding 未配置 → 退纯词面（模型名为空、回填零条）",
           mem.currentEmbeddingModel() === "" && (await mem.backfillMemoryEmbeddings()) === 0);
         const newId = mem.addMemoryEvent({ kind: "preference", content: "喜欢囤积复古唱片，周末常去淘碟", contactId: "default" });
@@ -3627,7 +3716,7 @@ try {
     // one() 那把计数助手是别段的局部函数，这儿够不着，就地来一把同语义的。
     const qqCount = (id: string): number =>
       (db.prepare(`SELECT COUNT(*) AS c FROM messages WHERE contact_id = ?`).get(id) as { c: number }).c;
-    const { qq } = await import("../src/qq.ts");
+    const { qq } = await import("../src/channels/qq.ts");
     const qqContact = await (await fetch(`${BASE}/api/contacts`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "QQ 测试", identity: "临时" }),
     })).json();
@@ -3848,7 +3937,7 @@ try {
 
       // 入站三件事：@ 昵称补回正文、引用关系、群图落本地媒体库。平台把 @ 从正文里剥了，
       // 昵称只剩在 mentions[] 里；引用关系只在 message_scene.ext 的 ref_msg_idx 里。
-      const { mediaUrlExists: qqMediaExists } = await import("../src/media.ts");
+      const { mediaUrlExists: qqMediaExists } = await import("../src/media/media.ts");
       const mediaFetchesBefore = qqMock.mediaFetches.length;
       sock.emit({ op: 0, t: "GROUP_AT_MESSAGE_CREATE", s: 12, d: {
         id: "gm2", group_openid: "GROUP-A", group_name: "测试群 A",
@@ -3952,7 +4041,7 @@ try {
         );
         check("群名接口拒绝把主私聊当群改", privateTitleRes.status === 404, `status=${privateTitleRes.status}`);
 
-        const { addMemoryEvent, recallExplained, promoteMemoryEvent } = await import("../src/memory.ts");
+        const { addMemoryEvent, recallExplained, promoteMemoryEvent } = await import("../src/mind/memory.ts");
         const aSecretId = addMemoryEvent({ kind: "fact", content: "A群暗号是山楂", contactId: qqCid, scopeKind: "conversation", scopeConversationId: groupA.id, sourceConversationId: groupA.id });
         addMemoryEvent({ kind: "fact", content: "B群暗号是橘子", contactId: qqCid, scopeKind: "conversation", scopeConversationId: groupB.id, sourceConversationId: groupB.id });
         const inA = recallExplained(qqCid, "暗号 山楂 橘子", 20, { scope: { conversationId: groupA.id } }).events.map((e) => e.content);
@@ -4069,7 +4158,7 @@ try {
       qqMock.rejectProactive = true;
       // 超窗之后同一句就没 msg_id 可带了——这才是真·主动消息，平台没给权限必须看得见。
       // 用注入 now 的隔离实例跨过一小时，而不是把内部时间戳掏出来改。
-      const { createQQService } = await import("../src/qq.ts");
+      const { createQQService } = await import("../src/channels/qq.ts");
       const late = createQQService({ now: () => Date.now() + 2 * 3_600_000, socketFactory: () => new FakeQQSocket() as never });
       await late.deliverToContact(qqCid, "超窗了还想主动发", { proactive: true });
       const rejected = late.snapshotFor(qqCid).binding;
@@ -4249,7 +4338,7 @@ try {
   console.log("\n[39] 恢复出厂设置：清干净 + 重新种子内置联系人");
 
 
-  const { db: dbR } = await import("../src/db.ts");
+  const { db: dbR } = await import("../src/core/db.ts");
   // `one()` 那把计数助手定义在更早的分段作用域里，这儿够不着，就地来一把同语义的
   const count = (table: string): number => (dbR.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get() as { c: number }).c;
   const beforeContacts = count("contacts");
@@ -4300,8 +4389,8 @@ try {
   console.log("\n[40] 用户自定义技能（发现 / 校验闸门 / 渐进披露 / 停用即时生效）");
   {
     const { mkdirSync, writeFileSync } = await import("node:fs");
-    const { skillCatalogSection, skillsDir } = await import("../src/skills.ts");
-    const { toolDefsForApi, executeTool } = await import("../src/tools.ts");
+    const { skillCatalogSection, skillsDir } = await import("../src/mind/skills.ts");
+    const { toolDefsForApi, executeTool } = await import("../src/mind/tools.ts");
     const dir = skillsDir();
     const writeSkill = (name: string, lines: string[]): void => {
       mkdirSync(`${dir}/${name}`, { recursive: true });
@@ -4530,7 +4619,7 @@ try {
   console.log("\n[41b] 扩展（清单校验 / MCP 桥接 / webhook / 脚本许可 / 插拔）");
   {
     const { createServer: createHttpServer } = await import("node:http");
-    const { toolDefsForApi, executeTool } = await import("../src/tools.ts");
+    const { toolDefsForApi, executeTool } = await import("../src/mind/tools.ts");
     const CHAT_CTX = { lastUserAt: null, contactId: "default", turnId: null };
 
     // 假 MCP 服务器 + 假 webhook：最小 JSON-RPC 面，只答握手、目录、调用三件事。
@@ -4739,12 +4828,12 @@ try {
 
   console.log("\n[41] 联网底座与动作预算（SSRF 门 / 正文抽取 / 相关性 / 开关与轮数）");
   {
-    const { isPrivateAddress, parseHttpUrl, htmlToText, fetchRaw, isFetchableMime, decodeWebBody } = await import("../src/web.ts");
-    const { materializePreviews, relevance, WEB_TOOLS } = await import("../src/search.ts");
-    const { parseLinkPreviewHtml } = await import("../src/link-preview.ts");
-    const { toolDefsForApi } = await import("../src/tools.ts");
-    const { safeMediaUrl } = await import("../src/model.ts");
-    const settings = await import("../src/settings.ts");
+    const { isPrivateAddress, parseHttpUrl, htmlToText, fetchRaw, isFetchableMime, decodeWebBody } = await import("../src/core/web.ts");
+    const { materializePreviews, relevance, WEB_TOOLS } = await import("../src/mind/search.ts");
+    const { parseLinkPreviewHtml } = await import("../src/mind/link-preview.ts");
+    const { toolDefsForApi } = await import("../src/mind/tools.ts");
+    const { safeMediaUrl } = await import("../src/settings/model.ts");
+    const settings = await import("../src/settings/settings.ts");
 
     // 地址门做成离线的：这条只能靠联网测的话，网络一抖就变成假绿。
     // IPv6 那组里 2408: 是百度真实的全球单播地址——第一版把「2000::/3」写成字符串前缀匹配，
@@ -4835,11 +4924,11 @@ try {
     const { execFileSync } = await import("node:child_process");
     const zeroDays = execFileSync(
       process.execPath,
-      ["-e", "import('./src/config.ts').then((m) => process.stdout.write(String(m.config.consolidateIntervalDays)))"],
+      ["-e", "import('./src/core/config.ts').then((m) => process.stdout.write(String(m.config.consolidateIntervalDays)))"],
       { env: { ...process.env, CONSOLIDATE_INTERVAL_DAYS: "0" }, encoding: "utf8" },
     ).trim();
     check("CONSOLIDATE_INTERVAL_DAYS=0 真的能关闭后台整理", zeroDays === "0", zeroDays);
-    const { sniffImageMime } = await import("../src/media.ts");
+    const { sniffImageMime } = await import("../src/media/media.ts");
     check("图片魔数识别 PNG / JPEG",
       sniffImageMime(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00])) === "image/png"
       && sniffImageMime(Buffer.from([0xff, 0xd8, 0xff, 0xe0])) === "image/jpeg");
@@ -4998,7 +5087,7 @@ try {
       check("真联网：图片搜索把候选图落成本地 /media 预览（用户才看得见那几张图）",
         previews.some(previewOk) && previews.every((u) => u === "" || previewOk(u)),
         `previews=${JSON.stringify(previews)}`);
-      const assistantTools = (await import("../src/assistant.ts")).ASSISTANT_TOOLS;
+      const assistantTools = (await import("../src/mind/assistant.ts")).ASSISTANT_TOOLS;
       const avatarTool = assistantTools.find((t) => t.name === "set_contact_avatar");
       if (firstHit !== undefined && avatarTool !== undefined) {
         const set = await avatarTool.execute(
@@ -5021,8 +5110,8 @@ try {
 
   console.log("\n[42] 设头像这道门（内网拒绝 / 坏参数 / 同名歧义 / 存储形态）");
   {
-    const { ASSISTANT_TOOLS } = await import("../src/assistant.ts");
-    const { createContact } = await import("../src/contacts.ts");
+    const { ASSISTANT_TOOLS } = await import("../src/mind/assistant.ts");
+    const { createContact } = await import("../src/chat/contacts.ts");
     // 这一组自己建联系人：[41] 的 cw 在它自己的块作用域里，跨块不可见。
     const made = await (await jsonPost("/api/contacts", { name: "头像门客" })).json();
     const target = made.contact.id as string;
@@ -5062,7 +5151,7 @@ try {
     }
     // 头像现在两种形态都收：内联 dataURL（用户在界面上手动传的那种）与真实存在的 /media 路径
     // （画出来的大图、搜来的原图）。既然收路径，就必须防裂图——文件不在时整段拒掉。
-    const { saveImage, mediaUrlExists, sweepOrphanMedia, releaseMediaFiles } = await import("../src/media.ts");
+    const { saveImage, mediaUrlExists, sweepOrphanMedia, releaseMediaFiles } = await import("../src/media/media.ts");
     const madeFile = saveImage(Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), "image/png");
     const okPath = await avatarTool.execute({ contact: target, image_url: madeFile.url }, A) as { ok?: boolean; error?: string };
     const stored = (db.prepare(`SELECT avatar FROM contacts WHERE id = ?`).get(target) as { avatar: string }).avatar;
@@ -5082,7 +5171,7 @@ try {
     // 反向半边要单独测**清理器**：updateContact 现在自己就会回收旧文件，
     // 走它那条路删掉的是 release 的功劳，证明不了 sweep 认得头像引用。
     // 所以这里全程用 SQL 直写 avatar，绕开 release，让"有没有人引用"只由 sweep 判断。
-    const contactsMod = await import("../src/contacts.ts");
+    const contactsMod = await import("../src/chat/contacts.ts");
     const lone = saveImage(Buffer.from("89504e470d0a1a0a0000000d49484452", "hex"), "image/png");
     db.prepare(`UPDATE contacts SET avatar = ? WHERE id = ?`).run(lone.url, target);
     const sweepKeep = sweepOrphanMedia(0);
@@ -5124,8 +5213,8 @@ try {
         "conversationId", "conversationTitle", "conversationReadOnly", "conversations", "lastAt",
         "pendingSoon", "pendingFocus", "pendingKind", "archivedAt", "unread"].includes(k)).join(",") || "干净");
     // 批量快照必须与旧的逐联系人/逐会话口径一致；这里用旧函数当 oracle。
-    const { lastMessagePreview, unreadCount, unreadCountForConversation } = await import("../src/contacts.ts");
-    const { listConversations } = await import("../src/conversations.ts");
+    const { lastMessagePreview, unreadCount, unreadCountForConversation } = await import("../src/chat/contacts.ts");
+    const { listConversations } = await import("../src/chat/conversations.ts");
     const listItem = (slim.contacts ?? []).find((c: { conversations?: unknown[] }) => (c.conversations ?? []).length > 0) as {
       id: string; conversationId: string | null; conversations: Array<{ id: string; unread: number }>; unread: number;
     } | undefined;
@@ -5157,7 +5246,7 @@ try {
     // 三段人设的**合计**额度：前端常量与后端必须报同一个数。这一条曾经各写各的
     // （前端写死 2000、后端每段截 10000），界面上的「超出会被截断」于是成了假话。
     const { PERSONA_TOTAL_MAX } = await import("../frontend/src/features/profile/constants.ts");
-    const { sanitizeCharacter, PERSONA_TOTAL_MAX: BACKEND_TOTAL_MAX } = await import("../src/settings.ts");
+    const { sanitizeCharacter, PERSONA_TOTAL_MAX: BACKEND_TOTAL_MAX } = await import("../src/settings/settings.ts");
     check("前端写的合计上限 = 后端实际截断值", PERSONA_TOTAL_MAX === BACKEND_TOTAL_MAX,
       `前端=${PERSONA_TOTAL_MAX} 后端=${BACKEND_TOTAL_MAX}`);
     const oneField = sanitizeCharacter({
@@ -5222,8 +5311,8 @@ try {
 
   console.log("\n[46] 媒体清理闭环（运行检查 → 查看 → 回收站 → 恢复/永久删除）");
   {
-    const { saveImage, saveWallpaper, mediaUrlExists } = await import("../src/media.ts");
-    const { currentFileOf } = await import("../src/media-layout.ts");
+    const { saveImage, saveWallpaper, mediaUrlExists } = await import("../src/media/media.ts");
+    const { currentFileOf } = await import("../src/media/media-layout.ts");
     const { utimesSync } = await import("node:fs");
     const oldTime = new Date(Date.now() - 2 * 24 * 3_600_000);
     const png = Buffer.from("89504e470d0a1a0a0000000d49484452", "hex");

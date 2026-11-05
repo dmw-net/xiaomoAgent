@@ -5,12 +5,12 @@
 // /api/contacts/<id>/qq 当成「id=qq/xxx」吞掉回 404。router.ts 里 channels 排在
 // contacts.detailRoutes 之前，正是为这一点（见 router.ts 的分段注释）。
 
-import { qq, applyQQBackend, qqBackend, qqBackendFor, qqBackendSaved, qqBackendSavedFor, qqUsesBackend, saveQQBackend, saveQQBackendForContact } from "../../qq.ts";
-import { upsertOneBotAccount, onebotLoginInfo, onebotSettings, applyOnebotSettings } from "../../qq-onebot.ts";
-import { napcatStatus, installNapcat, startNapcat, reloginNapcat } from "../../napcat.ts";
-import { config } from "../../config.ts";
-import { wechat } from "../../wechat.ts";
-import { getContact } from "../../contacts.ts";
+import { qq, applyQQBackend, qqBackend, qqBackendFor, qqBackendSaved, qqBackendSavedFor, qqUsesBackend, saveQQBackend, saveQQBackendForContact } from "../../channels/qq.ts";
+import { upsertOneBotAccount, onebotLoginInfo, onebotSettings, applyOnebotSettings } from "../../channels/qq-onebot.ts";
+import { napcatStatus, installNapcat, startNapcat, reloginNapcat } from "../../channels/napcat.ts";
+import { config } from "../../core/config.ts";
+import { wechat } from "../../channels/wechat.ts";
+import { getContact } from "../../chat/contacts.ts";
 import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 

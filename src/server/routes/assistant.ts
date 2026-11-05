@@ -13,8 +13,8 @@ import {
   pendingActionsFor,
   resolvePendingAction,
   isAssistantThreadContactId,
-} from "../../assistant.ts";
-import { ASSISTANT_CONTACT_ID } from "../../contacts.ts";
+} from "../../mind/assistant.ts";
+import { ASSISTANT_CONTACT_ID } from "../../chat/contacts.ts";
 import { getChannel } from "../../channels/types.ts";
 import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";

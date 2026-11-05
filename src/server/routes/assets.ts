@@ -12,9 +12,9 @@ import {
   applyEmoteSemantics, assetStats, dropMissingAsset, emoteNamingStats, getAssetById, isHumanName, listAssets, listEmotePacks,
   markMissingIfGone, setEmoteMark, setStarred,
   type AssetKindFilter, type AssetView, type EmoteNamedFilter,
-} from "../../assets.ts";
-import { removeEmoteAsset, registerEmoteAsset } from "../../qq-emote.ts";
-import { mediaDir } from "../../media.ts";
+} from "../../media/assets.ts";
+import { removeEmoteAsset, registerEmoteAsset } from "../../emote/qq-emote.ts";
+import { mediaDir } from "../../media/media.ts";
 import { clampInt, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 

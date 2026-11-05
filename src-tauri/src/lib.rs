@@ -44,7 +44,7 @@ struct SidecarState(Mutex<Option<tauri_plugin_shell::process::CommandChild>>);
 /// 这一个值同时决定两件事：**托盘图标在不在**，以及点 × 是隐藏窗口还是真退出。
 /// 两者必须一起——没有图标却把窗口藏起来，用户就再也找不回这个程序了。
 /// 后端改它时通过 stdout 的 `XIAOMO-PREF` 标记实时送达外壳，不用重启
-/// （见 src/desktop-prefs.ts 的注释）。
+/// （见 src/core/desktop-prefs.ts 的注释）。
 #[cfg(desktop)]
 struct TrayState(Mutex<bool>);
 
@@ -74,7 +74,7 @@ pub fn run() {
     // 移动端没有托盘，这个状态也就不存在（TrayState 本身是 cfg(desktop) 的）。
     #[cfg(desktop)]
     {
-        // 缺省值必须和后端 src/desktop-prefs.ts 的 DEFAULTS 一致（用户拍的是默认关）：
+        // 缺省值必须和后端 src/core/desktop-prefs.ts 的 DEFAULTS 一致（用户拍的是默认关）：
         // 两边不一致时，第一次启动会「界面显示关闭、托盘却已经建起来」。
         builder = builder.manage(TrayState(Mutex::new(false)));
     }
@@ -673,7 +673,7 @@ fn start_sidecar(app: &tauri::AppHandle, tx: Sender<BootOutcome>) -> Result<(), 
         .map_err(|e| format!("写配置失败：{e}"))?;
 
     // 卸载器要知道数据目录在哪。它读不了 JSON（NSIS 里解析转义路径是自己找雷），
-    // 所以这里另写一行纯文本指针；改数据目录的后端路径（src/data-dir.ts）写同一个文件。
+    // 所以这里另写一行纯文本指针；改数据目录的后端路径（src/core/data-dir.ts）写同一个文件。
     // 卸载器拿到之后还要过护栏（必须存在、必须有 xiaomo.db），指针过期只会"拒绝删除并说明"，
     // 不会删错地方。
     let _ = std::fs::write(
@@ -1069,6 +1069,6 @@ fn prefs_from_json(value: &serde_json::Value) -> (bool, bool) {
     let flag = |key: &str, default: bool| {
         value.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
     };
-    // 两个缺省都跟 src/desktop-prefs.ts 的 DEFAULTS 对齐（用户拍的：默认都不开）。
+    // 两个缺省都跟 src/core/desktop-prefs.ts 的 DEFAULTS 对齐（用户拍的：默认都不开）。
     (flag("AUTOSTART", false), flag("TRAY", false))
 }

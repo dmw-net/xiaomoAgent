@@ -45,14 +45,14 @@ const PHASE = process.env.EMOTE_SUB;
 if (PHASE === "1") {
   // ── 子进程：跑公共断言 + 对应渠道的渲染断言 ─────────────────────
   const run = async () => {
-    const emote = await import("../src/qq-emote.ts");
-    const media = await import("../src/media.ts");
-    const assetsMod = await import("../src/assets.ts");
-    const search = await import("../src/emote-search.ts");
+    const emote = await import("../src/emote/qq-emote.ts");
+    const media = await import("../src/media/media.ts");
+    const assetsMod = await import("../src/media/assets.ts");
+    const search = await import("../src/emote/emote-search.ts");
     // listAssets 读时要 LEFT JOIN artifacts（作品的提示词不复制进资产表，联表现取）。
     // 那张表是 artifacts.ts 的 import 副作用，不先 import 一下就会「no such table」。
-    await import("../src/artifacts.ts");
-    const { createContact } = await import("../src/contacts.ts");
+    await import("../src/media/artifacts.ts");
+    const { createContact } = await import("../src/chat/contacts.ts");
     const backend = process.env.QQ_BACKEND === "onebot" ? "onebot" : "official";
 
     /** 落一张真图，返回它的 /media 路径。素材登记现在要求文件真的在盘上，测试也得给真的。 */
@@ -122,7 +122,7 @@ if (PHASE === "1") {
     assert.strictEqual(assetsMod.listEmoteAssets().length, capCount, "去重没让库变脏");
     {
       // 采集成功会自动排一次延时补名（防抖 60s）；测试里撤掉，别让它烧到后面的断言上。
-      const namingEarly = await import("../src/emote-naming.ts");
+      const namingEarly = await import("../src/emote/emote-naming.ts");
       assert.strictEqual(namingEarly.namingJobStatus().running, false, "采集不立刻起作业（防抖）");
       namingEarly.cancelCaptureNaming();
     }
@@ -144,7 +144,7 @@ if (PHASE === "1") {
 
       // 5b) 端到端：同一张图发两次只上传一次；缓存凭证被平台判失效时作废重传而不是直接失败。
       //     假 QQ API 只认这条链路会用到的端点，按调用次数记账。
-      const { createQQService } = await import("../src/qq.ts");
+      const { createQQService } = await import("../src/channels/qq.ts");
       let filesCalls = 0;
       let sendCalls = 0;
       let failNextSend = false;
@@ -172,7 +172,7 @@ if (PHASE === "1") {
       });
       const contact = createContact({ name: "表情回归测试" });
       svc.setCredentials(contact.id, { appId: "10001", clientSecret: "sekret", enabled: true });
-      const savedOfficial = (await import("../src/media.ts")).saveImage(TINY_PNG, "image/png");
+      const savedOfficial = (await import("../src/media/media.ts")).saveImage(TINY_PNG, "image/png");
       const ref = [{ url: savedOfficial.url }];
       const first = await svc.deliverMediaToContact(contact.id, "", ref);
       const second = await svc.deliverMediaToContact(contact.id, "", ref);
@@ -250,7 +250,7 @@ if (PHASE === "1") {
       "按这个批次名筛得到那一张");
 
     // 7) 存量迁移：老格式（kv 里一整块 JSON）搬进 assets 表，机器名照样洗掉；搬完不留第二份真相。
-    const { kvGet, kvSet } = await import("../src/db.ts");
+    const { kvGet, kvSet } = await import("../src/core/db.ts");
     const legacyUrl = savePng();
     kvSet("qq.emote.v1", JSON.stringify({
       version: 1,
@@ -265,7 +265,7 @@ if (PHASE === "1") {
     assert.ok(assetsMod.listEmoteAssets().some((a) => a.url === hashUrl), "迁移不会把已有的素材挤掉");
 
     // 8) 富媒体凭证有效期：照平台回的 ttl 算，并留出提前作废的余量。
-    const qq = await import("../src/qq.ts");
+    const qq = await import("../src/channels/qq.ts");
     assert.strictEqual(qq.fileInfoLifetimeMs(7200), 7_200_000 - 60_000, "ttl 秒数换算 + 留余量");
     assert.ok(qq.fileInfoLifetimeMs(0) >= 3_600_000, "ttl=0（可长期使用）仍是有界有效期");
     assert.ok(qq.fileInfoLifetimeMs(-1) >= 3_600_000, "平台没回 ttl 走保守值，而不是当永久");
@@ -342,7 +342,7 @@ if (PHASE === "1") {
       // 使用次数只能影响候选排序，不能把弱命中推过自动发送线。
       const weakUrl = savePng();
       emote.registerEmoteAsset(weakUrl, { caption: "只有这里会出现的夸爆字样" });
-      const { db: rankDb } = await import("../src/db.ts");
+      const { db: rankDb } = await import("../src/core/db.ts");
       rankDb.prepare("UPDATE assets SET emote_use_count = 500 WHERE url = ?").run(weakUrl);
       const weakRanked = search.searchEmotes("夸爆", 3).find((h) => h.asset.url === weakUrl);
       assert.ok(weakRanked !== undefined, "弱命中仍可作为候选供模型判断");
@@ -352,7 +352,9 @@ if (PHASE === "1") {
       assert.strictEqual(weakDecision.kind, "choose", "高使用次数不能把弱命中变成高置信自动发");
       assert.ok(weakDecision.reason.includes("不够高"), "回执说明纯语义分没到线");
 
-      // 语义同分时，使用次数不能制造出“第一名明显领先”的假象。
+      // 语义同分时，使用次数不能制造出“第一名明显领先”的假象（决策只看纯语义）；
+      // 但整词命中名字的同分桶不算不确定——查「热度同分测试」，两张名字一模一样，
+      // 随机甩一张正是人干的事，交回候选只会多烧一轮还诱发连锁失败（实测翻车现场）。
       const hotUrl = savePng();
       const coldUrl = savePng();
       emote.registerEmoteAsset(hotUrl, { label: "热度同分测试" });
@@ -362,13 +364,12 @@ if (PHASE === "1") {
       assert.strictEqual(tieHits[0]?.asset.url, hotUrl, "常用图仍可排在候选第一位");
       assert.strictEqual(tieHits[0]?.semanticScore, tieHits[1]?.semanticScore, "两张的纯语义分相同");
       const tieDecision = search.autoPickEmote("热度同分测试");
-      assert.strictEqual(tieDecision.kind, "choose", "使用次数差不能绕过同分阈值");
-      assert.ok(tieDecision.reason.includes("太接近"), "同语义候选交回模型选择");
+      assert.strictEqual(tieDecision.kind, "send", "整词命中名字的同分桶直接发，不交回候选多烧一轮");
 
       // 12) 智能识别：真调用链（视觉能力 → 多模态请求 → JSON → 写库），假服务商回 canned 结果。
-      const naming = await import("../src/emote-naming.ts");
+      const naming = await import("../src/emote/emote-naming.ts");
       assert.strictEqual(naming.startNamingJob().started, false, "图片理解没配时起作业要如实拒绝，不是空跑");
-      const { updateModel } = await import("../src/settings.ts");
+      const { updateModel } = await import("../src/settings/settings.ts");
       // mode 要显式给 openai：出厂是 echo（离线回声档），不改 mode 的话 capabilityReady 永远 false，
       // 这条断言就跑在同一条「没配好就不许起作业」的规则上——那正是上面那条断言要覆盖的形态。
       updateModel({
@@ -376,7 +377,7 @@ if (PHASE === "1") {
         baseUrl: "http://127.0.0.1:9/v1", apiKey: "probe-key", name: "vision-probe",
         caps: { tools: false, vision: true, thinking: false, thinkingOnly: false, customProtocol: false },
       });
-      assert.strictEqual((await import("../src/settings.ts")).capabilityReady("imageVision"), true,
+      assert.strictEqual((await import("../src/settings/settings.ts")).capabilityReady("imageVision"), true,
         "视觉能力就绪（下面整段认图测试的前提）");
       const captured = [];
       let respondBad = false;
@@ -426,7 +427,9 @@ if (PHASE === "1") {
         assert.strictEqual(naming.parseCaptionJson("这不是 JSON"), null, "真不是 JSON 就报 null，不硬凑一个名字");
         assert.strictEqual(naming.parseCaptionJson("[1,2,3]"), null, "数组不是我们要的对象");
         // 新门反证：限流必须**退避后重试**（真机上第 7 张就撞 429，不重试等于半库判死）。
-        rateLimitTimes = 2;
+        // 喂 4 张假 429：callModel 内部还有一层 withRetry 快重试，两次 429 才把 ModelError
+        // 抛到命名层——命名层要退避两次（8000、20000）就得喂两对。
+        rateLimitTimes = 4;
         const waits = [];
         const retried = await naming.captionEmote(assetsMod.getAssetByUrl(badUrl), {
           attempts: 3, wait: async (ms) => { waits.push(ms); },
@@ -487,8 +490,8 @@ if (PHASE === "1") {
         assert.strictEqual(captured.length, callsBefore, "重跑一次视觉调用都没发");
         // 单张识别（弹窗里那颗「智能识别」）：排进当前队列，轮询到这一行出现就回填。不另起一条作业，所
         // 以整库跑着时它排在后面；关闭弹窗也不影响后台继续跑。
-        const started = naming.startNamingJob({ only: [named[0].id], force: true });
-        assert.strictEqual(started.started, true, "排进当前作业");
+        const startedRerun = naming.startNamingJob({ only: [named[0].id], force: true });
+        assert.strictEqual(startedRerun.started, true, "排进当前作业");
         for (let i = 0 && naming.namingJobStatus().running; i < 200; i += 1) {
           await new Promise((resolve) => setTimeout(resolve, 20));
         }
@@ -521,19 +524,32 @@ if (PHASE === "1") {
         // 新门反证：作业级的自适应节流。真机实测 20 张里 8 张即使单张退避 3 次仍然失败——
         // 只救单张不降整库的速，等于下半库白烧调用。撞过一次限流，下一张就该慢点打。
         const gaps = [];
-        rateLimitTimes = 1;
+        // 喂一对 429：callModel 内部的 withRetry 快重试会先消化一张，命名层要看到一对才退避。
+        rateLimitTimes = 2;
         const throttled = naming.startNamingJob({ force: true, limit: 2, wait: async (ms) => { gaps.push(ms); } });
         assert.strictEqual(throttled.started, true, "force 模式可以重认已经认过的");
+        // 队列追加：作业还在跑第一张时往里排一张（同 id 去重、force 升级），total 跟着涨。
+        // startNamingJob 返回后作业不可能同步跑完（worker 第一件事就是 await 网络调用），
+        // 所以这里同步追加一定落在 running 状态里。
+        const extraUrl = savePng();
+        emote.registerEmoteAsset(extraUrl, { pack: ["追加队列"] });
+        const extraId = assetsMod.listEmoteAssets().find((a) => a.url === extraUrl).id;
+        const appended = naming.startNamingJob({ only: [extraId], force: true });
+        assert.strictEqual(appended.started, true, "整库跑着时仍可排进当前任务");
+        assert.strictEqual(naming.namingJobStatus().total, 3, "总张数跟着加 1（2 → 3）");
         for (let i = 0; i < 600 && naming.namingJobStatus().running; i += 1) {
           await new Promise((resolve) => setTimeout(resolve, 10));
         }
         rateLimitTimes = 0;
         const tjob = naming.namingJobStatus();
         assert.strictEqual(tjob.failed, 0, "退避后救回来的那张不该算失败");
-        assert.strictEqual(tjob.named, 2, "两张都认回来了");
+        assert.strictEqual(tjob.named, 3, "三张都认回来了");
         assert.ok(gaps.includes(8000), "单张退避等过 8s：" + JSON.stringify(gaps));
         assert.ok(gaps.includes(3000), "下一张确实按抬起来的间隔排队：" + JSON.stringify(gaps));
         assert.ok(tjob.throttleMs > 0, "节流状态对界面可见：" + tjob.throttleMs);
+        const extraDone = assetsMod.getAssetById(extraId);
+        assert.ok(extraDone.emoteLabel !== "", "追加进来的那张也认完了");
+        assert.ok(tjob.results.find((r) => r.id === extraId)?.name !== "", "结果行里有它");
         // 笑脸是开关不是重新登记：取消再勾回来，认好的名字必须还在（一次误点不该洗掉名字）。
         const toggleRow = assetsMod.getAssetById(named[0].id);
         assert.ok(toggleRow.emoteLabel !== "", "这张已经有名字");
@@ -544,19 +560,6 @@ if (PHASE === "1") {
         assert.strictEqual(back.usableAsEmote, true, "再勾回来");
         assert.strictEqual(back.emoteLabel, toggleRow.emoteLabel, "开关式勾选不洗名字");
         assert.ok(back.emoteNamedAt > 0, "认图状态也还在");
-        // 队列追加：整库跑着时往里排一张（同 id 去重、force 升级），队列长度和 total 都会涨。
-        const extraId = savePng();
-        emote.registerEmoteAsset(extraId, { pack: ["追加队列"] });
-        const preTotal = naming.namingJobStatus().total;
-        const appended = naming.startNamingJob({ only: [extraId], force: true });
-        assert.strictEqual(appended.started, true, "整库跑着时仍可排进当前任务");
-        assert.strictEqual(naming.namingJobStatus().total, preTotal + 1, "总张数跟着加 1");
-        for (let i = 0; i < 400 && naming.namingJobStatus().running; i += 1) {
-          await new Promise((resolve) => setTimeout(resolve, 10));
-        }
-        const extraDone = assetsMod.getAssetById(extraId);
-        assert.ok(extraDone.emoteLabel !== "", "追加进来的那张也认完了");
-        assert.ok(naming.namingJobStatus().results.find((r) => r.id === extraId)?.name !== "", "结果行里有它");
       } finally {
         globalThis.fetch = realFetch;
       }
@@ -600,15 +603,16 @@ if (PHASE === "1") {
       // u2 的名字在这里显式写一次：上面那批作业先认哪三张由 created_at 顺序决定，
       // 这一节要测的是「按中文名找得到并发出去」，不是「作业挑了谁」。
       assetsMod.applyEmoteSemantics(u2, { label: "开心", caption: "他被夸了又不好意思承认", namedAt: Date.now() });
-      const { executeTool } = await import("../src/tools.ts");
-      const { updateContact } = await import("../src/contacts.ts");
-      const { ensureLocalConversation } = await import("../src/conversations.ts");
+      const { executeTool } = await import("../src/mind/tools.ts");
+      const { updateContact } = await import("../src/chat/contacts.ts");
+      const { ensureLocalConversation } = await import("../src/chat/conversations.ts");
       const contact = createContact({ name: "表情闭环测试" });
       // 表情现在是全局唯一开关（出厂 normal 就是开的），不再按联系人开——从前这里要 updateContact 开 emotes。
       const conv = ensureLocalConversation(contact.id);
       const ctx = { contactId: contact.id, conversationId: conv.id, turnId: "turn-" + Date.now(), lastUserAt: null };
 
-      // 一步式快路：唯一高置信命中直接发；同分候选只回候选、不替模型赌。
+      // 一步式快路：唯一高置信命中直接发；整词命中名字的同分桶也直接发（随机甩一张）；
+      // 标签级的中低分段同分仍只回候选、不替模型赌。
       const uniqueUrl = savePng();
       emote.registerEmoteAsset(uniqueUrl, { label: "独一档" });
       const twinA = savePng();
@@ -616,12 +620,21 @@ if (PHASE === "1") {
       emote.registerEmoteAsset(twinA, { label: "双胞胎表情" });
       emote.registerEmoteAsset(twinB, { label: "双胞胎表情" });
       assert.strictEqual(search.autoPickEmote("独一档").kind, "send", "唯一高置信候选可自动发");
-      assert.strictEqual(search.autoPickEmote("双胞胎表情").kind, "choose", "同分候选不自动发");
+      assert.strictEqual(search.autoPickEmote("双胞胎表情").kind, "send", "整词命中名字的同分桶也直接发，随机选桶内一张");
       const autoSent = await executeTool("send_emote", JSON.stringify({ keyword: "独一档" }), ctx);
       assert.strictEqual(autoSent.attachments?.[0], assetsMod.listEmoteAssets().find((a) => a.url === uniqueUrl).url,
         "keyword 快路一步发出正确素材");
-      const ambiguous = await executeTool("send_emote", JSON.stringify({ keyword: "双胞胎表情" }), ctx);
-      assert.strictEqual(ambiguous.result.sent, false, "候选接近时不发送");
+      const twinSent = await executeTool("send_emote", JSON.stringify({ keyword: "双胞胎表情" }), ctx);
+      assert.strictEqual(twinSent.ok, true, "同义同分桶走快路直接发出");
+      assert.ok([twinA, twinB].includes(twinSent.attachments?.[0]), "发出去的是桶里的其中一张");
+      // 标签级命中只有 4.9 分：同分拿不准，交回候选让模型选。
+      const tagTieA = savePng();
+      const tagTieB = savePng();
+      emote.registerEmoteAsset(tagTieA, { tags: ["半斤八两"] });
+      emote.registerEmoteAsset(tagTieB, { tags: ["半斤八两"] });
+      assert.strictEqual(search.autoPickEmote("半斤八两").kind, "choose", "标签级同分仍交回模型选择");
+      const ambiguous = await executeTool("send_emote", JSON.stringify({ keyword: "半斤八两" }), ctx);
+      assert.strictEqual(ambiguous.result.sent, false, "中低分段同分不自动发");
       assert.ok(ambiguous.result.candidates.length >= 2, "把接近的候选交回模型选择");
       const found = await executeTool("emote_search", JSON.stringify({ query: "开心" }), ctx);
       assert.strictEqual(found.ok, true, "检索工具可调用");
@@ -642,31 +655,53 @@ if (PHASE === "1") {
       // executeTool 外层永远 ok:true，工具自己的失败在 result.ok=false 那一层——断言要读那一边。
       const failOf = (r) => (r.result !== null && typeof r.result === "object" && r.result.ok === false
         ? String(r.result.error) : null);
+      // 失败回执各自在独立的一轮里断言：门控按轮计状态，共用一轮会互相污染
+      //（连续两次查询失败就封轮，后面的回执就变成门控话术了）。
+      const freshCtx = () => ({
+        contactId: contact.id, conversationId: conv.id,
+        turnId: "turn-" + Math.random().toString(36).slice(2), lastUserAt: null,
+      });
       // 越界：没标成表情的资产不能被当表情发——模型只能从 emote_search 给的候选里挑。
       const plain = assetsMod.listAssets({ view: "all", limit: 50, offset: 0 }).items.find((a) => !a.usableAsEmote);
       assert.ok(plain !== undefined, "库里有一张不是表情的普通图片（这条断言的前提）");
-      const cross = await executeTool("send_emote", JSON.stringify({ emote_id: plain.id }), ctx);
+      const cross = await executeTool("send_emote", JSON.stringify({ emote_id: plain.id }), freshCtx());
       assert.ok(failOf(cross) !== null, "非表情资产按 id 发要被拒掉：" + JSON.stringify(cross.result));
       assert.ok(failOf(cross).includes("不是表情包素材"), "拒因要说得清：" + failOf(cross));
-      const bogus = await executeTool("send_emote", JSON.stringify({ emote_id: "不存在的 id" }), ctx);
+      const bogus = await executeTool("send_emote", JSON.stringify({ emote_id: "不存在的 id" }), freshCtx());
       assert.ok(failOf(bogus) !== null, "编不出来的 id 会被拒");
       assert.ok(failOf(bogus).includes("emote_search"), "拒绝的话要指出下一步怎么走");
-      const miss = await executeTool("send_emote", JSON.stringify({ keyword: "qwq 库里绝对没有的词" }), ctx);
+      const miss = await executeTool("send_emote", JSON.stringify({ keyword: "qwq 库里绝对没有的词" }), freshCtx());
       assert.ok(failOf(miss) !== null, "keyword 没打中要如实失败");
-      assert.ok(/张/.test(failOf(miss)), "失败回执报的是库的真实规模，不是「换个词」：" + failOf(miss));
+      // error 是给工具卡的一句人话；库的真实规模在 hint 里（拆开是为了软失败卡不刷红字）。
+      const missHint = String(miss.result?.hint ?? "");
+      assert.ok(/张/.test(missHint), "失败回执的 hint 报的是库的真实规模，不是「换个词」：" + missHint);
+      // 门控容错（实测翻车现场）：候选交回 → 模型换词撞墙 → 同一轮按候选 id 补发，
+      // 这一步不许被「别再重试」拦死——查询失败不等于投递失败。
+      const recovery = freshCtx();
+      const missThenId = await executeTool("send_emote", JSON.stringify({ keyword: "qwq 库里绝对没有的词" }), recovery);
+      assert.ok(failOf(missThenId) !== null, "第一次查询失败，如实回执");
+      const afterMiss = await executeTool("send_emote", JSON.stringify({ emote_id: picked.emote_id }), recovery);
+      assert.strictEqual(afterMiss.ok, true, "查询没命中不影响按 id 补发（旧版一次失败封死整轮）");
+      // 连续两次查询失败才封轮：防的是换词刷屏，不是断模型的活路。
+      const twiceMiss = freshCtx();
+      await executeTool("send_emote", JSON.stringify({ keyword: "qwq 库里绝对没有的词" }), twiceMiss);
+      await executeTool("send_emote", JSON.stringify({ keyword: "qwq 库里绝对没有的词" }), twiceMiss);
+      const sealed = await executeTool("send_emote", JSON.stringify({ emote_id: picked.emote_id }), twiceMiss);
+      const sealedMsg = sealed.ok === false ? String(sealed.error) : String(failOf(sealed) ?? "");
+      assert.ok(sealedMsg.includes("别再重试"), "连续两次查询失败后整轮封死，不再补发：" + sealedMsg);
       // 表情是全局唯一开关：档位设成「关闭」时工具与提示词段一起下线，开回来时一起回来。
       // 这条门要防的是真库上翻过的车：从前有「全局倾向 + 联系人开关」两档，全局调到「主动」，
       // 13 个联系人里却只有 1 个开了联系人档——开关看着开着，底下全断。
-      const { setGlobalEmoteFrequency } = await import("../src/settings.ts");
-      const { emoteFrequencyForContact } = await import("../src/contacts.ts");
-      const promptOf = async (id) => (await import("../src/persona.ts"))
+      const { setGlobalEmoteFrequency } = await import("../src/settings/settings.ts");
+      const { emoteFrequencyForContact } = await import("../src/chat/contacts.ts");
+      const promptOf = async (id) => (await import("../src/mind/persona.ts"))
         .buildSystemPrompt([], { emoteFrequency: emoteFrequencyForContact(id) });
       setGlobalEmoteFrequency("off");
-      const declaredOff = (await import("../src/tools.ts")).toolDefsForApi(contact.id).map((t) => t.function.name);
+      const declaredOff = (await import("../src/mind/tools.ts")).toolDefsForApi(contact.id).map((t) => t.function.name);
       assert.ok(!declaredOff.includes("send_emote") && !declaredOff.includes("emote_search"), "全局档「关闭」时两个表情工具都不声明");
       assert.ok(!(await promptOf(contact.id)).includes("[表情]"), "全局档「关闭」时提示词里没有表情段");
       setGlobalEmoteFrequency("often");
-      const declaredOn = (await import("../src/tools.ts")).toolDefsForApi(contact.id).map((t) => t.function.name);
+      const declaredOn = (await import("../src/mind/tools.ts")).toolDefsForApi(contact.id).map((t) => t.function.name);
       assert.ok(declaredOn.includes("send_emote") && declaredOn.includes("emote_search"), "开回「主动」后两个工具一起回来");
       assert.ok((await promptOf(contact.id)).includes("[表情]"), "开回后表情段一起回来（提示词与工具同源，不会一边有一边没有）");
       // 反证：这位的「工具总开关」关掉时，表情提示也不该留着——没有手却被告知能发表情，就是下一句「我发了」的编造现场。
@@ -675,7 +710,7 @@ if (PHASE === "1") {
       updateContact(contact.id, { features: { tools: true } });
       // 主动那条路没有工具，表情靠 decide 契约里的 emote_keyword 表达（模型给反应词、代码查库落地）。
       // 全局档关着就不该向模型声明这个字段——声明了就是许一张发不出来的表情。
-      const { buildDecideSystem } = await import("../src/proactive.ts");
+      const { buildDecideSystem } = await import("../src/mind/proactive.ts");
       assert.ok(buildDecideSystem("他", false, undefined, true).includes("emote_keyword"), "表情开着时主动判断要能给出反应词字段");
       assert.ok(!buildDecideSystem("他", false, undefined, false).includes("emote_keyword"), "表情关闭时不向模型声明这个字段");
       assert.ok(buildDecideSystem("他", false, undefined, true).includes("挑不出贴的就只发文字"),
@@ -684,8 +719,8 @@ if (PHASE === "1") {
       // 从前只有 DEV_MODE 才落 req_full（真库 14063 行里只有 30 行有值），
       // 「给了手却没人用」这种问题连分母都凑不出来，只能靠肉眼复现。
       {
-        const { callModelWithTools } = await import("../src/model.ts");
-        const { db: dbMod } = await import("../src/db.ts");
+        const { callModelWithTools } = await import("../src/settings/model.ts");
+        const { db: dbMod } = await import("../src/core/db.ts");
         setGlobalEmoteFrequency("often");
         updateModel({ caps: { tools: true, vision: true, thinking: false, thinkingOnly: false, customProtocol: false } });
         const realFetchTools = globalThis.fetch;
@@ -758,7 +793,7 @@ if (PHASE === "1") {
         assetsMod.setEmoteMark(plainUrl, false);
         assert.deepEqual(assetsMod.getAssetByUrl(plainUrl).emotePack, ["默认"], "取消标记不动文件夹");
         // 存量形态（老库直接写在列里的空数组/多归属）启动时收敛。
-        const { db: folderDb } = await import("../src/db.ts");
+        const { db: folderDb } = await import("../src/core/db.ts");
         const legacyEmpty = savePng(); const legacyMulti = savePng();
         emote.registerEmoteAsset(legacyEmpty, {});
         emote.registerEmoteAsset(legacyMulti, {});
@@ -781,7 +816,7 @@ if (PHASE === "1") {
       // 15) 详情要能回答「哪些识别好了、结果是什么、哪几张要重试」。
       {
         const st = naming.namingJobStatus();
-        assert.strictEqual(st.results.length, 2, "上一轮逐张结果都在（那轮 limit=2）");
+        assert.strictEqual(st.results.length, 3, "上一轮逐张结果都在（limit=2 加上排进来的追加那张）");
         assert.ok(st.results.every((r) => r.name !== "" || r.error !== ""), "每条结果要么有名字要么有原因");
         assert.ok(st.results.every((r) => r.file.endsWith(".png") || r.file.endsWith(".gif")), "结果带文件名");
         const auto = assetsMod.listAssets({ view: "emote", named: "auto", limit: 500, offset: 0 });
@@ -802,7 +837,7 @@ if (PHASE === "1") {
         // chips 只报 245，用户会以为数据丢了。没有来源的老行也不能冒充手动维护，
         // 统计与筛选都要把它落到「文件命名」，四档必须永远能加回总数。
         const legacyRow = assetsMod.listEmoteAssets().find((r) => r.emoteNamedAt > 0);
-        const { db: rawDb } = await import("../src/db.ts");
+        const { db: rawDb } = await import("../src/core/db.ts");
         rawDb.prepare("UPDATE assets SET emote_name_source = '', source = 'unclaimed' WHERE id = ?").run(legacyRow.id);
         const patched = assetsMod.getAssetById(legacyRow.id);
         assert.strictEqual(patched.emoteNameSource, "", "先造一个「有名字没来源」的存量形态");
@@ -829,7 +864,7 @@ if (PHASE === "1") {
       // 16) 日志脱敏不许把一次成功的识别弄失败。真机上那张 5.2MB 的 PNG 就是这么被判死的：
       //     DEV_MODE 下 logModelCall 会对 6.9MB 的请求体跑一条 {512,} 贪婪正则，V8 吃栈溢出。
       {
-        const logs = await import("../src/logs.ts");
+        const logs = await import("../src/core/logs.ts");
         const big = "data:image/png;base64," + "A".repeat(7_000_000);
         const body = JSON.stringify({ messages: [{ content: [{ type: "image_url", image_url: { url: big } }] }] });
         // 反证：旧写法在这个输入上确实会炸——这条门抓的就是它，不是自证。
@@ -848,8 +883,8 @@ if (PHASE === "1") {
       }
       // 17) 真目录布局：文件名是身份、目录是分类；用户在资源管理器里动手都有兜底。
       {
-        const layout = await import("../src/media-layout.ts");
-        const mediaMod = await import("../src/media.ts");
+        const layout = await import("../src/media/media-layout.ts");
+        const mediaMod = await import("../src/media/media.ts");
         const { join: pjoin } = await import("node:path");
         assert.strictEqual(layout.EMOTE_ROOT, "表情包", "表情根目录名与界面同词");
         // 新落盘的图进 图片/，URL 仍是 /media/<名字>——身份不带目录，挪动不用改任何引用。
@@ -913,7 +948,7 @@ if (PHASE === "1") {
           assert.ok(assetsMod.assetStats().broken >= 1, "失效数进统计");
           assert.ok(!search.searchEmotes("老板英明", 10).some((h) => h.asset.url === "/media/老板英明.gif"),
             "失效行退出检索");
-          const failSend = await executeTool("send_emote", JSON.stringify({ emote_id: goneRow.id }), ctx);
+          const failSend = await executeTool("send_emote", JSON.stringify({ emote_id: goneRow.id }), freshCtx());
           assert.ok(String(failSend.result?.error ?? "").includes("已失效"), "按 id 硬发要报「已失效」：" + JSON.stringify(failSend));
           writeFileSync(pjoin(mediaMod.mediaDir(), "表情包", "语录新2", "改名了.gif"), dropBuf);
           mediaMod.reconcileAssets();
@@ -982,10 +1017,10 @@ if (PHASE === "1") {
         rmSync(pjoin(mediaMod.mediaDir(), "表情包", "语录新2"), { recursive: true, force: true });
       }
       // 18) 接收闭环：OneBot 收进来的表情必须当场落盘（CSP 只认 'self'，协议端的 CDN 签名地址
-      //     在前端渲染不出来），纯表情消息留「[表情]」占位不再蒸发，裸文件名走 get_image 换字节，
-      //     采集按内容去重。
+      //     在前端渲染不出来），表情段解析成具体表情、认不出才留「[表情]」占位（纯表情消息
+      //     不再在空正文闸门处蒸发），裸文件名走 get_image 换字节，采集按内容去重。
       {
-        const onebot = await import("../src/qq-onebot.ts");
+        const onebot = await import("../src/channels/qq-onebot.ts");
         const httpMod = await import("node:http");
         const OB_ALT = Buffer.concat([TINY_PNG, Buffer.from([1, 2, 3, 4])]); // 与前面所有素材内容都不重
         // 假协议端：/get_image 两种兑现形态（base64:// 与 url），/real.png 直接给图。
@@ -1013,10 +1048,16 @@ if (PHASE === "1") {
         const obEmoteBase = assetsMod.listEmoteAssets().length;
         try {
           writeFileSync(join(sameDir, "同机图.png"), OB_ALT);
-          // a) 表情占位：纯表情消息从前在「text 为空就 return」那道闸直接蒸发。
-          assert.strictEqual(onebot.obInboundText([{ type: "face", data: { id: "14" } }]), "[表情]", "face 段留占位");
-          assert.strictEqual(onebot.obInboundText([{ type: "text", data: { text: "早" } }, { type: "mface", data: { summary: "xD" } }]), "早[表情]", "文字后面的 mface 也留痕");
-          assert.strictEqual(onebot.obInboundText("[CQ:face,id=14]好"), "[表情]好", "字符串消息的 CQ 码同样换占位");
+          // a) 入站表情要**解析**，不是一律压成「[表情]」：按 id 查表、取 summary，
+          //    认不出来才留占位（纯表情消息从前在「text 为空就 return」那道闸直接蒸发）。
+          assert.strictEqual(onebot.obInboundText([{ type: "face", data: { id: "14" } }]), "[微笑]🙂", "face 段按 QFace 全量表解析成表情名+emoji");
+          assert.strictEqual(onebot.obInboundText([{ type: "text", data: { text: "早" } }, { type: "mface", data: { summary: "[微笑]" } }]), "早[微笑]", "文字后面的 mface 取 summary");
+          assert.strictEqual(onebot.obInboundText("[CQ:face,id=14]好"), "[微笑]🙂好", "字符串消息的 CQ 码同样解析");
+          assert.strictEqual(onebot.obInboundText("[CQ:mface,summary=&#91;微笑&#93;]"), "[微笑]", "CQ 码里被转义的方括号要还原");
+          assert.strictEqual(onebot.obInboundText([{ type: "image", data: { summary: "[搓手]", url: "https://gxh.vip.qq.com/a.gif" } }]), "[搓手]", "image 段的表情名补进正文");
+          assert.strictEqual(onebot.obInboundText([{ type: "image", data: { summary: "[图片]" } }]), "", "通用「[图片]」占位不进正文");
+          assert.strictEqual(onebot.obInboundText([{ type: "face", data: { id: "9999" } }]), "[表情]", "认不出的 face id 仍留占位，不蒸发");
+          assert.strictEqual(onebot.obInboundText([{ type: "mface", data: { emoji_id: "x" } }]), "[表情]", "mface 没给 summary 也留占位");
           // b) 段归型：裸文件名 / 完整 URL / 同机路径各归各字段，at 段不算媒体。
           const parsed = onebot.obInboundSegments([
             { type: "image", data: { file: "abcd.png", url: "https://cdn.qq.com/abcd.png?sign=1" } },
@@ -1067,7 +1108,7 @@ if (PHASE === "1") {
           assert.strictEqual(m7.urls.length, 0, "换不到地址的跳过，落得下的照常");
           assert.strictEqual(m7.meta.length, 0, "跳过的不产生半条元信息");
           // f) 延时补名排了队但不立刻跑（防抖），撤掉后无事发生。
-          const namingLate = await import("../src/emote-naming.ts");
+          const namingLate = await import("../src/emote/emote-naming.ts");
           assert.strictEqual(namingLate.namingJobStatus().running, false, "采集只排期，不抢跑");
           namingLate.cancelCaptureNaming();
         } finally {

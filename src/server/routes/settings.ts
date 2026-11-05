@@ -43,7 +43,7 @@ import {
   type ModelSettings,
   type OwnerProfile,
   type CapabilityName,
-} from "../../settings.ts";
+} from "../../settings/settings.ts";
 import {
   contactModelSettings,
   embedTexts,
@@ -51,11 +51,11 @@ import {
   listModels,
   pingChat,
   resetToolsUnsupported,
-} from "../../model.ts";
-import { backfillMemoryEmbeddings } from "../../memory.ts";
-import { localConversationId } from "../../conversations.ts";
-import { logModelCall } from "../../logs.ts";
-import { previewSystemPrompt } from "../../persona.ts";
+} from "../../settings/model.ts";
+import { backfillMemoryEmbeddings } from "../../mind/memory.ts";
+import { localConversationId } from "../../chat/conversations.ts";
+import { logModelCall } from "../../core/logs.ts";
+import { previewSystemPrompt } from "../../mind/persona.ts";
 import {
   companionPromptExtras,
   contactCard,
@@ -66,17 +66,17 @@ import {
   emoteFrequencyForContact,
   getContact,
   ASSISTANT_CONTACT_ID,
-} from "../../contacts.ts";
+} from "../../chat/contacts.ts";
 import {
   imageProxiedHistory,
   lastUserMessageAt,
   recentMessages,
   selectReplayImages,
   userImageUrls,
-} from "../../agent.ts";
-import { appendImageDescriptions, visionHandlingFor } from "../../image-understanding.ts";
-import { recallExplained } from "../../memory.ts";
-import { activeProfileId } from "../../settings.ts";
+} from "../../chat/agent.ts";
+import { appendImageDescriptions, visionHandlingFor } from "../../mind/image-understanding.ts";
+import { recallExplained } from "../../mind/memory.ts";
+import { activeProfileId } from "../../settings/settings.ts";
 import {
   MAX_CARD_BODY_BYTES,
   readJson,
@@ -90,7 +90,7 @@ import {
   snapshotResponse,
   strictContactId,
 } from "../context.ts";
-import { THINKING_LEVELS } from "../../settings.ts";
+import { THINKING_LEVELS } from "../../settings/settings.ts";
 import type { Route } from "../types.ts";
 
 export const personaDefaultCardRoute: Route = ({ res, path, method }) => {

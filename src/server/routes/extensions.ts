@@ -14,7 +14,7 @@ import {
   saveTool as saveExtensionTool,
   setEnabled as setExtensionEnabled,
   setScriptGate,
-} from "../../extensions.ts";
+} from "../../mind/extensions.ts";
 import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 

@@ -23,17 +23,17 @@ import {
   turnStats,
   updateAssistantText,
   updateUserMessageText,
-} from "../../agent.ts";
+} from "../../chat/agent.ts";
 import {
   DEFAULT_CONTACT_ID,
   getContact,
-} from "../../contacts.ts";
+} from "../../chat/contacts.ts";
 import {
   autoTitleThread,
   isAssistantThreadContactId,
-} from "../../assistant.ts";
-import { ensureLocalConversation, getConversation } from "../../conversations.ts";
-import { mediaUrlExists } from "../../media.ts";
+} from "../../mind/assistant.ts";
+import { ensureLocalConversation, getConversation } from "../../chat/conversations.ts";
+import { mediaUrlExists } from "../../media/media.ts";
 import { getChannel } from "../../channels/types.ts";
 import {
   clampInt,
@@ -43,9 +43,9 @@ import {
   sendJson,
 } from "../http.ts";
 import { currentContactId, normalizeAttachmentMeta, strictContactId, strictConversationId } from "../context.ts";
-import { contactModelSettings } from "../../model.ts";
-import { modelConfig, modelReadyNow, onboardingDone } from "../../settings.ts";
-import { defaultPersonaIsDefault } from "../../contacts.ts";
+import { contactModelSettings } from "../../settings/model.ts";
+import { modelConfig, modelReadyNow, onboardingDone } from "../../settings/settings.ts";
+import { defaultPersonaIsDefault } from "../../chat/contacts.ts";
 import type { Route } from "../types.ts";
 import { MAX_CHAT_IMAGES } from "../../../shared/limits.ts";
 

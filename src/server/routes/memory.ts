@@ -23,9 +23,9 @@ import {
   updateMemoryEvent,
   type MemoryKind,
   type MemorySpaceFilter,
-} from "../../memory.ts";
-import { getConversation } from "../../conversations.ts";
-import { searchMessages } from "../../agent.ts";
+} from "../../mind/memory.ts";
+import { getConversation } from "../../chat/conversations.ts";
+import { searchMessages } from "../../chat/agent.ts";
 import { clampInt, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, readJson, sendJson } from "../http.ts";
 import { strictContactId } from "../context.ts";
 import type { Route } from "../types.ts";

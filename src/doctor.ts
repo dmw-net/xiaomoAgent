@@ -7,13 +7,13 @@
 // 实测背景：某些服务商（例如本项目在用的 Agnes）对"没有可用渠道的模型名"不返回错误，
 // 而是让请求一直挂着直到超时。所以这里必须逐个模型真打一次请求，光看 /models 列表不够。
 
-import { config } from "./config.ts";
-import { db } from "./db.ts";
+import { config } from "./core/config.ts";
+import { db } from "./core/db.ts";
 import { existsSync, readdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
-import { modelConfig, modelReadyNow, settingsSnapshot } from "./settings.ts";
-import { isChatModelId, listModels, pingChat, type ModelError } from "./model.ts";
-import { modelFailureCount, recentModelCalls } from "./logs.ts";
+import { modelConfig, modelReadyNow, settingsSnapshot } from "./settings/settings.ts";
+import { isChatModelId, listModels, pingChat, type ModelError } from "./settings/model.ts";
+import { modelFailureCount, recentModelCalls } from "./core/logs.ts";
 
 const OK = "✓";
 const WARN = "⚠";

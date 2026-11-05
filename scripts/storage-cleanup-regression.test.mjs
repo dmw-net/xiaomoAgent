@@ -17,9 +17,9 @@ process.env.DEV_LOG_KEEP = "10";
 process.env.MEDIA_DIR = "./data/media-storage-regression";
 process.env.SKILLS_DIR = "./data/skills-storage-regression";
 
-const { db } = await import("../src/db.ts");
-const { logModelCall, recentModelCalls } = await import("../src/logs.ts");
-const { cleanupStorage, storageOverview } = await import("../src/storage.ts");
+const { db } = await import("../src/core/db.ts");
+const { logModelCall, recentModelCalls } = await import("../src/core/logs.ts");
+const { cleanupStorage, storageOverview } = await import("../src/core/storage.ts");
 
 const backup = "./data/storage-cleanup-regression.db.pre-import-test";
 writeFileSync(backup, "old backup".repeat(100_000));

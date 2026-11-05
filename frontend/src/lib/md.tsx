@@ -88,6 +88,29 @@ export function findFirstExternalUrl(text: string): string {
   return "";
 }
 
+/**
+ * 历史消息里遗留的「[表情]」占位：早期入站只留了个无信息的调试串，界面直接把这三个字
+ * 甩给了用户。新入站已经解析成具体表情（见 qq-onebot.ts 的 obInboundText），这里只兜旧数据，
+ * 渲染成一个看得见的表情徽标。代码块不走 inline()，不会被误替换。
+ */
+const EMOTE_PLACEHOLDER_RE = /\[表情\]/g;
+function withEmoteTokens(text: string, key: string): ReactNode {
+  if (!text.includes("[表情]")) return text;
+  const nodes: ReactNode[] = [];
+  EMOTE_PLACEHOLDER_RE.lastIndex = 0;
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = EMOTE_PLACEHOLDER_RE.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    nodes.push(<span key={`${key}-em${i}`} className="md-emote" title="QQ 表情" aria-label="QQ 表情">🙂</span>);
+    last = m.index + m[0].length;
+    i += 1;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
 function inline(text: string, keyBase: string): ReactNode[] {
   const nodes: ReactNode[] = [];
   // 复用模块级编译好的全局正则（重置 lastIndex 即可），避免每次调用都 new RegExp 重编译。
@@ -96,7 +119,7 @@ function inline(text: string, keyBase: string): ReactNode[] {
   let m: RegExpExecArray | null;
   let i = 0;
   while ((m = INLINE_RE.exec(text)) !== null) {
-    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m.index > last) nodes.push(withEmoteTokens(text.slice(last, m.index), keyBase + i));
     const token = m[0];
     if (token.startsWith("**")) {
       nodes.push(<strong key={keyBase + i}>{token.slice(2, -2)}</strong>);
@@ -114,7 +137,7 @@ function inline(text: string, keyBase: string): ReactNode[] {
     last = m.index + token.length;
     i += 1;
   }
-  if (last < text.length) nodes.push(text.slice(last));
+  if (last < text.length) nodes.push(withEmoteTokens(text.slice(last), keyBase + "end"));
   return nodes;
 }
 

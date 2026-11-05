@@ -3,7 +3,7 @@
 //
 // 为什么是卡片而不是让助手在文本里问：模型可以自己把 confirmed 参数传成 true，
 // 「用户答了一句好」不构成证据；这里的同意/拒绝是后端确认凭证的唯一注入口，
-// 模型无法伪造（详见 src/assistant.ts 的 guardDangerous）。
+// 模型无法伪造（详见 src/mind/assistant.ts 的 guardDangerous）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ShieldAlert } from "lucide-react";

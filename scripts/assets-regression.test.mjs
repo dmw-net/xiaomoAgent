@@ -49,13 +49,13 @@ function tinyWav(ms) {
   return Buffer.concat([head, Buffer.alloc(dataBytes, 0x40)]);
 }
 
-const { db } = await import("../src/db.ts");
+const { db } = await import("../src/core/db.ts");
 // 引用扫描会读 artifacts 表，而那张表是 artifacts.ts 被 import 时才建的（应用里由路由链带到，
 // 测试里没有）——不 import 它，对账会直接报「no such table」。
-await import("../src/artifacts.ts");
-const media = await import("../src/media.ts");
-const assets = await import("../src/assets.ts");
-const { createContact } = await import("../src/contacts.ts");
+await import("../src/media/artifacts.ts");
+const media = await import("../src/media/media.ts");
+const assets = await import("../src/media/assets.ts");
+const { createContact } = await import("../src/chat/contacts.ts");
 
 // ── 1) 落盘即登记 ──────────────────────────────────────────────────────
 const saved = media.saveImage(TINY_PNG, "image/png");
@@ -200,7 +200,7 @@ media.reconcileAssets();
 assert.strictEqual(media.scanOrphanMedia(0).all.find((m) => m.url === fav)?.cleanable, false, "收藏过的同样不该被清掉");
 
 // ── 8) 派生形态：静帧挂在父资产下、不进媒体库、父没了跟着清 ───────────────
-const rend = await import("../src/renditions.ts");
+const rend = await import("../src/media/renditions.ts");
 assert.strictEqual(rend.needsStaticVariant("/media/x.gif"), true, "gif 要派生静帧");
 for (const u of ["/media/x.png", "/media/x.jpg", "/media/x.webp", "/media/x.mp4"]) {
   assert.strictEqual(rend.needsStaticVariant(u), false, `这种格式不用派生：${u}`);

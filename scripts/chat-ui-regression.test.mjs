@@ -28,9 +28,9 @@ const themeCss = readFileSync("frontend/src/styles/theme.css", "utf8");
 const assistantDialogSource = readFileSync("frontend/src/features/assistant/AssistantDialog.tsx", "utf8");
 const assistantPermissionSource = readFileSync("frontend/src/features/assistant/AssistantPermissionChip.tsx", "utf8");
 const settingsSource = readFileSync("frontend/src/features/settings/SettingsView.tsx", "utf8");
-const agentSource = readFileSync("src/agent.ts", "utf8");
-const toolsSource = readFileSync("src/tools.ts", "utf8");
-const assistantSource = readFileSync("src/assistant.ts", "utf8");
+const agentSource = readFileSync("src/chat/agent.ts", "utf8");
+const toolsSource = readFileSync("src/mind/tools.ts", "utf8");
+const assistantSource = readFileSync("src/mind/assistant.ts", "utf8");
 const noticesSource = readFileSync("frontend/src/hooks/useNotices.ts", "utf8");
 
 const retractBranch = rowSource.indexOf('if (m.superseded_kind === "retract")');
@@ -78,7 +78,7 @@ assert(/\.think-state\.is-live::before[\s\S]*?animation:\s*thinkPulse/.test(expe
 assert(/@media \(prefers-reduced-motion: reduce\)[\s\S]*?\.think-live-dots i\s*\{\s*animation:\s*none/.test(experienceCss), "减少动效模式应关闭思考过程动画");
 
 const voiceSource = readFileSync("frontend/src/components/VoiceMessageBubble.tsx", "utf8");
-const mediaSource = readFileSync("src/media.ts", "utf8");
+const mediaSource = readFileSync("src/media/media.ts", "utf8");
 const mediaDialogSource = readFileSync("frontend/src/components/MediaMaintenanceDialog.tsx", "utf8");
 const mediaLibrarySource = readFileSync("frontend/src/components/MediaLibrary.tsx", "utf8");
 const profileViewSource = readFileSync("frontend/src/features/profile/ProfileView.tsx", "utf8");
@@ -189,6 +189,33 @@ assert(
 );
 assert(/imagesOnly=\{!showTools\}/.test(chatSource), "工具卡应支持只渲染候选图（不显示卡片本身）");
 assert(/if \(imagesOnly\) \{/.test(toolCardSource), "ToolCard 需要一条只出图的渲染分支");
+// 表情工具曾因两处漏登记，把工具结果的原始 JSON 显示成「做了点事 · {"via":"native"...}」。
+// 服务端改好之后还要守住：中文标签要登记，历史已落库的 JSON 摘要要有显示兜底。
+assert(/send_emote:\s*"发了张表情"/.test(toolCardSource), "ToolCard 要给 send_emote 登记中文标签");
+assert(/emote_search:\s*"翻了翻表情库"/.test(toolCardSource), "ToolCard 要给 emote_search 登记中文标签");
+assert(
+  toolCardSource.includes('/^\\s*[{[]/.test(rawSummary)'),
+  "早期落库的 JSON 摘要要兜住，别把调试串显示给用户",
+);
+// 早期入站把 QQ 表情一律压成「[表情]」，历史消息里至今还留着这三个字。
+// 新入站已解析成具体表情；旧数据也要有渲染兜底，不能直接把占位符甩给用户。
+const mdSource = readFileSync("frontend/src/lib/md.tsx", "utf8");
+const foundationCss = readFileSync("frontend/src/styles/foundation.css", "utf8");
+assert(/function withEmoteTokens/.test(mdSource) && /\[表情\]/.test(mdSource),
+  "消息渲染要把历史「[表情]」占位换成表情徽标");
+assert(/\.md-emote/.test(foundationCss), "表情徽标要有样式，不能退化成普通文字");
+// QQ 私聊是 1v1，气泡上不该再挂一行发言人昵称（「事上练（主人）」）；
+// 那条 sender_name 只属于群聊，模型上下文里也一样。
+const messageRowSource = readFileSync("frontend/src/features/chat/MessageRow.tsx", "utf8");
+assert(/showSenderName && m\.sender_name/.test(messageRowSource),
+  "发言人昵称要能按会话类型关掉，别无条件渲染");
+assert(/showSenderName=\{isGroupChat\}/.test(chatSource), "聊天页只在群聊传 showSenderName");
+assert(/conversations\.find\(\(conv\) => conv\.id === conversationId\)\?\.kind === "group"/.test(chatSource),
+  "群聊判定要按当前会话，不是「该联系人有群就算群」");
+// 一轮最多 3 张表情后，气泡要能折叠（微信「合并发图」的防刷屏做法），别把聊天撑成画廊。
+assert(/imgsFolded/.test(messageRowSource) && /点开看全部/.test(messageRowSource),
+  "3 张及以上图片要折叠成卡片并可展开");
+assert(/\.msg-img-fold-btn/.test(componentsCss), "折叠/展开按钮要有样式");
 
 // 设置助手自己的「对话设置」也要能存：回复方式 / 回放比例 / 历史占比上限就摆在那一屏上，
 // 从前 formPayload 用一条 isAssistant 分支把整块 features 跳过，于是这三个开关点了既不出
@@ -204,10 +231,10 @@ assert(
 );
 
 // ── 表情语义层（批次四~七）：一处数据、一处检索、一处界面 ──────────────
-const emoteSearchSource = readFileSync("src/emote-search.ts", "utf8");
-const qqEmoteSource = readFileSync("src/qq-emote.ts", "utf8");
-const assetsTableSource = readFileSync("src/assets.ts", "utf8");
-const namingSource = readFileSync("src/emote-naming.ts", "utf8");
+const emoteSearchSource = readFileSync("src/emote/emote-search.ts", "utf8");
+const qqEmoteSource = readFileSync("src/emote/qq-emote.ts", "utf8");
+const assetsTableSource = readFileSync("src/media/assets.ts", "utf8");
+const namingSource = readFileSync("src/emote/emote-naming.ts", "utf8");
 const emoteModalSource = readFileSync("frontend/src/components/EmoteSemanticsModal.tsx", "utf8");
 
 // 1) 那张 65 条的手写同义词表必须死透：叫法属于数据，不属于源码。
@@ -304,14 +331,14 @@ assert(/tone === "warn" \? 6000 : 4000/.test(mediaLibrarySource) && /toast\.tone
   "失败与成功共用底部浮层：失败红色那一档、多停 2 秒；页面里不再内联红框");
 
 // 12) 真目录布局：文件名是身份、目录是分类；表情包/<文件夹> 就是磁盘上的真目录。
-const layoutSource = readFileSync("src/media-layout.ts", "utf8");
+const layoutSource = readFileSync("src/media/media-layout.ts", "utf8");
 assert(/EMOTE_ROOT = "表情包"/.test(layoutSource) && /image: "图片"/.test(layoutSource),
   "目录词表（表情包/图片/视频/语音/文件）只在 media-layout.ts 定义一次");
 assert(/rel_path/.test(assetsTableSource) && /missing/.test(assetsTableSource),
   "资产表要有落点列与失效列");
 assert(/migrateMediaLayout\(\)/.test(readFileSync("src/index.ts", "utf8")),
   "启动要先跑布局迁移再对账（迁移排前，销账逻辑假设布局已定）");
-assert(/renameRescue/.test(readFileSync("src/media.ts", "utf8")),
+assert(/renameRescue/.test(readFileSync("src/media/media.ts", "utf8")),
   "用户改名的文件要按哈希救回身份，不能标失效再登记成重复");
 assert(/在文件管理器中打开/.test(mediaLibrarySource) && /openFolderNamed/.test(mediaLibrarySource),
   "文件夹下拉每行都有行内打开键，直接开对应的真目录");
@@ -322,7 +349,7 @@ assert(/job\?\.results \?\? \[\]/.test(mediaLibrarySource),
   "results 是可选字段，读不到要当空数组，不能把整页渲染崩掉");
 assert(/content-name-src/.test(mediaLibrarySource), "每张卡要看得出名字是机器起的还是人写的");
 assert(/emote_name_source/.test(assetsTableSource) && /namedBy/.test(assetsTableSource), "命名来源要有列，且写入点区分 auto/manual");
-assert(/patch\.namedBy = "file"/.test(readFileSync("src/qq-emote.ts", "utf8")), "导入文件名要写成 file，不能冒充手动维护或留下会从统计里消失的空值");
+assert(/patch\.namedBy = "file"/.test(readFileSync("src/emote/qq-emote.ts", "utf8")), "导入文件名要写成 file，不能冒充手动维护或留下会从统计里消失的空值");
 assert(/["any", "unnamed", "file", "auto", "manual"]/.test(readFileSync("src/server/routes/assets.ts", "utf8")), "列表接口必须接受 file 命名筛选，不能退回 any");
 assert(/emoteNamedAt === 0/.test(assetsTableSource),
   "语义迁移只许作用在没识别过的行上——识别过的名字与标签是权威数据");
@@ -358,7 +385,7 @@ assert(/pickDirectory/.test(mediaLibrarySource) && /导入文件夹/.test(mediaL
   "上传/导入在 MediaLibrary 的表情包工具行里，选中即导入");
 assert(!/本地文件夹路径/.test(mediaLibrarySource) && !/tagTouched/.test(mediaLibrarySource),
   "手敲路径与改名输入已退役——文件夹名只有源文件夹名一个来源");
-assert(/folderNameOf/.test(readFileSync("src/qq-emote.ts", "utf8")), "归属文件夹＝源文件夹名，前后端同口径");
+assert(/folderNameOf/.test(readFileSync("src/emote/qq-emote.ts", "utf8")), "归属文件夹＝源文件夹名，前后端同口径");
 assert(/canceled: true/.test(readFileSync("frontend/src/lib/native-dialog.ts", "utf8"))
   && /"error" in picked/.test(mediaLibrarySource),
   "取消文件夹选择器是正常操作：静默返回，不弹红条（真失败才有 error）");
@@ -366,7 +393,7 @@ assert(!/ml-pack-note|打开表情包目录/.test(mediaLibrarySource),
   "下拉不留解释性长文和底部大按钮——默认置顶＋行内打开键已经说明一切");
 assert(/a\.pack === DEFAULT_EMOTE_FOLDER \? -1/.test(assetsTableSource),
   "文件夹清单「默认」恒排第一");
-assert(/e\.dir === EMOTE_ROOT/.test(readFileSync("src/media.ts", "utf8")),
+assert(/e\.dir === EMOTE_ROOT/.test(readFileSync("src/media/media.ts", "utf8")),
   "散放在 表情包/ 根下的图自动挪进 默认 文件夹并认领");
 
 // 10) 文件夹层：单一归属是写出来的不变量，不是界面上的约定。

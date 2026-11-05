@@ -5,7 +5,7 @@
 //   所以 HTTP 请求不会因为等模型而超时，这跟 IM 平台的回调要求是同一个道理。
 
 import { randomUUID } from "node:crypto";
-import { getTurn, getTurnByClientId, createTurn, insertMessage, respondToTurn, retryTurn } from "../agent.ts";
+import { getTurn, getTurnByClientId, createTurn, insertMessage, respondToTurn, retryTurn } from "../chat/agent.ts";
 import type { Channel, ReceiveOptions } from "./types.ts";
 
 export const webChannel: Channel = {

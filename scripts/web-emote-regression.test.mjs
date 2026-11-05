@@ -16,9 +16,9 @@ const PHASE = process.env.WEB_EMOTE_SUB;
 if (PHASE === "1") {
   const run = async () => {
     // 先设隔离再 import（config 在 import 时锁 env）。
-    const { createContact } = await import("../src/contacts.ts");
-    const { ensureLocalConversation, getConversation } = await import("../src/conversations.ts");
-    const { executeTool } = await import("../src/tools.ts");
+    const { createContact } = await import("../src/chat/contacts.ts");
+    const { ensureLocalConversation, getConversation } = await import("../src/chat/conversations.ts");
+    const { executeTool } = await import("../src/mind/tools.ts");
 
     // 表情现在是全局唯一开关（出厂 normal 即开），不再按联系人开；建真实联系人只为拿到会话与 ctx。
     createContact({ id: "web-emote-test", name: "表情渠道测试" });

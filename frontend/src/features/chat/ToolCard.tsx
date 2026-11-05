@@ -12,6 +12,9 @@ const TOOL_LABEL: Record<string, string> = {
   search_memory: "翻了翻记忆",
   schedule_reminder: "记了条提醒",
   generate_image: "画了张图",
+  send_emote: "发了张表情",
+  emote_search: "翻了翻表情库",
+  send_voice: "发了条语音",
   web_search: "联网搜了一下",
   web_fetch: "读了个网页",
   load_skill: "翻出技能做法",
@@ -39,7 +42,11 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   const ok = p.ok !== false;
   // 未登记的工具不露原始函数名（get_current_time 之类）——兜一句人话。
   const label = TOOL_LABEL[p.tool ?? ""] ?? "做了点事";
-  const summary = p.summary || (ok ? "完成" : "失败");
+  const rawSummary = p.summary || (ok ? "完成" : "失败");
+  // 早期版本把工具结果的原始 JSON 当摘要落过库（send_emote 没登记时整串
+  // {"via":"native",...} 直接显示在卡片上）。这类历史卡不能把调试载荷再甩给用户；
+  // 新数据由 agent.toolSummary 保证是人话，这里只做兼容兜底。
+  const summary = /^\s*[{[]/.test(rawSummary) ? (ok ? "完成" : "失败") : rawSummary;
   const detail = m.tool_detail ?? "";
   const expandable = detail !== "";
   /** 搜到的候选图（目前只有图片搜索会带）：直接摆在卡片下面，点一下看大图。 */

@@ -1,6 +1,6 @@
 // 上下文用量：下一次发消息时系统提示词/记忆/工具/历史各占多少（估算值，供界面浮层展示）。
 
-import { contextUsage } from "../../agent.ts";
+import { contextUsage } from "../../chat/agent.ts";
 import { sendJson } from "../http.ts";
 import { strictContactId, strictConversationId } from "../context.ts";
 import type { Route } from "../types.ts";

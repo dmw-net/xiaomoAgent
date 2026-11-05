@@ -13,7 +13,7 @@ import {
   saveSkill,
   setSkillEnabled,
   skillsDir,
-} from "../../skills.ts";
+} from "../../mind/skills.ts";
 import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 

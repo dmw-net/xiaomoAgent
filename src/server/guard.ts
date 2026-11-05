@@ -6,8 +6,8 @@
 
 import type { IncomingMessage } from "node:http";
 import { networkInterfaces } from "node:os";
-import * as lan from "../lan.ts";
-import { config } from "../config.ts";
+import * as lan from "../core/lan.ts";
+import { config } from "../core/config.ts";
 
 /**
  * 从 Host 头里取主机名。

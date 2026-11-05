@@ -2,17 +2,17 @@
 // 媒体维护（trash/restore/purge/delete-message）、存储占用与清理、重新计数、用量统计、
 // 调用记录列表与单行详情。
 
-import { config } from "../../config.ts";
+import { config } from "../../core/config.ts";
 import {
   currentCharacterName,
   modelConfig,
   modelReadyNow,
   providerLabel,
-} from "../../settings.ts";
+} from "../../settings/settings.ts";
 import {
   deleteMessage,
   turnStats,
-} from "../../agent.ts";
+} from "../../chat/agent.ts";
 import {
   extractFailures,
   extractFailuresWorst,
@@ -20,7 +20,7 @@ import {
   memoryCount,
   memoryStats,
   resetExtractFailures,
-} from "../../memory.ts";
+} from "../../mind/memory.ts";
 import {
   countModelCalls,
   failureWatermark,
@@ -33,27 +33,27 @@ import {
   resetFailureCounters,
   usageStats,
   type CallFilter,
-} from "../../logs.ts";
+} from "../../core/logs.ts";
 import { listChannels } from "../../channels/types.ts";
-import { wechat } from "../../wechat.ts";
-import { qq } from "../../qq.ts";
+import { wechat } from "../../channels/wechat.ts";
+import { qq } from "../../channels/qq.ts";
 import {
   mediaMaintenanceSnapshot,
   purgeMediaFiles,
   restoreMediaFiles,
   trashMediaFiles,
   voiceMessageIdsForFile,
-} from "../../media.ts";
-import { runUserDiagnostics } from "../../diagnostics.ts";
-import { inspectGates } from "../../proactive.ts";
-import { outboundSummary } from "../../outbound.ts";
+} from "../../media/media.ts";
+import { runUserDiagnostics } from "../../core/diagnostics.ts";
+import { inspectGates } from "../../mind/proactive.ts";
+import { outboundSummary } from "../../channels/outbound.ts";
 import {
   cleanupStorage,
   isStorageCleanupOp,
   storageOverview,
   type StorageCleanupOp,
-} from "../../storage.ts";
-import { DEFAULT_CONTACT_ID } from "../../contacts.ts";
+} from "../../core/storage.ts";
+import { DEFAULT_CONTACT_ID } from "../../chat/contacts.ts";
 import { strictContactId } from "../context.ts";
 import { clampInt, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";

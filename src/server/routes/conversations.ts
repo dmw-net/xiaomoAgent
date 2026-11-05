@@ -13,8 +13,8 @@ import {
   setConversationEnabled,
   setConversationGroupProactive,
   setConversationTrigger,
-} from "../../conversations.ts";
-import { countMessagesFor } from "../../agent.ts";
+} from "../../chat/conversations.ts";
+import { countMessagesFor } from "../../chat/agent.ts";
 import { readJson, sendJson } from "../http.ts";
 import { strictContactId } from "../context.ts";
 import type { Route } from "../types.ts";

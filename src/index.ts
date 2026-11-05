@@ -10,27 +10,27 @@
 // 一次性跑主动判断（不想等定时器时用）：
 //   npm run proactive:once
 
-import { config } from "./config.ts";
-import { migrateCapsToolsDefault, modelConfig, modelReadyNow, personaConfig } from "./settings.ts";
+import { config } from "./core/config.ts";
+import { migrateCapsToolsDefault, modelConfig, modelReadyNow, personaConfig } from "./settings/settings.ts";
 import { registerChannel } from "./channels/types.ts";
 import { webChannel } from "./channels/web.ts";
 import { createHttpServer } from "./server.ts";
-import * as lan from "./lan.ts";
-import { startProactiveLoop, runProactiveCheck, pruneProactiveBacklog, pruneFinishedTasks } from "./proactive.ts";
-import { sweepStaleTurns } from "./agent.ts";
-import { backfillMemoryEmbeddings } from "./memory.ts";
-import { isChatModelId, listModels, pingChat } from "./model.ts";
-import { writeRuntimeHandshake, clearRuntimeHandshake } from "./runtime.ts";
-import { claimPrimary, isPrimary, leaseIsFreeOrOurs, primaryPid, releasePrimary, startLeaseLoop } from "./instance.ts";
-import { pruneModelCalls } from "./logs.ts";
-import { purgeExpiredMediaTrash, reconcileAssets } from "./media.ts";
-import { migrateMediaLayout } from "./media-layout.ts";
-import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./contacts.ts";
-import { wechat } from "./wechat.ts";
-import { qq, qqUsesBackend } from "./qq.ts";
-import { autostartNapcatIfInstalled } from "./napcat.ts";
-import { ensureDefaultConversations } from "./conversations.ts";
-import { startOutboundLoop, stopOutboundLoop } from "./outbound.ts";
+import * as lan from "./core/lan.ts";
+import { startProactiveLoop, runProactiveCheck, pruneProactiveBacklog, pruneFinishedTasks } from "./mind/proactive.ts";
+import { sweepStaleTurns } from "./chat/agent.ts";
+import { backfillMemoryEmbeddings } from "./mind/memory.ts";
+import { isChatModelId, listModels, pingChat } from "./settings/model.ts";
+import { writeRuntimeHandshake, clearRuntimeHandshake } from "./core/runtime.ts";
+import { claimPrimary, isPrimary, leaseIsFreeOrOurs, primaryPid, releasePrimary, startLeaseLoop } from "./core/instance.ts";
+import { pruneModelCalls } from "./core/logs.ts";
+import { purgeExpiredMediaTrash, reconcileAssets } from "./media/media.ts";
+import { migrateMediaLayout } from "./media/media-layout.ts";
+import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./chat/contacts.ts";
+import { wechat } from "./channels/wechat.ts";
+import { qq, qqUsesBackend } from "./channels/qq.ts";
+import { autostartNapcatIfInstalled } from "./channels/napcat.ts";
+import { ensureDefaultConversations } from "./chat/conversations.ts";
+import { startOutboundLoop, stopOutboundLoop } from "./channels/outbound.ts";
 
 // 兜底日志：单机应用「带病存活 + 看得见错误」好过静默崩溃。
 // 崩在这里意味着代码里有违背假设的路径——把它打进日志（状态页可查最近错误），不退出。

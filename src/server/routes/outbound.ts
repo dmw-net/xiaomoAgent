@@ -1,12 +1,12 @@
 // 出站队列与死信队列：用户可查看、重试、忽略；开发模式额外提供批量重试与清理。
 
-import { config } from "../../config.ts";
+import { config } from "../../core/config.ts";
 import { clampInt, LIST_LIMIT_MAX, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 import {
   channelOf, ignore, list, outboundSummary, retryAndDeliver,
-} from "../../outbound.ts";
-import { listDeliveries, purgeTerminal } from "../../dqueue.ts";
+} from "../../channels/outbound.ts";
+import { listDeliveries, purgeTerminal } from "../../core/dqueue.ts";
 
 const STATUSES = new Set(["open", "dead", "all", "pending", "in_flight", "failed", "delivered", "dead_letter", "expired", "ignored"]);
 

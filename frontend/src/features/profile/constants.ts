@@ -14,7 +14,7 @@ export const TABS: Array<{ key: ProfileTab; label: string; hint: string }> = [
 ];
 
 /**
- * 三段人设的合计字数上限，须与后端 src/settings.ts 的 PERSONA_TOTAL_MAX 一致
+ * 三段人设的合计字数上限，须与后端 src/settings/settings.ts 的 PERSONA_TOTAL_MAX 一致
  * （smoke 里有断言钉着这个等式，改一边不改另一边会立刻红）。
  *
  * 单段可以占到全部额度——写长人设的人常常只填「人设」一段。超预算时后端按

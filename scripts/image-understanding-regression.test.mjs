@@ -14,25 +14,25 @@ process.env.MODEL_MODE = "openai";
 for (const suffix of ["", "-wal", "-shm"]) rmSync(`data/image-understanding-regression.db${suffix}`, { force: true });
 rmSync("data/image-understanding-regression-media", { recursive: true, force: true });
 
-const { db } = await import("../src/db.ts");
-const { createContact, updateContact } = await import("../src/contacts.ts");
-const { saveImage } = await import("../src/media.ts");
-const { toChatMessages } = await import("../src/persona.ts");
+const { db } = await import("../src/core/db.ts");
+const { createContact, updateContact } = await import("../src/chat/contacts.ts");
+const { saveImage } = await import("../src/media/media.ts");
+const { toChatMessages } = await import("../src/mind/persona.ts");
 const {
   activateCapabilityProfile,
   saveCapabilityProfile,
   saveProfile,
   updateModel,
-} = await import("../src/settings.ts");
-const { callSettings } = await import("../src/model.ts");
-const { imageProxiedHistory, selectReplayImages } = await import("../src/agent.ts");
+} = await import("../src/settings/settings.ts");
+const { callSettings } = await import("../src/settings/model.ts");
+const { imageProxiedHistory, selectReplayImages } = await import("../src/chat/agent.ts");
 const { MAX_CHAT_IMAGES } = await import("../shared/limits.ts");
 const {
   appendImageDescriptions,
   clearImageDescriptionMemoryCache,
   describeImageForChat,
   visionHandlingFor,
-} = await import("../src/image-understanding.ts");
+} = await import("../src/mind/image-understanding.ts");
 
 const caps = { tools: true, vision: true, thinking: true, thinkingOnly: false, customProtocol: false };
 updateModel({

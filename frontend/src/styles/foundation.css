@@ -1805,6 +1805,8 @@ button.sm { padding: var(--space-3) var(--space-5); font-size: var(--text-note);
 .msg-row.me .link-card-icon { background: color-mix(in srgb, #fff 18%, transparent); color: var(--bubble-mine-text); }
 .md-h { font-weight: 600; }
 .md-code { background: var(--bg-sunken); border-radius: var(--radius-xs); padding: 0 var(--space-1); font-family: var(--font-mono); font-size: .92em; }
+/* 早期入站没解析的 QQ 表情占位：显示成表情徽标，别甩三个调试用的字给用户 */
+.md-emote { display: inline-block; font-size: 1.35em; line-height: 1; vertical-align: -.15em; user-select: all; }
 .md-pre {
   margin: var(--space-2) 0; padding: var(--space-3) var(--space-4);
   border-radius: var(--radius-md); background: var(--bg-sunken);

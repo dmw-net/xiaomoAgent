@@ -16,8 +16,8 @@ process.env.DB_PATH = join(tempRoot, "test.db");
 process.env.MEDIA_DIR = join(tempRoot, "media");
 process.env.QQ_BACKEND = "onebot";
 
-const onebot = await import("../src/qq-onebot.ts");
-const dbModule = await import("../src/db.ts");
+const onebot = await import("../src/channels/qq-onebot.ts");
+const dbModule = await import("../src/core/db.ts");
 
 const BOT_QQ = "10001";
 const OWNER_QQ = "20002";

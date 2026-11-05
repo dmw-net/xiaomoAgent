@@ -2,7 +2,7 @@
 // 顺序敏感（与原 handle() 一致）：status → run → tasks GET → tasks POST →
 // tasks/:id/cancel → tasks/:id/restore。
 
-import { config } from "../../config.ts";
+import { config } from "../../core/config.ts";
 import {
   cancelProactiveTask,
   countProactiveTasks,
@@ -11,8 +11,8 @@ import {
   listProactiveTasks,
   restoreProactiveTask,
   runProactiveCheck,
-} from "../../proactive.ts";
-import { leaseIsFreeOrOurs } from "../../instance.ts";
+} from "../../mind/proactive.ts";
+import { leaseIsFreeOrOurs } from "../../core/instance.ts";
 import { clampInt, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, readJson, sendJson } from "../http.ts";
 import { strictContactId } from "../context.ts";
 import type { Route } from "../types.ts";

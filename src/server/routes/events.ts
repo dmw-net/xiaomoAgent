@@ -1,7 +1,7 @@
 // 事件总线（SSE）：把「联系人那边发生了什么」推给在线客户端，替代空转轮询。
 // 提示通道不是数据通道：帧里只有 id/status，正文照旧走 /api/messages?since=。
 
-import { subscribe, type BusEvent } from "../../events.ts";
+import { subscribe, type BusEvent } from "../../core/events.ts";
 import { HTML_SECURITY_HEADERS } from "../http.ts";
 import type { Route } from "../types.ts";
 

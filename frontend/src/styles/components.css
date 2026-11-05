@@ -707,6 +707,13 @@ button.btn.ghost:hover:not(:disabled) { border-color: var(--border); color: var(
 .msg-row.me .bubble.img-only { background: transparent; }
 .bubble.img-only::before { display: none; }
 .bubble .msg-imgs + .msg-text { margin-top: var(--space-2); }
+/* 3 张及以上先折叠成一张卡片，点开看全部（对齐微信「合并发图」的防刷屏做法） */
+.msg-img-fold-btn {
+  margin-top: var(--space-1); padding: 3px 8px; border: 0;
+  border-radius: var(--radius-xs); background: var(--bg-sunken);
+  color: var(--text-muted); font: inherit; font-size: var(--text-aux); cursor: pointer;
+}
+.msg-img-fold-btn:hover { color: var(--text-primary, var(--text-muted)); }
 
 .attach-strip { display: flex; gap: var(--space-3); padding: 0 2px var(--space-3); flex-wrap: wrap; }
 .attach-item { position: relative; }
@@ -745,12 +752,14 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 .rec-actions { display: flex; gap: var(--space-3); }
 
 .tts-btn {
+  position: absolute; right: calc(100% - 58px); bottom: 8px;
   align-self: center; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
-  width: 32px; height: 32px; border-radius: 50%; margin-left: 2px;
+  width: 28px; height: 28px; border-radius: 50%;
   border: none; background: transparent; color: var(--text-subtle); cursor: pointer;
   transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
               scale var(--dur-fast) var(--ease-out);
+  z-index: 1; /* 确保在 msg-text 之上 */
 }
 .tts-btn:active:not(:disabled) { scale: .9; }
 .tts-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-muted); }

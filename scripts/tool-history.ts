@@ -14,10 +14,10 @@
 // 清的是 tool_args / tool_result / tool_detail 三列：界面上「查过什么」的卡片还在，
 // 只是不再回放给模型、也点不开详情。这一步不可逆，但丢的是载荷不是对话。
 
-import { q } from "../src/db.ts";
-import { getContact, listContacts } from "../src/contacts.ts";
-import { purgeToolHistory, trimToolStore, TOOL_STORE_TURNS } from "../src/tool-history.ts";
-import { config } from "../src/config.ts";
+import { q } from "../src/core/db.ts";
+import { getContact, listContacts } from "../src/chat/contacts.ts";
+import { purgeToolHistory, trimToolStore, TOOL_STORE_TURNS } from "../src/chat/tool-history.ts";
+import { config } from "../src/core/config.ts";
 
 const args = process.argv.slice(2);
 const command = args[0] ?? "stats";

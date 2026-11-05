@@ -28,19 +28,19 @@ import {
   type BondState,
   type CompanionFeatures,
   type ContactGender,
-} from "../../contacts.ts";
-import { buildContactListSnapshots } from "../../contact-list.ts";
-import { pendingSoonByContact } from "../../proactive.ts";
-import { ensureDefaultConversations, ensureLocalConversation, getConversation } from "../../conversations.ts";
-import { ensureAssistantContact, isAssistantThreadContactId } from "../../assistant.ts";
-import { consolidateContact } from "../../consolidate.ts";
-import { wechat } from "../../wechat.ts";
-import { qq } from "../../qq.ts";
-import { listProfiles } from "../../settings.ts";
-import { resetToolsUnsupported } from "../../model.ts";
-import { writeDataExport, importDataArchive } from "../../data-transfer.ts";
-import { migrateDataDir } from "../../data-dir.ts";
-import { setDesktopPrefs } from "../../desktop-prefs.ts";
+} from "../../chat/contacts.ts";
+import { buildContactListSnapshots } from "../../chat/contact-list.ts";
+import { pendingSoonByContact } from "../../mind/proactive.ts";
+import { ensureDefaultConversations, ensureLocalConversation, getConversation } from "../../chat/conversations.ts";
+import { ensureAssistantContact, isAssistantThreadContactId } from "../../mind/assistant.ts";
+import { consolidateContact } from "../../chat/consolidate.ts";
+import { wechat } from "../../channels/wechat.ts";
+import { qq } from "../../channels/qq.ts";
+import { listProfiles } from "../../settings/settings.ts";
+import { resetToolsUnsupported } from "../../settings/model.ts";
+import { writeDataExport, importDataArchive } from "../../core/data-transfer.ts";
+import { migrateDataDir } from "../../core/data-dir.ts";
+import { setDesktopPrefs } from "../../core/desktop-prefs.ts";
 import { avatarForDisplay, currentContactId, humanPreview, snapshotResponse } from "../context.ts";
 import { MAX_CARD_BODY_BYTES, readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";

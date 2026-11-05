@@ -15,16 +15,16 @@ process.env.MODEL_MODE = "openai";
 for (const suffix of ["", "-wal", "-shm"]) rmSync(`data/model-thinking-regression.db${suffix}`, { force: true });
 rmSync("data/model-thinking-regression-media", { recursive: true, force: true });
 
-const { db } = await import("../src/db.ts");
-const { createContact, updateContact } = await import("../src/contacts.ts");
+const { db } = await import("../src/core/db.ts");
+const { createContact, updateContact } = await import("../src/chat/contacts.ts");
 const {
   activateCapabilityProfile,
   deleteCapabilityProfile,
   saveCapabilityProfile,
   saveProfile,
   updateModel,
-} = await import("../src/settings.ts");
-const { applyThinkingParams, callSettings } = await import("../src/model.ts");
+} = await import("../src/settings/settings.ts");
+const { applyThinkingParams, callSettings } = await import("../src/settings/model.ts");
 
 const caps = { tools: true, vision: true, thinking: true, thinkingOnly: false, customProtocol: false };
 updateModel({

@@ -40,6 +40,7 @@
     "typecheck": "tsc --noEmit",
     "stage-sidecar": "node scripts/stage-sidecar.mjs",
     "bundle:backend": "node scripts/bundle-backend.mjs",
+    "gen:qq-faces": "node scripts/gen-qq-faces.mjs",
     "manifest": "node scripts/make-manifest.mjs",
     "verify:staged": "node scripts/verify-staged.mjs",
     "cjk:test": "node scripts/cjk-encode.test.mjs",

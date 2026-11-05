@@ -20,10 +20,10 @@
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { strict as assert } from "node:assert";
 
-const agentSrc = readFileSync("src/agent.ts", "utf8");
-const memorySrc = readFileSync("src/memory.ts", "utf8");
+const agentSrc = readFileSync("src/chat/agent.ts", "utf8");
+const memorySrc = readFileSync("src/mind/memory.ts", "utf8");
 const routeSrc = readFileSync("src/server/routes/memory.ts", "utf8");
-const contactListSrc = readFileSync("src/contact-list.ts", "utf8");
+const contactListSrc = readFileSync("src/chat/contact-list.ts", "utf8");
 const panelSrc = readFileSync("frontend/src/features/memory/MemoryPanel.tsx", "utf8");
 const cardSrc = readFileSync("frontend/src/features/memory/MemoryCard.tsx", "utf8");
 const selectSrc = readFileSync("frontend/src/features/memory/MemorySpaceSelect.tsx", "utf8");
@@ -41,9 +41,9 @@ for (const suffix of ["", "-wal", "-shm"]) {
 }
 process.env.DB_PATH = testDb;
 
-const { db } = await import("../src/db.ts");
-const { createContact } = await import("../src/contacts.ts");
-const { ensureConversation, ensureDefaultConversations, ensureLocalConversation } = await import("../src/conversations.ts");
+const { db } = await import("../src/core/db.ts");
+const { createContact } = await import("../src/chat/contacts.ts");
+const { ensureConversation, ensureDefaultConversations, ensureLocalConversation } = await import("../src/chat/conversations.ts");
 const {
   addMemoryEvent,
   countMemoryEvents,
@@ -53,7 +53,7 @@ const {
   listMemorySpaces,
   recall,
   setMemorySpace,
-} = await import("../src/memory.ts");
+} = await import("../src/mind/memory.ts");
 
 assert.equal(decideMemoryScope({ conversationKind: "group", modelScope: "global" }), "conversation",
   "群轮次里模型说 global 一律不给——群里别人的话不能变成全局记忆");
@@ -155,7 +155,7 @@ assert.equal(getMemoryEvent(globalMem, contact.id).scope_conversation_id, local.
 assert(setMemorySpace(globalMem, contact.id, { kind: "global" }), "移回全局供后续断言");
 
 // ── 5. 整理不许跨空间合并 ─────────────────────────────────────
-const { sameMemorySpace } = await import("../src/consolidate.ts");
+const { sameMemorySpace } = await import("../src/chat/consolidate.ts");
 const rows = db.prepare("SELECT * FROM memory_events WHERE contact_id = ? ORDER BY id").all(contact.id);
 const byId = new Map(rows.map((r) => [r.id, r]));
 assert(!sameMemorySpace(byId.get(globalMem), byId.get(groupMem)), "全局与群条目不是同一个空间");
@@ -172,7 +172,7 @@ assert(/conv\.contact_id !== contactId/.test(routeSrc), "转移目标必须是�
 assert(/promoteMemoryEvent[\s\S]{0,200}setMemorySpace\(id, contactId, \{ kind: "global" \}\)/.test(memorySrc),
   "提升与转移共用同一个写入函数，不许留两条改归属的路");
 assert(!/member/.test(memorySrc.match(/export type MemoryScopeKind =[^;]+/)[0]), "作用域枚举里不该再有 member");
-assert(!/members\.ts/.test(readFileSync("src/db.ts", "utf8")), "群成员名册表已撤掉，不给磁盘留第二份真相源");
+assert(!/members\.ts/.test(readFileSync("src/core/db.ts", "utf8")), "群成员名册表已撤掉，不给磁盘留第二份真相源");
 assert(/MemorySpaceSelect/.test(panelSrc) && /onSpaceChange/.test(panelSrc), "记忆清单要有空间选择器");
 assert(!/当前会话<\/span>/.test(cardSrc), "徽标不能再写「当前会话」——管理页里没有指代对象");
 assert(/convName/.test(cardSrc), "徽标要报得出是哪个群");

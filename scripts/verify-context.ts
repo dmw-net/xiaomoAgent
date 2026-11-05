@@ -57,17 +57,17 @@ const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestI
 };
 globalThis.fetch = mockFetch;
 
-const { updateModel, updatePersona } = await import("../src/settings.ts");
-const { createContact, updateContact, getContact, companionPromptExtras } = await import("../src/contacts.ts");
-const { createTurn, getTurn, insertMessage, contextUsage, recentMessages, respondToTurn, editAndRegenerate, retryTurn } = await import("../src/agent.ts");
-const { listInflightCalls } = await import("../src/logs.ts");
-const { addMemoryEvent, deleteMemoryEvent, extractFailures, extractMemories, keywords, listMemoryEventsFiltered, memoryStats, recall, recordExtractFailure } = await import("../src/memory.ts");
-const { maybeRefreshRecap } = await import("../src/recap.ts");
-const { callModelJson } = await import("../src/model.ts");
-const { NON_CHAT_DEFAULT_MAX_TOKENS } = await import("../src/model.ts");
-const { maybeRunConsolidation } = await import("../src/consolidate.ts");
-const { buildSystemPrompt } = await import("../src/persona.ts");
-const { db } = await import("../src/db.ts");
+const { updateModel, updatePersona } = await import("../src/settings/settings.ts");
+const { createContact, updateContact, getContact, companionPromptExtras } = await import("../src/chat/contacts.ts");
+const { createTurn, getTurn, insertMessage, contextUsage, recentMessages, respondToTurn, editAndRegenerate, retryTurn } = await import("../src/chat/agent.ts");
+const { listInflightCalls } = await import("../src/core/logs.ts");
+const { addMemoryEvent, deleteMemoryEvent, extractFailures, extractMemories, keywords, listMemoryEventsFiltered, memoryStats, recall, recordExtractFailure } = await import("../src/mind/memory.ts");
+const { maybeRefreshRecap } = await import("../src/chat/recap.ts");
+const { callModelJson } = await import("../src/settings/model.ts");
+const { NON_CHAT_DEFAULT_MAX_TOKENS } = await import("../src/settings/model.ts");
+const { maybeRunConsolidation } = await import("../src/chat/consolidate.ts");
+const { buildSystemPrompt } = await import("../src/mind/persona.ts");
+const { db } = await import("../src/core/db.ts");
 
 let failures = 0;
 const check = (label: string, ok: boolean, detail = ""): void => {
@@ -203,7 +203,7 @@ contextUsage(cid);
 check("刷上下文占用圆环不算被想起", usedAt() === null);
 recall(cid, "周末 新开的馆");
 check("真实对话召回算被想起", usedAt() !== null);
-const { executeTool } = await import("../src/tools.ts");
+const { executeTool } = await import("../src/mind/tools.ts");
 const probe2 = addMemoryEvent({ kind: "fact", content: "她喜欢看展，尤其是画展", contactId: cid });
 // ⚠️ executeTool 是 async：少了 await 这个 promise 就悬空，
 // 断言只是因为 recallExplained 的 markUsed 在第一个微任务段同步跑完才碰巧过的。
@@ -330,7 +330,7 @@ try {
 } catch (error) {
   guardErr = error instanceof Error ? error.message : String(error);
 }
-// 这一条原来断的是「只许重答最新一轮」，而 src/agent.ts 已改成任何一轮都能重答
+// 这一条原来断的是「只许重答最新一轮」，而 src/chat/agent.ts 已改成任何一轮都能重答
 // （区别只在写回原气泡还是分条重插），断言留着就是假红灯。
 check("后面还有有效轮次时也能重答（按现行口径：区别只在写回位置）", guardErr === "", guardErr);
 

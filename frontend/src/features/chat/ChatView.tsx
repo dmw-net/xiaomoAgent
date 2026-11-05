@@ -202,6 +202,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const cid = contactIdOverride;
   const cacheKey = (msgScope ?? cid ?? "") + (conversationId ? ":" + conversationId : ":local");
   const hasGroupSources = conversations.some((conv) => conv.channel === "qq" && conv.kind === "group");
+  // 发言人昵称只在群聊有意义；私聊是 1v1，连模型上下文里都不该带「[某某]」前缀。
+  const isGroupChat = conversations.find((conv) => conv.id === conversationId)?.kind === "group";
   const [msgs, setMsgs] = useState<MessageRow[]>(() => msgsSeed.get(cacheKey) ?? []);
   /**
    * 新消息入场动效的判定。
@@ -2544,7 +2546,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             ttsPlaying={playingId === m.id} ttsBusy={ttsBusyId === m.id}
             showThinking={showThinking}
             thinkingOpen={m.turn_id ? thinkingOpenTurns[m.turn_id] : undefined}
-            onThinkingOpenChange={setThinkingOpen} />
+            onThinkingOpenChange={setThinkingOpen}
+            showSenderName={isGroupChat} />
         );
       }
     }

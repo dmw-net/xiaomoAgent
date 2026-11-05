@@ -1,4 +1,4 @@
-import { memo, useMemo, type CSSProperties } from "react";
+import { memo, useMemo, useState, type CSSProperties } from "react";
 import { Volume2, Loader2 } from "lucide-react";
 import Avatar from "../../components/Avatar";
 import VoiceMessageBubble from "../../components/VoiceMessageBubble";
@@ -10,7 +10,7 @@ import { avatarToneStyle } from "../../lib/avatar-tone";
 import type { MessageAttachmentMeta, MessageRow } from "../../types";
 
 /** 一条普通消息气泡（含撤回态）。编辑态不走这里——它需要编辑器状态，留在 ChatView。 */
-function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, thinkingOpen, onThinkingOpenChange, enter = false, enterDelay = 0 }: {
+function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, thinkingOpen, onThinkingOpenChange, showSenderName = true, enter = false, enterDelay = 0 }: {
   m: MessageRow;
   gap: boolean;
   /** 本条是「刚追加进来」的新消息，挂一次入场动效（判定见 ChatView 的 enterIds）。 */
@@ -34,6 +34,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   ttsOn?: boolean;
   /** 该联系人是否在聊天框显示思考过程（资料页「对话设置」里的开关）。 */
   showThinking?: boolean;
+  /** 只有群聊才显示发言人昵称：私聊是 1v1，气泡上再挂一行自己的名字纯属多余。 */
+  showSenderName?: boolean;
   /** 思考面板是否展开：由聊天页按 turnId 持久化，保证流式草稿与定稿交接不闪回。 */
   thinkingOpen?: boolean;
   onThinkingOpenChange?: (turnId: string, open: boolean) => void;
@@ -63,6 +65,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   const imgs = voiceMeta ? allAttachments.filter((url) => url !== voiceMeta.url) : allAttachments;
   // 一次渲染只在 text 变化时重扫；长回复里正则扫描不该跟着 TTS/主题等无关 props 重跑。
   const previewUrl = useMemo(() => (m.text ? findFirstExternalUrl(m.text) : ""), [m.text]);
+  /** 3 张及以上先收成一张卡片（微信「合并发图」的做法）：防止一轮连发表情把气泡撑成画廊。 */
+  const [imgsExpanded, setImgsExpanded] = useState(false);
   // 这一条必须放在所有 Hook 之后：撤回会让同一行从普通气泡切成“已撤回”，
   // 若提前 return 跳过 useMemo，React 会看到 Hook 数量变化并整页白屏（error #300）。
   if (m.superseded_kind === "retract") {
@@ -86,27 +90,50 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
       onClick={(e) => { e.stopPropagation(); onRetry?.(failed.id); }}
     >!</button>
   ) : null;
+  const imgsFolded = imgs.length >= 3 && !imgsExpanded;
+  const shownImgs = imgsFolded ? imgs.slice(0, 1) : imgs;
   const bubble = (
     <div className={"bubble" + (voiceMeta ? " voice-only" : imgs.length > 0 && m.text === "" ? " img-only" : "")}>
-      {m.role === "user" && m.sender_name && <div className="msg-sender">{m.sender_name}</div>}
+      {m.role === "user" && showSenderName && m.sender_name && <div className="msg-sender">{m.sender_name}</div>}
       {thinking}
       {voiceMeta && (
         <VoiceMessageBubble url={voiceMeta.url} durationMs={voiceMeta.durationMs}
           waveform={voiceMeta.waveform} transcript={voiceMeta.transcript} />
       )}
       {imgs.length > 0 && (
-        <div className={"msg-imgs" + (imgs.length === 1 ? " single" : "")}>
-          {imgs.map((url) => (
-            <img key={url} src={url} alt={m.role === "user" ? "我发送的图片" : characterName + "发来的图片"} loading="lazy"
-              onClick={(e) => { e.stopPropagation(); onImageClick?.(url); }}
-              onContextMenu={(e) => e.stopPropagation()} />
-          ))}
-        </div>
+        <>
+          <div className={"msg-imgs" + (shownImgs.length === 1 ? " single" : "")}>
+            {shownImgs.map((url) => (
+              <img key={url} src={url} alt={m.role === "user" ? "我发送的图片" : characterName + "发来的图片"} loading="lazy"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  // 折叠态点图先展开，展开后才走灯箱放大。
+                  if (imgsFolded) setImgsExpanded(true);
+                  else onImageClick?.(url);
+                }}
+                onContextMenu={(e) => e.stopPropagation()} />
+            ))}
+          </div>
+          {imgs.length >= 3 && (
+            <button type="button" className="msg-img-fold-btn"
+              onClick={(e) => { e.stopPropagation(); setImgsExpanded((v) => !v); }}>
+              {imgsFolded ? `共 ${imgs.length} 张 · 点开看全部` : "收起"}
+            </button>
+          )}
+        </>
       )}
       {!voiceMeta && m.text && <div className="msg-text">{renderMd(m.text)}</div>}
       {/* key 用地址本身：编辑消息换了链接时强制重挂载，避免新链接下还显示旧卡的标题/域名。 */}
       {previewUrl !== "" && <LinkPreviewCard key={previewUrl} url={previewUrl} />}
-      {time && <div className="msg-time">{time}</div>}
+      {/* TTS 播放按钮放在气泡右下角 */}
+      {!voiceMeta && ttsOn && m.role === "assistant" && m.kind === "chat" && m.text !== "" && (
+        <button type="button" className={"tts-btn" + (ttsPlaying ? " playing" : "")} title="播放语音"
+          aria-label="播放语音" disabled={ttsBusy}
+          onClick={(e) => { e.stopPropagation(); onPlayTts?.(m); }}
+          onContextMenu={(e) => e.stopPropagation()}>
+          {ttsBusy ? <Loader2 size={15} className="spin" /> : <Volume2 size={15} />}
+        </button>
+      )}
     </div>
   );
 
@@ -121,13 +148,9 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
           style={avatarToneStyle(characterName)} />
       )}
       {bubble}
-      {!voiceMeta && ttsOn && m.role === "assistant" && m.kind === "chat" && m.text !== "" && (
-        <button type="button" className={"tts-btn" + (ttsPlaying ? " playing" : "")} title="播放语音"
-          aria-label="播放语音" disabled={ttsBusy}
-          onClick={(e) => { e.stopPropagation(); onPlayTts?.(m); }}
-          onContextMenu={(e) => e.stopPropagation()}>
-          {ttsBusy ? <Loader2 size={15} className="spin" /> : <Volume2 size={15} />}
-        </button>
+      {/* 时间戳放到气泡外面右侧，避免和气泡内的播放按钮位置冲突 */}
+      {time && !voiceMeta && (
+        <div className="msg-time" style={{ marginLeft: 'auto' }}>{time}</div>
       )}
       {m.role === "user" && (
         <Avatar className={"msg-ava mine" + (gap ? "" : " ava-hidden")} src={ownerAvatar || undefined} name={ownerName || "我"} />

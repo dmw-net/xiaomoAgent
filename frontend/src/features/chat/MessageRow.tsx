@@ -125,7 +125,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
       {!voiceMeta && m.text && <div className="msg-text">{renderMd(m.text)}</div>}
       {/* key 用地址本身：编辑消息换了链接时强制重挂载，避免新链接下还显示旧卡的标题/域名。 */}
       {previewUrl !== "" && <LinkPreviewCard key={previewUrl} url={previewUrl} />}
-      {/* TTS 播放按钮放在气泡右下角 */}
+      {time && <div className="msg-time">{time}</div>}
+      {/* TTS 播放按钮：放在气泡右下角，不挤占显示空间 */}
       {!voiceMeta && ttsOn && m.role === "assistant" && m.kind === "chat" && m.text !== "" && (
         <button type="button" className={"tts-btn" + (ttsPlaying ? " playing" : "")} title="播放语音"
           aria-label="播放语音" disabled={ttsBusy}
@@ -148,10 +149,6 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
           style={avatarToneStyle(characterName)} />
       )}
       {bubble}
-      {/* 时间戳放到气泡外面右侧，避免和气泡内的播放按钮位置冲突 */}
-      {time && !voiceMeta && (
-        <div className="msg-time" style={{ marginLeft: 'auto' }}>{time}</div>
-      )}
       {m.role === "user" && (
         <Avatar className={"msg-ava mine" + (gap ? "" : " ava-hidden")} src={ownerAvatar || undefined} name={ownerName || "我"} />
       )}

@@ -752,7 +752,7 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 .rec-actions { display: flex; gap: var(--space-3); }
 
 .tts-btn {
-  position: absolute; right: calc(100% - 58px); bottom: 8px;
+  position: absolute; right: 8px; bottom: 8px;
   align-self: center; flex: none;
   display: inline-flex; align-items: center; justify-content: center;
   width: 28px; height: 28px; border-radius: 50%;
@@ -765,6 +765,10 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 .tts-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-muted); }
 .tts-btn.playing { color: var(--accent-ink); }
 .tts-btn:disabled { opacity: var(--alpha-disabled); cursor: wait; }
+/* msg-time 与右下角绝对定位的 tts-btn 水平重叠：
+   tts-btn right(8) + tts-btn width(28) = 按钮左边缘距 bubble 右 36px，
+   而 msg-time 右边缘默认距 14px（bubble padding-right），差额必须让出去。 */
+.bubble:has(> .tts-btn) > .msg-time { margin-right: calc(8px + 28px - 14px); }
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { 100% { transform: rotate(360deg); } }
 

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, LockKeyhole, MessageSquareText, Search, UsersRound, X } from "lucide-react";
 import { useDismiss } from "../../hooks/useDismiss";
+import { useExitVisible } from "../../hooks/useExitVisible";
 import { usePopPosition } from "../../hooks/usePopPosition";
 import { shortTimeLabel } from "../../lib/datetime";
 import type { ContactConversationItem } from "../../types";
@@ -23,10 +24,13 @@ export default function ConversationSwitcher({ conversations, currentId, onSelec
   onSelect: (conversationId: string | null, title?: string, readOnly?: boolean) => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  // 下拉退场：open 置假先播 menuOut 淡出（与 menuIn 互为镜像），走完再摘 portal。
+  const exit = useExitVisible(open, "menuOut");
   const [query, setQuery] = useState("");
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const { setRef, pos, place } = usePopPosition(POP_W, 430);
-  useDismiss(open, () => { setOpen(false); setQuery(""); });
+  // 只负责收起；清查询词统一交给上面那条 effect（退场帧播完再清，淡出不变脸）。
+  useDismiss(open, () => setOpen(false));
 
   const local = conversations.find((conv) => conv.channel === "web" && conv.kind === "private");
   const groups = conversations.filter((conv) => conv.channel === "qq" && conv.kind === "group");
@@ -40,7 +44,8 @@ export default function ConversationSwitcher({ conversations, currentId, onSelec
     ? orderedGroups
     : orderedGroups.filter((conv) => conv.title.toLocaleLowerCase().includes(normalizedQuery));
   const leftGroups = groups.filter((conv) => conv.leftAt !== null).length;
-  useEffect(() => { if (!open) setQuery(""); }, [open]);
+  // 查询词等退场帧播完再清：清早了，淡出中的搜索框会当着用户的面突然变空。
+  useEffect(() => { if (!exit.visible) setQuery(""); }, [exit.visible]);
   // 群多时当前会话可能不在列表顶部，打开后先把它滚进可视区。
   useEffect(() => {
     if (!open || currentId === null) return;
@@ -87,8 +92,10 @@ export default function ConversationSwitcher({ conversations, currentId, onSelec
         <span className="conv-switch-label">{currentLabel}</span>
         <ChevronDown size={11} strokeWidth={2} className={"conv-switch-arrow" + (open ? " up" : "")} />
       </button>
-      {open && createPortal(
+      {exit.visible && createPortal(
         <div className="conv-switch-pop" data-keep-menu="" role="listbox" aria-label="选择会话来源"
+          data-closing={exit.closing || undefined} aria-hidden={exit.closing || undefined}
+          onAnimationEnd={exit.onAnimationEnd}
           style={{ left: pos.left, top: pos.top, width: `min(${POP_W}px, calc(100vw - 24px))`, transform: pos.flip ? "translateY(-100%)" : undefined }}>
           <div className="conv-switch-head">
             <span className="conv-switch-title-main">切换会话</span>
@@ -99,10 +106,10 @@ export default function ConversationSwitcher({ conversations, currentId, onSelec
           {searchable && (
             <div className="conv-switch-search">
               <Search size={13} strokeWidth={2} />
-              <input value={query} autoFocus placeholder="搜索 QQ 群名"
+              <input value={query} autoFocus placeholder="搜索 QQ 群名" tabIndex={exit.closing ? -1 : undefined}
                 aria-label="搜索 QQ 群名" onChange={(e) => setQuery(e.target.value)} />
               {query !== "" && (
-                <button type="button" aria-label="清除搜索" title="清除搜索" onClick={() => setQuery("")}>
+                <button type="button" aria-label="清除搜索" title="清除搜索" tabIndex={exit.closing ? -1 : undefined} onClick={() => setQuery("")}>
                   <X size={13} strokeWidth={2} />
                 </button>
               )}
@@ -110,6 +117,7 @@ export default function ConversationSwitcher({ conversations, currentId, onSelec
           )}
           <div className="conv-switch-section">主对话</div>
           <button type="button" role="option" aria-selected={currentId === null}
+            tabIndex={exit.closing ? -1 : undefined}
             className={"conv-switch-row" + (currentId === null ? " on" : "")} onClick={pickLocal}>
             <span className="conv-switch-icon local"><MessageSquareText size={15} strokeWidth={1.9} /></span>
             <span className="conv-switch-copy">
@@ -126,6 +134,7 @@ export default function ConversationSwitcher({ conversations, currentId, onSelec
           <div className="conv-switch-scroll" ref={scrollRef}>
             {visibleGroups.map((conv) => (
               <button key={conv.id} type="button" role="option" aria-selected={conv.id === currentId}
+                tabIndex={exit.closing ? -1 : undefined}
                 data-conversation-id={conv.id}
                 className={"conv-switch-row" + (conv.id === currentId ? " on" : "") + (conv.enabled ? "" : " off")}
                 title={`QQ 群 · ${conv.title}`}

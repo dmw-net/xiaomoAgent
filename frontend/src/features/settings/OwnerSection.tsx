@@ -1,5 +1,5 @@
-import { useRef, useState } from "react";
-import { Camera, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Camera, Save, X } from "lucide-react";
 import { fileToAvatarDataUrl } from "../../lib/avatar";
 import QqAvatarButton from "../../components/QqAvatarButton";
 import { useDismiss } from "../../hooks/useDismiss";
@@ -12,9 +12,11 @@ const GENDER_OPTIONS = [
 ] as const;
 
 /** 全局用户资料：头像 + 指代方式 + 「联系人眼中的你」三字段。联系人各自的设定在编辑资料页。 */
-export default function OwnerSection({ form, onOwnerAvatar }: {
+export default function OwnerSection({ form, onOwnerAvatar, onDirtyChange }: {
   form: SettingsForm;
   onOwnerAvatar: (dataUrl: string) => void;
+  /** 脏值变化上报给 SettingsView：切走分组前要拦一句（见 SettingsView 的 leaveOwnerGuard）。 */
+  onDirtyChange?: (dirty: boolean) => void;
 }): JSX.Element {
   const fileRef = useRef<HTMLInputElement>(null);
   const [avaHint, setAvaHint] = useState("");
@@ -25,6 +27,26 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
   const avatar = form.saved?.persona?.owner?.avatar || "";
   const ownerName = form.oName.trim() || "你";
 
+  // 脏值口径与 useSettingsForm.collectOwner 完全一致：name 落库前 trim、其余原样比对，
+  // 指代方式缺省按「中性」回填——基线对不齐就会永远显示「有未保存的改动」。
+  const savedOwner = form.saved?.persona?.owner;
+  const ownerDirty = useMemo((): boolean => (
+    form.oName.trim() !== (savedOwner?.name ?? "").trim()
+    || form.oImpression !== (savedOwner?.impression ?? "")
+    || form.oNotes !== (savedOwner?.notes ?? "")
+    || form.oGender !== (savedOwner?.gender ?? "other")
+  ), [form.oName, form.oImpression, form.oNotes, form.oGender, savedOwner]);
+
+  useEffect(() => {
+    onDirtyChange?.(ownerDirty);
+  }, [onDirtyChange, ownerDirty]);
+
+  /** 放弃改动：把表单灌回最近一次保存的快照（applySnapshot 即 useSettingsForm 的 fill）。
+      快照还没到手（加载失败）时没有可回退的基线，只能等用户自己改回去。 */
+  const discardOwner = (): void => {
+    if (form.saved) form.applySnapshot(form.saved);
+  };
+
   const pick = (): void => { if (!avaBusy) fileRef.current?.click(); };
 
   const onFile = (e: React.ChangeEvent<HTMLInputElement>): void => {
@@ -34,12 +56,10 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
     setAvaBusy(true);
     setAvaHint("处理中…");
     fileToAvatarDataUrl(file)
-      // 注意：不能读 form.saved——那是本次渲染的闭包快照，fill 之后也不会立刻变
-      .then((dataUrl) => form.saveOwnerAvatar(dataUrl).then(() => dataUrl))
-      .then((dataUrl) => {
-        onOwnerAvatar(dataUrl);
-        setAvaHint("头像已更新，左上角与聊天里即时生效");
-      })
+      // 注意：不能读 form.saved——那是本次渲染的闭包快照，fill 之后也不会立刻变。
+      // saveOwnerAvatar 失败时已在 hook 内 toast 报因并返回 false，这里不能把
+      // 成功链（换本地头像缓存、写就地提示）跑下去，否则会把没保存成的图当成已生效。
+      .then((dataUrl) => form.saveOwnerAvatar(dataUrl).then((ok) => { if (ok) { onOwnerAvatar(dataUrl); setAvaHint("头像已更新，左上角与聊天里即时生效"); } }))
       .catch((err: Error) => setAvaHint("没换成：" + err.message))
       .finally(() => setAvaBusy(false));
   };
@@ -57,9 +77,12 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
     try {
       const blob = await (await fetch(mediaUrl)).blob();
       const dataUrl = await fileToAvatarDataUrl(new File([blob], "qq-avatar.jpg", { type: blob.type || "image/jpeg" }));
-      await form.saveOwnerAvatar(dataUrl);
-      onOwnerAvatar(dataUrl);
-      setAvaHint("头像已更新，左上角与聊天里即时生效");
+      // saveOwnerAvatar 失败已在 hook 内 toast 报因；这里只在真保存成功时才走成功链。
+      const ok = await form.saveOwnerAvatar(dataUrl);
+      if (ok) {
+        onOwnerAvatar(dataUrl);
+        setAvaHint("头像已更新，左上角与聊天里即时生效");
+      }
     } catch (err) {
       setAvaHint("没换成：" + (err as Error).message);
     } finally {
@@ -142,18 +165,37 @@ export default function OwnerSection({ form, onOwnerAvatar }: {
           </div>
           <p className="owner-see-note">这是所有联系人共享的背景；每位联系人自己的关系设定仍在各自的资料页里。</p>
         </div>
-        {form.personaBanner && (
-          <div className={"banner show " + form.personaBanner.kind} id="personaBanner" role={form.personaBanner.kind === "bad" ? "alert" : "status"}>
-            <div className="body">{form.personaBanner.text}</div>
-          </div>
-        )}
+        {/* 保存结果不再渲染就地 personaBanner：绑在「我的资料」分区里，用户点完保存
+            切个分组就看不见。成败统一走全局 toast（useSettingsForm.saveOwner 内
+            offerToast）；这里的脏值条（ownerDirty）只负责「还没保存」这件事，
+            放弃改动走 applySnapshot 不经过 saveOwner，不会误弹「已保存」。 */}
         <div className="actions">
-          <button type="button" className="primary" id="btn-save-owner" disabled={form.busy !== ""} onClick={form.saveOwner}>
+          {/* 没有 dirty 时禁用，与资料页 ProfileView 的保存条同一口径：
+              从前这里永远可点、点了也常常是空保存，反而盖住了真正的脏值。 */}
+          <button type="button" className="primary" id="btn-save-owner" disabled={form.busy !== "" || !ownerDirty}
+            title={ownerDirty ? undefined : "没有需要保存的改动"} onClick={form.saveOwner}>
             {form.busy === "owner" ? "保存中…" : "保存资料"}
           </button>
         </div>
         <div className="hint">想看某位联系人实际收到什么，去联系人的资料页 → 对话设置 → 提示词预览。</div>
       </div>
+
+      {/* 脏值提示条：对齐 ProfileView 的底部保存条（pf-dock / pf-dock-note / pf-save 都是
+          现成样式，sticky 贴在滚动视口底缘）。称呼/印象/备注写完不保存就切分组，
+          从前既不提示也不保存——用户最容易在这里白写一段，所以改动时必须看得见。 */}
+      {ownerDirty && (
+        <div className="pf-dock">
+          <span className="pf-dock-note" role="status">有未保存的改动</span>
+          <span style={{ display: "flex", gap: "var(--space-2)", alignItems: "center" }}>
+            <button type="button" className="pf-ghost" disabled={form.busy !== ""} onClick={discardOwner}>
+              放弃改动
+            </button>
+            <button type="button" className="pf-save" disabled={form.busy !== ""} onClick={form.saveOwner}>
+              <Save size={14} strokeWidth={1.9} />{form.busy === "owner" ? "保存中…" : "保存"}
+            </button>
+          </span>
+        </div>
+      )}
     </div>
   );
 }

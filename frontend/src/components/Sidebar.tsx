@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Search, Plus, Pencil, FileDown, Archive, ArchiveRestore, FileUp, ChevronDown, ChevronRight, Trash2 } from "lucide-react";
+import { Search, Plus, Pencil, FileDown, Archive, ArchiveRestore, FileUp, ChevronDown, ChevronRight, Trash2, SearchX, UserPlus } from "lucide-react";
 import { contactsApi, searchApi } from "../api";
+import EmptyState from "./EmptyState";
 import type { MessageHit, MemoryHit } from "../types/search";
 import { getCachedContacts, isContactsLoaded, refreshContacts, subscribeContacts } from "../lib/contactsStore";
 import { exportPersonaMd, parseMd, parseNameFromMd } from "../lib/persona-doc";
@@ -321,9 +322,16 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
       </div>
       <div className="s-list" id="s-list">
         {shown.length === 0 && !hits && (
-          <div className="s-empty">
-            {query ? "没有匹配的联系人" : loaded ? "还没有联系人 · 点右上角「＋」新建，或从 .md 导入" : "读取中…"}
-          </div>
+          query ? (
+            /* 搜索无结果的空态走统一组件；列表很窄，用 compact。
+               加载中（!loaded）不是空态，保持原来的纯文字提示，不硬塞图标。 */
+            <EmptyState compact icon={<SearchX size={20} strokeWidth={1.5} />} title="没有匹配的联系人" />
+          ) : loaded ? (
+            <EmptyState compact icon={<UserPlus size={20} strokeWidth={1.5} />}
+              title="还没有联系人" hint="点右上角「＋」新建，或从 .md 导入" />
+          ) : (
+            <div className="s-empty">读取中…</div>
+          )
         )}
         {shown.map((c) => renderRow(c, false))}
         {hits && (
@@ -349,7 +357,10 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
                   <div className="s-r2">{clip(h.content)}</div></div>
               </div>
             ))}
-            {hits.messages.length + hits.memories.length === 0 && <div className="s-empty">什么都没搜到</div>}
+            {/* 全历史搜索无命中：同样是列表内的窄空间空态，compact。 */}
+            {hits.messages.length + hits.memories.length === 0 && (
+              <EmptyState compact icon={<SearchX size={20} strokeWidth={1.5} />} title="什么都没搜到" />
+            )}
           </div>
         )}
 

@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Blocks, ChevronRight, Database, Images, Info, Palette, Search, Sparkles, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Blocks, ChevronRight, Database, Images, Info, Palette, Search, SearchX, Sparkles, UserRound, X, type LucideIcon } from "lucide-react";
 import Tabs, { panelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import Modal from "../../components/Modal";
 import AboutBody from "../../components/AboutBody";
+import EmptyState from "../../components/EmptyState";
 import ModelSection from "./ModelSection";
 import CapabilitySection from "./CapabilitySection";
 import ToolsWorkbench from "./ToolsWorkbench";
@@ -145,6 +146,10 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
   const [toolsFocus, setToolsFocus] = useState<{ tab: "overview" | "skills" | "extensions"; seq: number }>(
     () => ({ tab: "overview", seq: 0 }),
   );
+  /** 「我的资料」有没有未保存的改动（OwnerSection 上报）。切走分组前要拦一句。 */
+  const [ownerDirty, setOwnerDirty] = useState(false);
+  /** 待确认的分组切换：ownerDirty 时先弹确认，用户放弃才放行（对齐 ProfileView 的离开拦截）。 */
+  const [ownerLeaveAsk, setOwnerLeaveAsk] = useState<{ go: () => void } | null>(null);
 
   const searchTerm = query.trim().toLocaleLowerCase();
   const searchResults = searchTerm === ""
@@ -192,32 +197,52 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
     return () => cancelAnimationFrame(raf);
   }, [pendingAnchor, group, modelTab, mobileHub]);
 
+  /** 「我的资料」有未保存改动时，页内切走分组先问一句；确认放弃才把表单灌回快照。
+      只拦页内切换——外部导航（navSeq 那条）带着明确意图（「去设置」跳转），不该被表单挡路。 */
+  const leaveOwnerGuard = (go: () => void): void => {
+    if (ownerDirty) setOwnerLeaveAsk({ go });
+    else go();
+  };
+
   const goToGroup = (next: SettingsGroup): void => {
-    setGroup(next);
-    setMobileHub(false);
-    setQuery("");
+    const go = (): void => {
+      setGroup(next);
+      setMobileHub(false);
+      setQuery("");
+    };
+    // 点当前分组只是清掉搜索/回总览，不算离开，不拦。
+    if (next === group) { go(); return; }
+    leaveOwnerGuard(go);
   };
 
   /** 总览卡里的「去改」：只换落点，不复制任何开关，避免两处状态打架。 */
   const goToTarget = (next: SettingsGroup, tab?: ModelTab, anchor?: string): void => {
-    setGroup(next);
-    if (next === "model" && tab !== undefined) setModelTab(tab);
-    setMobileHub(false);
-    setQuery("");
-    if (anchor !== undefined && anchor !== "") setPendingAnchor(anchor);
+    const go = (): void => {
+      setGroup(next);
+      if (next === "model" && tab !== undefined) setModelTab(tab);
+      setMobileHub(false);
+      setQuery("");
+      if (anchor !== undefined && anchor !== "") setPendingAnchor(anchor);
+    };
+    if (next === group) { go(); return; }
+    leaveOwnerGuard(go);
   };
 
   const jumpTo = (entry: SearchEntry): void => {
-    setGroup(entry.group);
-    if (entry.modelTab) setModelTab(entry.modelTab);
-    if (entry.group === "tools") {
-      const tab = entry.anchor === "settings-skills" ? "skills"
-        : entry.anchor === "settings-extensions" ? "extensions" : "overview";
-      setToolsFocus((prev) => ({ tab, seq: prev.seq + 1 }));
-    }
-    setMobileHub(false);
-    setQuery("");
-    setPendingAnchor(entry.anchor);
+    const go = (): void => {
+      setGroup(entry.group);
+      if (entry.modelTab) setModelTab(entry.modelTab);
+      if (entry.group === "tools") {
+        const tab = entry.anchor === "settings-skills" ? "skills"
+          : entry.anchor === "settings-extensions" ? "extensions" : "overview";
+        setToolsFocus((prev) => ({ tab, seq: prev.seq + 1 }));
+      }
+      setMobileHub(false);
+      setQuery("");
+      setPendingAnchor(entry.anchor);
+    };
+    if (entry.group === group) { go(); return; }
+    leaveOwnerGuard(go);
   };
 
   // 优先显示 App 层传入的加载错误（初始读取失败），再显示 form 层的错误（保存后重新加载失败）
@@ -260,7 +285,9 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
   const searchList = query.trim() !== "" && (
     <div className="settings-search-results" role="region" aria-label="设置搜索结果" aria-live="polite">
       {searchResults.length === 0 ? (
-        <div className="settings-search-empty">没有找到“{query.trim()}”。换个词试试，或从下方分类进入。</div>
+        /* 侧栏搜索无命中：窄栏里的空态，compact；主文案带关键词，指引放 hint。 */
+        <EmptyState compact icon={<SearchX size={18} strokeWidth={1.5} />}
+          title={`没有找到“${query.trim()}”`} hint="换个词试试，或从下方分类进入。" />
       ) : (
         searchResults.map((entry) => (
           <button key={entry.group + ":" + entry.anchor} type="button" className="settings-search-result" onClick={() => jumpTo(entry)}>
@@ -340,7 +367,8 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
     <div id="settings" ref={rootRef}>
       <div className={"head-row" + (narrow && !mobileHub ? " settings-detail-head" : "")}>
         {narrow && !mobileHub ? (
-          <button type="button" className="settings-back" onClick={() => setMobileHub(true)} aria-label="返回设置分类">
+          /* 窄屏返回分类总览同样会离开「我的资料」，一并拦。 */
+          <button type="button" className="settings-back" onClick={() => leaveOwnerGuard(() => setMobileHub(true))} aria-label="返回设置分类">
             <ArrowLeft size={18} />
           </button>
         ) : null}
@@ -358,11 +386,9 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
         )}
       </div>
 
-      {form.resetBanner && (
-        <div className={"banner show " + form.resetBanner.kind} role={form.resetBanner.kind === "bad" ? "alert" : "status"}>
-          <div className="body">{form.resetBanner.text}</div>
-        </div>
-      )}
+      {/* 重置/全部清空的结果不再渲染就地 banner（原 resetBanner）：按钮在系统页、
+          用户确认完常立刻切分组，绑在任何分区上的提示都会跟着卸载。
+          成败统一走全局 toast（useSettingsForm 内 offerToast），哪一页都看得见。 */}
 
       {narrow && mobileHub ? (
         <div className="settings-hub">
@@ -388,7 +414,7 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
         <div className={"settings-layout" + (group === "media" ? " settings-layout-media" : "")}>
           {!narrow && nav}
           <div className="set-body">
-            {groupPanel("owner", <OwnerSection form={form} onOwnerAvatar={onOwnerAvatar} />)}
+            {groupPanel("owner", <OwnerSection form={form} onOwnerAvatar={onOwnerAvatar} onDirtyChange={setOwnerDirty} />)}
 
             {(visitedGroups.has("model") || group === "model") && groupPanel("model", modelContent)}
 
@@ -420,6 +446,25 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
           <div className="del-row">
             <button type="button" onClick={form.cancelAsk}>取消</button>
             <button type="button" className="danger" onClick={form.acceptAsk}>确认</button>
+          </div>
+        </Modal>
+      )}
+
+      {/* 「我的资料」没保存就切分组：结构与文案对齐 ProfileView 的离开拦截。
+          「放弃并切换」把表单灌回最近一次保存的快照（applySnapshot 即 fill），
+          这样切回来时不会还挂着一条已经作废的脏值条。 */}
+      {ownerLeaveAsk && (
+        <Modal label="放弃未保存的修改？" onClose={() => setOwnerLeaveAsk(null)}>
+          <div className="del-title">放弃未保存的修改？</div>
+          <div className="del-note">「我的资料」的改动还没保存，切换后会回到上一次保存的样子。</div>
+          <div className="del-row">
+            <button type="button" className="primary" onClick={() => setOwnerLeaveAsk(null)}>继续编辑</button>
+            <button type="button" className="danger" onClick={() => {
+              if (form.saved) form.applySnapshot(form.saved);
+              const go = ownerLeaveAsk.go;
+              setOwnerLeaveAsk(null);
+              go();
+            }}>放弃并切换</button>
           </div>
         </Modal>
       )}

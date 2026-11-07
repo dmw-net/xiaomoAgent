@@ -1,20 +1,23 @@
 import { useEffect, useRef, useState } from "react";
 import {
   ArrowLeft, ArrowRight, Check, Eye, EyeOff, FileDown, FileUp, Loader2,
-  Pencil, Play, Plus, Server, ShieldCheck, Sparkles, Trash2, X, Zap,
+  Package, Pencil, Play, Plus, Server, ShieldCheck, Sparkles, Trash2, X, Zap,
 } from "lucide-react";
+import EmptyState from "../../components/EmptyState";
 import Modal from "../../components/Modal";
+import ToggleSwitch from "../../components/ToggleSwitch";
 import { settingsApi } from "../../api";
 import { useDismiss } from "../../hooks/useDismiss";
 import { CHAT_PRESETS, CAPABILITY_GROUPS } from "./presets";
 import { groupByProvider, normBase, type ProviderGroup } from "../../lib/providers";
 import { SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
+import { offerToast } from "../../lib/toast";
 import {
   buildModelConfig, downloadModelConfig, planImport, parseModelConfig, runImport,
   type ImportPlan, type ModelConfigFile,
 } from "../../lib/model-config";
 import type { ModelCaps, ProfileItem, ThinkingModeId, ThinkingParamId } from "../../types";
-import type { SettingsForm } from "./useSettingsForm";
+import { TIMEOUT_HINT, TIMEOUT_MAX_SEC, TIMEOUT_MIN_SEC, timeoutSecOf, type SettingsForm } from "./useSettingsForm";
 
 /** 添加/编辑面板的本地表单。密钥直接回填已保存的真实值（本机应用），眼睛按钮可明文查看。 */
 type Draft = {
@@ -23,6 +26,7 @@ type Draft = {
   baseUrl: string;
   key: string;
   name: string;
+  /** 超时，界面按「秒」（1~600 整数，口径见 useSettingsForm 的 timeoutSecOf）；库里存毫秒，加载/保存时换算。 */
   timeout: string;
   extra: string;
   caps: ModelCaps;
@@ -47,7 +51,7 @@ const NO_CAPS: ModelCaps = {
 };
 
 const emptyDraft = (): Draft => ({
-  id: null, label: "", baseUrl: "", key: "", name: "", timeout: "90000", extra: "",
+  id: null, label: "", baseUrl: "", key: "", name: "", timeout: "90", extra: "",
   caps: { ...NO_CAPS }, thinkingLevel: "", thinkingLevels: [], thinkingParam: "effort", thinkingMode: "auto",
   maxInput: "", maxOutput: "", underProvider: false,
 });
@@ -155,8 +159,6 @@ function globalReplayModeOf(persona: { recentTurns?: number; recentTurnsPct?: nu
  *  的 N 改不了，是归类核查揪出的隐形设置；现在补齐为与联系人页同构的三种给法。 */
 function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
-  const [err, setErr] = useState("");
   const [custom, setCustom] = useState("");
   const persona = form.saved?.persona;
   const { mode, turns: savedTurns, pct: savedPct } = globalReplayModeOf(persona);
@@ -165,21 +167,24 @@ function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
   const customValid = custom.trim() !== "" && Number.isInteger(customValue)
     && customValue >= 1 && customValue <= (mode === "pct" ? 100 : GLOBAL_TURN_MAX);
 
-  /** 一次请求把两个字段写齐：模式互斥在服务端 updatePersona 里兜底，这里显式带上更直观。 */
+  /**
+   * 一次请求把两个字段写齐：模式互斥在服务端 updatePersona 里兜底，这里显式带上更直观。
+   * 成败提示走全局 toast（lib/toast.ts）：note 原来绑在这张卡的就地 banner 上，
+   * 用户改完回放范围切个分组就看不见了；带后果说明的长文案（如「回放全部历史」
+   * 的代价）也一并进 toast，8 秒的停留读得完。
+   */
   const save = (patch: { recentTurns: number; recentTurnsPct: number }, ok: string): void => {
     if (busy) return;
     setBusy(true);
-    setNote("");
-    setErr("");
     settingsApi.saveSettings(patch)
       .then((d) => {
         form.applySnapshot(d);
         // 联系人页的「跟随全局」标签监听这条广播，保存后立刻跟上。
         window.dispatchEvent(new Event(SETTINGS_CHANGED_EVENT));
-        setNote(ok);
+        offerToast(ok, "ok");
         setCustom("");
       })
-      .catch((e: Error) => setErr(e.message))
+      .catch((e: Error) => offerToast("回放范围没保存成：" + e.message, "error"))
       .finally(() => setBusy(false));
   };
 
@@ -306,8 +311,6 @@ function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
         没单独指定「回放范围」的联系人都用这一档；联系人页的「跟随全局」指的就是它。
         单独改过的人在联系人 → 对话 → 回放范围里调。
       </div>
-      {note !== "" && <div className="banner show ok" role="status"><div className="body">{note}</div></div>}
-      {err !== "" && <div className="banner show bad" role="alert"><div className="body">{err}</div></div>}
     </div>
   );
 }
@@ -438,7 +441,8 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
       baseUrl: p.baseUrl ?? "",
       key: p.apiKey ?? "",
       name: p.name ?? "",
-      timeout: String(p.timeoutMs ?? 90000),
+      // 库里是毫秒，界面按秒说话：/1000 四舍五入；没存过就给默认 90 秒。
+      timeout: p.timeoutMs != null ? String(Math.round(p.timeoutMs / 1000)) : "90",
       extra: p.extraBody && Object.keys(p.extraBody).length ? JSON.stringify(p.extraBody) : "",
       caps: { ...NO_CAPS, ...(p.caps ?? {}) },
       thinkingLevel: p.thinkingLevel ?? "",
@@ -494,9 +498,15 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
       form.setModelBanner({ kind: "bad", text: "远程服务需要填 API Key；本地 Ollama 可以留空。" });
       return;
     }
+    // 超时不再静默吞非法值：校验不过就地拦下说清楚，落库前秒 ×1000 转毫秒。
+    const sec = timeoutSecOf(draft.timeout);
+    if (sec === null) {
+      form.setModelBanner({ kind: "bad", text: TIMEOUT_HINT + "。" });
+      return;
+    }
     const saved = await form.saveModelProfile({
       id: draft.id, label, baseUrl: draft.baseUrl,
-      key: draft.key, name: draft.name, timeoutMs: draft.timeout, extraBody: draft.extra,
+      key: draft.key, name: draft.name, timeoutMs: String(sec * 1000), extraBody: draft.extra,
       caps: draft.caps, thinkingLevel: draft.thinkingLevel, thinkingLevels: draft.thinkingLevels,
       thinkingParam: draft.thinkingParam, thinkingMode: draft.thinkingMode,
       maxInput: draft.maxInput, maxOutput: draft.maxOutput,
@@ -679,7 +689,10 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
         </div>
 
         {profiles.length === 0 && draft === null && (
-          <div className="ml-empty">还没有模型。点「添加供应商」接入 DeepSeek、火山方舟、通义等；同一家下面想再加一个，点右侧「添加模型」。</div>
+          /* 列表为空的呈现层换成统一 EmptyState（只是呈现，不牵涉上面的搜索/筛选逻辑）：
+             主文案说空，接入指引放 hint。 */
+          <EmptyState icon={<Package size={20} strokeWidth={1.5} />} title="还没有模型"
+            hint="点「添加供应商」接入 DeepSeek、火山方舟、通义等；同一家下面想再加一个，点右侧「添加模型」。" />
         )}
 
         {groups.length > 0 && (
@@ -712,8 +725,9 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
                 <div className="field">
                   <label htmlFor="prov-key">API 密钥</label>
                   <div className="key-wrap">
+                    {/* autoComplete=new-password：别让浏览器把密钥当登录密码 autofill/存进密码本（与能力端点同口径）。 */}
                     <input id="prov-key" type={showProvKey ? "text" : "password"} value={d.key} placeholder="sk-..."
-                      onChange={(e) => setProvRaw({ ...d, key: e.target.value })} />
+                      autoComplete="new-password" onChange={(e) => setProvRaw({ ...d, key: e.target.value })} />
                     <button type="button" className="key-eye" aria-label={showProvKey ? "隐藏密钥" : "显示密钥"}
                       title={showProvKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowProvKey((v) => !v)}>
                       {showProvKey ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -842,7 +856,7 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
                       <label htmlFor="ml-api-key">API Key {isLocalBase(draft.baseUrl) ? <span className="ml-optional">本地可留空</span> : "*"}</label>
                       <div className="key-wrap">
                         <input id="ml-api-key" type={showKey ? "text" : "password"} placeholder="sk-..."
-                          value={draft.key} onChange={(e) => set({ key: e.target.value })} />
+                          autoComplete="new-password" value={draft.key} onChange={(e) => set({ key: e.target.value })} />
                         <button type="button" className="key-eye" aria-label={showKey ? "隐藏密钥" : "显示密钥"}
                           title={showKey ? "隐藏密钥" : "显示密钥"} onClick={() => setShowKey((v) => !v)}>
                           {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
@@ -1029,8 +1043,16 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
 
                   <div className="form-row">
                     <div className="field">
-                      <label htmlFor="ml-6">超时（毫秒）</label>
-                      <input id="ml-6" value={draft.timeout} onChange={(e) => set({ timeout: e.target.value })} />
+                      <label htmlFor="ml-6">超时（秒）</label>
+                      {/* 与能力端点同一口径：数字框 + 1~600 的整数秒，库里仍存毫秒。
+                          非法/空值在输入框下面就地给提示，不能只等保存时拦。 */}
+                      <input id="ml-6" type="number" inputMode="numeric"
+                        min={TIMEOUT_MIN_SEC} max={TIMEOUT_MAX_SEC} step={1} placeholder="90"
+                        aria-invalid={timeoutSecOf(draft.timeout) === null}
+                        value={draft.timeout} onChange={(e) => set({ timeout: e.target.value })} />
+                      {timeoutSecOf(draft.timeout) === null && (
+                        <div className="hint bad">{TIMEOUT_HINT}；留空也不行。</div>
+                      )}
                     </div>
                     <div className="field">
                       <label htmlFor="ml-7" title="一般不用填。只在需要往发给模型的请求体里塞额外字段时才用，格式是一个 JSON 对象。">额外参数（JSON）</label>
@@ -1165,11 +1187,11 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
         )}
 
         <div className="ml-foot">
-          <label className="check">
-            <input type="checkbox" id="f-echo" checked={echoOn} disabled={form.busy !== ""}
-              onChange={(e) => form.setEchoMode(e.target.checked)} />
-            <span>演示模式：不调用真实模型，只验证流程通不通</span>
-          </label>
+          {/* 演示模式是功能开关，统一滑块；上面的能力勾选（caps）与导出带不带密钥是
+              「在集合里勾选」，语义不同，保留 checkbox。保留 .check 行式样。 */}
+          <ToggleSwitch className="check" label="演示模式：不调用真实模型，只验证流程通不通" labelSide="right"
+            checked={echoOn} disabled={form.busy !== ""}
+            onChange={(next) => form.setEchoMode(next)} />
         </div>
       </div>
 

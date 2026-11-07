@@ -5,8 +5,9 @@ import PickList, { type PickOption } from "../../components/PickList";
 import { settingsApi } from "../../api";
 import { CAPABILITY_GROUPS, type CapabilityPresetGroup } from "./presets";
 import { groupByProvider, normBase, profilePicks, providerTitle } from "../../lib/providers";
+import { offerToast } from "../../lib/toast";
 import type { CapabilityEndpoint } from "../../types";
-import type { SettingsForm } from "./useSettingsForm";
+import { TIMEOUT_HINT, TIMEOUT_MAX_SEC, TIMEOUT_MIN_SEC, timeoutSecOf, type SettingsForm } from "./useSettingsForm";
 
 const errText = (e: unknown): string => e instanceof Error ? e.message : String(e);
 
@@ -19,10 +20,11 @@ type Draft = {
   apiKey: string;
   name: string;
   voice: string;
+  /** 超时，界面按「秒」（1~600 整数，口径见 useSettingsForm 的 timeoutSecOf）；库里存毫秒，加载/保存时换算。 */
   timeout: string;
 };
 
-const EMPTY: Draft = { id: null, label: "", provider: "", baseUrl: "", apiKey: "", name: "", voice: "", timeout: "90000" };
+const EMPTY: Draft = { id: null, label: "", provider: "", baseUrl: "", apiKey: "", name: "", voice: "", timeout: "90" };
 
 const draftOf = (p: CapabilityEndpoint, provider: string): Draft => ({
   id: p.id,
@@ -32,7 +34,8 @@ const draftOf = (p: CapabilityEndpoint, provider: string): Draft => ({
   apiKey: p.apiKey ?? "",
   name: p.name ?? "",
   voice: p.voice ?? "",
-  timeout: String(p.timeoutMs ?? 90_000),
+  // 库里是毫秒，界面按秒说话：从前直接把毫秒值塞进标着「秒」的框，90000 秒的超时就是这么来的。
+  timeout: p.timeoutMs != null ? String(Math.round(p.timeoutMs / 1000)) : "90",
 });
 
 type Banner = { kind: "ok" | "bad"; text: string } | null;
@@ -72,6 +75,8 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
   const [msg, setMsg] = useState<Banner>(null);
   const [ids, setIds] = useState<string[] | null>(null);
   const [showKey, setShowKey] = useState(false);
+  // 拉回来的模型清单的筛选词（清单是全量，不截断）。
+  const [filter, setFilter] = useState("");
   const set = (key: keyof Draft) => (e: React.ChangeEvent<HTMLInputElement>): void => {
     // 值先取出来再更新：updater 要等下一次 render 才跑，那时 currentTarget 已经空了。
     const value = e.currentTarget.value;
@@ -79,11 +84,14 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
   };
 
   const test = async (): Promise<void> => {
+    // 超时先过校验：非法/空值就地拦下说清楚，不再把秒的数字当毫秒发出去。
+    const sec = timeoutSecOf(f.timeout);
+    if (sec === null) { setMsg({ kind: "bad", text: TIMEOUT_HINT }); return; }
     setBusy("test");
     setMsg(null);
     try {
       const r = await settingsApi.testCapability({
-        capability: group.name, baseUrl: f.baseUrl, apiKey: f.apiKey, model: f.name, timeoutMs: Number(f.timeout),
+        capability: group.name, baseUrl: f.baseUrl, apiKey: f.apiKey, model: f.name, timeoutMs: sec * 1000,
       }) as { ready?: boolean; hint?: string; note?: string; error?: string };
       setMsg(r.ready ? { kind: "ok", text: r.note ?? "连上了" } : { kind: "bad", text: r.hint ?? r.error ?? "没连上" });
     } catch (e: unknown) {
@@ -100,8 +108,11 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
       const r = await settingsApi.pingModel({ baseUrl: f.baseUrl, apiKey: f.apiKey, want: "list" }) as {
         list?: { ok: boolean; ids?: string[]; message?: string };
       };
-      if (r.list?.ok) setIds(r.list.ids ?? []);
-      else setMsg({ kind: "bad", text: "没拉到这个服务商的模型清单，可以直接填模型名。" });
+      if (r.list?.ok) {
+        // 新清单来了先清掉上一轮的筛选词：别让人对着一个被筛空的列表以为没拉到。
+        setFilter("");
+        setIds(r.list.ids ?? []);
+      } else setMsg({ kind: "bad", text: "没拉到这个服务商的模型清单，可以直接填模型名。" });
     } catch (e: unknown) {
       setMsg({ kind: "bad", text: errText(e) });
     } finally {
@@ -109,14 +120,25 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
     }
   };
 
+  // 与主模型清单同一套口径：全量保留、输入即筛（前缀命中的排前面）、限高滚动。
+  // 从前砍到 80 条，剩下的长尾模型在界面上根本够不着，只能回去手打。
+  const lq = filter.trim().toLowerCase();
+  const shownIds = (ids ?? [])
+    .filter((id) => lq === "" || id.toLowerCase().includes(lq))
+    .sort((a, b) => (a.toLowerCase().startsWith(lq) ? 0 : 1) - (b.toLowerCase().startsWith(lq) ? 0 : 1)
+      || a.localeCompare(b));
+
   const save = async (): Promise<void> => {
+    // 与测试同一道校验：秒 ×1000 转毫秒落库，非法/空值拦在本地而不是发给后端。
+    const sec = timeoutSecOf(f.timeout);
+    if (sec === null) { setMsg({ kind: "bad", text: TIMEOUT_HINT }); return; }
     setBusy("save");
     setMsg(null);
     try {
       await settingsApi.capabilityProfile({
         capability: group.name, op: "save", id: f.id ?? undefined,
         label: f.label.trim() === "" ? f.name.trim() : f.label.trim(),
-        baseUrl: f.baseUrl, apiKey: f.apiKey, name: f.name, voice: f.voice, timeoutMs: Number(f.timeout),
+        baseUrl: f.baseUrl, apiKey: f.apiKey, name: f.name, voice: f.voice, timeoutMs: sec * 1000,
       });
       // 供应商名走主模型那条同一接口：两家共用一张名字表，不另存一份。
       const provider = f.provider.trim();
@@ -203,9 +225,15 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
           </button>
           {ids !== null && (
             <div className="model-pick">
-              {ids.slice(0, 80).map((id) => (
-                <button key={id} type="button" title={id} onClick={() => setF((prev) => ({ ...prev, name: id }))}>{id}</button>
-              ))}
+              <input className="model-filter" value={filter} aria-label="筛选模型名"
+                placeholder={`在拉到的 ${ids.length} 个里筛…`} onChange={(e) => setFilter(e.target.value)} />
+              <div className="model-pick-list">
+                {shownIds.map((id) => (
+                  <button key={id} type="button" title={id} onClick={() => setF((prev) => ({ ...prev, name: id }))}>{id}</button>
+                ))}
+                {shownIds.length === 0 && <div className="hint">没匹配到，清空筛选框就能看全部。</div>}
+              </div>
+              <div className="hint">显示 {shownIds.length} / {ids.length} 个 · 点一个填进模型名。</div>
             </div>
           )}
         </div>
@@ -218,8 +246,11 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
         )}
         <div className="field">
           <label>超时（秒）
-            <input value={f.timeout} onChange={set("timeout")} type="number" min={1} max={600} />
+            <input value={f.timeout} onChange={set("timeout")} type="number" inputMode="numeric"
+              min={TIMEOUT_MIN_SEC} max={TIMEOUT_MAX_SEC} step={1} placeholder="90"
+              aria-invalid={timeoutSecOf(f.timeout) === null} />
           </label>
+          {timeoutSecOf(f.timeout) === null && <div className="hint bad">{TIMEOUT_HINT}。</div>}
         </div>
       </div>
       {msg && <p className={"onb-msg " + msg.kind} role="alert">{msg.text}</p>}
@@ -247,14 +278,15 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
   const active = profiles.find((p) => p.id === activeId) ?? null;
   const [editing, setEditing] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
-  const [banner, setBanner] = useState<Banner>(null);
 
+  // 启用/删除档的结果走全局 toast：banner 原来渲染在 <details> 的展开体里，
+  // 用户点完「使用中」把卡一折叠、或切个分组，结果就看不见了。
+  // 弹窗内的校验/试连提示（EndpointForm 的 msg）留在就地——用户正盯着表单。
   const run = (payload: Record<string, unknown>, ok: string): void => {
     setBusy(true);
-    setBanner(null);
     void settingsApi.capabilityProfile({ capability: group.name, ...payload })
-      .then((snap) => { form.applySnapshot(snap); setBanner({ kind: "ok", text: ok }); })
-      .catch((e: Error) => setBanner({ kind: "bad", text: e.message }))
+      .then((snap) => { form.applySnapshot(snap); offerToast(ok, "ok"); })
+      .catch((e: Error) => offerToast("没保存成：" + e.message, "error"))
       .finally(() => setBusy(false));
   };
 
@@ -330,7 +362,6 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
           </div>
         )}
 
-        {banner && <div className={"banner show " + banner.kind}><div className="body">{banner.text}</div></div>}
         <div className="cap-actions">
           {!linked && (
             <button type="button" className="btn sm" disabled={busy} onClick={() => setEditing({ ...EMPTY })}>
@@ -350,9 +381,10 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
         <EndpointForm group={group} initial={editing} names={names} reuse={reuseProvidersOf(form)} onClose={() => setEditing(null)}
           onSaved={(text) => {
             setEditing(null);
+            // 弹窗关掉后结果只能交给全局 toast：banner 没有落点了。
             void settingsApi.fetchSettings()
-              .then((snap) => { form.applySnapshot(snap); setBanner({ kind: "ok", text }); })
-              .catch((e: Error) => setBanner({ kind: "bad", text: e.message }));
+              .then((snap) => { form.applySnapshot(snap); offerToast(text, "ok"); })
+              .catch((e: Error) => offerToast("配置没刷新出来：" + e.message, "error"));
           }} />
       )}
     </details>

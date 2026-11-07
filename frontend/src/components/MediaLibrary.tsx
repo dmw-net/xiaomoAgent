@@ -4,9 +4,11 @@ import { AudioLines, ChevronDown, File, Film, FolderInput, FolderOpen, Image as 
 import { artifactApi, assetsApi, contactsApi, emotesApi, type Asset, type AssetKindFilter, type AssetView, type EmoteNamedFilter, type EmotePackCount, type NamingJob, type NamingStats } from "../api";
 import { pickDirectory } from "../lib/native-dialog";
 import EmoteSemanticsModal from "./EmoteSemanticsModal";
+import EmptyState from "./EmptyState";
 import ListPager from "./ListPager";
 import Modal from "./Modal";
 import VoiceMessageBubble from "./VoiceMessageBubble";
+import ToggleSwitch from "./ToggleSwitch";
 import { revealInFolder } from "../lib/reveal-folder";
 import { usePagedList } from "../hooks/usePagedList";
 import { useDismiss } from "../hooks/useDismiss";
@@ -874,12 +876,12 @@ const renameOne = async (): Promise<{ label: string; caption: string; tags: stri
                   失败 {job.failed} 张 · 重试
                 </button>
               )}
+              {/* 「自动收录」是功能开关，统一滑块；toggleCapture 的入参形状不变（boolean）。 */}
               {contactId === "" && (
-                <label className="ml-capture-compact" title="聊天中收到的图片是否自动存入表情库">
-                  <input type="checkbox" checked={autoCapture} disabled={adding !== ""}
-                    onChange={(e) => { toggleCapture(e.target.checked); }} />
-                  自动收录
-                </label>
+                <ToggleSwitch className="ml-capture-compact" title="聊天中收到的图片是否自动存入表情库"
+                  label="自动收录" labelSide="right"
+                  checked={autoCapture} disabled={adding !== ""}
+                  onChange={(next) => { toggleCapture(next); }} />
               )}
               {(naming.total > 0 || job !== null) && (
                 <button type="button" className={"ml-naming-detail" + (job?.running === true ? " live" : "")}
@@ -903,23 +905,24 @@ const renameOne = async (): Promise<{ label: string; caption: string; tags: stri
       )}
 
       {list.page !== null && rows.length === 0 && (
-        <div className="art-empty">
-          <EmptyIcon size={26} strokeWidth={1.5} />
-          {activeFilters.length > 0 ? (
-            <>
-              <p>
-                这个筛选下没有素材：{activeFilters.join(" × ")}。
-                条件叠加后为空不代表库是空的——换个条件，或者清掉筛选。
-              </p>
-              <button type="button" className="btn sm"
-                onClick={() => { setQuery(""); setPack(""); setNamed("any"); setMissingOnly(false); setKind("all"); }}>
-                清除筛选
-              </button>
-            </>
-          ) : (
-            <p>{emptyCopyFor(view, kind, who)}</p>
-          )}
-        </div>
+        /* 空 lib 从 .art-empty 换成统一 EmptyState：图标沿用按类型挑好的 EmptyIcon
+           （尺寸交给 .empty-state-icon 的样式口径，不再各写各的 26px）。
+           文案一刀切成「主文案 + 补充」两段：第一句说为什么空，剩下的是下一步指引。 */
+        activeFilters.length > 0 ? (
+          <EmptyState icon={<EmptyIcon />} title={`这个筛选下没有素材：${activeFilters.join(" × ")}。`}
+            hint="条件叠加后为空不代表库是空的——换个条件，或者清掉筛选。">
+            <button type="button" className="btn sm"
+              onClick={() => { setQuery(""); setPack(""); setNamed("any"); setMissingOnly(false); setKind("all"); }}>
+              清除筛选
+            </button>
+          </EmptyState>
+        ) : (() => {
+          const copy = emptyCopyFor(view, kind, who);
+          const firstDot = copy.indexOf("。");
+          const title = firstDot === -1 ? copy : copy.slice(0, firstDot + 1);
+          const hint = firstDot === -1 ? "" : copy.slice(firstDot + 1);
+          return <EmptyState icon={<EmptyIcon />} title={title} hint={hint !== "" ? hint : undefined} />;
+        })()
       )}
 
       <div className={"content-grid" + (view === "emote" ? " content-grid-emote" : "")}>

@@ -17,18 +17,14 @@ const OPTIONS: Array<{ value: EmoteFrequency; name: string; hint: string }> = [
 
 export default function EmoteFrequencySection({ form }: { form: SettingsForm }): JSX.Element {
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
-  const [err, setErr] = useState("");
   const current = form.saved?.emoteFrequency ?? "normal";
 
+  // 成败提示走全局 toast（hook 内 offerToast）：就地 banner 在用户切走「媒体与表情」
+  // 分组的瞬间就被卸载了；这里只保留按钮级的「保存中…」。
   const save = (frequency: EmoteFrequency): void => {
     if (busy || form.busy !== "" || frequency === current) return;
     setBusy(true);
-    setNote("");
-    setErr("");
-    form.saveEmoteFrequency(frequency)
-      .then((saved) => setNote(`已设为「${OPTIONS.find((o) => o.value === saved)?.name ?? saved}」，下一轮对话立即生效。`))
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+    void form.saveEmoteFrequency(frequency)
       .finally(() => setBusy(false));
   };
 
@@ -63,8 +59,6 @@ export default function EmoteFrequencySection({ form }: { form: SettingsForm }):
         <div className="hint">
           「主动」也不会为了凑频率硬发；认真解决问题时仍应少发。要发时联系人会直接调用表情工具，而不是只在文字里描述。
         </div>
-        {note !== "" && <div className="banner show ok" role="status"><div className="body">{note}</div></div>}
-        {err !== "" && <div className="banner show bad" role="alert"><div className="body">{err}</div></div>}
       </div>
     </div>
   );

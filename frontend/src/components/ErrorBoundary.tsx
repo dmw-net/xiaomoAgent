@@ -50,34 +50,38 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     if (this.state.error === null) return this.props.children;
     const message = this.state.error.message || String(this.state.error);
     const shortStack = lastCaught?.stack ?? "";
+    // 降级卡片同样只消费主题令牌：从前是全内联裸值（z-index 1000、radius 14、
+    // rgba(0,0,0,.18) 阴影、#fff 文字），是全站唯一不跟随主题的组件——暗色下
+    // 详情代码块的 rgba(0,0,0,.06) 底色会整个失效。字号走 --text-* 档位。
     return (
       <div
         role="alert"
         style={{
-          position: "fixed", inset: 0, zIndex: 1000, display: "flex", alignItems: "center",
+          position: "fixed", inset: 0, zIndex: "var(--z-error, 200)", display: "flex", alignItems: "center",
           justifyContent: "center", padding: "8%", boxSizing: "border-box",
-          background: "var(--bg)", color: "var(--text)",
+          background: "var(--bg, #f4f2ed)", color: "var(--text, #201d18)",
           fontFamily: "var(--font-body, sans-serif)",
         }}
       >
         <div style={{
-          maxWidth: 460, width: "100%", padding: "24px 28px", borderRadius: 14,
-          background: "var(--bg)", border: "1px solid var(--border)",
-          boxShadow: "0 8px 40px rgba(0,0,0,.18)", textAlign: "center",
+          maxWidth: 460, width: "100%", padding: "var(--space-10, 24px) var(--space-8, 20px)", borderRadius: "var(--radius-xl, 16px)",
+          background: "var(--bg-elevated, #fffefb)", border: "1px solid var(--border, #dfdad0)",
+          boxShadow: "var(--shadow-card)", textAlign: "center",
         }}>
-          <div style={{ fontSize: 15, fontWeight: 600, marginBottom: 8 }}>
+          <div style={{ fontSize: "var(--text-lg, 15px)", fontWeight: 600, marginBottom: "var(--space-2, 8px)" }}>
             界面出了点小状况
           </div>
-          <div style={{ fontSize: 13, color: "var(--text-muted)", lineHeight: 1.6, marginBottom: 18 }}>
+          <div style={{ fontSize: "var(--text-note, 13px)", color: "var(--text-muted)", lineHeight: 1.6, marginBottom: "var(--space-6, 16px)" }}>
             渲染中途崩了，已为你降级到这张卡片。先点「重试」，不行就「刷新页面」。
           </div>
-          <div style={{ display: "flex", gap: 10, justifyContent: "center", flexWrap: "wrap" }}>
+          <div style={{ display: "flex", gap: "var(--space-3, 8px)", justifyContent: "center", flexWrap: "wrap" }}>
             <button
               type="button"
               onClick={this.retry}
               style={{
-                padding: "8px 18px", borderRadius: 9, border: "none", cursor: "pointer",
-                background: "var(--accent)", color: "#fff", fontSize: 13, fontWeight: 550,
+                padding: "var(--space-2, 8px) var(--space-6, 16px)", borderRadius: "var(--radius-md, 10px)",
+                border: "none", cursor: "pointer", minHeight: "var(--tap-min, 32px)",
+                background: "var(--accent, #a64b2f)", color: "var(--accent-text, #fff)", fontSize: "var(--text-base, 13px)", fontWeight: 600,
               }}
             >
               重试
@@ -86,18 +90,20 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
               type="button"
               onClick={() => window.location.reload()}
               style={{
-                padding: "8px 18px", borderRadius: 9, border: "1px solid var(--border)", cursor: "pointer",
-                background: "transparent", color: "var(--text)", fontSize: 13, fontWeight: 550,
+                padding: "var(--space-2, 8px) var(--space-6, 16px)", borderRadius: "var(--radius-md, 10px)",
+                border: "1px solid var(--border, #dfdad0)", cursor: "pointer", minHeight: "var(--tap-min, 32px)",
+                background: "transparent", color: "var(--text, #201d18)", fontSize: "var(--text-base, 13px)", fontWeight: 600,
               }}
             >
               刷新页面
             </button>
           </div>
-          <details style={{ marginTop: 20, textAlign: "left", color: "var(--text-muted)" }}>
-            <summary style={{ fontSize: 12, cursor: "pointer", userSelect: "none" }}>出错详情（排障用）</summary>
+          <details style={{ marginTop: "var(--space-8, 20px)", textAlign: "left", color: "var(--text-muted)" }}>
+            <summary style={{ fontSize: "var(--text-sm, 12px)", cursor: "pointer", userSelect: "none" }}>出错详情（排障用）</summary>
             <pre style={{
-              margin: "10px 0 0", padding: 10, borderRadius: 8, fontSize: 11, lineHeight: 1.5,
-              background: "rgba(0,0,0,.06)", border: "1px solid var(--border)",
+              margin: "var(--space-3, 8px) 0 0", padding: "var(--space-3, 8px)", borderRadius: "var(--radius-sm, 6px)",
+              fontSize: "var(--text-xs, 11px)", lineHeight: 1.5,
+              background: "var(--bg-sunken, #ebe8e1)", border: "1px solid var(--border, #dfdad0)",
               whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 180, overflow: "auto",
             }}>{`message: ${message}${shortStack ? `\n\ncomponentStack:\n${shortStack}` : ""}`}</pre>
           </details>

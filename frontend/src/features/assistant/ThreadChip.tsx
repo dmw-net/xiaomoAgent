@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown, Eraser, Pencil, Trash2 } from "lucide-react";
 import { useDismiss } from "../../hooks/useDismiss";
+import { useExitVisible } from "../../hooks/useExitVisible";
 import { usePopPosition } from "../../hooks/usePopPosition";
 import type { AssistantThread } from "../../api";
 
@@ -23,6 +24,9 @@ export default function ThreadChip({ threads, current, dialogOpen, onPick, onRen
   onClear: (thread: AssistantThread) => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  // 下拉退场：open 置假先播 menuOut 淡出（与 menuIn 互为镜像），走完再摘 portal；
+  // 弹窗整体隐藏（dialogOpen 置假）时也走同一套退场，下拉不会瞬间消失。
+  const exit = useExitVisible(open, "menuOut");
   const { setRef, pos, place } = usePopPosition(POP_W);
   useDismiss(open, () => setOpen(false));
   // × / 悬浮球 / 跳设置这些关闭路径都落在弹窗内部，不会触发上面按"点外部"的下拉 dismiss，
@@ -48,18 +52,21 @@ export default function ThreadChip({ threads, current, dialogOpen, onPick, onRen
         <span className="chip-name">{active?.title ?? "工作区"}</span>
         <ChevronDown size={14} className={"chip-arrow" + (open ? " up" : "")} />
       </button>
-      {open && createPortal(
+      {exit.visible && createPortal(
         <div className="switch-pop" data-keep-menu="" role="listbox" aria-label="选择工作区"
+          data-closing={exit.closing || undefined} aria-hidden={exit.closing || undefined}
+          onAnimationEnd={exit.onAnimationEnd}
           style={{ left: pos.left, top: pos.top, width: POP_W, transform: pos.flip ? "translateY(-100%)" : undefined }}>
           <div className="switch-cap">工作区</div>
           {th.map((t) => (
             <div key={t.id || "builtin"} className={"switch-item" + (t.id === current ? " on" : "")}>
               <button type="button" className="switch-pick" role="option" aria-selected={t.id === current}
+                tabIndex={exit.closing ? -1 : undefined}
                 onClick={() => { setOpen(false); onPick(t.id); }}>
                 <span className="switch-name">{t.title}</span>
                 {t.id === current && <Check size={15} className="switch-check" />}
               </button>
-              <button type="button" className="switch-act" title="清空消息"
+              <button type="button" className="switch-act" title="清空消息" tabIndex={exit.closing ? -1 : undefined}
                 aria-label={`清空 ${t.title} 的消息`} disabled={t.messages === 0}
                 onClick={() => { setOpen(false); onClear(t); }}>
                 <Eraser size={13} strokeWidth={1.8} />
@@ -67,10 +74,12 @@ export default function ThreadChip({ threads, current, dialogOpen, onPick, onRen
               {!t.builtin && (
                 <>
                   <button type="button" className="switch-act" title="改名" aria-label={`重命名 ${t.title}`}
+                    tabIndex={exit.closing ? -1 : undefined}
                     onClick={() => { setOpen(false); onRename(t); }}>
                     <Pencil size={13} strokeWidth={1.8} />
                   </button>
                   <button type="button" className="switch-act switch-act-danger" title="删除" aria-label={`删除 ${t.title}`}
+                    tabIndex={exit.closing ? -1 : undefined}
                     onClick={() => { setOpen(false); onDelete(t); }}>
                     <Trash2 size={13} strokeWidth={1.8} />
                   </button>

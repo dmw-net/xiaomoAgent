@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { settingsApi, storageApi } from "../../api";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
+import { offerToast } from "../../lib/toast";
 import type { EmoteFrequency, ModelCaps, SettingsSnapshot, ThinkingModeId, ThinkingParamId } from "../../types";
 
 type Banner = { kind: string; text: string } | null;
+
+/** 错误文案的统一取法：Axios/接口层抛的未必是 Error 实例，别让 "[object Object]" 进提示。 */
+const errText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
 /** 一份能力卡片的表单值（全是字符串，保存时才转数字/清值）。 */
 /** 添加/编辑模型档的表单载荷。 */
@@ -13,6 +17,7 @@ export type ProfileInput = {
   baseUrl: string;
   key: string;
   name: string;
+  /** 超时（毫秒字符串）：界面按「秒」填，调用方用 timeoutSecOf 校验并 ×1000 后传进来。 */
   timeoutMs: string;
   extraBody: string;
   caps: ModelCaps;
@@ -29,9 +34,35 @@ export type ProfileInput = {
 };
 
 /**
+ * 超时的统一口径：界面按「秒」说话（1~600 的整数），落库仍是毫秒（timeoutMs）。
+ * 从前主模型那格是裸文本标「毫秒」、能力端点那格标着「秒」回填的却是毫秒值，
+ * 两边保存时都靠 `Number(x) || 90000` 把非法值静默洗白。现在保存/测试前先过
+ * timeoutSecOf，非法或空值给行内提示并拦下，不再吞。
+ */
+export const TIMEOUT_MIN_SEC = 1;
+export const TIMEOUT_MAX_SEC = 600;
+export const TIMEOUT_HINT = `超时需要 ${TIMEOUT_MIN_SEC}~${TIMEOUT_MAX_SEC} 之间的整数（秒）`;
+/** 合法时返回整数秒，非法/空返回 null。别拿 0 当哨兵——0 是个会真实出现的坏值。 */
+export const timeoutSecOf = (raw: string): number | null => {
+  const t = Number(raw);
+  return raw.trim() !== "" && Number.isInteger(t) && t >= TIMEOUT_MIN_SEC && t <= TIMEOUT_MAX_SEC ? t : null;
+};
+
+/**
  * 设置页的全部表单状态与动作，集中在一个 hook 里。
  * 每个 tab 自己保存自己；模型相关全部围绕「档」进行（列表 + 添加/编辑/应用/删除），
  * 不再有一张裸的全局表单和一根「保存全部」横杆。
+ *
+ * 反馈口径（为什么要分层）：
+ * - 纯结果类（保存成功/失败）一律 offerToast 走全局轻提示——就地 banner 绑在某个
+ *   分区上，用户点完保存立刻切分组就看不见了（这类事故发生过一次，resetBanner
+ *   那种「提示跟着按钮搬家」的补丁一个个堵不完），现在统一收敛到跨视图的出口。
+ * - 带上下文/差异信息的诊断（试连结果、拉模型清单）留在就地 banner：用户正盯着
+ *   表单等结果，且文案里带「下一步怎么办」，toast 3 秒读不完就没了。
+ * - 所有异步动作 try/finally 管理 busy：早期审查 P1-7——saveToolLoopTurns 等方法
+ *   裸奔 Promise，调用方漏接时既产生 unhandled rejection、busy 也可能永远不复位。
+ *   现在失败在 hook 内 toast 报因并吞掉（返回 null/false 区分成败），调用方不必
+ *   再各自 .catch。
  */
 export function useSettingsForm(onChanged: () => void): {
   saved: SettingsSnapshot | null;
@@ -40,9 +71,10 @@ export function useSettingsForm(onChanged: () => void): {
   reload: () => void;
   modelBanner: Banner;
   setModelBanner: (b: Banner) => void;
-  personaBanner: Banner;
-  /** 重置设置 / 全部清空的结果提示：按钮在系统页头部，提示也要落在系统页上。 */
-  resetBanner: Banner;
+  /** 保存全局工具循环轮次；失败已 toast 报因，返回 null 让调用方别把成功链跑下去。 */
+  saveToolLoopTurns: (turns: number) => Promise<number | null>;
+  /** 保存全局表情使用倾向；失败已 toast 报因，返回 null 让调用方别把成功链跑下去。 */
+  saveEmoteFrequency: (frequency: EmoteFrequency) => Promise<EmoteFrequency | null>;
   modelList: { show: boolean; ids: string[] };
   /** 危险操作确认弹窗的状态与动作，由 SettingsView 渲染成 <Modal>。 */
   ask: { title: string; note: string; run: () => void } | null;
@@ -67,17 +99,14 @@ export function useSettingsForm(onChanged: () => void): {
   testProfile: (id: string) => void;
   profileTestResult: Record<string, { kind: "ok" | "bad"; text: string } | undefined>;
   setEchoMode: (on: boolean) => void;
-  /** 保存全局工具循环轮次，返回服务端最终采用的值。 */
-  saveToolLoopTurns: (turns: number) => Promise<number>;
-  /** 保存全局表情使用倾向，返回服务端最终采用的值。 */
-  saveEmoteFrequency: (frequency: EmoteFrequency) => Promise<EmoteFrequency>;
   /** 写接口拿回来的新快照直接灌进表单状态。给不经本 hook 的局部动作（供应商层改名/同步）用。 */
   applySnapshot: (d: SettingsSnapshot) => void;
   saveOwner: () => void;
   resetAll: () => void;
   /** 比「恢复默认」狠一档：连对话、记忆、画作、绑定一起清，再重新种子内置联系人。 */
   factoryResetAll: () => void;
-  saveOwnerAvatar: (dataUrl: string) => Promise<void>;
+  /** 换我的头像。失败已 toast 报因、不抛错，返回 false 让调用方别把成功链跑下去。 */
+  saveOwnerAvatar: (dataUrl: string) => Promise<boolean>;
 } {
   const [saved, setSaved] = useState<SettingsSnapshot | null>(null);
   const [loadErr, setLoadErr] = useState("");
@@ -90,7 +119,9 @@ export function useSettingsForm(onChanged: () => void): {
   const [oGender, setOGender] = useState("other");
 
   const [modelBanner, setModelBanner] = useState<Banner>(null);
-  const [personaBanner, setPersonaBanner] = useState<Banner>(null);
+  // personaBanner / resetBanner 已随「结果提示收敛到全局 toast」一并撤掉：
+  // 这两个就地 banner 分别绑在「我的资料」分区和设置页头部，用户点完保存切分组
+  // 就看不见；「按钮在系统页、提示也要落在系统页」那类补丁到 toast 出口为止。
   const [profileTestResult, setProfileTestResult] = useState<Record<string, { kind: "ok" | "bad"; text: string } | undefined>>({});
   /**
    * 危险操作的确认一律走应用内的居中弹窗（<Modal>），不再用 window.confirm：
@@ -166,7 +197,7 @@ export function useSettingsForm(onChanged: () => void): {
             + "。有时服务商不报错、只是没反应——那多半是这个模型名在这里用不了。" });
         }
       })
-      .catch((e: Error) => setModelBanner({ kind: "bad", text: e.message }))
+      .catch((e: unknown) => setModelBanner({ kind: "bad", text: errText(e) }))
       .finally(() => setBusy(""));
   };
 
@@ -192,7 +223,7 @@ export function useSettingsForm(onChanged: () => void): {
           setModelBanner({ kind: "bad", text: "没拉到清单。这不代表模型不能用——很多服务商不提供这个，直接填模型名再测。" });
         }
       })
-      .catch((e: Error) => setModelBanner({ kind: "bad", text: e.message }))
+      .catch((e: unknown) => setModelBanner({ kind: "bad", text: errText(e) }))
       .finally(() => setBusy(""));
   };
 
@@ -207,7 +238,9 @@ export function useSettingsForm(onChanged: () => void): {
       mode: "openai",
       baseUrl: input.baseUrl.trim(),
       name: input.name.trim(),
-      timeoutMs: Number(input.timeoutMs) || 90000,
+      // 调用方已用 timeoutSecOf 把「秒」校验并 ×1000 过。不再 `|| 90000` 兜底：
+      // 那个兜底会把打错的值悄悄洗成默认值，用户毫不知情。
+      timeoutMs: Number(input.timeoutMs),
       extraBody: input.extraBody,
       caps: input.caps,
       thinkingLevel: input.thinkingLevel,
@@ -223,10 +256,11 @@ export function useSettingsForm(onChanged: () => void): {
     try {
       const d = await settingsApi.saveProfile(payload);
       fill(d);
-      setModelBanner({ kind: "ok", text: d.note || "模型配置已保存" });
+      // 保存结果走 toast：编辑弹窗关掉之后 banner 就没了落点，切分组更看不见。
+      offerToast(d.note || "模型配置已保存", "ok");
       return true;
     } catch (e: unknown) {
-      setModelBanner({ kind: "bad", text: e instanceof Error ? e.message : String(e) });
+      offerToast("模型配置没保存成：" + errText(e), "error");
       return false;
     } finally {
       setBusy("");
@@ -237,8 +271,8 @@ export function useSettingsForm(onChanged: () => void): {
     setBusy("prof");
     setModelBanner(null);
     settingsApi.activateProfile(id)
-      .then((d) => { fill(d); setModelBanner({ kind: "ok", text: d.note || "已启用这个模型" }); })
-      .catch((e: Error) => setModelBanner({ kind: "bad", text: e.message }))
+      .then((d) => { fill(d); offerToast(d.note || "已启用这个模型", "ok"); })
+      .catch((e: unknown) => offerToast("启用没成功：" + errText(e), "error"))
       .finally(() => setBusy(""));
   };
 
@@ -265,8 +299,8 @@ export function useSettingsForm(onChanged: () => void): {
     setBusy("prof");
     setModelBanner(null);
     settingsApi.deleteProfile(id)
-      .then((d) => { fill(d); setModelBanner({ kind: "ok", text: d.note || "已删除" }); })
-      .catch((e: Error) => setModelBanner({ kind: "bad", text: e.message }))
+      .then((d) => { fill(d); offerToast(d.note || "已删除这个模型档", "ok"); })
+      .catch((e: unknown) => offerToast("删除没成功：" + errText(e), "error"))
       .finally(() => setBusy(""));
   };
 
@@ -277,35 +311,66 @@ export function useSettingsForm(onChanged: () => void): {
     settingsApi.saveSettings({ model: { mode: on ? "echo" : "openai" } })
       .then((d) => {
         fill(d);
-        setModelBanner({ kind: "ok", text: on ? "已切到演示模式。" : "已退出演示模式。" });
+        offerToast(on ? "已切到演示模式。" : "已退出演示模式。", "ok");
       })
-      .catch((e: Error) => setModelBanner({ kind: "bad", text: e.message }))
+      .catch((e: unknown) => offerToast("切换没成功：" + errText(e), "error"))
       .finally(() => setBusy(""));
   };
 
-  const saveToolLoopTurns = (turns: number): Promise<number> =>
-    settingsApi.saveSettings({ toolLoopTurns: turns }).then((d) => {
+  /**
+   * 保存全局工具循环轮次。早期审查 P1-7 的代表案例：这个方法原来是裸 Promise——
+   * 调用方漏接 .catch 就是一个 unhandled rejection，而且 hook 层没有 busy，
+   * 失败时全页的「保存中…」闸门状态也对不齐。现在 busy、错误提示（toast）、
+   * 快照回灌都在 hook 内收口，失败返回 null，调用方只分辨成败。
+   */
+  const saveToolLoopTurns = async (turns: number): Promise<number | null> => {
+    setBusy("toolLoop");
+    try {
+      const d = await settingsApi.saveSettings({ toolLoopTurns: turns });
       fill(d);
       onChanged();
+      offerToast(`工具循环轮次已设为 ${d.toolLoopTurns} 轮，下一轮对话生效。`, "ok");
       return d.toolLoopTurns;
-    });
+    } catch (e: unknown) {
+      offerToast("轮次没保存成：" + errText(e), "error");
+      return null;
+    } finally {
+      setBusy("");
+    }
+  };
 
-  const saveEmoteFrequency = (frequency: EmoteFrequency): Promise<EmoteFrequency> =>
-    settingsApi.saveSettings({ emoteFrequency: frequency }).then((d) => {
+  /** 同 saveToolLoopTurns：busy/报错在 hook 内收口，失败返回 null。 */
+  const saveEmoteFrequency = async (frequency: EmoteFrequency): Promise<EmoteFrequency | null> => {
+    setBusy("emote");
+    try {
+      const d = await settingsApi.saveSettings({ emoteFrequency: frequency });
       fill(d);
       onChanged();
+      offerToast("发表情倾向已保存，下一轮对话生效。", "ok");
       return d.emoteFrequency;
-    });
+    } catch (e: unknown) {
+      offerToast("表情倾向没保存成：" + errText(e), "error");
+      return null;
+    } finally {
+      setBusy("");
+    }
+  };
 
+  /**
+   * 保存「我的资料」。成功/失败都走 toast：结果提示原来是 personaBanner，绑在
+   * 「我的资料」分区里，用户点完保存立刻切到别的分组就看不见了。保存成功后
+   * 快照被 fill() 灌回，OwnerSection 的脏值条自然消失——放弃改动（applySnapshot）
+   * 不经过这里，所以「放弃后误弹已保存」不会发生。
+   */
   const saveOwner = (): void => {
     setBusy("owner");
     settingsApi.saveSettings({ owner: collectOwner() })
       .then((d) => {
         fill(d);
-        setPersonaBanner({ kind: "ok", text: "资料已保存，立即生效。" });
+        offerToast("资料已保存，立即生效。", "ok");
         onChanged();
       })
-      .catch((e: Error) => setPersonaBanner({ kind: "bad", text: e.message }))
+      .catch((e: unknown) => offerToast("资料没保存成：" + errText(e), "error"))
       .finally(() => setBusy(""));
   };
 
@@ -313,19 +378,11 @@ export function useSettingsForm(onChanged: () => void): {
     askDangerous("重置设置？", "会清掉你改过的全部设置，回到刚装好时的样子。联系人和聊天记录不受影响。", () => doResetAll());
   };
 
-  /**
-   * 重置/全部清空的结果提示走独立的 resetBanner：这两个按钮在「系统与数据」页头部，
-   * 而 personaBanner 只在「我的资料」页渲染——从前成功失败都写进那边，用户点了确认
-   * 之后停在系统页，什么都看不到（失败也一样被吞），只能靠猜。
-   */
-  const [resetBanner, setResetBanner] = useState<Banner>(null);
-
   const doResetAll = (): void => {
     setBusy("reset");
-    setResetBanner(null);
     settingsApi.resetSettings()
-      .then((d) => { fill(d); setResetBanner({ kind: "ok", text: "已恢复默认。" }); })
-      .catch((e: Error) => setResetBanner({ kind: "bad", text: e.message }))
+      .then((d) => { fill(d); offerToast("已恢复默认设置。", "ok"); })
+      .catch((e: unknown) => offerToast("重置没成功：" + errText(e), "error"))
       .finally(() => setBusy(""));
   };
 
@@ -339,7 +396,6 @@ export function useSettingsForm(onChanged: () => void): {
   const factoryResetAll = (): void => {
     const run = () => {
       setBusy("reset");
-      setResetBanner(null);
       settingsApi.factoryReset()
         .then((d) => {
           fill(d);
@@ -350,9 +406,11 @@ export function useSettingsForm(onChanged: () => void): {
           // 那一整段被清掉的对话会原样重现，直到第一次拉取落地（拉取失败就永远留着）。
           window.dispatchEvent(new Event(DATA_WIPED_EVENT));
           onChanged();
-          setResetBanner({ kind: "ok", text: d.note || "已恢复出厂设置。" });
+          // 结果走全局 toast：重置按钮在系统页头部、就地 banner 曾被换成 resetBanner
+          // 补丁，现在统一出口后，用户确认完无论停在哪一页都看得见结果。
+          offerToast(d.note || "已恢复出厂设置。", "ok");
         })
-        .catch((e: Error) => setResetBanner({ kind: "bad", text: e.message }))
+        .catch((e: unknown) => offerToast("恢复出厂没成功：" + errText(e), "error"))
         .finally(() => setBusy(""));
     };
     const mediaClause = (n: number): string =>
@@ -364,14 +422,30 @@ export function useSettingsForm(onChanged: () => void): {
         "这一步找不回来，会清掉：所有聊天和长期记忆、画过的画、模型和密钥、各项设置、微信绑定，以及盘上的媒体文件（聊天图片、语音、导入的表情包）。相当于第一次打开这个应用。", run));
   };
 
-  /** 换我的头像：上传 → 存全局 owner → 快照同步。 */
-  const saveOwnerAvatar = async (dataUrl: string): Promise<void> => {
-    const d = await settingsApi.saveSettings({ owner: { avatar: dataUrl } });
-    fill(d);
+  /**
+   * 换我的头像：上传 → 存全局 owner → 快照同步。原来是裸 async（P1-7 的另一例），
+   * 调用方漏接就是 unhandled rejection。现在 hook 内收口：busy 走 try/finally，
+   * 成败都 toast（用户换完头像常顺手切去别的分组，「更新了没」不该只能猜），
+   * 失败不抛、返回 false——调用方的成功链（改本地头像缓存、写就地提示）必须
+   * 拿到 true 才继续跑，否则会把没保存成的 dataUrl 当成已生效的。
+   */
+  const saveOwnerAvatar = async (dataUrl: string): Promise<boolean> => {
+    setBusy("avatar");
+    try {
+      const d = await settingsApi.saveSettings({ owner: { avatar: dataUrl } });
+      fill(d);
+      offerToast("头像已更新。", "ok");
+      return true;
+    } catch (e: unknown) {
+      offerToast("头像没换成：" + errText(e), "error");
+      return false;
+    } finally {
+      setBusy("");
+    }
   };
 
   return {
-    saved, loadErr, busy, reload, modelBanner, setModelBanner, personaBanner, resetBanner, modelList,
+    saved, loadErr, busy, reload, modelBanner, setModelBanner, modelList,
     oName, setOName, oImpression, setOImpression, oNotes, setONotes, oGender, setOGender,
     testModel, fetchModelList, resetModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode, saveToolLoopTurns, saveEmoteFrequency,
     ask, askDangerous, acceptAsk, cancelAsk,

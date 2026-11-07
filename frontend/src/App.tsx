@@ -4,6 +4,9 @@ import Sidebar from "./components/Sidebar";
 import Titlebar from "./components/Titlebar";
 import AboutDialog from "./components/AboutDialog";
 import UndoBar from "./components/UndoBar";
+import ToastLayer from "./components/ToastLayer";
+import EmptyState from "./components/EmptyState";
+import { MessagesSquare, UserRoundPlus } from "lucide-react";
 import type { SettingsTab } from "./features/settings/SettingsView";
 import type { PersonaDraft } from "./lib/persona-doc";
 import ChatView from "./features/chat/ChatView";
@@ -537,7 +540,17 @@ export default function App(): JSX.Element {
               onContactArchived={leaveChat}
               onBack={narrow ? backToChatList : undefined} />
             ) : (
-              <div className="chat-blank"><div className="empty">还没有打开会话 · 从联系人列表里挑一位开始聊天</div></div>
+              /* 全站最显眼的空态：当前联系人被归档/删掉后等人自己挑。
+                 .chat-blank 只管居中布局（布局类，非旧空态类），内容换成统一 EmptyState。
+                 「新建联系人」复用资料页现成的 openContactProfile("create") 入口。 */
+              <div className="chat-blank">
+                <EmptyState icon={<MessagesSquare size={22} strokeWidth={1.5} />}
+                  title="还没有打开会话" hint="从联系人列表里挑一位开始聊天">
+                  <button type="button" className="primary sm" onClick={() => openContactProfile("create", "")}>
+                    <UserRoundPlus size={14} strokeWidth={1.8} style={{ verticalAlign: -2, marginRight: 6 }} />新建联系人
+                  </button>
+                </EmptyState>
+              </div>
             )}
           </div>
         )}
@@ -580,6 +593,9 @@ export default function App(): JSX.Element {
     {/* 反悔条挂在全局而不是各视图里：它得在"刚做完事的那一眼"里看得见。
         放在记忆列表末尾时，18 张卡的窄屏上它落在 top:2810——等于没有。 */}
     <UndoBar />
+    {/* 全局轻提示：设置保存这类「结果提示」的统一出口（lib/toast.ts）。
+        挂在 App 根上，用户保存后立刻切分组/切视图，提示照样看得见。 */}
+    <ToastLayer />
     </>
   );
 }

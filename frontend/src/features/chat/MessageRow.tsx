@@ -143,17 +143,23 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
           {ttsBusy ? <Loader2 size={15} className="spin" /> : <Volume2 size={15} />}
         </button>
       )}
-      {/* 版本切换条（swipe）：每条回复常驻——1/1 表示还没有别的版本，右位是生成入口（↻）；
-          重答后变 2/3、3/3…左箭头回看历史版本。挂气泡内文字下方，与 .tts-btn 同区。 */}
+      {/* 版本切换条（swipe）：重答后变 2/3、3/3…左箭头回看历史版本。只有一个版本的
+          回复不渲染「1/1」计数文字——100% 气泡都挂整条计数条是视觉噪声（评审 P3-3），
+          收成右下一颗「再来一版」（↻）；真有多版本了才展开完整计数条。键盘可达性不变：
+          都是原生 <button>，走消息区的 ↑↓/回车通道。挂气泡内文字下方，与 .tts-btn 同区。 */}
       {variantCount >= 1 && m.role === "assistant" && m.kind === "chat" && m.superseded_at === null && (
         <div className="variant-bar" role="group" aria-label="回复版本切换"
           onContextMenu={(e) => e.stopPropagation()}>
-          <button type="button" className="v-btn" title="上一个版本"
-            aria-label="上一个版本" disabled={variantIndex <= 0}
-            onClick={(e) => { e.stopPropagation(); onVariantChange?.(m, variantIndex - 1); }}>
-            <ChevronLeft size={13} />
-          </button>
-          <span className="v-idx">{variantIndex + 1}/{variantCount}</span>
+          {variantCount > 1 && (
+            <>
+              <button type="button" className="v-btn" title="上一个版本"
+                aria-label="上一个版本" disabled={variantIndex <= 0}
+                onClick={(e) => { e.stopPropagation(); onVariantChange?.(m, variantIndex - 1); }}>
+                <ChevronLeft size={13} />
+              </button>
+              <span className="v-idx">{variantIndex + 1}/{variantCount}</span>
+            </>
+          )}
           {variantIndex >= variantCount - 1 ? (
             /* 已是最新版本：右位不再灰着，改成「再来一版」的入口——
                点击走重新生成的确认弹窗，新回答追加为下一个版本。 */

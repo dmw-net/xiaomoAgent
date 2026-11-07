@@ -2,6 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { ChevronRight, MessageCircle, Settings2 } from "lucide-react";
 // qrcode 只在「生成绑定二维码」这一步用得到，不该进首屏 chunk。
 import { wechatApi, type WeChatLink } from "../../api";
+import EmptyState from "../../components/EmptyState";
+import ToggleSwitch from "../../components/ToggleSwitch";
 import Modal from "../../components/Modal";
 import { ChannelBadge, ChannelNote, type ChannelTone } from "./ChannelKit";
 
@@ -160,18 +162,17 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
       </div>
 
       {!link && (
-        /* 未连接空态：从前只有一枚孤零零的按钮，先讲清楚绑定能得到什么，再给唯一的下一步。 */
-        <div className="ch-empty">
-          <div className="ch-empty-points">
-            <span>扫码后，先从微信发一条消息激活会话</span>
-            <span>连接后可随时暂停或关闭主动发送</span>
-          </div>
-          <div className="wx-actions">
-            <button type="button" className="primary sm" disabled={busy} onClick={() => { void startBind(); }}>
-              {busy ? "正在生成…" : "扫码绑定微信"}
-            </button>
-          </div>
-        </div>
+        /* 未连接空态：从 .ch-empty 换成统一 EmptyState——先讲清楚绑定能得到什么，
+           再给唯一的下一步；两条要点并成 hint 里的两行。图标沿用本卡已有的微信图标。 */
+        <EmptyState icon={<MessageCircle size={20} strokeWidth={1.5} />} title="还没有绑定微信"
+          hint={<>
+            <div>扫码后，先从微信发一条消息激活会话</div>
+            <div>连接后可随时暂停或关闭主动发送</div>
+          </>}>
+          <button type="button" className="primary sm" disabled={busy} onClick={() => { void startBind(); }}>
+            {busy ? "正在生成…" : "扫码绑定微信"}
+          </button>
+        </EmptyState>
       )}
 
       {link && !link.hasContext && bindHint === "" && (
@@ -220,14 +221,15 @@ export function WeChatSection({ contactId, who = "这位联系人" }: { contactI
                 {link.enabled ? "暂停" : "恢复"}
               </button>
             </div>
-            <label className="qq-setting-row">
+            {/* 与 QQ 连接设置同一行式样：裸 checkbox 换成统一的滑块开关，回传仍是 proactive 布尔。 */}
+            <div className="qq-setting-row">
               <span className="qq-setting-copy">
                 <strong>允许主动发送</strong>
                 <small>已有微信会话时，提醒和主动关心会发到微信。</small>
               </span>
-              <input type="checkbox" checked={link.proactive} disabled={busy}
-                onChange={(e) => { void patchFlags({ proactive: e.target.checked }); }} />
-            </label>
+              <ToggleSwitch ariaLabel="允许主动发送" checked={link.proactive} disabled={busy}
+                onChange={(next) => { void patchFlags({ proactive: next }); }} />
+            </div>
           </div>
           <div className="qq-settings-danger">
             <div className="qq-setting-copy">

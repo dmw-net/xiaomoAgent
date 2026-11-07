@@ -14,6 +14,7 @@ import { FolderOpen, Pencil, Plus, RefreshCw, Trash2 } from "lucide-react";
 import { skillsApi } from "../../api";
 import type { SkillEntry, SkillWriteResult } from "../../types";
 import { revealInFolder } from "../../lib/reveal-folder";
+import ToggleSwitch from "../../components/ToggleSwitch";
 
 /** SKILL.md 的文件名。写死在注释里不如让界面照着说，故单独一个常量。 */
 const SKILL_FILE = "SKILL.md";
@@ -280,11 +281,10 @@ export default function SkillSection({ ask }: {
 
             {s.valid ? (
               <div className="preset-row cap-pro-row">
-                <label className="cap-enable">
-                  <input type="checkbox" checked={!s.disabled} disabled={busy !== ""}
-                    onChange={(e) => toggle(s.name, e.target.checked)} />
-                  启用
-                </label>
+                {/* 技能启用是单功能开/关：统一滑块开关；回传仍是 (name, nextBool)。 */}
+                <ToggleSwitch className="cap-enable" label="启用" labelSide="right"
+                  checked={!s.disabled} disabled={busy !== ""}
+                  onChange={(next) => toggle(s.name, next)} />
                 <div className="skill-acts">
                   <button type="button" className="btn sm" onClick={() => startEdit(s.name)}
                     disabled={busy !== ""}>

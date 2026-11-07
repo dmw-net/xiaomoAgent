@@ -38,12 +38,25 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   /** 搜到的候选图（目前只有图片搜索会带）：直接摆在卡片下面，点一下看大图。 */
   const imgs = m.attachments ?? [];
 
+  // 耗时数据落库时早就带上了（elapsedMs），只是界面一直没渲染——搜索/生图恰恰是
+  // 用户最关心「等了多久」的动作。≥1s 显示秒（人读 1.2s 不读 1200ms），不到 1s
+  // 显示毫秒；旧数据没有这个字段就不渲染，不留一个空档。
+  const elapsed = typeof p.elapsedMs === "number" && p.elapsedMs >= 0
+    ? (p.elapsedMs >= 1000 ? `${(p.elapsedMs / 1000).toFixed(1)}s` : `${Math.round(p.elapsedMs)}ms`)
+    : null;
+
   const head = (
     <>
       <span className="tool-ico">{ok ? <Check size={11} strokeWidth={2.4} /> : <X size={11} strokeWidth={2.4} />}</span>
       <span className="tool-label">{label}</span>
       <span className="tool-sep">·</span>
       <span className="tool-summary">{summary}</span>
+      {elapsed !== null && (
+        <>
+          <span className="tool-sep">·</span>
+          <span className="tool-ms">{elapsed}</span>
+        </>
+      )}
       {expandable && (open
         ? <ChevronDown size={12} strokeWidth={2} className="tool-caret" />
         : <ChevronRight size={12} strokeWidth={2} className="tool-caret" />)}

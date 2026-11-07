@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ChevronDown, ChevronUp, MapPinned as MapIcon, Search, X } from "lucide-react";
+import { ChevronDown, ChevronUp, MapPinned as MapIcon, MessagesSquare, Search, X } from "lucide-react";
 import { useDismiss } from "../../hooks/useDismiss";
+import EmptyState from "../../components/EmptyState";
 
 export type ChatMapNode = {
   id: number;
@@ -71,7 +72,11 @@ export default function ChatMap({ open, nodes, activeId, onJump, onClose, onOpen
         </div>
         {!collapsed && (
           <div className="chat-map-body" ref={bodyRef}>
-            {nodes.length === 0 && <div className="chat-map-empty">这段对话还没有可显示的消息。</div>}
+            {nodes.length === 0 && (
+              // 空态收编进全站 EmptyState（此前 9 种空态写法之一）：抽屉是窄空间，走 compact。
+              <EmptyState compact icon={<MessagesSquare size={20} strokeWidth={1.8} />}
+                title="这段对话还没有可显示的消息。" />
+            )}
             {nodes.map((n) => {
               const day = n.day !== lastDay ? n.day : "";
               lastDay = n.day;

@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { Bot, Check, ChevronRight, CircleMinus, Copy, Ellipsis, PencilLine, Search, Settings2, SlidersHorizontal, Trash2, UsersRound, X } from "lucide-react";
 import { avatarApi, qqApi, type QQBindingView, type QQConversationView, type QQStatus } from "../../api";
+import EmptyState from "../../components/EmptyState";
 import Modal from "../../components/Modal";
+import ToggleSwitch from "../../components/ToggleSwitch";
 import { ChannelBadge, ChannelNote, ChannelSteps, type ChannelStep, type ChannelTone } from "./ChannelKit";
 
 const GROUP_TITLE_MAX = 40;
@@ -1154,19 +1156,15 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
                   </div>
                 </div>
                 <div className="qq-conv-actions">
-                  <button type="button" role="switch" aria-checked={conv.enabled && conv.leftAt === null}
-                    aria-label={`${conv.title}群消息接收`}
+                  {/* 状态词（收件中/已停用/已离群）只是给人看的反馈；真正的开关语义
+                      由 ariaLabel 补全，样式随 aria-checked 在 CSS 里染色，不再私有一套。 */}
+                  <ToggleSwitch
+                    checked={conv.enabled && conv.leftAt === null}
+                    ariaLabel={`${conv.title}群消息接收`}
                     title={conv.leftAt !== null ? "机器人已被移出群聊或群已解散，仅保留历史" : conv.enabled ? "关闭群消息接收" : "开启群消息接收"}
-                    className={"qq-conv-switch " + (conv.leftAt !== null ? "left" : conv.enabled ? "on" : "off")}
                     disabled={toggleBusyId === conv.id || conv.leftAt !== null}
-                    onClick={() => { void toggleGroupEnabled(conv); }}>
-                    <span className="qq-conv-switch-label">
-                      {conv.leftAt !== null ? "已离群" : conv.enabled ? "收件中" : "已停用"}
-                    </span>
-                    <span className="qq-conv-switch-track" aria-hidden="true">
-                      <span className="qq-conv-switch-thumb" />
-                    </span>
-                  </button>
+                    label={conv.leftAt !== null ? "已离群" : conv.enabled ? "收件中" : "已停用"}
+                    onChange={() => { void toggleGroupEnabled(conv); }} />
                   <button type="button" className={"qq-conv-more-btn" + (openGroupMenuId === conv.id ? " open" : "")}
                     aria-label={`${conv.title}更多设置`} aria-expanded={openGroupMenuId === conv.id}
                     onClick={() => setOpenGroupMenuId(openGroupMenuId === conv.id ? "" : conv.id)}>
@@ -1186,11 +1184,11 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
                     </button>
                   )}
                   {conv.leftAt === null && (
-                    <label className="qq-conv-menu-check" title="主动消息（到点提醒、主动关心）也会发到这个群；需先在 QQ 群设置里允许机器人主动发言。">
-                      <input type="checkbox" checked={conv.groupProactive} disabled={toggleProactiveBusyId !== ""}
+                    <div className="qq-conv-menu-check" title="主动消息（到点提醒、主动关心）也会发到这个群；需先在 QQ 群设置里允许机器人主动发言。">
+                      <ToggleSwitch label="群主动消息" labelSide="right"
+                        checked={conv.groupProactive} disabled={toggleProactiveBusyId !== ""}
                         onChange={() => { void toggleGroupProactive(conv); }} />
-                      <span>群主动消息</span>
-                    </label>
+                    </div>
                   )}
                   <div className="qq-conv-menu-danger">
                     <button type="button" onClick={() => { setOpenGroupMenuId(""); setErr(""); setClearTarget(conv); }}>
@@ -1207,7 +1205,8 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
             </div>
           ))}
           {visibleGroups.length === 0 && (
-            <div className="qq-conv-empty">没有找到匹配的群名</div>
+            /* 群名筛选无命中：窄列表里的空态，compact；图标沿用本卡已有的群聊图标。 */
+            <EmptyState compact icon={<UsersRound size={18} strokeWidth={1.5} />} title="没有找到匹配的群名" />
           )}
           </div>
         </div>
@@ -1247,14 +1246,16 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
                 {binding.enabled ? "暂停" : "恢复"}
               </button>
             </div>
-            <label className="qq-setting-row">
+            {/* 原来是裸 checkbox，同样是「开启某功能」的语义：统一换成滑块开关。
+                label 改 div——不再用 label 包住控件，点击文案不切换，命中区由开关自身外扩补足。 */}
+            <div className="qq-setting-row">
               <span className="qq-setting-copy">
                 <strong>允许主动发送</strong>
                 <small>{backend === "official" ? "小茉侧开关；QQ 平台仍可能限制主动消息。" : "提醒和主动关心可直接发到 QQ。"}</small>
               </span>
-              <input type="checkbox" checked={binding.proactive} disabled={busy}
-                onChange={(e) => { void patchFlags({ proactive: e.target.checked }); }} />
-            </label>
+              <ToggleSwitch ariaLabel="允许主动发送" checked={binding.proactive} disabled={busy}
+                onChange={(next) => { void patchFlags({ proactive: next }); }} />
+            </div>
           </div>
           <div className="qq-settings-danger">
             <div className="qq-setting-copy">

@@ -59,6 +59,7 @@
       s.removeProperty('--accent'); s.removeProperty('--accent-hover');
       s.removeProperty('--accent-soft'); s.removeProperty('--accent-text'); s.removeProperty('--accent-ink');
       s.removeProperty('--accent-glow');
+      s.removeProperty('--msg-time-mine');
       return;
     }
     var dark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -70,6 +71,14 @@
     s.setProperty('--accent-ink', dark ? a.accent : mix(a.accent, '#201d18', 0.35));
     // 选中态那圈同色辉光跟着自定义色走，否则换色后（比如换成湖蓝）还亮着赤陶的光
     s.setProperty('--accent-glow', 'color-mix(in srgb, ' + a.accent + ' 22%, transparent)');
+    // 自己气泡内的时间戳（--msg-time-mine）压在 accent 实底上，主题里的 88% 是按
+    // 默认赤陶调的——低饱和/浅色强调色会跌破 4.5:1。这里按 WCAG 从 88% 往上试墨色
+    // 占比（有效实色 = 墨色 × t 叠在 accent 上），达标才整体覆盖；不达标时留 100%。
+    var mt = 0.88, mtHex = mix(a.accent, a.ink, mt);
+    while (mt < 1 && cr(mtHex, a.accent) < 4.5) {
+      mt += 0.04; mtHex = mix(a.accent, a.ink, mt);
+    }
+    s.setProperty('--msg-time-mine', 'color-mix(in srgb, ' + a.ink + ' ' + Math.round(mt * 100) + '%, transparent)');
   }
   // 旧版四套“主题风格”已经下线。首帧前把用户当时的色感迁移到强调色，
   // 清掉旧键和旧属性，避免残留皮肤继续影响 CSS 或让老用户无感丢配置。

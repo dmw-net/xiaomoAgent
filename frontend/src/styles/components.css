@@ -25,6 +25,13 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
    用独立 translate / scale 属性写，不和卡片自己的 transform 抢通道。 */
 @keyframes scrimIn { 0% { opacity: 0; } }
 @keyframes cardIn { 0% { opacity: 0; translate: 0 10px; scale: .97; } }
+/* 退场与入场互为镜像：从前关闭是瞬时消失，和「细腻」的定位直接冲突。
+   Modal 挂 data-closing 后等 animationend（或 240ms 兜底）才真正卸载；
+   forwards 定格在透明帧，避免卸载前闪回。 */
+@keyframes scrimOut { to { opacity: 0; } }
+@keyframes cardOut { to { opacity: 0; translate: 0 8px; scale: .98; } }
+.modal-overlay[data-closing] { animation: scrimOut var(--dur-base) var(--ease-out) forwards; pointer-events: none; }
+.modal-overlay[data-closing] .modal-card { animation: cardOut var(--dur-base) var(--ease-out) forwards; }
 .modal-card {
   /* 兜住 320px 这类小屏：从前是裸 340px，卡片本身就比屏幕宽。 */
   width: min(340px, calc(100vw - 24px));
@@ -156,7 +163,7 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   font-size: var(--text-sm); padding: 2px var(--space-4); border-radius: var(--radius-full);
   border: 1px solid var(--border); background: transparent; color: var(--text-muted); cursor: pointer;
 }
-.pf-gender-btn.on { border-color: var(--accent-ink); color: var(--text); background: var(--bg-hover); font-weight: 600; }
+.pf-gender-btn.on { border-color: var(--sel-border); color: var(--accent-ink); background: var(--sel-bg); font-weight: 600; }
 .pf-gender-hint { font-size: var(--text-cap); color: var(--text-subtle); margin-left: var(--space-1); }
 @media (max-width: 760px), (max-height: 520px) {
   .pf-gender-hint { flex-basis: 100%; margin-left: 0; line-height: 1.55; }
@@ -207,8 +214,7 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   display: inline-flex; align-items: center; gap: var(--space-2);
   font-size: var(--text-base); color: var(--text); cursor: pointer;
 }
-.cap-enable input { width: 15px; height: 15px; accent-color: var(--accent-ink); cursor: pointer; }
-.cap-enable:has(input:disabled) { color: var(--text-subtle); cursor: default; }
+/* 「启用」控件已换成 .toggle-switch（自带禁用态），input 时代的选择器随之删除。 */
 /* 与全应用那条「窄」边界同一条查询：从前这里写 720，721-760 这一段就落在
    既不算窄屏壳、又放不下桌面排布的空档里。 */
 @media (max-width: 760px), (max-height: 520px) { .cap-pro-save { margin-left: 0; width: 100%; } }
@@ -327,6 +333,10 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   padding: var(--space-2); animation: menuIn var(--dur-fast) var(--ease-out);
   max-height: min(60vh, 360px); max-height: min(60dvh, 360px); overflow-y: auto;
 }
+/* 退场：与入场 menuIn 互为镜像（keyframes 定义在 foundation.css .msgmenu 段）。
+   动 translate 不动 transform——翻转定位靠 transform: translateY(-100%)，
+   退场帧不能把翻转中的下拉拽回原位。 */
+.switch-pop[data-closing] { animation: menuOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
 .switch-cap {
   font-size: var(--text-xs); letter-spacing: .07em; color: var(--text-subtle);
   padding: var(--space-2) var(--space-4) var(--space-1);
@@ -517,6 +527,12 @@ button.tool-card.open { border-style: solid; border-bottom-left-radius: 0; borde
   font-size: var(--text-note); line-height: 1.5; white-space: pre-wrap; word-break: break-word;
   max-height: 320px; overflow: auto;
 }
+/* 展开详情的入场：详情是随 open 条件挂载的（ToolCard 的 `open && <pre>`），
+   动画写在这里每次展开都会重放。opacity + 4px 上滑，fast 档收口——卡片本体
+   的边框变化也是 fast，两段观感才接得上；reduced-motion 下 --dur-fast 被
+   theme.css 的总闸压成 .01ms，等于直出，不必另写退让规则。 */
+@keyframes toolDetailIn { from { opacity: 0; translate: 0 4px; } }
+.tool-detail { animation: toolDetailIn var(--dur-fast) var(--ease-out); }
 /* 工具卡上的候选图（图片搜索）：用户就是靠这一排「看看这几张行不行」。
    尺寸与气泡里那套（.msg-imgs）对齐，但贴在卡片左缘、不进气泡——它不是她说的话。 */
 .tool-wrap .tool-imgs {
@@ -555,7 +571,7 @@ button.preset {
 }
 button.preset:hover { border-color: var(--accent-ink); color: var(--accent-ink); translate: 0 -1px; }
 button.preset[aria-pressed="true"] {
-  background: var(--accent-soft); border-color: var(--accent-ink); color: var(--accent-ink); font-weight: 600;
+  background: var(--sel-bg); border-color: var(--sel-border); color: var(--accent-ink); font-weight: 600;
 }
 details.advanced { margin-top: var(--space-6); border-top: 1px dashed var(--border); padding-top: var(--space-5); }
 details.advanced > summary {
@@ -716,7 +732,7 @@ button.btn.ghost:hover:not(:disabled) { border-color: var(--border); color: var(
   border-radius: var(--radius-xs); background: var(--bg-sunken);
   color: var(--text-muted); font: inherit; font-size: var(--text-aux); cursor: pointer;
 }
-.msg-img-fold-btn:hover { color: var(--text-primary, var(--text-muted)); }
+.msg-img-fold-btn:hover { color: var(--text-muted); }
 
 .attach-strip { display: flex; gap: var(--space-3); padding: 0 2px var(--space-3); flex-wrap: wrap; }
 .attach-item { position: relative; }
@@ -749,6 +765,7 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 .rec-state { display: inline-flex; align-items: center; gap: var(--space-3); font-size: var(--text-note); color: var(--text-muted); flex: 1; }
 .rec-dot {
   width: 8px; height: 8px; border-radius: 50%;
+  /* 氛围循环：1Hz 闪烁是录音指示的惯例节奏，快了读成报错（≥1s 豁免，见映射口径） */
   background: var(--danger); animation: rec-blink 1s infinite;
 }
 @keyframes rec-blink { 50% { opacity: .25; } }
@@ -801,7 +818,8 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 /* 右位的「再来一版」（重新生成入口）：跟灰箭头区分开，让人看出它是动作不是导航 */
 .variant-bar .v-btn.generate { color: var(--accent-ink); }
 .variant-bar .v-btn.generate:hover { background: color-mix(in srgb, var(--accent-ink) 12%, transparent); color: var(--accent-ink); }
-.spin { animation: spin 0.9s linear infinite; }
+/* 氛围循环：加载旋转统一 1s（原来是 0.9s 的孤值；≥1s 豁免，见映射口径） */
+.spin { animation: spin 1s linear infinite; }
 @keyframes spin { 100% { transform: rotate(360deg); } }
 
 .img-zoom {
@@ -830,8 +848,9 @@ button.prof-chip {
 }
 button.prof-chip:hover { border-color: var(--border-strong); color: var(--text); }
 button.prof-chip.on {
-  border-color: var(--accent-ink); color: var(--accent-ink);
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
+  /* 选中配方全站一套（theme.css --sel-*），从前这里是 10% 手调版 */
+  border-color: var(--sel-border); color: var(--accent-ink);
+  background: var(--sel-bg);
 }
 
 /* ── 模型接入：档列表 ─────────────────────────────────────── */
@@ -1222,7 +1241,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .qq-backend { margin-top: var(--space-5); display: flex; flex-direction: column; gap: var(--space-3); }
 .qq-backend .seg { margin-bottom: 0; align-self: flex-start; }
 .qq-backend-head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
-.qq-backend-label { font-size: var(--text-note); font-weight: 600; color: var(--text-secondary); }
+.qq-backend-label { font-size: var(--text-note); font-weight: 600; color: var(--text-muted); }
 .qq-backend-scope {
   padding: 1px 7px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink);
   font-size: var(--text-cap); font-weight: 600;
@@ -1242,7 +1261,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 }
 .ob-account-fallback {
   display: inline-flex; align-items: center; justify-content: center;
-  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-secondary); font-weight: 600;
+  background: var(--bg-sunken); border: 1px solid var(--border); color: var(--text-muted); font-weight: 600;
 }
 .ob-account-meta { display: flex; flex: 1 1 160px; flex-direction: column; gap: 2px; min-width: 0; }
 .ob-account-name { font-weight: 600; }
@@ -1256,12 +1275,12 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .ob-card-actions { display: flex; flex: none; align-items: center; gap: var(--space-2); margin-left: auto; }
 /* 就地编辑：与首次绑定表单同一套字段皮（.qq-creds），标题行说明「这是改，不是绑」。 */
 .ob-edit-head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
-.ob-edit-title { font-weight: 600; font-size: var(--text-note); color: var(--text-secondary); }
+.ob-edit-title { font-weight: 600; font-size: var(--text-note); color: var(--text-muted); }
 /* OneBot 连接面板：指引 + 地址就地改 + 保存并连接。 */
 /* OneBot 连接面板：一键托管流 + 手动兜底（收起）。 */
 .ob-connect { display: flex; flex-direction: column; gap: var(--space-3); }
 .ob-connect-head { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; }
-.ob-connect-title { font-weight: 600; font-size: var(--text-note); color: var(--text-secondary); }
+.ob-connect-title { font-weight: 600; font-size: var(--text-note); color: var(--text-muted); }
 .ob-qr { display: flex; align-items: center; gap: var(--space-4); }
 .ob-qr img { border-radius: var(--radius-md); border: 1px solid var(--border); background: #fff; }
 .ob-manual summary { cursor: pointer; font-size: var(--text-note); color: var(--text-muted); }
@@ -1286,9 +1305,10 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
   background: color-mix(in srgb, var(--accent) 7%, transparent);
   display: flex; flex-direction: column; gap: 10px;
 }
-.qq-bind-try-label { font-size: var(--text-note); color: var(--text-secondary); line-height: 1.6; }
+.qq-bind-try-label { font-size: var(--text-note); color: var(--text-muted); line-height: 1.6; }
 .qq-bind-try-row { display: flex; align-items: center; gap: var(--space-3); flex-wrap: wrap; }
 .ch-waiting { display: flex; align-items: center; gap: 8px; font-size: var(--text-aux); color: var(--text-muted); line-height: 1.5; }
+/* 以下 ch-pulse 三处（等待点/渠道徽标/步骤核）都是状态呼吸循环，非微交互（≥1s 豁免） */
 .ch-waiting-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: ch-pulse 1.4s ease-in-out infinite; }
 .wx-close:hover { color: var(--text); }
 .wx-qr { width: 224px; height: 224px; border-radius: var(--radius-lg); background: var(--bg-elevated); padding: var(--space-2); }
@@ -1299,7 +1319,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .ch-channel-icon {
   flex: none; width: 36px; height: 36px; border-radius: 10px;
   display: inline-flex; align-items: center; justify-content: center;
-  border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-secondary);
+  border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-muted);
 }
 .ch-channel-wx { color: #3d9a5f; border-color: color-mix(in srgb, #3d9a5f 38%, transparent); background: color-mix(in srgb, #3d9a5f 11%, transparent); }
 .ch-channel-qq { color: #5b83d6; border-color: color-mix(in srgb, #5b83d6 38%, transparent); background: color-mix(in srgb, #5b83d6 11%, transparent); }
@@ -1309,13 +1329,14 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
   flex: none; display: inline-flex; align-items: center; gap: 6px;
   font-size: var(--text-sm); font-weight: 550; padding: 4px 12px;
   border-radius: var(--radius-full); border: 1px solid var(--border);
-  color: var(--text-secondary); background: var(--bg-sunken);
+  color: var(--text-muted); background: var(--bg-sunken);
 }
 .ch-badge-dot { width: 7px; height: 7px; border-radius: 50%; background: currentColor; opacity: .85; }
 .ch-badge-ok { color: var(--success); border-color: color-mix(in srgb, var(--success) 42%, transparent); background: color-mix(in srgb, var(--success) 10%, transparent); }
 .ch-badge-warn { color: var(--warn-text); border-color: color-mix(in srgb, var(--warn-text) 42%, transparent); background: color-mix(in srgb, var(--warn-text) 10%, transparent); }
 .ch-badge-busy { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 42%, transparent); background: color-mix(in srgb, var(--accent) 9%, transparent); }
 .ch-badge-muted { color: var(--text-subtle); border-style: solid; }
+/* 氛围循环：busy 徽标呼吸（≥1s 豁免，同上） */
 .ch-badge-busy .ch-badge-dot { animation: ch-pulse 1.6s ease-in-out infinite; }
 @keyframes ch-pulse {
   0%, 100% { opacity: .3; }
@@ -1327,7 +1348,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
   display: flex; align-items: flex-start; gap: 8px;
   margin-top: var(--space-4); padding: 9px 12px;
   border-radius: var(--radius-md); border: 1px solid var(--border);
-  font-size: var(--text-aux); line-height: 1.6; color: var(--text-secondary);
+  font-size: var(--text-aux); line-height: 1.6; color: var(--text-muted);
   background: var(--bg-sunken);
 }
 .ch-note svg { flex: none; margin-top: 2px; opacity: .9; }
@@ -1350,6 +1371,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 }
 .ch-step-done .ch-step-marker { background: var(--success); border-color: var(--success); }
 .ch-step-current .ch-step-marker { border-color: var(--accent); }
+/* 氛围循环：进行中步骤的呼吸核（≥1s 豁免，同 ch-waiting-dot） */
 .ch-step-core { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); animation: ch-pulse 1.6s ease-in-out infinite; }
 .ch-step-line { flex: 1; width: 1.5px; min-height: 14px; margin: 2px 0; background: var(--border); }
 .ch-step-done .ch-step-line { background: color-mix(in srgb, var(--success) 55%, var(--border)); }
@@ -1368,7 +1390,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
   margin-top: var(--space-5); padding: var(--space-5);
   border: 1px dashed var(--border); border-radius: var(--radius-lg); background: var(--bg-sunken);
 }
-.ch-empty-points { display: flex; flex-direction: column; gap: 8px; font-size: var(--text-aux); color: var(--text-secondary); line-height: 1.6; }
+.ch-empty-points { display: flex; flex-direction: column; gap: 8px; font-size: var(--text-aux); color: var(--text-muted); line-height: 1.6; }
 .ch-empty-points > span::before {
   content: ""; display: inline-block; width: 5px; height: 5px; border-radius: 50%;
   background: var(--accent); opacity: .65; margin-right: 8px; vertical-align: 3px;
@@ -1422,8 +1444,9 @@ button.adv-chip {
 }
 button.adv-chip:hover { border-color: var(--border-strong); color: var(--text); }
 button.adv-chip.on {
-  border-color: var(--accent-ink); color: var(--accent-ink);
-  background: color-mix(in srgb, var(--accent) 10%, var(--bg-elevated));
+  /* 选中配方全站一套（theme.css --sel-*），从前这里是 10% 手调版 */
+  border-color: var(--sel-border); color: var(--accent-ink);
+  background: var(--sel-bg);
 }
 .advanced .hint { margin-top: var(--space-2); }
 
@@ -1448,6 +1471,8 @@ button.ctx-btn:hover .ctx-pct { color: var(--text); }
    --z-scrim/--z-dialog；否则点击只是改成了 open，整块浮层仍藏在弹窗后面。
    同档的权限浮层已经使用 --z-chat-pop，这里保持同一层级。 */
 .ctx-backdrop { position: fixed; inset: 0; z-index: calc(var(--z-chat-pop) - 1); }
+/* 退场帧背板放开指针：它没有可播的画面（透明全屏层），只需不挡淡出期间的下一发点击。 */
+.ctx-backdrop[data-closing] { pointer-events: none; }
 .ctx-pop {
   position: fixed; right: auto; bottom: 0; z-index: var(--z-chat-pop);
   width: min(264px, calc(100vw - 24px)); max-width: calc(100vw - 24px);
@@ -1456,6 +1481,9 @@ button.ctx-btn:hover .ctx-pct { color: var(--text); }
   border: 1px solid var(--border-strong); border-radius: var(--radius-2xl);
   background: var(--bg-elevated); box-shadow: var(--shadow-menu);
 }
+/* 退场：ctx-pop 没有自己的入场动画，退场借 cardOut（model-pop 一族同方向，
+   向触发钮方向沉落、微缩），不另造观感。计时由组件侧 useExitVisible 接管。 */
+.ctx-pop[data-closing] { animation: cardOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
 .ctx-pop-head {
   display: flex; align-items: center; justify-content: space-between;
   font-size: var(--text-base); font-weight: 600; color: var(--text);
@@ -1538,7 +1566,6 @@ button.ctx-btn:hover .ctx-pct { color: var(--text); }
 .chat-map-title span { margin-left: auto; font-size: var(--text-cap); font-weight: 400; color: var(--text-subtle); }
 .chat-map-acts { flex: none; display: flex; align-items: center; gap: 1px; }
 .chat-map-body { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: var(--space-4) var(--space-4) 32px; }
-.chat-map-empty { padding: 48px 12px; text-align: center; color: var(--text-subtle); font-size: var(--text-note); }
 .chat-map-day { margin: 14px 0 7px; text-align: center; font-size: var(--text-cap); color: var(--text-subtle); }
 .chat-map-row-wrap { content-visibility: auto; contain-intrinsic-size: 38px; }
 .chat-map-row { display: flex; width: 100%; padding: 3px 0; border: none; background: transparent; text-align: left; cursor: pointer; }
@@ -1588,6 +1615,7 @@ button.bar-btn {
 button.bar-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text); }
 button.bar-btn:active:not(:disabled) { scale: .9; }
 button.bar-btn:disabled { opacity: var(--alpha-disabled); cursor: wait; }
+/* 氛围循环：对话条目的 typing 打点（≥1s 豁免，见映射口径） */
 .dot.typing { background: var(--accent); animation: dotPulse 1.1s ease-in-out infinite; }
 .dot.bad { background: var(--danger); }
 @keyframes dotPulse {
@@ -2077,7 +2105,8 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   min-width: 8px;
   border-radius: inherit;
   background: var(--accent);
-  transition: width 160ms ease-out;
+  /* 进度条增量的状态切换时长：.16s 落 base 档（映射口径） */
+  transition: width var(--dur-base) ease-out;
 }
 .transfer-error {
   margin-top: var(--space-4);
@@ -2132,6 +2161,9 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   background: var(--bg-elevated); box-shadow: var(--shadow-menu);
   animation: cardIn var(--dur-fast) var(--ease-out);
 }
+/* 退场：cardOut 与入场 cardIn 互为镜像（顶部通用段定义，translate/scale 独立属性，
+   不碰翻转定位的 transform）。计时由组件侧 useExitVisible 接管。 */
+.model-pop[data-closing] { animation: cardOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
 .model-pop-head {
   flex: none; display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4);
   padding: var(--space-5) var(--space-5) var(--space-3);
@@ -2336,6 +2368,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
     radial-gradient(.7px .7px at 46px 52px, rgba(255,255,255,.65), transparent 100%),
     radial-gradient(1px 1px at 18px 60px, rgba(255,255,255,.55), transparent 100%);
   background-size: 70px 64px;
+  /* 氛围循环：迷你星野闪烁，缩略即预览（≥1s 豁免，见映射口径） */
   animation: wp-thumb-twinkle 4.5s ease-in-out infinite;
 }
 .wp-thumb .wp-thumb-face[data-wp-preview="starry"]::after {
@@ -2347,6 +2380,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   box-shadow: 0 0 5px rgba(225, 239, 255, .75), 0 0 11px rgba(137, 174, 255, .4);
   transform: rotate(-33deg);
   opacity: 0;
+  /* 氛围循环：5.6s 周期 + .9s 起手延迟，与迷你星野同一套预览（≥1s 豁免） */
   animation: wp-thumb-meteor 5.6s linear .9s infinite;
 }
 @keyframes wp-thumb-twinkle {
@@ -2439,7 +2473,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-search {
   display: flex; align-items: center; gap: 7px; min-height: 34px; padding: 0 10px;
   border: 1px solid var(--border); border-radius: 9px; background: var(--bg-elevated);
-  color: var(--text-muted); transition: border-color .16s ease, box-shadow .16s ease;
+  color: var(--text-muted); transition: border-color var(--dur-fast) ease, box-shadow var(--dur-fast) ease;
 }
 .qq-conv-search:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 11%, transparent); }
 .qq-conv-search > svg { flex: none; opacity: .64; }
@@ -2455,7 +2489,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
   display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
   width: 100%; padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
   border: 1px solid var(--border); background: color-mix(in srgb, var(--bg) 34%, var(--bg-elevated)); color: var(--text); text-align: left;
-  transition: border-color .16s ease, background .16s ease;
+  transition: border-color var(--dur-fast) ease, background var(--dur-fast) ease;
 }
 .qq-conv-row:hover { border-color: color-mix(in srgb, var(--accent) 55%, var(--border)); }
 .qq-conv-main { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 1px; }
@@ -2468,7 +2502,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-more-btn {
   display: grid; width: 28px; height: 28px; flex: none; place-items: center; padding: 0;
   border: 0; border-radius: 7px; background: transparent; color: var(--text-muted); cursor: pointer;
-  transition: color .16s ease, background .16s ease;
+  transition: color var(--dur-fast) ease, background var(--dur-fast) ease;
 }
 .qq-conv-more-btn:hover { color: var(--text); background: var(--bg-hover); }
 .qq-conv-more-btn.open { color: var(--accent-ink); background: var(--accent-soft); }
@@ -2481,42 +2515,22 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-menu-check,
 .qq-conv-menu-danger button {
   display: inline-flex; align-items: center; gap: 5px; padding: 4px 7px;
-  border: 0; border-radius: 6px; background: transparent; color: var(--text-secondary);
+  border: 0; border-radius: 6px; background: transparent; color: var(--text-muted);
   font: inherit; font-size: var(--text-note); cursor: pointer;
 }
 .qq-conv-menu-action:hover,
 .qq-conv-menu-check:hover { background: var(--bg-hover); color: var(--text); }
 .qq-conv-menu-value { color: var(--text-subtle); font-size: var(--text-cap); }
 .qq-conv-menu-check { user-select: none; }
-.qq-conv-menu-check input[type="checkbox"] { width: 13px; height: 13px; margin: 0; cursor: pointer; accent-color: var(--accent); }
 .qq-conv-menu-danger { display: flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 10px; border-left: 1px solid var(--border); }
 .qq-conv-menu-danger button { color: var(--danger); }
 .qq-conv-menu-danger button:hover { background: var(--danger-soft); }
 .qq-conv-menu-danger button:disabled { cursor: default; opacity: .45; background: transparent; }
 .qq-conv-trigger-seg { margin-bottom: 0; }
 .qq-conv-trigger-seg button { padding: 4px 10px; font-size: var(--text-note); }
-/* 旧版把重命名铅笔直接摆在群名旁（.qq-conv-edit-icon）；现在收进行内「更多」面板，
-   那套样式已无人使用，别再留着诱人加回一个重复入口。 */
-.qq-conv-switch {
-  display: flex; align-items: center; flex: none; gap: 7px; padding: 4px 2px 4px 7px;
-  border: 0; border-radius: 8px; background: transparent; cursor: pointer;
-}
-.qq-conv-switch:hover { background: color-mix(in srgb, var(--bg-hover) 64%, transparent); }
-.qq-conv-switch:disabled { cursor: default; opacity: .56; }
-.qq-conv-switch-label { min-width: 3em; color: var(--text-muted); font-size: var(--text-note); text-align: right; }
-.qq-conv-switch.on .qq-conv-switch-label { color: var(--success); }
-.qq-conv-switch-track {
-  display: flex; align-items: center; width: 32px; height: 19px; flex: none; padding: 2px;
-  border: 1px solid var(--border-strong); border-radius: 999px; background: var(--bg-hover);
-  transition: background-color .16s ease, border-color .16s ease;
-}
-.qq-conv-switch-thumb {
-  width: 13px; height: 13px; border-radius: 50%; background: var(--text-subtle);
-  box-shadow: 0 1px 2px rgb(var(--shadow-tint) / .18);
-  transition: transform .18s var(--ease-out), background-color .16s ease;
-}
-.qq-conv-switch.on .qq-conv-switch-track { border-color: var(--accent); background: var(--accent); }
-.qq-conv-switch.on .qq-conv-switch-thumb { transform: translateX(13px); background: var(--accent-text); }
+/* 旧手写滑块 .qq-conv-switch（轨道/滑块私有一套）已整体换成全站统一的
+   .toggle-switch，这里只保留本卡特有的语义：状态词随开关态染色（收件中=成功绿）。 */
+.qq-conv-actions .toggle-switch[aria-checked="true"] .toggle-switch-text b { color: var(--success); }
 .qq-conv-rename {
   display: flex; flex-direction: column; gap: var(--space-3); width: 100%;
   padding: var(--space-3) var(--space-4); border-radius: var(--radius-md);
@@ -2607,8 +2621,8 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 #composer.readonly { min-height: 0; padding: var(--space-4); }
 .composer-readonly {
   display: flex; flex-direction: column; gap: var(--space-1); align-items: center;
-  padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md);
-  background: var(--surface-2); color: var(--text-muted); text-align: center;
+  padding: var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--bg-sunken); color: var(--text-muted); text-align: center;
 }
 .composer-readonly small { color: var(--text-muted); }
 
@@ -2617,7 +2631,175 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 
 /* 联系人下的独立平台会话入口：本地对话仍占联系人主行，QQ 私聊/群各占一行。 */
 .s-item.s-conv { padding-left: 54px; min-height: 50px; }
-.s-conv-rail { position: absolute; left: 38px; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--line); }
+.s-conv-rail { position: absolute; left: 38px; top: 12px; bottom: 12px; width: 2px; border-radius: 2px; background: var(--border); }
 .s-item.s-conv.active .s-conv-rail { background: var(--accent); }
 .s-item.s-conv .s-name { font-size: var(--text-note); }
 .s-item.s-conv .s-r2 { font-size: var(--text-note); }
+
+/* 字段行内的「这里填错了」提示：排版完全复用 foundation 里 .field .hint 那一套，
+   只把颜色让给 --danger。校验失败要在原地说话，不能只靠保存时拦一下把人晾着。 */
+.field .hint.bad { color: var(--danger); }
+
+
+/* ── 用量趋势 sparkline（UsageSection）：纯 SVG 手绘，一眼看趋势，不做缩放/悬浮细节 ──
+   不做生长动画：一瞥即懂的小图上动画是噪音，也免去 prefers-reduced-motion 的专门分支。 */
+/* 高度是画布几何，主题令牌里没有“图高”这一档；须与 UsageSection 里的 SPARK_H 保持一致。
+   先占住高度再等 ResizeObserver 量宽，首帧不会因为 svg 还没画而把下面的维度行顶下去。 */
+.usage-spark-wrap { height: 56px; margin-bottom: var(--space-2); }
+.usage-spark { display: block; width: 100%; height: 100%; }
+/* 主曲线与数据点都吃强调色：外观设置里换强调色预设时，图随界面一起换，不写死品牌色。 */
+.usage-spark .spark-line { fill: none; stroke: var(--accent); stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.usage-spark .spark-dot { fill: var(--accent); }
+/* 失败是坏消息：最细一档的红虚线，看得见，但不抢主曲线的戏。 */
+.usage-spark .spark-fail { fill: none; stroke: var(--danger); stroke-width: 1; stroke-dasharray: 3 3; stroke-linecap: round; }
+.usage-spark-legend {
+  display: flex; gap: var(--space-5); margin-bottom: var(--space-6);
+  font-size: var(--text-aux); color: var(--text-subtle);
+}
+.usage-spark-legend span { display: inline-flex; align-items: center; gap: var(--space-2); }
+/* 图例小样是画布几何，同上用字面量；颜色照旧走令牌。 */
+.usage-spark-legend i { display: inline-block; width: 14px; height: 0; border-top: 2px solid var(--accent); }
+.usage-spark-legend i.spark-swatch-fail { border-top: 1px dashed var(--danger); }
+
+/* ── 状态总览的「数据截至」小字（OverviewSection）：SWR 缓存的新鲜度标注 ──
+   借 .ov-desc 的行尾搭车，不另起一行占高度；颜色用最浅一档，元信息不该抢正文的视觉。 */
+.ov-fresh { margin-left: var(--space-3); font-size: var(--text-aux); color: var(--text-subtle); }
+
+/* ── 触控命中区补漏（气泡内的小控件） ──
+   foundation.css 的 min-width 清单盖不到的三个：.variant-bar .v-btn 视觉宽 20px、
+   .voice-play 28px、.voice-text-toggle 24px。它们都贴在气泡/语音行里，直接进
+   min-width 清单会把视觉尺寸一起撑大（那份清单自己在注释里记录过这条教训），
+   所以沿用同一份文件里 .msg-fail 那组的先例：视觉尺寸原样不动，用伪元素向外扩
+   一圈命中区——20px + 两侧各 6px = 32px，正好够到 --tap-min 的紧凑档。
+   foundation.css 不在这次改动范围内，等效规则只能补在这里。 */
+.variant-bar .v-btn, .voice-play, .voice-text-toggle { position: relative; }
+.variant-bar .v-btn::before, .voice-play::before, .voice-text-toggle::before {
+  content: ""; position: absolute; inset: -6px;
+}
+
+
+/* ── 温度计行的亲密度数字框（ProfileView → NumField） ──
+   亲密度从裸 input 改走 NumField（失焦才夹紧，不再吃掉打到一半的数字）后，
+   外面多了一层 .pf-custom 包装 label。默认它不参与 .pf-bond-row 的弹性分配，
+   且 .pf-custom input 的 62px 定宽会盖掉原 .pf-comp-tiny 的 76px——
+   这里让包装层接管原输入框的 flex:1 占位、输入框在包装内撑满，行内三格的宽度关系不变。 */
+.pf-bond-row .pf-custom { flex: 1; min-width: 0; }
+.pf-bond-row .pf-custom input { width: 100%; }
+
+/* ── 录音实时波形（ChatView 的 RecWaveMeter）──
+   与「N 秒 + 红点」并存：rec-state 从前 flex:1 独占一行（.rec-state 0,1,0 的规则在上方），
+   这里用更高特异度只把录音态的它收成内容宽，腾出的空间全部给波形条——
+   宽度自适应剩余空间，历史向左渐隐，最新一帧恒在最右。 */
+.composer-bar.recording .rec-state { flex: 0 0 auto; }
+.rec-wave { flex: 1 1 24px; min-width: 40px; height: 22px; align-self: center; }
+
+/* ── composer 表情选择弹层（EmotePicker）：model-pop / switch-pop 一族的同语言 ──
+   同样 portal 到 body、按 useAnchoredPop 的坐标 fixed 定位；z 走 --z-subpop——
+   composer 自己在 --z-dock，弹层必须稳压过它。圆角、阴影、menuIn 入场均照抄一族配方，
+   不另造第四种弹层观感。 */
+.emote-pop {
+  position: fixed; z-index: var(--z-subpop);
+  display: flex; flex-direction: column;
+  max-height: min(360px, 52vh); overflow: hidden;
+  padding: 0;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-2xl);
+  background: var(--bg-elevated); box-shadow: var(--shadow-menu);
+  animation: menuIn var(--dur-fast) var(--ease-out);
+}
+/* 退场：menuOut 与入场 menuIn 互为镜像（keyframes 在 foundation.css .msgmenu 段），
+   动 translate 不动 transform，锚定坐标（left/bottom 是内联样式）不受影响。 */
+.emote-pop[data-closing] { animation: menuOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
+.emote-pop-head {
+  flex: none; display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-4);
+  padding: var(--space-4) var(--space-4) var(--space-2);
+}
+.emote-pop-head > span { font-size: var(--text-base); font-weight: 600; color: var(--text); }
+.emote-pop-head small { font-size: var(--text-cap); color: var(--text-subtle); }
+.emote-pop-state {
+  display: flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-5) var(--space-4);
+  color: var(--text-subtle); font-size: var(--text-note);
+}
+/* 网格自适应列数：minmax 由容器宽度自己算出列数，桌面窄弹层与移动半屏都成立。 */
+.emote-grid {
+  min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(56px, 1fr)); gap: var(--space-1);
+  padding: 0 var(--space-2) var(--space-2);
+  scrollbar-width: thin;
+}
+.emote-cell {
+  display: flex; align-items: center; justify-content: center;
+  /* 触控下限：格子必须 ≥ --tap-min（32/44px 双档），缩略图本身可以更小。 */
+  min-width: var(--tap-min); min-height: var(--tap-min);
+  padding: 4px; border: 1px solid transparent; border-radius: var(--radius-md);
+  background: transparent; cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out), scale var(--dur-fast) var(--ease-out);
+}
+.emote-cell:hover { background: var(--bg-hover); }
+.emote-cell:focus-visible { border-color: var(--accent-ink); background: var(--accent-soft); outline: none; }
+.emote-cell:active { scale: .94; }
+.emote-cell img { max-width: 100%; max-height: 40px; object-fit: contain; }
+
+/* 弹层打开时触发钮的 on 态。语义用 aria-expanded（弹层触发是披露，不是勾选），
+   视觉沿用工具钮选中态的同一配方（accent-soft / accent-ink），不新造第四种「亮起」。 */
+.composer-tools button.tool-btn[aria-expanded="true"] { background: var(--accent-soft); color: var(--accent-ink); }
+/* 触发钮外只包了一层定位/判界用的壳：不参与 composer-tools 的 flex 排版。 */
+.emote-wrap { display: contents; }
+
+/* ── ToggleSwitch：全站唯一的滑块开关 ─────────────────────────────
+   为什么收敛成滑块：历史上「开启某功能」有三种互斥形态并存——
+   ① 旧 Switch.tsx 名叫 Switch，实际是「关闭/开启」双按钮分段（aria-pressed）；
+   ② QQSection 手写的 role="switch" 轨道滑块（.qq-conv-switch，样式私有）；
+   ③ 十来处原生 checkbox 直接当开关用。同一个界面里换一个地方开个功能
+      就要重新认一种控件，比哪种形态「好不好看」更伤害一致性。
+   分段按钮的语义是「在两个选项里选一个」，滑块的语义是「这个功能开着/关着」；
+   这里所有场景都是后者，所以统一到滑块，轨道+滑块只此一套。
+   保留 checkbox 的场景：多选（批量清理、批量选素材）、勾选确认（导出带不带密钥）
+   ——那些是「在集合里挑」，不是「开关」。 */
+.toggle-switch {
+  /* 本体视觉尺寸：轨道 40×22、滑块 16。命中区另用伪元素外扩补足，见下。 */
+  --ts-track-w: 40px;
+  --ts-track-h: 22px;
+  --ts-thumb: 16px;
+  --ts-travel: calc(var(--ts-track-w) - var(--ts-thumb) - 6px);
+  position: relative;
+  display: inline-flex; align-items: center; gap: var(--space-3);
+  border: 0; padding: 0 2px; background: transparent;
+  font: inherit; color: inherit; cursor: pointer;
+}
+/* 命中区外扩（foundation.css .msg-fail 同一招）：本体可以只有 22px 高，
+   但可点区补到 ≥ --tap-min（32/44 双档），触屏上才点得中。 */
+.toggle-switch::after { content: ""; position: absolute; inset: -11px; }
+.toggle-switch:disabled { cursor: default; opacity: .5; }
+.toggle-switch-track {
+  display: flex; align-items: center; flex: none;
+  width: var(--ts-track-w); height: var(--ts-track-h); padding: 2px;
+  border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-sunken);
+  transition: background-color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out);
+}
+.toggle-switch-thumb {
+  width: var(--ts-thumb); height: var(--ts-thumb); flex: none; border-radius: 50%;
+  background: var(--text-muted);
+  box-shadow: 0 1px 2px rgb(var(--shadow-tint) / .18);
+  transition: transform var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
+}
+.toggle-switch[aria-checked="true"] .toggle-switch-track { border-color: var(--accent); background: var(--accent); }
+.toggle-switch[aria-checked="true"] .toggle-switch-thumb { transform: translateX(var(--ts-travel)); background: var(--accent-text); }
+.toggle-switch.is-danger[aria-checked="true"] .toggle-switch-track { border-color: var(--danger); background: var(--danger); }
+/* 焦点描在轨道上：整个按钮含文字，描文字区反而看不出焦点在开关上。 */
+.toggle-switch:focus-visible { outline: none; }
+.toggle-switch:focus-visible .toggle-switch-track { outline: 2px solid var(--accent-ink); outline-offset: 2px; }
+/* 文字区：labelSide=left 的表单行给加粗主行 + 弱化补充；=right 的紧凑行同样式，靠间距自适应。 */
+.toggle-switch-text { display: flex; min-width: 0; flex-direction: column; gap: 2px; text-align: left; }
+.toggle-switch-text b { color: var(--text); font-weight: 600; line-height: 1.35; }
+.toggle-switch-text span { color: var(--text-muted); font-size: var(--text-note); line-height: 1.45; }
+
+/* 玻璃模式覆写：off 态的实底 --bg-sunken 轨道压在壁纸上会变成一块不透气的塑料片，
+   沿 .pf-gender-btn 一带的配方换成透光底；on 态保持 --accent 实色——
+   accent 与 accent-text 的对比度承诺建立在实色上，掺透会砸掉可读性。 */
+html[data-glass="on"] .toggle-switch[aria-checked="false"] .toggle-switch-track {
+  border-color: var(--glass-edge-soft);
+  background: color-mix(in srgb, var(--wp-tint) 58%, transparent);
+}
+html[data-glass="on"] .toggle-switch[aria-checked="false"] .toggle-switch-thumb { background: var(--glass-shine); }

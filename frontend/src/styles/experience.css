@@ -343,6 +343,17 @@ select {
   gap: 1px;
 }
 
+/* 长会话的离屏跳渲染（content-visibility: auto）试过两次都撤掉了：
+   第一次是「常开」，落底那一刻离屏行还是估高，真高替换后落底实测漂了 1352px
+   （foundation.css 那条「撤」注释）；第二次改成「boot 落底稳定两拍后再放开」，
+   估高误差确实绕开了，但它和这套滚动契约的根本冲突还在——跳转落点附近的行
+   在跳完之后才完成最终布局，scrollHeight 随后变化让一次性 scrollTop 赋值停在
+   半空，「一键到底」「切人落底」接连失准；且跳转自己触发的 scroll 事件是在高度
+   长完之后才派发的，onScroll 重判 stickRef 会把自动跟随摘掉。两轮修收敛循环都
+   只能打补丁，最终整体撤除：这套消息流的滚动正确性（贴底 ±2px、未读计数、
+   搜索/地图定位）比长会话的渲染收益更值钱。scrollDown 的收敛循环保留，它对
+   图片解码、链接卡长高这类正常的落底后高度变化仍然有效。 */
+
 .msg-row.contact {
   gap: 10px;
 }
@@ -425,6 +436,7 @@ select {
 .think-state.is-live { color: var(--accent-ink); }
 .think-state.is-live::before {
   background: var(--accent);
+  /* 氛围循环：思考中的状态点呼吸（≥1s 豁免，见 foundation.css 映射口径） */
   animation: thinkPulse 1.2s ease-in-out infinite;
 }
 @keyframes thinkPulse {
@@ -512,6 +524,7 @@ select {
   border-radius: 50%;
   background: currentColor;
   opacity: .3;
+  /* 氛围循环：思考中三点打拍（≥1s 豁免，见映射口径） */
   animation: thinkDot 1.15s ease-in-out infinite;
 }
 .think-live-dots i:nth-child(2) { animation-delay: .14s; }
@@ -778,15 +791,15 @@ button.tool-btn {
 }
 
 #settings .card-pad {
-  padding: 20px;
+  padding: var(--space-8);
 }
 
 #settings .set-subnav {
-  margin: 0 0 16px;
+  margin: 0 0 var(--space-6);
 }
 
 #settings .set-subnav .seg {
-  gap: 4px;
+  gap: var(--space-1);
 }
 
 #settings .set-subnav .seg button {
@@ -794,20 +807,21 @@ button.tool-btn {
 }
 
 .settings-panel {
-  margin-bottom: 16px;
-  padding: 24px;
+  margin-bottom: var(--space-6);
+  padding: var(--space-10);
   border: 1px solid var(--border);
+  /* 18px 落在 --radius-xl(16) 与 --radius-2xl(20) 正中间，换哪边都有 2px 视差，保留原值 */
   border-radius: 18px;
   background: var(--bg-elevated);
   box-shadow: var(--shadow-xs);
 }
 
 .settings-panel-head {
-  margin-bottom: 20px;
+  margin-bottom: var(--space-8);
 }
 
 .settings-panel-head h3 {
-  margin: 0 0 4px;
+  margin: 0 0 var(--space-1);
   font-size: 18px;
   font-weight: 600;
 }
@@ -823,12 +837,13 @@ button.tool-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 16px 0;
+  gap: var(--space-10);
+  padding: var(--space-6) 0;
   border-top: 1px solid color-mix(in srgb, var(--border) 72%, transparent);
 }
 
 .settings-row.compact {
+  /* 14px 卡在 --space-5(12) 与 --space-6(16) 之间，压哪边都会挤压邻行，保留原值 */
   padding: 14px 0;
 }
 
@@ -854,17 +869,19 @@ button.tool-btn {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
-  gap: 4px;
+  gap: var(--space-1);
   flex: none;
+  /* 3px 是凹槽内衬的 hairline 级留白，低于 --space-1(4px)，保留原值 */
   padding: 3px;
-  border-radius: 10px;
+  border-radius: var(--radius-md);
   background: var(--bg-sunken);
 }
 
 .choice {
-  min-height: 32px;
-  padding: 5px 12px;
+  min-height: var(--space-12);
+  padding: 5px var(--space-4);
   border: 0;
+  /* 8px 在 --radius-sm(6) 与 --radius-md(10) 正中间，换哪边都有 2px 视差，保留原值 */
   border-radius: 8px;
   background: transparent;
   color: var(--text-muted);
@@ -1278,7 +1295,8 @@ button.tool-btn {
   color: var(--text);
   font-size: var(--text-sm);
   cursor: pointer;
-  transition: transform .15s, border-color .15s;
+  /* hover 反馈一律 fast（映射口径） */
+  transition: transform var(--dur-fast), border-color var(--dur-fast);
 }
 
 .emote-face-chip:hover {
@@ -3596,6 +3614,10 @@ a.btn:hover {
   animation: menuIn var(--dur-fast) var(--ease-out);
   overscroll-behavior: contain;
 }
+/* 退场：与入场 menuIn 互为镜像（keyframes 在 foundation.css .msgmenu 段）。
+   动 translate 不动 transform——翻转定位靠 transform: translateY(-100%)，
+   退场帧不能把翻转中的下拉拽回原位。 */
+.conv-switch-pop[data-closing] { animation: menuOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
 .conv-switch-head {
   display: flex;
   align-items: baseline;
@@ -3855,6 +3877,7 @@ a.btn:hover {
   border-radius: var(--radius-full);
   background: linear-gradient(90deg, var(--bg-sunken), var(--bg-hover), var(--bg-sunken));
   background-size: 220% 100%;
+  /* 氛围循环：骨架扫光（≥1s 豁免，见映射口径） */
   animation: skeletonSweep 1.35s ease-in-out infinite;
 }
 .skeleton-row > span:last-child { height: 5px; opacity: .72; }
@@ -4727,11 +4750,13 @@ a.btn:hover {
 .ml-pack-picker { position: relative; }
 .ml-pack-btn { display: inline-flex; align-items: center; gap: 5px; max-width: 240px; }
 .ml-pack-btn .ml-pack-name, .ml-pack-btn { overflow: hidden; }
-.ml-pack-caret { transition: transform .15s ease; flex-shrink: 0; }
+.ml-pack-caret { transition: transform var(--dur-fast) ease; flex-shrink: 0; }
 .ml-pack-caret.on { transform: rotate(180deg); }
 
+/* 锚在按钮上的下拉弹层，与 foundation.css 的 .mem-space-pop 同族，走 --z-subpop；
+   原来的裸 40 与 --z-backdrop 撞档（读起来像遮罩层），42 则是来历不明的孤值。 */
 .ml-pack-pop {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: var(--z-subpop);
   width: min(320px, calc(100vw - 32px));
   padding: 10px; border: 1px solid var(--edge-float); border-radius: 12px;
   background: var(--bg-elevated); box-shadow: var(--shadow-modal);
@@ -4959,7 +4984,7 @@ a.btn:hover {
   font-weight: 600;
   color: var(--text);
 }
-.qq-emote-cap-caret { transition: transform 0.15s ease; }
+.qq-emote-cap-caret { transition: transform var(--dur-fast) ease; }
 .qq-emote-cap-caret.on { transform: rotate(90deg); }
 
 /* 搜索框和类型 chips 在同一条 flex 行里：不给基准宽度，窄屏会被挤成只剩图标（实测 24px）。 */
@@ -5101,7 +5126,8 @@ a.btn:hover {
   left: 0;
   top: calc(100% + 6px);
   box-sizing: border-box;
-  z-index: 42;
+  /* 下拉弹层与 .ml-pack-pop / .mem-space-pop 同族，走 --z-subpop（原裸 42 是孤值） */
+  z-index: var(--z-subpop);
   width: min(230px, calc(100vw - 32px));
   max-height: 300px;
   overflow-y: auto;
@@ -5223,7 +5249,7 @@ a.btn:hover {
   cursor: pointer;
   white-space: nowrap;
 }
-.ml-capture-compact input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); cursor: pointer; }
+/* 「自动收录」已换成 .toggle-switch，input 选择器随之删除。 */
 .ml-progress {
   height: 2px;
   margin: -4px 0 8px;
@@ -5231,7 +5257,8 @@ a.btn:hover {
   background: var(--bg-sunken);
   overflow: hidden;
 }
-.ml-progress span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width .25s var(--ease-out); }
+/* 进度条增量的慢档：批量导入的进度块跨度大，.25s 落 slow（映射口径） */
+.ml-progress span { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width var(--dur-slow) var(--ease-out); }
 
 .media-library .content-grid {
   grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
@@ -5423,3 +5450,74 @@ a.btn:hover {
   .ml-results-summary { grid-template-columns: 1fr; gap: 6px; }
   .ml-results-summary > span { padding: 7px 9px; }
 }
+
+/* ── 搜索/地图跳转命中的一次性描边脉冲 ──
+   数据早就有了（focusMessage 拿得到那一行），差的只是这层皮：只 scrollIntoView 的
+   话，用户要在满屏气泡里自己找两秒「是哪条」。给 1.2s 的 accent-glow 描边脉冲，
+   与 .msg-row.flash 同一套路——动画负责闪、JS 负责摘类（ChatView 的 pulseHitRow），
+   连跳下一条不叠影。reduced-motion 下退让成静态描边，停满同样长（靠摘类收尾，
+   WCAG 2.2.2：不是取消提示，只是不再动）。 */
+.msg-row.hit-pulse .bubble { animation: hitPulse 1.2s var(--ease-out); }
+@keyframes hitPulse {
+  0%   { box-shadow: 0 0 0 0 var(--accent-glow), var(--bubble-shadow); }
+  35%  { box-shadow: 0 0 0 4px var(--accent-glow), var(--bubble-shadow); }
+  100% { box-shadow: 0 0 0 5px transparent, var(--bubble-shadow); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .msg-row.hit-pulse .bubble { animation: none; box-shadow: 0 0 0 3px var(--accent-glow), var(--bubble-shadow); }
+}
+
+/* ── 在途气泡的呼吸圆点 ──
+   乐观占位此前只有「失败」「待发送」两个事后态，已发出、回执未到的几秒是视觉真空。
+   给一颗 8px 呼吸圆点挂在气泡右上角：它只说「在路上」，不代表任何问题——所以不出
+   红黄那两档（那是失败的语义），不用图标不加文字，鼠标悬停有 title「发送中」即可；
+   aria-hidden：读屏用户已经能从发送按钮的忙碌态知道在途，再念一个点是噪音。 */
+.bubble.pend-going .pend-flight {
+  position: absolute; top: 7px; right: 7px; width: 8px; height: 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--bubble-mine-text) 55%, transparent);
+  /* 氛围循环：在途呼吸点（≥1s 豁免，见映射口径） */
+  animation: pendFlight 1.6s ease-in-out infinite;
+}
+@keyframes pendFlight { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .bubble.pend-going .pend-flight { animation: none; opacity: .5; }
+}
+
+/* ── 自己气泡里的 Markdown 在实底 accent 上的配色 ──
+   .md-code / .md-pre 的 --bg-sunken 底是给浅色气泡设计的（foundation.css，那份不动）：
+   压在 --bubble-mine 的全饱和 accent 实底上就是一块补丁。走 .msg-row.me .link-card
+   （foundation.css:1809 起）的同一条路：底色用 bubble-mine-text 调低透明度叠上去，
+   文字继承 --bubble-mine-text；.md-link 的全局 a 色（--accent-ink）同理换掉——
+   强调色字压强调色底认不出链接。对方气泡是浅底，保持原样不动。 */
+.msg-row.me .bubble .md-code,
+.msg-row.me .bubble .md-pre {
+  background: color-mix(in srgb, var(--bubble-mine-text) 14%, transparent);
+  color: var(--bubble-mine-text);
+}
+.msg-row.me .bubble .md-link { color: var(--bubble-mine-text); }
+.msg-row.me .bubble .md-link:hover { color: color-mix(in srgb, var(--bubble-mine-text) 78%, transparent); }
+
+/* ── composer 中等宽度（约 560–760px）的韧性 ──
+   .composer-bar 不换行（foundation.css:466），整行几乎都是 flex:none 的固定件；
+   模型档名一长，快捷键提示和上下文圆环就被挤变形。胶囊里的档名自己已带
+   min-width:0 + ellipsis（components.css 的 .model-trigger-label），但外层
+   .model-wrap 是 flex:none——收缩被它挡住了。放开收缩并给 min-width:0，
+   过长的档名在胶囊内截断，ctx 环与发送钮不再被压。 */
+.composer-bar .model-wrap { flex: 0 1 auto; min-width: 0; }
+
+/* ── 「载入更早的消息」窄条控件（ChatView）──
+   此前借用建议 chip 的样式：悬在消息流顶部像个静态标签，可供性太弱——用户不确定
+   它能不能点。收成独立的窄条：居中、上下留白、描边胶囊 + hover 反馈点明「可点」。
+   行为不动：仍走 fetchEarlierMessages、仍由服务端报剩余条数，滚动锚定逻辑原样。 */
+.load-earlier-row { display: flex; justify-content: center; padding: var(--space-2) 0 var(--space-3); }
+.load-earlier {
+  max-width: 100%; padding: 3px 14px;
+  border: 1px solid var(--border); border-radius: var(--radius-full);
+  background: var(--bg-elevated); color: var(--text-subtle); font-size: var(--text-cap);
+  transition: border-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out),
+              background-color var(--dur-fast) var(--ease-out);
+}
+.load-earlier:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); background: var(--bg-hover); }
+.load-earlier:active:not(:disabled) { scale: .98; }
+.load-earlier:disabled { opacity: var(--alpha-disabled); cursor: wait; }

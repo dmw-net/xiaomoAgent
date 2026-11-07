@@ -20,6 +20,72 @@ const DIMS: Array<{ key: Dim; label: string; hint: string; col: string }> = [
 const PAGE_START = 7;
 const PAGE_STEP = 7;
 
+/**
+ * 近 7 天消息量 sparkline：纯手写 SVG，不引图表依赖。
+ * 设计取舍：
+ * - 只画「有记录的日子」——与按日表同一口径（后端 GROUP BY 本来就不给空日子），不硬造 0 点补齐；
+ * - 失败线与主曲线共用一套「0 ~ 最高调用」的坐标系：各自归一化会把“失败很多”画得像“失败很少”；
+ * - 完全静态、不做生长动画：一瞥即懂的小图上动画是噪音，也免去 prefers-reduced-motion 的专门分支。
+ */
+const SPARK_H = 56; // 画布高（像素）：SVG 几何不属于主题语义（令牌里没有“图高”这一档），须与 components.css 的 .usage-spark-wrap 保持一致。
+
+function UsageSpark({ days }: { days: UsageStats["byDay"] }): JSX.Element | null {
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const [w, setW] = useState(0);
+  // 容器量出多宽，viewBox 就设多宽：1:1 坐标系下数据点才是正圆，
+  // preserveAspectRatio="none" 那套省事方案会把圆点拉成椭圆，所以宁可等一帧再画。
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const cw = entries[0]?.contentRect.width ?? 0;
+      if (cw > 0) setW(Math.round(cw));
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, []);
+
+  // byDay 新的一天在前，画趋势先转成时间正序；只取最近 7 个有记录的日子。
+  const pts = days.slice(0, 7).reverse();
+  const maxCalls = Math.max(0, ...pts.map((p) => p.calls));
+  const maxFail = Math.max(0, ...pts.map((p) => p.fail));
+  // 画不画的门槛：不足两点连不成线，全是 0 是贴底的直线——都没有信息量，宁可不画。
+  if (pts.length < 2 || maxCalls === 0) return null;
+  const hi = pts.reduce((a, b) => (b.calls > a.calls ? b : a));
+  const lo = pts.reduce((a, b) => (b.calls < a.calls ? b : a));
+  const failTotal = pts.reduce((n, p) => n + p.fail, 0);
+
+  // 坐标系内缩留出数据点半径，两端点不被裁掉。
+  const PAD = 6;
+  const x = (i: number): number => PAD + (i * (w - PAD * 2)) / (pts.length - 1);
+  const y = (v: number, max: number): number => SPARK_H - PAD - (v / max) * (SPARK_H - PAD * 2);
+  const line = (vals: number[], max: number): string =>
+    vals.map((v, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)} ${y(v, max).toFixed(1)}`).join(" ");
+
+  return (
+    <div>
+      <div className="usage-spark-wrap" ref={wrapRef}>
+        {w > 0 && (
+          <svg className="usage-spark" viewBox={`0 0 ${w} ${SPARK_H}`} role="img"
+            aria-label={`近 7 天消息量趋势，最高 ${hi.calls}（${hi.day}），最低 ${lo.calls}（${lo.day}）`
+              + (failTotal > 0 ? `；同期失败共 ${failTotal} 次` : "")}>
+            {maxFail > 0 && <path className="spark-fail" d={line(pts.map((p) => p.fail), maxCalls)} />}
+            <path className="spark-line" d={line(pts.map((p) => p.calls), maxCalls)} />
+            {pts.map((p, i) => (
+              <circle key={p.day} className="spark-dot" cx={x(i).toFixed(1)} cy={y(p.calls, maxCalls).toFixed(1)} r={2.5} />
+            ))}
+          </svg>
+        )}
+      </div>
+      {/* 图例只给两条线各一句话：颜色含义靠它说，而不是逼用户去猜红线是什么。 */}
+      <div className="usage-spark-legend">
+        <span><i className="spark-swatch-main" />消息量</span>
+        {maxFail > 0 && <span><i className="spark-swatch-fail" />失败</span>}
+      </div>
+    </div>
+  );
+}
+
 /** 模型用量 tab：今日速览 + 近 7 天按日、近 30 天按模型/联系人/用途的分布。token 依赖服务商返回 usage，旧记录为 0。 */
 export default function UsageSection({ panel, refreshNonce = 0 }: {
   panel: PanelAria;
@@ -92,6 +158,9 @@ export default function UsageSection({ panel, refreshNonce = 0 }: {
         <div className="stat"><div className="n">{fmtInt(usage.total.calls)}</div><div className="t">累计调用{usage.total.fail > 0 ? ` · 失败 ${usage.total.fail}` : ""}</div></div>
         <div className="stat"><div className="n">{fmtTokens(usage.total.totalTokens)}</div><div className="t">累计消耗</div></div>
       </div>
+
+      {/* 近 7 天趋势贴着数字块：先看「今天多少」，顺势看「这几天是涨是落」。 */}
+      <UsageSpark days={usage.byDay} />
 
       {/* 维度四选一：点哪个看哪个，页面不再纵向堆叠 */}
       <div className="u-dims" role="radiogroup" aria-label="统计维度">

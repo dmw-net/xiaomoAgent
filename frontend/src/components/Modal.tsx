@@ -1,9 +1,12 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { useDismiss } from "../hooks/useDismiss";
 
 /** 多层弹窗共享一个页面滚动锁；计数器避免内层关闭时误解锁外层。 */
 let openModalCount = 0;
+
+/** 退场动画兜底时长：遮罩/卡片都是 --dur-base（.18s），留一点余量。 */
+const EXIT_FALLBACK_MS = 240;
 
 /**
  * 通用弹窗：点遮罩关闭、Esc 关闭、role=dialog + aria-modal。
@@ -31,9 +34,26 @@ export default function Modal({ onClose, label, className = "", head, children, 
       if (openModalCount === 0) document.documentElement.classList.remove("modal-open");
     };
   }, []);
+  // 退场动画：入场有 scrimIn/cardIn，关闭以前是瞬时消失——Quiet Studio 的收尾
+  // 突兀感是全站最明显的动效缺口。挂上 data-closing 先播淡出，动画结束（或
+  // EXIT_FALLBACK_MS 兜底，覆盖 reduced-motion 下 animation:none 的情形）才真正
+  // 卸载。遮罩点击 / Esc 这两条内部收口走 requestClose；children 里按钮直接调
+  // parent 的 onClose 的路径保持原样瞬时关——那是调用方语义，不强行拦。
+  const [closing, setClosing] = useState(false);
+  const finishedRef = useRef(false);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const requestClose = (): void => {
+    if (!finishedRef.current) setClosing(true);
+  };
+  useEffect(() => {
+    if (!closing) return;
+    const t = window.setTimeout(() => { finishedRef.current = true; onCloseRef.current(); }, EXIT_FALLBACK_MS);
+    return () => window.clearTimeout(t);
+  }, [closing]);
   // 卡片本体就是"内部"：点它不关，点遮罩关。开层那一发手势不会被这里看到
   // （useDismiss 听的是 pointerdown，比这个监听器存在更早），所以不需要时间宽限。
-  useDismiss(true, onClose, cardRef);
+  useDismiss(!closing, requestClose, cardRef);
   // 此前弹窗既不给初始焦点也不在关闭后交还：Tab 会溜到遮罩背后，关掉之后
   // 焦点掉回 body，键盘用户得从头走一遍页面。
   useEffect(() => {
@@ -70,7 +90,20 @@ export default function Modal({ onClose, label, className = "", head, children, 
   return createPortal(
     // 遮罩不再自己挂 onClick 关闭：按下遮罩就是 useDismiss 眼里的"点在卡片外部"，
     // 一处判定就够（两处都写会各自演化出宽限期）。
-    <div className={"modal-overlay" + (placement === "center" ? " is-center" : "")}>
+    // data-closing 由退场动画消费（scrimOut/cardOut）；animationend 名字过滤是
+    // 因为卡片内部也可能有动画冒泡上来（骨架屏呼吸、loader 旋转）。
+    <div
+      className={"modal-overlay" + (placement === "center" ? " is-center" : "")}
+      data-closing={closing || undefined}
+      aria-hidden={closing || undefined}
+      onAnimationEnd={(e) => {
+        if (!closing) return;
+        if (e.target === e.currentTarget && e.animationName === "scrimOut") {
+          finishedRef.current = true;
+          onCloseRef.current();
+        }
+      }}
+    >
       <div className={"modal-card" + (className ? " " + className : "")} data-keep-menu ref={cardRef}
         role="dialog" aria-modal="true" aria-label={label}>
         {head}

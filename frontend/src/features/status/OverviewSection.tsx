@@ -1,5 +1,5 @@
 import { ReactNode, useState } from "react";
-import { relTime, whenText } from "../../lib/datetime";
+import { clockOf, relTime, whenText } from "../../lib/datetime";
 import CheckRow from "./CheckRow";
 import { qqApi } from "../../api";
 import type { StatusData, CapabilityName } from "../../types";
@@ -34,6 +34,14 @@ function uptimeText(sec: number): string {
 /** 过去用「13 小时前」，将来用「约 3 小时后」：whenText 只认将来，混用会写出「即将检查的往事」。 */
 function when(ts: number): string {
   return ts > Date.now() ? whenText(ts) : relTime(ts);
+}
+
+/** 缓存多旧说人话：一分钟内按秒，一小时内按分，再久交给现成的 relTime（小时/天前）。 */
+function ageText(ts: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000)); // 客户端时钟快过服务端时差值为负，钳到 0 免得出现「-2 秒前」
+  if (s < 60) return `${s} 秒前`;
+  if (s < 3_600) return `${Math.floor(s / 60)} 分钟前`;
+  return relTime(ts);
 }
 
 /** 把原始错误翻成用户先能理解的一句话；完整技术信息留在可展开区。 */
@@ -112,6 +120,11 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   onOpenContacts: () => void;
 }): JSX.Element {
   const now = Date.now();
+  // 「数据截至」取载荷自带的生成时刻（d.time），而不是组件里另记 receivedAt：
+  // 总览走 stale-while-revalidate（statusStore），重入时拿到的是缓存里的上一份，
+  // 当场记 Date.now() 会把旧数据谎报成刚拉到的；后端盖章的时刻才说真话。
+  // 旧后端没下发 time 就整行不渲染，不硬凑。
+  const fetchedAt = d.time ? Date.parse(d.time) : NaN;
   const recent = d.recent ?? { calls: 0, fail: 0 };
   const errAge = d.lastModelError?.at ? now - Date.parse(d.lastModelError.at) : null;
   const errRecent = errAge !== null && errAge < DAY;
@@ -272,7 +285,10 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
         : "总开关关着：不会主动找你",
       fix: d.proactive.enabled
         ? undefined
-        : <>总开关在配置文件里改；免打扰与每天说几次在各联系人的「主动性」里配</>,
+        // 总开关是启动环境变量（config.ts 只认 PROACTIVE_ENABLED），设置页没有对应开关；
+        // 桌面版外壳每次启动会把 desktop.json 的该项重写回默认值，改它不生效——
+        // 所以唯一诚实的出口是把变量名和 .env 路径写具体，别让人对着一句话瞎找。
+        : <>总开关是启动环境变量 <code>PROACTIVE_ENABLED</code>（开发/命令行改项目根目录的 <code>.env</code>，改完重启生效；桌面版暂无界面开关）；免打扰与每天说几次在各联系人的「主动性」里配</>,
     },
     {
       led: (d.memoryExtractFailures > 0 ? "bad" : "ok") as Led, k: "记忆提取",
@@ -322,7 +338,11 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
         <h2>运行概览</h2>
         <div className="actions">{actions}</div>
       </div>
-      <div className="ov-desc">这套配置整体跑得怎么样。想改就点各卡片右上角的「去设置」；某位联系人的主动性、记忆和微信绑定在联系人的资料页里。</div>
+      <div className="ov-desc">这套配置整体跑得怎么样。想改就点各卡片右上角的「去设置」；某位联系人的主动性、记忆和微信绑定在联系人的资料页里。
+        {Number.isFinite(fetchedAt) && (
+          <span className="ov-fresh">数据截至 {clockOf(fetchedAt)} · {ageText(fetchedAt)}</span>
+        )}
+      </div>
       <div className={`ov-summary ${summaryLed}`}>
         <span className="ov-summary-dot" aria-hidden="true" />
         <div className="ov-summary-copy">

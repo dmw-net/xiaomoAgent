@@ -2,12 +2,11 @@
    颜色一律取自 theme.css 的设计令牌，明暗主题自动跟随；不复用 .skill-item
    那套为技能条目设计的两行截断布局，扩展卡片有自己的结构。 */
 
-/* ── 开关：一律复用项目既有的 .choice-row / .choice ──────────
-   （「开机自动启动」那一套），连尺寸也同源。台账行内不再另设
-   收紧档：同一个界面里出现两种大小的开关，比稍大的行高更伤一致性。 */
-
-.tw-choice-row { margin: 0; }
-.tw-choice-row.is-danger .choice[aria-pressed="true"] { color: var(--danger); }
+/* ── 开关 ────────────────────────────────────────────────────
+   「关闭/开启」双按钮分段的 Switch（复用 .choice-row）已退役：
+   全站开关统一为 components/ToggleSwitch.tsx 的真滑块（role="switch"），
+   样式在 components.css 的 .toggle-switch。这里不再留收紧档与危险色钩子。
+   .choice-row 本身别动——它还被「开机自动启动」等真正的二选一场景使用。 */
 
 /* 台账已无独立总闸：「全关」并入档位轴的最左档（见 ToolOverviewSection），
    这里的总闸卡样式随之移除，档位卡沿用 .lg-preset-card。 */
@@ -188,7 +187,8 @@
   display: flex; flex-direction: column; gap: 12px;
   background: var(--bg-elevated); border: 1px solid var(--border);
   border-radius: 14px; padding: 16px; min-width: 0;
-  transition: border-color var(--dur-fast, 140ms) ease;
+  /* fallback 140ms 与 --dur-fast 实值 .12s 不符：令牌在 theme.css 必有，不留第二真相 */
+  transition: border-color var(--dur-fast) ease;
 }
 .ext-card:hover { border-color: var(--border-strong); }
 .ext-card.is-bad { border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
@@ -303,7 +303,7 @@
 .lg-seg {
   border: 0; background: transparent; border-radius: 9px; padding: 10px 6px;
   font-size: 13px; font-weight: 500; color: var(--text-muted); cursor: pointer;
-  transition: background var(--dur-fast, 140ms) ease, color var(--dur-fast, 140ms) ease;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 .lg-seg:hover:not(.is-on):not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .lg-seg.is-on { background: var(--accent); color: var(--accent-text); }
@@ -435,7 +435,7 @@
 .pf-preset-chip {
   border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-muted);
   border-radius: 999px; padding: 7px 14px; font-size: 12px; font-weight: 500; cursor: pointer;
-  transition: background var(--dur-fast, 140ms) ease, color var(--dur-fast, 140ms) ease;
+  transition: background var(--dur-fast) ease, color var(--dur-fast) ease;
 }
 .pf-preset-chip:hover:not(.is-on):not(:disabled) { background: var(--bg-hover); color: var(--text); }
 .pf-preset-chip.is-on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }

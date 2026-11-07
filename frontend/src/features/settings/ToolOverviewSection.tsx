@@ -18,6 +18,7 @@ import { CircleDot, RefreshCw, ShieldAlert, SlidersHorizontal } from "lucide-rea
 import { contactsApi, toolsApi } from "../../api";
 import type { ToolCatalogEntry, ToolPreset, ToolPresetChoice, ToolState } from "../../api/tools";
 import { loadToolState, putToolState } from "../../lib/toolsStore";
+import { offerToast } from "../../lib/toast";
 import ToolLoopSection from "./ToolLoopSection";
 import type { SettingsForm } from "./useSettingsForm";
 
@@ -112,8 +113,10 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
 }): JSX.Element {
   const [state, setState] = useState<ToolState | null>(null);
   const [busy, setBusy] = useState("");
+  // err 只留给「台账没读出来」：它带重试按钮、绑定这张卡，属于就地诊断。
+  // 写入类（档位/逐项开关/跟随全局）的成败走全局 toast——note 原来绑在台账卡上，
+  // 用户拧完开关切个分组就看不见了。
   const [err, setErr] = useState("");
-  const [note, setNote] = useState("");
 
   const load = useCallback((): void => {
     // 写方挂载必须看到最新：不走缓存， store 会对同一时刻的并发去重。
@@ -126,10 +129,9 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
   const write = (key: string, patch: { disabledTools?: string[]; globalPreset?: ToolPreset; toolsEnabled?: boolean }, ok: string): void => {
     setBusy(key);
     setErr("");
-    setNote("");
     toolsApi.saveToolState(patch)
-      .then((next) => { putToolState(next); setState(next); setNote(ok); })
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+      .then((next) => { putToolState(next); setState(next); offerToast(ok, "ok"); })
+      .catch((e: unknown) => offerToast("没保存成：" + (e instanceof Error ? e.message : String(e)), "error"))
       .finally(() => setBusy(""));
   };
 
@@ -157,13 +159,12 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
   const followGlobal = async (id: string, name: string): Promise<void> => {
     setBusy(`c:${id}`);
     setErr("");
-    setNote("");
     try {
       await contactsApi.updateContact(id, { features: { toolPreset: "follow" } });
       load();
-      setNote(`「${name}」已改回跟随全局档。`);
+      offerToast(`「${name}」已改回跟随全局档。`, "ok");
     } catch (e) {
-      setErr(e instanceof Error ? e.message : String(e));
+      offerToast("没保存成：" + (e instanceof Error ? e.message : String(e)), "error");
     } finally {
       setBusy("");
     }
@@ -207,7 +208,6 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
       </div>
 
       {err !== "" && <div className="ext-banner is-bad" role="alert">{err}</div>}
-      {note !== "" && <div className="ext-banner is-ok" role="status">{note}</div>}
 
       <div className="lg-preset-card">
         <div className="lg-preset-head">

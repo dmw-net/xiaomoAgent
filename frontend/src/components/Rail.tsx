@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { MessageCircleMore, Sparkles, Activity, Settings, Menu } from "lucide-react";
 import { useDismiss } from "../hooks/useDismiss";
+import { useExitVisible } from "../hooks/useExitVisible";
 import { getWallpaper, WALLPAPER_EVENT } from "../lib/ui-prefs";
 import type { ThemeMode, ViewKey } from "../types";
 
@@ -33,6 +34,9 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
   unreadChat?: number;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  // 退场交接：open 置假后菜单先播 menuOut 淡出（与 msgmenu 一族同配方），
+  // 走完才从树上摘掉；useDismiss(open) 随 open 置假自动停用，淡出途中不会重复关。
+  const railMenuExit = useExitVisible(open, "menuOut");
   const [mode, setMode] = useState<ThemeMode>(currentMode);
   /** 壁纸开着 = 浅色/深色暂停生效，菜单的主题组换成一枚状态徽标。 */
   const [wallpaperOn, setWallpaperOn] = useState(() => getWallpaper().kind !== "none");
@@ -120,8 +124,11 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
           <Menu size={20} strokeWidth={1.8} />
           <span className="rbtn-label">更多</span>
         </button>
-        {open && (
-          <div className="rail-menu" id="railMenu" data-keep-menu>
+        {railMenuExit.visible && (
+          <div className="rail-menu" id="railMenu" data-keep-menu
+            data-closing={railMenuExit.closing || undefined}
+            aria-hidden={railMenuExit.closing || undefined}
+            onAnimationEnd={railMenuExit.onAnimationEnd}>
             <div className="menu-label">主题</div>
             {wallpaperOn ? (
               <div className="wp-mode-chip" role="status">
@@ -131,7 +138,8 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
             ) : (
               <div className="menu-theme" role="group" aria-label="主题">
                 {(["system", "light", "dark"] as const).map((m) => (
-                  <button key={m} type="button" aria-pressed={mode === m ? "true" : "false"} onClick={() => pick(m)}>
+                  <button key={m} type="button" tabIndex={railMenuExit.closing ? -1 : undefined}
+                    aria-pressed={mode === m ? "true" : "false"} onClick={() => pick(m)}>
                     {/* 与设置页同一套词：浅色 / 深色 / 跟随系统 */}
                     {m === "system" ? "跟随系统" : m === "light" ? "浅色" : "深色"}
                   </button>
@@ -139,15 +147,15 @@ export default function Rail({ active, onNavigate, onPrefetch, ownerName, ownerA
               </div>
             )}
             <div className="menu-sep" />
-            <button type="button" className="menu-item" onClick={() => { setOpen(false); onOnboarding(); }}>
+            <button type="button" className="menu-item" tabIndex={railMenuExit.closing ? -1 : undefined} onClick={() => { setOpen(false); onOnboarding(); }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="9" /><path d="M14.8 9.2 13 13l-3.8 1.8L11 11z" /></svg>
               <span>首次设置</span>
             </button>
-            <button type="button" className="menu-item" onClick={() => { setOpen(false); onNavigate("settings"); }}>
+            <button type="button" className="menu-item" tabIndex={railMenuExit.closing ? -1 : undefined} onClick={() => { setOpen(false); onNavigate("settings"); }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" /></svg>
               <span>设置</span>
             </button>
-            <button type="button" className="menu-item" onClick={() => { setOpen(false); onAbout(); }}>
+            <button type="button" className="menu-item" tabIndex={railMenuExit.closing ? -1 : undefined} onClick={() => { setOpen(false); onAbout(); }}>
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><path d="M12 16v-4" /><path d="M12 8h.01" /></svg>
               <span>关于小茉</span>
             </button>

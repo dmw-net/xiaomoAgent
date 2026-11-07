@@ -4,7 +4,13 @@
 /* ── 动效令牌（明暗共用）────────────────────────────────────────
    从前全站散着 .1 / .12 / .13 / .14 / .15 / .16 / .18 / .22 八种时长和裸 ease，
    同一句"轻微反馈"在不同控件上手感各异。收成三档时长 + 两条曲线：
-   fast 给点按回声，base 给状态切换，slow 给面板入场；确实要"弹一下"才用 spring。 */
+   fast 给点按回声，base 给状态切换，slow 给面板入场；确实要"弹一下"才用 spring。
+   裸时长映射口径（scripts/css-token-check.mjs 把守）：
+   - 意图优先：hover/focus/按压反馈一律 fast；面板、卡片、抽屉的出现 base；
+     大块内容转场 slow。
+   - 数值兜底：.12~.15s → fast，.16~.22s → base，>0.22s → slow。
+   - ≥1s 的是氛围循环（骨架呼吸、打字点、流星这类），不归三档管，沿用原值，
+     但就近要留一行注释说明它为何游离于三档之外，防止被当微交互魔数照抄。 */
 :root {
   --dur-fast: .12s;
   --dur-base: .18s;
@@ -214,6 +220,12 @@ input, textarea {
   display: inline-flex; flex: none; border: 0; background: none; padding: 2px;
   color: var(--text-subtle); cursor: pointer;
 }
+/* 退场与入场互为镜像：淡出 + 下沉。这里必须用独立的 translate 属性——
+   .undo-bar 本体靠 transform: translateX(-50%) 居中，动画若写 transform
+   会在收尾那几帧把居中位移冲掉，条会向右跳半屏。UndoBar 挂 data-closing
+   后等动画走完（240ms 兜底）才真正卸载。 */
+@keyframes undoOut { to { opacity: 0; translate: 0 8px; } }
+.undo-bar[data-closing] { animation: undoOut var(--dur-base) var(--ease-out) forwards; pointer-events: none; }
 @media (prefers-reduced-motion: reduce) { .undo-bar { animation: none; } }
 
 .msg-row { display: flex; flex-direction: column; max-width: 100%; }
@@ -380,6 +392,7 @@ input, textarea {
 .typing i {
   width: 5px; height: 5px; border-radius: 50%;
   background: color-mix(in srgb, var(--accent) 70%, var(--text-subtle));
+  /* 氛围循环：1.3s 一拍远低于 3Hz 闪光阈值，快了反而像报错（≥1s 豁免，见映射口径） */
   animation: breathe 1.3s ease-in-out infinite;
 }
 .typing i:nth-child(2) { animation-delay: var(--dur-base); }
@@ -418,8 +431,9 @@ input, textarea {
 }
 .chip:hover { border-color: var(--border-strong); color: var(--text); }
 .chip.on {
-  border-color: color-mix(in srgb, var(--accent) 44%, var(--border));
-  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  /* 选中配方已提炼成 theme.css 的 --sel-bg/--sel-border，全站 chip 一套语言 */
+  border-color: var(--sel-border);
+  background: var(--sel-bg);
   color: var(--accent-ink); font-weight: 600;
 }
 .chip.on:hover { border-color: var(--accent); color: var(--accent-ink); }
@@ -519,6 +533,14 @@ input, textarea {
 }
 @keyframes menuIn { 0% { opacity: 0; transform: translateY(-3px); } }
 @media (prefers-reduced-motion: reduce) { .msgmenu { animation: none; } }
+/* 退场：与入场 menuIn 互为镜像——menuIn 从 -3px 沉降到原位，退场原路浮回、淡出
+   （挂 data-closing 由组件侧 useExitVisible 驱动；animationend 或 240ms 兜底计时收场）。
+   动 translate 而不是 transform：translate 是独立属性，不会冲掉 switch-pop 一族
+   翻转定位用的 transform: translateY(-100%)（menuIn 动 transform 是历史写法，
+   首帧同样盖掉翻转位移，只是 0% 就在 opacity:0 上没人看见）。reduced-motion 下
+   theme.css 把 --dur-* 压成 .01ms，动画一瞬即逝，由兜底计时器收场。 */
+@keyframes menuOut { to { opacity: 0; translate: 0 -3px; } }
+.msgmenu[data-closing] { animation: menuOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
 
 .msgmenu button {
   display: flex; flex-direction: column; gap: 1px;
@@ -547,7 +569,12 @@ input, textarea {
    所以这里用白叠加而不是 --bg-hover。别在下一轮统一掉。 */
 .msgmenu.dark button:hover { background: rgba(255, 255, 255, .14); }
 .msgmenu.dark button .lb { color: #f2f2f2; white-space: nowrap; }
+/* 说明文字同样不跟随主题：从前漏继承浅色菜单的 --text-muted（#5f5a51），
+   压在 rgba(30,30,30,.94) 上只有约 2:1——「放回输入框再发一次」这类最有价值的
+   提示实际看不清。白系 64% 在同底色上 ≈6.4:1，与 .lb 的层级关系保留。 */
+.msgmenu.dark button .nt { color: rgba(242, 242, 242, .64); }
 .msgmenu.dark button.danger .lb { color: #ff6b61; }
+.msgmenu.dark button.danger .nt { color: rgba(255, 122, 110, .66); }
 .mm-arrow {
   position: absolute; width: 10px; height: 10px;
   background: inherit; border-radius: 2px;
@@ -601,6 +628,11 @@ input, textarea {
 }
 @keyframes toastIn { 0% { opacity: 0; transform: translateY(6px); } }
 @media (prefers-reduced-motion: reduce) { .toast { animation: none; } }
+
+/* 全局轻提示（ToastLayer，挂在 App 根上）的层级：.toast-layer 本体用 --z-chat-pop
+   是给会话视图自己的浮层定的；全局这条要盖过设置页的居中确认弹窗（Modal），
+   否则「确认之后弹出的失败提示」会被弹窗压在下面看不见。 */
+.toast-layer-app { z-index: var(--z-toast); }
 
 /* 撤回后的消息：气泡换成一行灰字，跟 IM 的既有心智一致 */
 .msg-row.retracted { align-items: center; }
@@ -796,6 +828,9 @@ input, textarea {
   border-radius: var(--radius-xl); box-shadow: var(--shadow-menu);
   padding: var(--space-3); z-index: var(--z-menu);
 }
+/* 退场：rail-menu 没有自己的入场动画，借同族 menuOut（menuIn 的镜像，见 .msgmenu 段）
+   收尾，不另造观感；3px 的位移方向差在 216px 的菜单上不可感。 */
+.rail-menu[data-closing] { animation: menuOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
 /* 菜单原语（Rail 的「更多」与助手弹窗的「更多操作」共用） */
 .menu-label {
   font-size: var(--text-xs); letter-spacing: .07em; color: var(--text-subtle);
@@ -1017,9 +1052,14 @@ input, textarea {
 /* 消息流例外：槽位只在右侧预留，会把右对齐的「我的头像」比她的头像多推 10px
    （实测 24 vs 14）。聊天流本来就贴着底部，这条滚动条没有导航价值——
    不显示也就没有忽现忽隐，预留槽要解决的问题同样不存在。 */
-/* 消息行不做 content-visibility：离屏行塌缩成估算高度后，「进会话落底」量到的
-   scrollHeight 是假的（实测 500 行差 1352px），塌缩记住的高度也不可信、滚动条会
-   自己缩。500 行是后端封顶，真实布局的滚动是稳的；这个性能优化和核心体验冲突，撤。 */
+/* 消息行不做 content-visibility 跳渲染——「常开」与「落底后再放开」两个变体都试过、
+   都撤了：常开时离屏行塌缩成估算高度，「进会话落底」量到的 scrollHeight 是假的
+   （实测 500 行差 1352px）；「落底稳定两拍后再放开」绕开了估高，但跳转落点附近的
+   行在跳完之后才完成最终布局，scrollHeight 随后变化让一次性 scrollTop 赋值停在半空，
+   且跳转自己触发的 scroll 事件在高度长完之后才派发、会把 onScroll 重判的 stickRef
+   摘掉——「一键到底」「切人落底」接连失准。滚动正确性（贴底 ±2px、未读计数、
+   搜索/地图定位）比长会话的渲染收益值钱，整体撤除，详见 experience.css 的撤除记录。
+   scrollDown 的收敛循环保留：对图片解码、链接卡长高这类正常的落底后高度变化仍有效。 */
 
 /* 触屏没有 Ctrl+Enter / Shift+Enter，这类快捷键说明只在有物理指针时出现 */
 @media (pointer: coarse) { .kbd-only { display: none; } }
@@ -1169,7 +1209,9 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
   background: var(--bg-sunken); border: 1px solid var(--border);
   border-radius: var(--radius-lg); transition: border-color var(--dur-fast);
 }
-.probe input:focus { border-color: var(--border-strong); }
+/* 「聚焦」语义全站一个颜色语言：全局输入走 --accent-ink（foundation.css 输入段），
+   这里从前落在 --border-strong 上，同一个动作两种颜色。 */
+.probe input:focus { border-color: var(--focus-ring); }
 .probe input::placeholder { color: var(--text-subtle); }
 .probe button {
   flex: none; padding: 0 var(--space-7); border-radius: var(--radius-lg);
@@ -1287,10 +1329,12 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 /* 记忆空间下拉：与表情包那套自定义弹层同形（原生 select 的弹层不吃主题）。 */
 .mem-space { position: relative; display: inline-flex; }
 .mem-space-btn { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; }
-.mem-space-caret { transition: transform .15s ease; flex-shrink: 0; }
+.mem-space-caret { transition: transform var(--dur-fast) ease; flex-shrink: 0; }
 .mem-space-caret.on { transform: rotate(180deg); }
+/* 锚在按钮上的下拉弹层，与 .s-add-pop / .chatmenu-pop 同族，走 --z-subpop；
+   原来的裸 40 与 --z-backdrop 撞档，读起来像遮罩层，其实是内容弹层。 */
 .mem-space-pop {
-  position: absolute; right: 0; top: calc(100% + 6px); z-index: 40;
+  position: absolute; right: 0; top: calc(100% + 6px); z-index: var(--z-subpop);
   width: min(300px, calc(100vw - 32px));
   max-height: 300px; overflow-y: auto;
   padding: 6px; border: 1px solid var(--edge-float); border-radius: 12px;
@@ -1336,9 +1380,29 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 }
 .empty a { text-decoration: underline; text-underline-offset: 2px; }
 
+/* EmptyState 组件（components/EmptyState.tsx）的呈现层：图标 → 主文案 → 补充 → 动作。
+   这里只定骨架与节奏，颜色语义走令牌；各旧空态类迁到组件后随迁随删。 */
+.empty-state { display: flex; flex-direction: column; align-items: center; gap: var(--space-2); }
+.empty-state-icon {
+  display: flex; align-items: center; justify-content: center;
+  width: 40px; height: 40px; margin-bottom: var(--space-2);
+  border-radius: var(--radius-full); color: var(--text-subtle);
+  background: var(--bg-sunken);
+}
+.empty-state-icon svg { width: 20px; height: 20px; }
+.empty-state-title { font-size: var(--text-note); color: var(--text-muted); font-weight: 500; }
+.empty-state-hint { font-size: var(--text-aux); color: var(--text-subtle); line-height: 1.7; max-width: 34em; }
+.empty-state-actions { margin-top: var(--space-3); display: flex; gap: var(--space-3); flex-wrap: wrap; justify-content: center; }
+.empty-state-compact { padding: var(--space-4) var(--space-3); gap: var(--space-1); }
+.empty-state-compact .empty-state-icon { width: 28px; height: 28px; margin-bottom: 0; }
+.empty-state-compact .empty-state-icon svg { width: 15px; height: 15px; }
+.empty-state-compact .empty-state-title { font-size: var(--text-aux); }
+.empty-state-compact .empty-state-actions { margin-top: var(--space-2); }
+
 .skeleton {
   height: 62px; border-radius: var(--radius-xl);
   background: var(--bg-elevated); border: 1px solid var(--border);
+  /* 氛围循环：骨架呼吸贴着心跳节奏 1.6s，不归三档管（≥1s 豁免，见映射口径） */
   animation: pulse 1.6s ease-in-out infinite;
 }
 @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
@@ -1919,6 +1983,7 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
     radial-gradient(26% 22% at 76% 66%, rgba(214, 122, 150, .24), transparent 70%),
     radial-gradient(22% 20% at 58% 12%, rgba(64, 108, 190, .18), transparent 72%);
   will-change: transform;
+  /* 氛围循环：星云漂移 64s，壁纸是用户显式选中的动态素材（≥1s 豁免） */
   animation: wp-drift 64s ease-in-out infinite alternate;
 }
 /* 地平线辉光 + 暗角：静态一层，把画面重心压住，零动画成本 */
@@ -1939,6 +2004,7 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
     radial-gradient(1px 1px at 66px 140px, rgba(214,226,255,.7), transparent 100%),
     radial-gradient(1.2px 1.2px at 170px 178px, rgba(255,255,255,.5), transparent 100%);
   background-size: 240px 220px;
+  /* 氛围循环：密星闪烁 6.5s（≥1s 豁免，见映射口径） */
   animation: wp-twinkle 6.5s ease-in-out infinite;
 }
 .wp-stars::after {
@@ -1949,6 +2015,7 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
     radial-gradient(2.6px 2.6px at 128px 196px, rgba(255,240,200,.9), transparent 100%),
     radial-gradient(1.6px 1.6px at 240px 64px, rgba(255,255,255,.7), transparent 100%);
   background-size: 320px 300px;
+  /* 氛围循环：亮星缓漂 92s，靠极慢速度差造视差（≥1s 豁免） */
   animation: wp-star-drift 92s linear infinite;
 }
 /* 流星：十四道光痕分成近景、中景、远景三档。近景更长更亮、远景更短更淡，
@@ -1982,6 +2049,7 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
   /* 不把所有流星都常驻提升为合成层：只有四道近景火流星提前声明 will-change，
      其余流星交给 Chromium 在动画期间按需提升，减少长期占用的显存。 */
   will-change: auto;
+  /* 氛围循环：流星周期/延迟由 JS 按道下发（默认 11s），≥1s 豁免 */
   animation: wp-meteor var(--meteor-duration, 11s) linear var(--meteor-delay, 0s) infinite;
 }
 .wp-meteors .wp-meteor:nth-child(1),
@@ -2441,7 +2509,7 @@ html.native-frame #shell {
 }
 .titlebar {
   position: fixed; top: 0; left: 0; right: 0;
-  height: var(--frame-h, 40px); z-index: 200;
+  height: var(--frame-h, 40px); z-index: var(--z-titlebar);
   display: flex; align-items: center; gap: 12px;
   padding-left: 16px;
   border-bottom: 1px solid color-mix(in srgb, var(--border) 72%, transparent);

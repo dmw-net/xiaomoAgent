@@ -9,9 +9,10 @@
 // 快照由 ToolsWorkbench 统一持有，这一屏不再自己缓存一份可能过期的状态。
 
 import { useRef, useState } from "react";
-import { FileJson, Plus, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { FileJson, Plus, RefreshCw, Trash2, Upload, Wrench, X } from "lucide-react";
 import * as extensionsApi from "../../api/extensions";
-import Switch from "../../components/Switch";
+import EmptyState from "../../components/EmptyState";
+import ToggleSwitch from "../../components/ToggleSwitch";
 import type { ExtensionSnapshot, ExtensionSnapshotEntry, ExtensionToolKind } from "../../types";
 
 const KIND_LABEL: Record<ExtensionToolKind, string> = { mcp: "MCP", webhook: "Webhook", script: "JS" };
@@ -240,7 +241,7 @@ export default function ExtensionSection({ ask, snapshot, onSnapshot, onRefresh 
           <h3>安全边界</h3>
           <span className="tw-panel-note">外部服务会收到工具调用的参数；只导入可信来源的清单。</span>
         </div>
-        <Switch
+        <ToggleSwitch
           checked={snapshot?.allowScripts === true}
           disabled={snapshot === null || busy !== ""}
           onChange={toggleScriptGate}
@@ -288,13 +289,14 @@ export default function ExtensionSection({ ask, snapshot, onSnapshot, onRefresh 
         onChange={(e) => onPickFile(e.target.files?.[0])} />
 
       {snapshot === null ? (
+        /* 读取中不是空态，保持原来的 ext-empty 纯文字提示。 */
         <div className="ext-empty"><b>正在读取扩展列表…</b><span>第一次打开会向本机后端取一次清单快照。</span></div>
       ) : extensions.length === 0 ? (
-        <div className="ext-empty">
-          <b>还没有扩展</b>
-          <span>导入一份清单后即可启用。MCP 服务会在启用时自动拉取工具目录；Webhook 与 JS 工具由清单自带。</span>
+        /* 「还没有扩展」空态迁到统一组件：主文案 + 补充 + 唯一下一步（选清单文件）。 */
+        <EmptyState icon={<FileJson size={20} strokeWidth={1.5} />} title="还没有扩展"
+          hint="导入一份清单后即可启用。MCP 服务会在启用时自动拉取工具目录；Webhook 与 JS 工具由清单自带。">
           <button type="button" className="btn sm" onClick={() => fileRef.current?.click()}>选择清单文件</button>
-        </div>
+        </EmptyState>
       ) : (
         <div className="ext-cards">
           {extensions.map((entry) => {
@@ -332,7 +334,9 @@ export default function ExtensionSection({ ask, snapshot, onSnapshot, onRefresh 
                 </div>
 
                 {entry.tools.length === 0 ? (
-                  <div className="ext-tools-empty">还没有工具。启用 MCP 后点「连接测试」拉取目录，或在上面添加自定义工具。</div>
+                  /* 卡片内的窄空间空态：compact，主文案与指引分两段。 */
+                  <EmptyState compact icon={<Wrench size={18} strokeWidth={1.5} />} title="还没有工具"
+                    hint="启用 MCP 后点「连接测试」拉取目录，或在上面添加自定义工具。" />
                 ) : (
                   <div className="ext-tools">
                     {entry.tools.map((tool) => {
@@ -406,7 +410,7 @@ export default function ExtensionSection({ ask, snapshot, onSnapshot, onRefresh 
                 )}
 
                 <div className="ext-card-foot">
-                  <Switch checked={entry.enabled} disabled={busy !== ""} onChange={(next) => toggle(entry, next)} label="启用" />
+                  <ToggleSwitch checked={entry.enabled} disabled={busy !== ""} onChange={(next) => toggle(entry, next)} label="启用" />
                   <div className="ext-card-acts">
                     <button type="button" className="btn sm" onClick={() => probe(entry)} disabled={busy !== ""}>
                       <RefreshCw size={13} /> {busy === entry.id ? "连接中…" : "连接测试"}

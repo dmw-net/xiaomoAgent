@@ -13,8 +13,6 @@ const OPTIONS = [
 
 export default function ToolLoopSection({ form }: { form: SettingsForm }): JSX.Element {
   const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState("");
-  const [err, setErr] = useState("");
   const [custom, setCustom] = useState("");
   const current = form.saved?.toolLoopTurns ?? 5;
   const limits = form.saved?.toolLoopTurnLimits ?? { min: 1, max: 16 };
@@ -23,17 +21,13 @@ export default function ToolLoopSection({ form }: { form: SettingsForm }): JSX.E
   const customValid = custom.trim() !== "" && Number.isInteger(customValue)
     && customValue >= limits.min && customValue <= limits.max;
 
+  // 成败提示走全局 toast（hook 内 offerToast）：这条 note 原来绑在台账卡的就地
+  // banner 上，用户设完轮次切个分组就看不见了。这里只保留按钮级的「保存中…」。
   const saveTurns = (turns: number): void => {
     if (busy || form.busy !== "" || turns === current) return;
     setBusy(true);
-    setNote("");
-    setErr("");
-    form.saveToolLoopTurns(turns)
-      .then((saved) => {
-        setNote(`已设为 ${saved} 轮，下一轮对话立即生效。`);
-        setCustom("");
-      })
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
+    void form.saveToolLoopTurns(turns)
+      .then((saved) => { if (saved !== null) setCustom(""); })
       .finally(() => setBusy(false));
   };
 
@@ -90,8 +84,6 @@ export default function ToolLoopSection({ form }: { form: SettingsForm }): JSX.E
           </button>
         </div>
         <div className="hint">普通联系人共用此设置；设置助手固定 8 轮。</div>
-        {note !== "" && <div className="banner show ok" role="status"><div className="body">{note}</div></div>}
-        {err !== "" && <div className="banner show bad" role="alert"><div className="body">{err}</div></div>}
       </div>
     </div>
   );

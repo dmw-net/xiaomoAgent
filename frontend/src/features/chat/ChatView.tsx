@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, RotateCcw, Search, Square, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, RotateCcw, Search, Smile, Square, X } from "lucide-react";
 import { ApiError, chatApi, contactsApi, memoryApi, proactiveApi, settingsApi } from "../../api";
 import { refreshContacts } from "../../lib/contactsStore";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
@@ -17,11 +17,13 @@ import { onBusEvent } from "../../lib/eventBus";
 import { enqueueOutbox, flushOutbox, outboxForContact, subscribeOutbox } from "../../lib/outbox";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useAnchoredPop } from "../../hooks/useAnchoredPop";
+import { useExitVisible } from "../../hooks/useExitVisible";
 import { useLiveReveal } from "../../hooks/useLiveReveal";
 import { useNotices } from "../../hooks/useNotices";
 import { CHAT_RESIZE_EVENT } from "../../hooks/useResizeSignal";
 import { stopExclusiveAudio, playExclusiveAudio } from "../../lib/audioBus";
 import Avatar from "../../components/Avatar";
+import EmotePicker from "../../components/EmotePicker";
 import { avatarToneStyle } from "../../lib/avatar-tone";
 import MessageMenu, { type MenuState } from "./MessageMenu";
 import Modal from "../../components/Modal";
@@ -46,7 +48,10 @@ type PendingChatConfirm =
 
 /** 消息流的渲染节点：普通消息之间插日分隔；时间戳落在气泡内，不再占独立行。 */
 type ListNode =
-  | { t: "daysep"; label: string }
+  /* day：daysep 的 React key 用日期串而不是 label——「今天」这类相对称呼跨页拼接
+     （载入更早 / 搜索窗口合并）后列表里可能出现两条同 label 的分隔，label 做 key
+     会撞；日期串在同一帧构建里天然唯一（只在跨天时推入），时钟偏好切换时也更稳。 */
+  | { t: "daysep"; label: string; day: string }
   | { t: "msg"; m: MessageRow; gap: boolean; clock?: string }
   | { t: "tool"; m: MessageRow }
   | { t: "pending"; id: string; text: string; imgs: string[]; voice?: MessageAttachmentMeta; gap: boolean; failed?: boolean; queued?: boolean }
@@ -60,6 +65,12 @@ const msgsSeed = new Map<string, MessageRow[]>();
 
 /** 种子缓存容量。Map 的迭代顺序即插入顺序，先删再插等于 LRU。 */
 const SEED_MAX = 5;
+
+/** 「已经到最早了」提示的最低加载量。首屏一页就是几百条（后端 CHAT_FIRST_PAGE=500，
+ *  「载入更早」一页 200，同一量级取 200）：不到这个量说明会话本身就短、用户没翻过页，
+ *  顶部挂这句纯属占地方——新会话发完第一句顶上就写着"已经到最早了"，像句废话。
+ *  超过它才值得说破"上面真的没有了"。 */
+const EARLIEST_HINT_MIN_ROWS = 200;
 /** 上下文各分量的白话名：后端给的是「系统提示词 / 记忆召回」这类内部词，界面换成用户能看懂的说法。 */
 const CTX_PART_LABEL: Record<string, string> = {
   system: "联系人的人设与规则",
@@ -172,6 +183,116 @@ function rememberDraft(key: string, text: string): void {
     if (oldest === undefined) break;
     draftSeed.delete(oldest);
   }
+}
+
+/**
+ * 会话内记住的阅读位置（切走时视口顶部压着的锚点行 + 它到容器顶的像素偏移）。
+ * 与 draftSeed 同一生命周期口径：只活在本次应用会话里，重启后回到最新消息。
+ *
+ * 为什么存「锚点行」而不是 scrollTop 绝对值：切走再切回来是整实例重挂载（key 换人），
+ * 消息要重新拉取，拉取条数、图片占位都会让绝对像素失配；锚点行定位（scrollIntoView
+ * / 矩形差补偿）不依赖 scrollHeight 的绝对值，行还没按真实高度布局时也准——
+ * 也一样准——浏览器会先把目标行变相关、渲染出真实高度再算滚动位置。
+ * 本来就贴着底切走的（绝大多数情况）不存记录，回来照旧落底，旧契约不变。
+ */
+type SavedReadPos = { anchorId: number; offset: number };
+const readPosSeed = new Map<string, SavedReadPos>();
+function rememberReadPos(key: string, pos: SavedReadPos | null): void {
+  if (key === "") return;
+  if (pos === null) { readPosSeed.delete(key); return; }
+  readPosSeed.delete(key);
+  readPosSeed.set(key, pos);
+  while (readPosSeed.size > 12) {
+    const oldest = readPosSeed.keys().next().value;
+    if (oldest === undefined) break;
+    readPosSeed.delete(oldest);
+  }
+}
+
+/**
+ * 录音态的实时音量波形（composer 里那条细长条）。
+ *
+ * 数据不另采：startRecording 已经在用 AudioContext + AnalyserNode 按 120ms 一拍把
+ * 归一化 RMS 推进 recWaveRef——正是发语音时存进 meta.waveform 的那份数据。这里只做
+ * 重画，composer 上的波形等于是「将要发出去的语音波形」的实时预览：两份数据天然一致，
+ * 也不会出现第二套采集口径。
+ *
+ * 视觉纪律：单色 var(--accent)，历史条向左渐隐、最新一帧恒在最右，不做彩色频谱。
+ *
+ * prefers-reduced-motion 的取舍：选「低频更新」而不是整条隐藏。彻底砍掉会把录音中
+ * 唯一的连续反馈也带走（只剩红点+秒数，信息量倒退）；降级成 500ms 一拍的重画——
+ * 离散跳变、无滑移无闪烁节奏，与 .spin 退让成慢呼吸是同一先例。两条路各自建帧/清帧，
+ * 卸载即 cancel，不泄漏 rAF。
+ */
+function RecWaveMeter({ active, samplesRef }: {
+  active: boolean;
+  /** 已在采的音量历史（ChatView 的 recWaveRef），120ms 一拍，0.1..1。 */
+  samplesRef: RefObject<number[]>;
+}): JSX.Element | null {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  // 初始值读一次即可；运行中系统切换 reduce 档位是极小概率事件，监听一遍成本也不高。
+  const [reduced, setReduced] = useState(
+    () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  );
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const onChange = (): void => setReduced(mq.matches);
+    mq.addEventListener("change", onChange);
+    return () => mq.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!active) return;
+    const canvas = canvasRef.current;
+    const ctx = canvas?.getContext("2d");
+    if (!canvas || !ctx) return;
+    let raf = 0;
+    let timer = 0;
+    const draw = (): void => {
+      const w = canvas.clientWidth;
+      const h = canvas.clientHeight;
+      if (w === 0 || h === 0) return;
+      const dpr = window.devicePixelRatio || 1;
+      const pw = Math.round(w * dpr);
+      const ph = Math.round(h * dpr);
+      if (canvas.width !== pw || canvas.height !== ph) { canvas.width = pw; canvas.height = ph; }
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.clearRect(0, 0, w, h);
+      const samples = samplesRef.current;
+      if (!samples || samples.length === 0) return;
+      // 3px 条 + 1px 缝：宽度自适应剩多少空间就画多少根，历史按 120ms 一帧回放。
+      const slot = 4;
+      const count = Math.max(1, Math.floor(w / slot));
+      const visible = samples.slice(-count);
+      // 强调色是运行时变量（用户可换 accent），canvas 读不到 CSS 变量，每帧从计算样式取。
+      const color = getComputedStyle(canvas).getPropertyValue("--accent").trim();
+      if (color === "") return;
+      ctx.fillStyle = color;
+      const mid = h / 2;
+      for (let i = 0; i < visible.length; i++) {
+        const level = Math.min(1, Math.max(0.06, visible[i] ?? 0));
+        // 平方渐隐：越老的帧退得越快，视觉重心始终压在最新一拍上。
+        const age = (i + 1) / visible.length;
+        ctx.globalAlpha = 0.14 + 0.86 * age * age;
+        const barH = Math.max(2, level * (h - 4));
+        ctx.fillRect(w - (visible.length - i) * slot, mid - barH / 2, slot - 1, barH);
+      }
+      ctx.globalAlpha = 1;
+    };
+    if (reduced) {
+      draw();
+      timer = window.setInterval(draw, 500);
+    } else {
+      const loop = (): void => { draw(); raf = requestAnimationFrame(loop); };
+      raf = requestAnimationFrame(loop);
+    }
+    return () => { cancelAnimationFrame(raf); window.clearInterval(timer); };
+  }, [active, reduced, samplesRef]);
+
+  if (!active) return null;
+  // 纯装饰：录音状态已由 rec-state 的文字与红点向读屏通报，画布对辅助技术静默。
+  return <canvas ref={canvasRef} className="rec-wave" aria-hidden="true" />;
 }
 
 export default function ChatView({ characterName, ownerName, ownerAvatar, contactAvatar, onSwitchContact, contactIdOverride, conversationId, conversationTitle, readOnly = false, onOpenLocal, conversations = [], onOpenConversation, introChip, onBack, onEditProfile, onOpenSection, onOpenModelSettings, onOpenOnboarding, onContactArchived, msgScope, focusMessageId, onFocusHandled, onStatus, paused , showThinking = true, showTools = true, imageGenOn = false, streamReveal = true, composerAccessory }: {
@@ -334,6 +455,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const searchSeqRef = useRef(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchJumpRef = useRef<(m: MessageRow) => void>(() => {});
+  /** 搜索/地图跳转命中的那一条：一次只挂一个脉冲（行 + 定时器），连跳下一条时
+      先摘旧的再挂新的，定时器只留最新一个——不然快速 ↓ 连跳会漏下一堆计时器。 */
+  const hitPulseRef = useRef<{ row: HTMLElement; timer: number } | null>(null);
   const [mapOpen, setMapOpen] = useState(false);
   const [mapActiveId, setMapActiveId] = useState<number | null>(null);
   const mapRafRef = useRef<number | null>(null);
@@ -347,12 +471,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   /** 编辑自己的话有两种后果：只改文字（后面原样保留）/ 改完从这里重开。菜单决定，这里记住。 */
   const [editTextOnly, setEditTextOnly] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  /** 待恢复的阅读位置：boot 拉到消息时挂进来，由 loaded 翻真那一拍的 layout effect 消费一次。 */
+  const restoreRef = useRef<SavedReadPos | null>(null);
   useEffect(() => { if (cacheKey) rememberMsgs(cacheKey, msgs); }, [msgs, cacheKey]);
   useEffect(() => { rememberDraft(cacheKey, draft); }, [draft, cacheKey]);
 
   // ── 上下文用量（估算值）：圆环常驻显示，挂载即拉、消息变动时刷新；点开浮层再拉一次 ──
   const [ctx, setCtx] = useState<ContextUsage | null>(null);
   const [ctxOpen, setCtxOpen] = useState(false);
+  // 浮层退场：open 置假先播 cardOut 淡出，走完再摘 portal（背板一起走）。
+  const ctxExit = useExitVisible(ctxOpen, "cardOut");
   const [ctxErr, setCtxErr] = useState("");
   const ctxBtnRef = useRef<HTMLButtonElement>(null);
   const loadCtx = useCallback((): void => {
@@ -378,6 +506,21 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     setThinkingOpenTurns((prev) => prev[turnId] === undefined ? { ...prev, [turnId]: true } : prev);
   }, [streamReasoning]);
 
+  // 草稿→定稿交接拍（draftRetired 翻真＝真气泡落位）：把这轮的展开态补记成草稿
+  // 当时的值（草稿侧默认 ?? true，所以补记的正是 true）。常规路径上首个推理片段
+  // 到达时上面那条已经写入，但推理与气泡落位之间存在时序窗口——同拍到达、
+  // 切走再回来由 checkTurnState 重新接管 watch 时会先删掉这条记录——漏记的话
+  // 定稿气泡拿到 undefined，落回 ThinkingBlock 内部的默认收起：用户正读着的
+  // 推理面板啪地合上，persistKey 的滚动位置恢复也一起失效。只在「草稿真的挂着
+  // 思考面板」（streamReasoning 非空）且只写交接那一拍的那一轮，历史旧气泡不受影响；
+  // 用户在流式期间手动收起（记录为 false）时不动，尊重用户的选择。
+  useEffect(() => {
+    if (!draftRetired || streamReasoning === "") return;
+    const turnId = draftTurnRef.current;
+    if (!turnId) return;
+    setThinkingOpenTurns((prev) => prev[turnId] !== undefined ? prev : { ...prev, [turnId]: true });
+  }, [draftRetired, streamReasoning]);
+
   // ── 聊天模型快捷切换：只改这一位联系人的绑定，不动全局主模型 ──
   const chatModelScope = cid ?? msgScope ?? "";
   const modelSwitchable = cid === undefined && chatModelScope !== "";
@@ -387,6 +530,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [globalModelReady, setGlobalModelReady] = useState(false);
   const [globalModelEcho, setGlobalModelEcho] = useState(false);
   const [modelOpen, setModelOpen] = useState(false);
+  // 模型浮层退场：open 置假先播 cardOut（与入场 cardIn 互为镜像），走完再摘 portal。
+  // 定位 hook 吃 visible 而不是 open：退场帧里坐标得原样保留，visibility:hidden 会闪没。
+  const modelExit = useExitVisible(modelOpen, "cardOut");
   /** 模型浮层当前展开的区：模型列表 / 推理等级。开浮层永远回到模型列表。 */
   const [modelPane, setModelPane] = useState<"models" | "think">("models");
   const [modelQuery, setModelQuery] = useState("");
@@ -426,7 +572,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       .catch((error: Error) => setModelError(error.message));
   }, [chatModelScope, modelSwitchable]);
   useDismiss(modelOpen, () => setModelOpen(false), modelWrapRef);
-  const modelPopPos = useAnchoredPop(modelOpen, modelTriggerRef, 390);
+  const modelPopPos = useAnchoredPop(modelExit.visible, modelTriggerRef, 390);
   useEffect(() => {
     if (!modelSwitchable) return;
     loadModels();
@@ -474,7 +620,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     <button key={item.value} type="button" role="radio"
       aria-checked={modelProfileId === item.value}
       className={"model-option" + (modelProfileId === item.value ? " on" : "")}
-      disabled={modelBusy} onClick={() => chooseModel(item.value)}>
+      disabled={modelBusy} tabIndex={modelExit.closing ? -1 : undefined} onClick={() => chooseModel(item.value)}>
       <span className="model-option-copy">
         <b>{item.label}</b>
         {item.detail !== "" && <small>{item.detail}</small>}
@@ -544,7 +690,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   // 这两个浮层此前只认「点遮罩」，键盘用户按 Esc 什么都不会发生。
   // 浮层本体标 data-keep-menu，内部点击才不会被 useDismiss 误判成外部点击。
   useDismiss(ctxOpen, () => { setCtxOpen(false); });
-  const ctxPopPos = useAnchoredPop(ctxOpen, ctxBtnRef, 264);
+  // 定位 hook 吃 visible：退场帧里坐标原样保留（useAnchoredPop 关掉会清成 null，
+  // 弹层会以 visibility:hidden 渲染，退场动画就白播了）。
+  const ctxPopPos = useAnchoredPop(ctxExit.visible, ctxBtnRef, 264);
 
   const toggleCtx = (): void => {
     setModelOpen(false);
@@ -571,6 +719,17 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [ttsBusyId, setTtsBusyId] = useState<number | null>(null);
   const [zoom, setZoom] = useState<string | null>(null);
   useDismiss(!!zoom, () => { setZoom(null); });
+
+  // composer 表情入口：弹层走 portal + 锚定定位（model-pop 同一套）。
+  // 触发钮外包一层 wrapper 交给 useDismiss——弹层本体虽标 data-keep-menu，
+  // 但触发钮不在里面，不兜住的话「点开钮的那一下」会先被当成外部点击关掉再立刻重开。
+  const [emoteOpen, setEmoteOpen] = useState(false);
+  // 表情弹层退场：open 置假先播 menuOut 淡出（与 menuIn 互为镜像），走完再摘 portal。
+  const emoteExit = useExitVisible(emoteOpen, "menuOut");
+  const emoteWrapRef = useRef<HTMLDivElement>(null);
+  const emoteBtnRef = useRef<HTMLButtonElement>(null);
+  useDismiss(emoteOpen, () => setEmoteOpen(false), emoteWrapRef);
+  const emotePopPos = useAnchoredPop(emoteExit.visible, emoteBtnRef, 320);
 
   // 微信式的会话状态：联系人在忙什么就说什么，连接信息退到异常时才出现。
   const chatStatus = useMemo<{ text: string; tone: string }>(() => {
@@ -625,6 +784,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const userHoldRef = useRef(false);
   /** 顶栏「⋯」下拉（微信式聊天详情入口）：编辑资料。 */
   const [headMenu, setHeadMenu] = useState(false);
+  // 菜单退场：先播 menuOut 淡出再从树上摘掉；useDismiss 随 headMenu 置假自动停用。
+  const headMenuExit = useExitVisible(headMenu, "menuOut");
   const headBtnRef = useRef<HTMLButtonElement>(null);
   /** 「⋯」里的归档二次确认（和侧栏右键菜单一个套路）。触发点与菜单本体都标了 data-keep-menu。 */
   useDismiss(headMenu && editingId === null, () => setHeadMenu(false));
@@ -654,17 +815,43 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     if (!el) return true;
     return el.scrollHeight - el.scrollTop - el.clientHeight < 120;
   }, []);
+  /** 强制滚动的序号：搜索/地图跳转、编辑定位、键盘走位这类「去别处」的显式滚动
+      会把它 +1，正在跑的落底收敛循环看到序号变了就收手让位。 */
+  const scrollSeqRef = useRef(0);
   const scrollDown = useCallback((force?: boolean, instant?: boolean) => {
     const el = logRef.current;
     if (!el || !(force || nearBottom())) return;
-    const target = el.scrollHeight - el.clientHeight;
-    if (instant || target - el.scrollTop > 300) {
-      // 远距离定位（进会话/切联系人）与逐字追底：跳过平滑动画直接落底。
-      // 追字那一档尤其要走这里——smooth 被 30 次/秒重启就永远追不完，看着是整页在往上爬。
+    const jump = (): void => {
       const prev = el.style.scrollBehavior;
       el.style.scrollBehavior = "auto";
       el.scrollTop = el.scrollHeight;
       el.style.scrollBehavior = prev;
+    };
+    const far = el.scrollHeight - el.clientHeight - el.scrollTop > 300;
+    if (instant || far) {
+      // 远距离定位（进会话/切联系人）与逐字追底：跳过平滑动画直接落底。
+      // 追字那一档尤其要走这里——smooth 被 30 次/秒重启就永远追不完，看着是整页在往上爬。
+      jump();
+      // 收敛循环：跳转落点附近的行在跳完之后才完成最终布局（图片解码、链接卡异步
+      // 长高），scrollHeight 会在随后一两帧里变化——单次赋值可能停在半空。「一键到底」
+      // 点完不到底、切联系人回来落点不对，都是它。逐帧验证还没贴底就再顶一次，贴底即收。
+      // 只挂在瞬时分支：≤300px 的近距平滑滚动不进来，微滚动手感不受影响。
+      //
+      // 让位条件必须用 userHoldRef 而不是 stickRef：落底过程中间态离底超过 120px 时，
+      // 跳转自己触发的 scroll 事件会把 stickRef 重判成 false（那次事件是在高度长完之后
+      // 才派发的，看到的已经是新 scrollHeight）——上一版收敛循环在第一帧就被它掐死，
+      // 「一键到底」还是不到底。用户上滑（wheel/touchmove → takeOver）与显式滚动命令
+      // （scrollSeqRef 变号）才是真正的「别再顶了」。
+      const seq = ++scrollSeqRef.current;
+      const start = performance.now();
+      const settle = (): void => {
+        if (!logRef.current || scrollSeqRef.current !== seq) return;
+        if (userHoldRef.current || performance.now() - start > 800) return;
+        if (el.scrollTop >= el.scrollHeight - el.clientHeight - 1) return;
+        jump();
+        requestAnimationFrame(settle);
+      };
+      requestAnimationFrame(settle);
     } else {
       el.scrollTop = el.scrollHeight;
     }
@@ -856,6 +1043,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const onWiped = (): void => {
     msgsSeed.clear();
     draftSeed.clear();
+    readPosSeed.clear();
     setMsgs([]);
     lastIdRef.current = 0;
     pendingsRef.current = [];
@@ -1098,12 +1286,15 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     attachments?: string[];
     attachmentMeta?: MessageAttachmentMeta[];
     voice?: MessageAttachmentMeta;
+    /** 独立发送（语音 / 表情这类自成一条的动作）：不合并待发图片、不吞草稿。 */
+    standalone?: boolean;
   }): void => {
     const text = raw.trim();
     const extraAttachments = extras?.attachments ?? [];
     const voice = extras?.voice;
-    // 语音是独立的发送动作：不把输入区里还没发的图片一起塞进这条语音消息。
-    const attachments = voice ? [...extraAttachments] : [...imgsRef.current, ...extraAttachments];
+    const standalone = extras?.standalone === true;
+    // 语音/表情是独立的发送动作：不把输入区里还没发的图片一起塞进这条消息。
+    const attachments = voice || standalone ? [...extraAttachments] : [...imgsRef.current, ...extraAttachments];
     const attachmentMeta = extras?.attachmentMeta ?? [];
     const outboxContactId = cid ?? msgScope ?? "";
     if (!text && attachments.length === 0) return;
@@ -1126,8 +1317,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     const localId = globalThis.crypto?.randomUUID?.() ?? (Math.random().toString(36).slice(2) + Date.now().toString(36));
     pendingsRef.current = [...pendingsRef.current, { text, at: Date.now(), imgs: attachments, localId, ...(voice ? { voice } : {}) }];
     setPendings([...pendingsRef.current]);
-    // 语音消息不吞正在写的草稿，也不消费待发图片；它是与文字并列的另一种发送方式。
-    if (!voice) {
+    // 语音/表情消息不吞正在写的草稿，也不消费待发图片；它们是与文字并列的另一种发送方式。
+    if (!voice && !standalone) {
       setDraft("");
       imgsRef.current = [];
       setImgs([]);
@@ -1178,6 +1369,18 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         retireDraft();
       });
   }, [addNotice, cid, conversationId, watch]);
+
+  /** 点选一张表情 = 独立发一条「表情消息」：attachments + kind:image 的 meta（label 随行），
+   *  与 send_emote 在应用端的落库口径一致——模型回放历史时靠 meta.label 记住发过哪张。
+   *  文本留空：图即是这句话，气泡里不再并排一行字。 */
+  const sendEmote = useCallback((pick: { url: string; label: string }): void => {
+    send("", {
+      attachments: [pick.url],
+      attachmentMeta: [{ url: pick.url, kind: "image", label: pick.label }],
+      standalone: true,
+    });
+    setEmoteOpen(false);
+  }, [send]);
 
   /** 重发一条发送失败的占位消息（无网络时 say 没成功，本地还留着这条）。成功就接回正常轮询。 */
   const rememberMessage = useCallback((m: MessageRow): void => {
@@ -1344,6 +1547,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   useLayoutEffect(() => {
     if (editingId === null) return;
     const row = logRef.current?.querySelector(`[data-id="${editingId}"]`);
+    scrollSeqRef.current += 1; // 「去别处」的显式滚动：叫停正在跑的落底收敛
     row?.scrollIntoView({ block: "nearest" });
   }, [editingId]);
 
@@ -1542,7 +1746,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         // 工具卡也算"一天里的话"：跨天落在工具卡上时同样要出日分隔，
         // 否则前一天的回复和今天的第一句之间什么标记都没有。
         const dayChanged = lastDay === null || dayOf(m.created_at) !== lastDay;
-        if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: clockPref === "auto" ? dayTimeLabel(m.created_at) : dayLabel(m.created_at) });
+        if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: clockPref === "auto" ? dayTimeLabel(m.created_at) : dayLabel(m.created_at), day: dayOf(m.created_at) });
         out.push({ t: "tool", m });
         lastDay = dayOf(m.created_at);
         lastAt = m.created_at;
@@ -1550,7 +1754,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         continue;
       }
       const dayChanged = lastDay === null || dayOf(m.created_at) !== lastDay;
-      if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: clockPref === "auto" ? dayTimeLabel(m.created_at) : dayLabel(m.created_at) });
+      if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: clockPref === "auto" ? dayTimeLabel(m.created_at) : dayLabel(m.created_at), day: dayOf(m.created_at) });
       // 智能模式的当天首条时间放在日分隔里；气泡右下角只在隔得久时补带。每条显示=全带；极简=全无
       const showClock = clockPref === "always"
         || (clockPref === "auto" && !dayChanged && m.created_at - lastAt > PROACTIVE_GAP_MS);
@@ -1628,7 +1832,21 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     setBootErr("");
     void pullAllRef.current?.().then(() => {
       setLoaded(true);
-      scrollDown(true);
+      const saved = readPosSeed.get(cacheKey);
+      readPosSeed.delete(cacheKey);
+      if (saved && lastIdRef.current > 0 && saved.anchorId <= lastIdRef.current) {
+        // 切走前用户停在历史中间：恢复阅读位置而不是砸回底部。stickRef 先摘掉，
+        // nodes 落位的 layout effect 才不会先把人拽到最底、下一拍又跳回锚点闪一下；
+        // 真正的定位在 loaded 翻真那一拍的 layout effect 里做（行已进 DOM）。
+        stickRef.current = false;
+        restoreRef.current = saved;
+      } else {
+        scrollDown(true);
+      }
+      // 落底与恢复都靠 scrollDown / 锚点定位自身收敛（见 scrollDown 的收敛循环），
+      // 这里不再有「落底后放开跳渲染」的后续动作——content-visibility 实验撤掉了，
+      // 它与这套滚动契约（scroll 事件重判 stickRef、贴底 ±2px、未读计数）冲突了两次，
+      // foundation.css 与 experience.css 各留了一条「为什么撤」的记录。
       // 首屏这一拍也要认处理单：重答跑到一半切走再回来，界面得接着显示"正在回复"。
       // 增量拉取不会把"上一轮还在飞"通知给前端，不主动查就永远看不到了。
       void checkTurnState();
@@ -1649,7 +1867,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       }
       setBootErr(e.message);
     });
-  }, [scrollDown, onSwitchContact, cid, msgScope, checkTurnState]);
+  }, [scrollDown, onSwitchContact, cid, msgScope, checkTurnState, cacheKey]);
 
   /** 每次渲染都取最新的 boot：它闭包里带着当前作用域与调用方回调。 */
   const bootRef = useRef(boot);
@@ -1712,6 +1930,77 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     };
   }, []);
 
+  // 切走时把「读到哪儿」记下来（本实例卸载 = 切联系人 / 切视图的必经之路）。
+  // 只在用户真的停在历史中间时才记：贴底切走的不记，回来照旧落底，旧契约不变。
+  // 锚点行取「视口顶部压着的那条 data-id 行」——从上往下第一条底边越过容器顶的行。
+  useEffect(() => {
+    return () => {
+      const el = logRef.current;
+      if (!el || lastIdRef.current === 0 || nearBottom()) return;
+      const top = el.getBoundingClientRect().top;
+      let anchor: HTMLElement | null = null;
+      for (const row of el.querySelectorAll<HTMLElement>(".msg-row[data-id]")) {
+        if (row.getBoundingClientRect().bottom > top) { anchor = row; break; }
+      }
+      if (anchor === null) return;
+      const anchorId = Number(anchor.dataset.id);
+      if (!Number.isFinite(anchorId) || anchorId <= 0) return;
+      rememberReadPos(cacheKey, { anchorId, offset: Math.round(anchor.getBoundingClientRect().top - top) });
+    };
+  }, [cacheKey, nearBottom]);
+
+  // 恢复阅读位置（boot 挂进 restoreRef 的那笔）：loaded 翻真那一拍消息已进 DOM，
+  // 用矩形差把锚点行对回切走时的视口位置——比 scrollIntoView 更可控（不依赖
+  // offsetParent，也不用二段补偿）。锚点行已经不在（被删、或落在还没翻页载入的
+  // 更早历史里）就回落落底，不让人悬在半空。此拍在 boot 的消息 commit 同帧运行，
+  // 全量行都按真实高度布局着，定位是准的。
+  useLayoutEffect(() => {
+    if (!loaded) return;
+    const saved = restoreRef.current;
+    if (saved === null) return;
+    restoreRef.current = null;
+    const el = logRef.current;
+    const row = el?.querySelector<HTMLElement>(`.msg-row[data-id="${saved.anchorId}"]`);
+    if (!el || !row) {
+      stickRef.current = true;
+      scrollDown(true);
+      return;
+    }
+    const prev = el.style.scrollBehavior;
+    el.style.scrollBehavior = "auto";
+    scrollSeqRef.current += 1; // 恢复阅读位置是显式滚动：叫停可能还在跑的落底收敛
+    el.scrollTop += row.getBoundingClientRect().top - el.getBoundingClientRect().top - saved.offset;
+    el.style.scrollBehavior = prev;
+  }, [loaded, scrollDown]);
+
+  /** 跳转命中的那一行挂一次性描边脉冲（.hit-pulse，样式在 experience.css）：
+      只 scrollIntoView 的话，用户在满屏气泡里找「是哪条」还得自己扫两秒。
+      与 .flash 同一套路：动画负责闪，JS 负责摘类（动画时长 1.2s，定时器跟着给）；
+      同一行连着命中两次时先摘类再强制 reflow，动画才能重新起跳。 */
+  const pulseHitRow = useCallback((row: HTMLElement): void => {
+    const prev = hitPulseRef.current;
+    if (prev) {
+      window.clearTimeout(prev.timer);
+      prev.row.classList.remove("hit-pulse");
+    }
+    row.classList.remove("hit-pulse");
+    void row.offsetWidth; // 读取强制排版：刚摘过类的同一行要重启动画，得先抹掉旧状态
+    row.classList.add("hit-pulse");
+    const timer = window.setTimeout(() => {
+      row.classList.remove("hit-pulse");
+      if (hitPulseRef.current?.row === row) hitPulseRef.current = null;
+    }, 1200);
+    hitPulseRef.current = { row, timer };
+  }, []);
+  // 卸载时把挂着的类和计时器一起收掉：行已经不在了，定时器再响就是空跑。
+  useEffect(() => () => {
+    if (hitPulseRef.current) {
+      window.clearTimeout(hitPulseRef.current.timer);
+      hitPulseRef.current.row.classList.remove("hit-pulse");
+      hitPulseRef.current = null;
+    }
+  }, []);
+
   /** 搜索点进来的那条：等它真的进了列表再滚过去。
    *  消息可能在渲染窗口之外（首屏只画最近 500 条），那一行此时还不存在——
    *  不等到就动手，等于 silently 什么都不做。 */
@@ -1722,9 +2011,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       if (!row) return false;
       stickRef.current = false;          // 别在跳完之后又把人拽回底部
       userHoldRef.current = true;        // 这一路都当是用户主动在上翻，直到用户回到底部
+      scrollSeqRef.current += 1;         // 「去别处」的显式滚动：叫停正在跑的落底收敛
       row.scrollIntoView({ block: "center", behavior: "smooth" });
-      row.classList.add("flash");
-      window.setTimeout(() => row.classList.remove("flash"), 1800);
+      pulseHitRow(row);
       onFocusHandled?.();
       return true;
     };
@@ -1742,7 +2031,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       }
     }, 260);
     return () => window.clearInterval(timer);
-  }, [focusMessageId, loaded, onFocusHandled, addNotice]);
+  }, [focusMessageId, loaded, onFocusHandled, addNotice, pulseHitRow]);
 
   // 宿主的暂停态（助手弹窗关闭＝收进 display:none）与唤醒
   useEffect(() => {
@@ -1905,11 +2194,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     if (!row) return false;
     stickRef.current = false;
     userHoldRef.current = true;
+    scrollSeqRef.current += 1;         // 「去别处」的显式滚动：叫停正在跑的落底收敛
     row.scrollIntoView({ block: "center", behavior: "smooth" });
-    row.classList.add("flash");
-    window.setTimeout(() => row.classList.remove("flash"), 1800);
+    pulseHitRow(row);
     return true;
-  }, []);
+  }, [pulseHitRow]);
 
   const jumpToSearchHit = useCallback((hit: MessageRow): void => {
     if (focusMessage(hit.id)) return;
@@ -2418,6 +2707,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       const next = at < 0
         ? (e.key === "ArrowDown" ? 0 : rows.length - 1)
         : Math.min(rows.length - 1, Math.max(0, at + (e.key === "ArrowDown" ? 1 : -1)));
+      scrollSeqRef.current += 1; // 键盘走位也是「去别处」：focus 会自动滚，别让落底收敛跟它抢
       rows[next]?.focus({ preventScroll: false });
       return;
     }
@@ -2432,7 +2722,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
 
   const renderNode = (n: ListNode): JSX.Element | null => {
     switch (n.t) {
-      case "daysep": return <div key={"d" + n.label} className="daysep">{n.label}</div>;
+      case "daysep": return <div key={"d" + n.day} className="daysep">{n.label}</div>;
       case "stale": return (
         <details key={"s" + (n.items[0]?.id ?? 0)} className="staleGroup">
           <summary>{n.items.length} 条已被编辑取代 · 展开</summary>
@@ -2471,7 +2761,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       case "pending": return (
         /* 乐观气泡就是"我刚发出去"那一下的入场，补上 .msg-enter 让点按与上屏连成一拍。 */
         <div key={"p" + n.id} className="msg-row me gap msg-enter">
-          <div className={"bubble" + (n.voice ? " voice-only" : n.imgs.length > 0 && !n.text ? " img-only" : "") + (n.failed ? " pend-failed" : "")}>
+          <div className={"bubble" + (n.voice ? " voice-only" : n.imgs.length > 0 && !n.text ? " img-only" : "") + (n.failed ? " pend-failed" : "") + (!n.failed && !n.queued ? " pend-going" : "")}>
+            {/* 在途指示：已发出、回执未到的几秒里气泡不该是视觉真空。与「待发送
+                （离线队列，黄字整行）」「失败（红叹号 + 重试）」是三种语义——它只说
+                "在路上"，不代表任何问题，所以只是一颗呼吸圆点，不出现在前两种态里。 */}
+            {!n.failed && !n.queued && <span className="pend-flight" aria-hidden="true" title="发送中" />}
             {n.voice && (
               <VoiceMessageBubble url={n.voice.url} durationMs={n.voice.durationMs}
                 waveform={n.voice.waveform} transcript={n.voice.transcript} />
@@ -2719,25 +3013,28 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         </div>
       )}
 
-      {headMenu && onEditProfile && (
-        <div className="msgmenu chatmenu-pop" data-keep-menu>
-          <button type="button" onClick={() => { setHeadMenu(false); onEditProfile(); }}>
+      {headMenuExit.visible && onEditProfile && (
+        <div className="msgmenu chatmenu-pop" data-keep-menu
+          data-closing={headMenuExit.closing || undefined}
+          aria-hidden={headMenuExit.closing || undefined}
+          onAnimationEnd={headMenuExit.onAnimationEnd}>
+          <button type="button" tabIndex={headMenuExit.closing ? -1 : undefined} onClick={() => { setHeadMenu(false); onEditProfile(); }}>
             <span className="lb"><Pencil size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />编辑资料</span>
             <span className="nt">头像 / 昵称 / 人格 / 模型</span>
           </button>
           {onOpenSection && (
             <>
-              <button type="button" onClick={() => { setHeadMenu(false); onOpenSection("memory"); }}>
+              <button type="button" tabIndex={headMenuExit.closing ? -1 : undefined} onClick={() => { setHeadMenu(false); onOpenSection("memory"); }}>
                 <span className="lb"><BookOpen size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />记忆</span>
                 <span className="nt">联系人记得的事，可纠正可删</span>
               </button>
-              <button type="button" onClick={() => { setHeadMenu(false); onOpenSection("proactive"); }}>
+              <button type="button" tabIndex={headMenuExit.closing ? -1 : undefined} onClick={() => { setHeadMenu(false); onOpenSection("proactive"); }}>
                 <span className="lb"><CalendarCheck size={13} strokeWidth={1.8} style={{ verticalAlign: "-2px", marginRight: 6 }} />主动找你</span>
                 <span className="nt">联系人惦记的计划</span>
               </button>
             </>
           )}
-          <button type="button" onClick={() => {
+          <button type="button" tabIndex={headMenuExit.closing ? -1 : undefined} onClick={() => {
             setHeadMenu(false);
             const scope = cid ?? msgScope ?? "";
             void contactsApi.fetchContact(scope)
@@ -2759,7 +3056,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           {/* 内置小茉也能归档（联系人要删得先走这一步冷却期）；只有助手的工作区不该出现这个入口——
               后端也拒，但那是一句点了才看得到的报错。 */}
           {!(String(msgScope ?? "").startsWith("assistant")) && (
-            <button type="button" className="danger" onClick={(e) => {
+            <button type="button" className="danger" tabIndex={headMenuExit.closing ? -1 : undefined} onClick={(e) => {
               e.stopPropagation();
               setHeadMenu(false);
               archiveNow();
@@ -2793,8 +3090,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           if (at) bottomIdRef.current = lastIdRef.current;
         }}>
         {olderLeft > 0 && msgs.length > 0 && (
-          <div style={{ textAlign: "center", margin: "4px 0 8px" }}>
-            <button type="button" className="chip" disabled={earlierBusy} onClick={() => {
+          // 专用窄条控件（.load-earlier，样式在 experience.css 末尾）：此前借用建议 chip 的样式，
+          // 弱可供性——悬在消息流顶部像个静态标签，点不点没把握。行为不动：仍走
+          // fetchEarlierMessages + 服务端报剩余数，滚动锚定逻辑也不变。
+          <div className="load-earlier-row">
+            <button type="button" className="load-earlier" disabled={earlierBusy} onClick={() => {
               const first = msgs[0];
               if (!first) return;
               setEarlierBusy(true);
@@ -2808,8 +3108,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             }}>{earlierBusy ? "读取中…" : `载入更早的消息（还有 ${olderLeft} 条）`}</button>
           </div>
         )}
-        {/* 翻到顶了说一句总数：长会话里"上面还有没有"这件事，从前只能靠一直点按钮试 */}
-        {olderLeft === 0 && msgs.length > 0 && (
+        {/* 翻到顶了说一句总数：长会话里"上面还有没有"这件事，从前只能靠一直点按钮试。
+            加载量过 EARLIEST_HINT_MIN_ROWS 才显示——短会话/新会话没翻过页，不挂这句。 */}
+        {olderLeft === 0 && msgs.length >= EARLIEST_HINT_MIN_ROWS && (
           <div className="hint" style={{ textAlign: "center", margin: "2px 0 8px" }}>
             已经到最早了
           </div>
@@ -2932,6 +3233,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         {recSec !== null ? (
           <div className="composer-bar recording">
             <span className="rec-state"><i className="rec-dot" /> 录音中 {recSec} 秒（最长 1 分钟）</span>
+            {/* 实时波形与「N 秒 + 红点」并存：秒数管时长，波形管音量，各答一件事。 */}
+            <RecWaveMeter active samplesRef={recWaveRef} />
             <div className="rec-actions">
               <button type="button" className="btn sm" onClick={() => finishRecording("cancel")}>取消</button>
               {caps.speechToText && (
@@ -2968,6 +3271,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                   <Palette size={17} />
                 </button>
               )}
+              <div className="emote-wrap" ref={emoteWrapRef}>
+                <button type="button" ref={emoteBtnRef} className="tool-btn" aria-haspopup="dialog"
+                  aria-expanded={emoteOpen} aria-label="发送表情" title="发送表情"
+                  onClick={() => setEmoteOpen((v) => !v)}>
+                  <Smile size={17} />
+                </button>
+              </div>
             </div>
             <span className="tip">
               <span className="kbd-only">Enter 发送 · Shift+Enter 换行</span>
@@ -2986,8 +3296,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                   )}
                   <ChevronDown size={12} strokeWidth={2} className={modelOpen ? "flip" : ""} />
                 </button>
-                {modelOpen && createPortal(
+                {modelExit.visible && createPortal(
                   <div className="model-pop" role="dialog" aria-label="聊天模型" data-keep-menu
+                    data-closing={modelExit.closing || undefined}
+                    aria-hidden={modelExit.closing || undefined}
+                    onAnimationEnd={modelExit.onAnimationEnd}
                     style={modelPopPos ? { left: modelPopPos.left, bottom: modelPopPos.bottom, width: modelPopPos.width } : { visibility: "hidden" }}>
                     <div className="model-pop-head">
                       <span>模型与推理</span>
@@ -3000,6 +3313,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                       </div>
                       <button type="button" className="model-current-row model-current-action"
                         disabled={!reasoningAvailable} aria-expanded={modelPane === "think"}
+                        tabIndex={modelExit.closing ? -1 : undefined}
                         onClick={() => setModelPane((prev) => prev === "think" ? "models" : "think")}>
                         <span className="model-current-label">推理等级</span>
                         <span className="model-current-value">{reasoningAvailable ? thinkingSummary : "模型未启用思考"}</span>
@@ -3012,7 +3326,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                       <div className="model-pane">
                         <div className="model-section-head">
                           <span>选择推理等级</span>
-                          <button type="button" className="model-back" onClick={() => setModelPane("models")}>
+                          <button type="button" className="model-back" tabIndex={modelExit.closing ? -1 : undefined} onClick={() => setModelPane("models")}>
                             <ChevronLeft size={13} strokeWidth={2.2} /> 返回模型
                           </button>
                         </div>
@@ -3020,7 +3334,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                           <button type="button" role="radio"
                             aria-checked={thinking.thinking.mode === "auto" || (thinking.thinking.param === "effort" && thinking.thinking.mode === "off") || (thinking.thinking.param !== "effort" && thinking.thinking.mode === "")}
                             className={"reason-option" + (thinking.thinking.mode === "auto" || (thinking.thinking.param === "effort" && thinking.thinking.mode === "off") || (thinking.thinking.param !== "effort" && thinking.thinking.mode === "") ? " on" : "")}
-                            disabled={thinkBusy} onClick={() => chooseThinking("auto")}>
+                            disabled={thinkBusy} tabIndex={modelExit.closing ? -1 : undefined} onClick={() => chooseThinking("auto")}>
                             <span className="reason-option-copy">
                               <b>跟随模型</b>
                               <small>不发送推理强度，由服务商决定</small>
@@ -3031,7 +3345,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                             <button key={level} type="button" role="radio"
                               aria-checked={thinking.thinking.mode !== "off" && thinking.thinking.mode !== "auto" && thinking.thinking.level === level}
                               className={"reason-option" + (thinking.thinking.mode !== "off" && thinking.thinking.mode !== "auto" && thinking.thinking.level === level ? " on" : "")}
-                              disabled={thinkBusy} onClick={() => chooseThinking(level)}>
+                              disabled={thinkBusy} tabIndex={modelExit.closing ? -1 : undefined} onClick={() => chooseThinking(level)}>
                               <span className="reason-option-copy">
                                 <b>{THINKING_LEVEL_LABELS[level]}</b>
                                 <small>{level === "max" ? "最深、最慢，适合复杂问题" : level === "high" || level === "xhigh" ? "更深入，耗时更长" : level === "low" ? "更快，适合简单问题" : "平衡速度与深度"}</small>
@@ -3043,14 +3357,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                               <button type="button" role="radio"
                                 aria-checked={thinking.thinking.mode === "on"}
                                 className={"reason-option" + (thinking.thinking.mode === "on" ? " on" : "")}
-                                disabled={thinkBusy} onClick={() => chooseThinking("on")}>
+                                disabled={thinkBusy} tabIndex={modelExit.closing ? -1 : undefined} onClick={() => chooseThinking("on")}>
                                 <span className="reason-option-copy"><b>开启思考</b><small>显式向服务商发送开启字段</small></span>
                                 {thinking.thinking.mode === "on" && <Check size={15} strokeWidth={2.4} />}
                               </button>
                               <button type="button" role="radio"
                                 aria-checked={thinking.thinking.mode === "off"}
                                 className={"reason-option" + (thinking.thinking.mode === "off" ? " on" : "")}
-                                disabled={thinkBusy} onClick={() => chooseThinking("off")}>
+                                disabled={thinkBusy} tabIndex={modelExit.closing ? -1 : undefined} onClick={() => chooseThinking("off")}>
                                 <span className="reason-option-copy"><b>关闭思考</b><small>显式向服务商发送关闭字段</small></span>
                                 {thinking.thinking.mode === "off" && <Check size={15} strokeWidth={2.4} />}
                               </button>
@@ -3078,9 +3392,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                           <label className="model-filter">
                             <Search size={14} strokeWidth={2} />
                             <input value={modelQuery} onChange={(event) => setModelQuery(event.currentTarget.value)}
+                              tabIndex={modelExit.closing ? -1 : undefined}
                               placeholder="搜索模型或供应商" aria-label="搜索模型" />
                             {modelQuery !== "" && (
-                              <button type="button" aria-label="清空搜索" onClick={() => setModelQuery("")}><X size={13} /></button>
+                              <button type="button" aria-label="清空搜索" tabIndex={modelExit.closing ? -1 : undefined} onClick={() => setModelQuery("")}><X size={13} /></button>
                             )}
                           </label>
                         )}
@@ -3088,7 +3403,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                           {(modelQueryText === "" || "跟随全局".includes(modelQueryText)) && (
                             <button type="button" role="radio" aria-checked={modelProfileId === ""}
                               className={"model-option" + (modelProfileId === "" ? " on" : "")}
-                              disabled={modelBusy} onClick={() => chooseModel("")}>
+                              disabled={modelBusy} tabIndex={modelExit.closing ? -1 : undefined} onClick={() => chooseModel("")}>
                               <span className="model-option-copy">
                                 <b>跟随全局</b>
                                 <small>全局模型 · {globalModelStatus}</small>
@@ -3113,7 +3428,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                           <div className="model-pop-empty">没有匹配的模型。</div>
                         )}
                         {onOpenModelSettings && (
-                          <button type="button" className="model-manage"
+                          <button type="button" className="model-manage" tabIndex={modelExit.closing ? -1 : undefined}
                             onClick={() => { setModelOpen(false); onOpenModelSettings(); }}>
                             管理模型档
                           </button>
@@ -3147,14 +3462,18 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                   )
                   : "—"}
               </button>
-              {ctxOpen && ctx && (() => { const c = ctx; return createPortal(
+              {ctxExit.visible && ctx && (() => { const c = ctx; return createPortal(
                 <>
-                  <div className="ctx-backdrop" onClick={() => setCtxOpen(false)} />
+                  {/* 背板跟着一起退场：CSS 在 [data-closing] 上放开 pointer-events，淡出帧不挡下一发点击 */}
+                  <div className="ctx-backdrop" data-closing={ctxExit.closing || undefined} onClick={() => setCtxOpen(false)} />
                   <div className="ctx-pop" id="ctxPop" data-keep-menu
+                    data-closing={ctxExit.closing || undefined}
+                    aria-hidden={ctxExit.closing || undefined}
+                    onAnimationEnd={ctxExit.onAnimationEnd}
                     style={ctxPopPos ? { left: ctxPopPos.left, bottom: ctxPopPos.bottom, width: ctxPopPos.width } : { visibility: "hidden" }}>
                     <div className="ctx-pop-head">
                       <span>联系人记得的范围</span>
-                      <button type="button" aria-label="关闭" onClick={() => setCtxOpen(false)}><X size={14} /></button>
+                      <button type="button" aria-label="关闭" tabIndex={ctxExit.closing ? -1 : undefined} onClick={() => setCtxOpen(false)}><X size={14} /></button>
                     </div>
                     <div className="ctx-pop-total">
                       <b>{Math.round((c.used / c.limit) * 100)}%</b>
@@ -3199,7 +3518,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                         <span className="ctx-warn">
                           更早的没带上，还差 {c.droppedByBudget} 轮 · 想多带，去 编辑资料 → 回放轮数 调大
                           {c.limitIsFallback
-                            ? <>，或先<button type="button" className="ctx-link" onClick={() => { setCtxOpen(false); onOpenModelSettings?.(c.profile?.id); }}>去设置</button>给{c.profile ? `「${c.profile.label}」` : "这一档"}填上输入上限</>
+                            ? <>，或先<button type="button" className="ctx-link" tabIndex={ctxExit.closing ? -1 : undefined} onClick={() => { setCtxOpen(false); onOpenModelSettings?.(c.profile?.id); }}>去设置</button>给{c.profile ? `「${c.profile.label}」` : "这一档"}填上输入上限</>
                             : "，或换个能记更多的模型"}
                           。
                         </span>
@@ -3216,13 +3535,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 </>,
                 document.body
               ); })()}
-              {ctxOpen && !ctx && createPortal(
+              {ctxExit.visible && !ctx && createPortal(
                 <>
-                  <div className="ctx-backdrop" onClick={() => setCtxOpen(false)} />
+                  <div className="ctx-backdrop" data-closing={ctxExit.closing || undefined} onClick={() => setCtxOpen(false)} />
                   <div className="ctx-pop" data-keep-menu
+                    data-closing={ctxExit.closing || undefined}
+                    aria-hidden={ctxExit.closing || undefined}
+                    onAnimationEnd={ctxExit.onAnimationEnd}
                     style={ctxPopPos ? { left: ctxPopPos.left, bottom: ctxPopPos.bottom, width: ctxPopPos.width } : { visibility: "hidden" }}>
                     <div className="ctx-foot">{ctxErr !== ""
-                      ? <>没读到，<button type="button" className="ctx-link" onClick={loadCtx}>重试</button></>
+                      ? <>没读到，<button type="button" className="ctx-link" tabIndex={ctxExit.closing ? -1 : undefined} onClick={loadCtx}>重试</button></>
                       : "读取中…"}</div>
                   </div>
                 </>,
@@ -3253,12 +3575,13 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         )}
       </div>
 
-      {menu && <MessageMenu menu={menu} setMenu={setMenu} addNotice={addNotice}
+      {/* MessageMenu 常驻：menu 置 null 时它自己播 menuOut 淡出、走完再摘 portal */}
+      <MessageMenu menu={menu} setMenu={setMenu} addNotice={addNotice}
         onEdit={startEdit} onReedit={reeditRetracted}
         onRetract={(mm) => { setMenu(null); setPendingConfirm({ kind: "retract", m: mm }); }}
         onRequestDelete={(mm) => { setMenu(null); setDelTarget(mm); }}
         onRegenerate={(mm) => { setMenu(null); setPendingConfirm({ kind: "regenerate", m: mm }); }}
-        onRemember={rememberMessage} />}
+        onRemember={rememberMessage} />
 
       {pendingConfirm && (
         <Modal label="操作确认" placement="center" onClose={() => setPendingConfirm(null)}>
@@ -3329,6 +3652,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           <img src={zoom} alt="消息图片大图" onClick={(e) => e.stopPropagation()} />
           <button type="button" aria-label="关闭" onClick={() => setZoom(null)}><X size={18} /></button>
         </div>,
+        document.body,
+      )}
+
+      {emoteExit.visible && createPortal(
+        <EmotePicker pos={emotePopPos} onPick={sendEmote}
+          closing={emoteExit.closing} onAnimationEnd={emoteExit.onAnimationEnd} />,
         document.body,
       )}
     </div>

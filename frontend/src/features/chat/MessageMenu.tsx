@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef } from "react";
 import { createPortal } from "react-dom";
 import { copyText } from "../../lib/clipboard";
+import { useExitVisible } from "../../hooks/useExitVisible";
 import type { MessageRow } from "../../types";
 
 /** 目标气泡的视口矩形；拿不到时退回点击点。 */
@@ -11,9 +12,14 @@ export type MenuState = { m: MessageRow; x: number; y: number; anchor: MenuAncho
  * 消息操作菜单（右键/长按/回车呼出）——仿微信/QQ：
  * 深色小圆角气泡、箭头指着被操作的消息、每项只留两个字的短标签。
  * 细节说明放 title（桌面悬停可见）。删除的二次确认不在这，走居中弹窗。
+ *
+ * 组件常驻（父层把 menu 传成 null 表示关），关的时候先用 ref 拽住最后一份
+ * 菜单数据渲染淡出帧（menuOut，与 menuIn 互为镜像），走完才摘 portal——
+ * 瞬时消失会让「长按 → 菜单啪地没了」的收尾很突兀。退场期间不重算位置：
+ * positionMenu 的定位/翻转只在打开那一拍算，淡出帧原样沿用。
  */
 export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit, onRetract, onRequestDelete, onRegenerate, onRemember }: {
-  menu: MenuState;
+  menu: MenuState | null;
   setMenu: (m: MenuState | null) => void;
   addNotice: (text: string, opts?: { info?: boolean }) => void;
   /** textOnly=true 时保存走「只改文字」，不作废任何后续。 */
@@ -25,29 +31,33 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
   onRegenerate: (m: MessageRow) => void;
   /** 把这条话写进长期记忆；后端按消息 id 幂等。 */
   onRemember: (m: MessageRow) => void;
-}): JSX.Element {
+}): JSX.Element | null {
   const ref = useRef<HTMLDivElement>(null);
-  const m = menu.m;
-  const hasVoice = (m.attachment_meta ?? []).some((item) => item.kind === "audio")
-    || (m.attachments ?? []).some((url) => /\.(mp3|wav|m4a|ogg|opus|weba)$/i.test(url));
-  const voiceTranscript = hasVoice
-    ? ((m.attachment_meta ?? []).find((item) => item.kind === "audio")?.transcript ?? "").trim()
-    : "";
-  const copyableText = hasVoice ? voiceTranscript : m.text;
+  const { visible, closing, onAnimationEnd } = useExitVisible(menu !== null, "menuOut");
+  // 退场帧的数据源：menu 已被置 null，渲染还得吃打开时的那一份坐标与条目。
+  const lastMenuRef = useRef<MenuState | null>(menu);
+  if (menu !== null) lastMenuRef.current = menu;
+  const view = menu ?? lastMenuRef.current;
   const close = (): void => setMenu(null);
 
   /**
    * 键盘路径：Enter 打开菜单后必须把焦点送进来，否则 Tab 会直接走到输入框，
-   * 菜单里的按钮对键盘用户等于不存在。关闭时把焦点还给打开前的那一行。
+   * 菜单里的按钮对键盘用户等于不存在。关闭时把焦点还给打开前的那一行——
+   * 时机在退场帧开始那一刻（open 翻假），不把焦点留进 aria-hidden 的淡出帧里。
    */
+  const open = menu !== null;
   useEffect(() => {
+    if (!open) return;
     const back = document.activeElement as HTMLElement | null;
     ref.current?.querySelector<HTMLElement>("button:not([disabled])")?.focus({ preventScroll: true });
     return () => { back?.focus?.({ preventScroll: true }); };
-  }, []);
+  }, [open]);
 
   // 贴边时收回视口内；优先悬在气泡上方，放不下就翻到下方，箭头始终指向气泡中心。
   useLayoutEffect(() => {
+    // 退场帧（menu 已是 null）沿用打开时算好的定位，不重算——坐标/翻转/--ax
+    // 都是打开那一拍的产物，重算只会让淡出帧乱跳。
+    if (menu === null) return;
     const el = ref.current;
     if (!el) return;
     const pad = 10;
@@ -80,6 +90,16 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
     el.classList.toggle("below", below);
   }, [menu]);
 
+  // 没开也没在退场：什么都不挂。之后才安全地拆 view（可能为 null）。
+  if (!visible || view === null) return null;
+  const m = view.m;
+  const hasVoice = (m.attachment_meta ?? []).some((item) => item.kind === "audio")
+    || (m.attachments ?? []).some((url) => /\.(mp3|wav|m4a|ogg|opus|weba)$/i.test(url));
+  const voiceTranscript = hasVoice
+    ? ((m.attachment_meta ?? []).find((item) => item.kind === "audio")?.transcript ?? "").trim()
+    : "";
+  const copyableText = hasVoice ? voiceTranscript : m.text;
+
   const onKeyDown = (e: React.KeyboardEvent<HTMLDivElement>): void => {
     if (e.key !== "Tab") return;
     const items = [...(ref.current?.querySelectorAll<HTMLElement>("button:not([disabled])") ?? [])];
@@ -91,7 +111,9 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
   };
 
   const item = (label: string, hint: string, cls: string | null, fn: () => void): JSX.Element => (
-    <button type="button" role="menuitem" className={cls ?? ""} title={hint} onClick={(e) => { e.stopPropagation(); fn(); }}>
+    // tabIndex=-1 只在退场帧挂：淡出期间菜单已 aria-hidden，别让 Tab 还能落进来误触。
+    <button type="button" role="menuitem" className={cls ?? ""} title={hint} tabIndex={closing ? -1 : undefined}
+      onClick={(e) => { e.stopPropagation(); fn(); }}>
       <span className="lb">{label}</span>
       <span className="nt">{hint}</span>
     </button>
@@ -138,7 +160,11 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
   // 必须挂在 body 上：祖先一旦带 transform（助手弹窗就带），position:fixed 会改成
   // 相对那个祖先定位，坐标整体偏半个弹窗，还被它的 overflow:hidden 裁掉。
   return createPortal(
-    <div className="msgmenu dark" ref={ref} style={{ left: menu.x, top: menu.y }} data-keep-menu
+    // data-closing 驱动 .msgmenu[data-closing] 的 menuOut 淡出；animationend
+    // 按名字过滤后提前收场（内部没有别的动画，纯兜底双保险）。
+    <div className="msgmenu dark" ref={ref} style={{ left: view.x, top: view.y }} data-keep-menu
+      data-closing={closing || undefined} aria-hidden={closing || undefined}
+      onAnimationEnd={onAnimationEnd}
       role="menu" aria-label="消息操作" onKeyDown={onKeyDown}>
       <span className="mm-arrow" aria-hidden="true" />
       {body}

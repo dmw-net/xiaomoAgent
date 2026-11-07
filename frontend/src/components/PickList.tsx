@@ -2,6 +2,7 @@ import { useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 import { useDismiss } from "../hooks/useDismiss";
+import { useExitVisible } from "../hooks/useExitVisible";
 import { usePopPosition } from "../hooks/usePopPosition";
 
 export type PickOption = { value: string; label: string; hint?: string; disabled?: boolean };
@@ -25,6 +26,8 @@ export default function PickList({ value, options, onChange, label, width = 264,
   disabled?: boolean;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  // 下拉退场：open 置假先播 menuOut 淡出（与 menuIn 互为镜像），走完再摘 portal。
+  const exit = useExitVisible(open, "menuOut");
   const { setRef, pos, place } = usePopPosition(width);
   useDismiss(open, () => setOpen(false));
   const current = options.find((o) => o.value === value) ?? null;
@@ -43,12 +46,15 @@ export default function PickList({ value, options, onChange, label, width = 264,
         <span className="pick-val">{current ? current.label : empty ?? "未选择"}</span>
         <ChevronDown size={14} className={"chip-arrow" + (open ? " up" : "")} />
       </button>
-      {open && createPortal(
+      {exit.visible && createPortal(
         <div className="switch-pop pick-pop" data-keep-menu="" role="listbox" aria-label={label}
+          data-closing={exit.closing || undefined} aria-hidden={exit.closing || undefined}
+          onAnimationEnd={exit.onAnimationEnd}
           style={{ left: pos.left, top: pos.top, width, transform: pos.flip ? "translateY(-100%)" : undefined }}>
           {options.map((o) => (
             <button key={o.value || "none"} type="button" role="option" aria-selected={o.value === value}
-              disabled={o.disabled} className={"switch-item" + (o.value === value ? " on" : "")}
+              disabled={o.disabled} tabIndex={exit.closing ? -1 : undefined}
+              className={"switch-item" + (o.value === value ? " on" : "")}
               title={o.hint ?? o.label}
               onClick={() => { setOpen(false); onChange(o.value); }}>
               <span className="switch-name">{o.label}</span>

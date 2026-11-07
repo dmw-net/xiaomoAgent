@@ -32,6 +32,13 @@
   --accent-ink-hover: color-mix(in srgb, var(--accent-ink) 82%, var(--text));
   --accent-glow:   color-mix(in srgb, var(--accent) 18%, transparent);
 
+  /* 选中 chip 的全站唯一配方：底 = accent 12% 叠在卡片底上，描边 = accent 44% 叠在
+     常规描边上。从前十来处「选中」各自手调（accent-soft / 10% mix / bg-hover /
+     bg-elevated 四种底色并存），跨页看是「不是一个应用」的观感。分段控件
+     （.seg）与选项行（.model-option）语义不同，不在此列。 */
+  --sel-bg:     color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  --sel-border: color-mix(in srgb, var(--accent) 44%, var(--border));
+
   --success:       #466b4d;
   --success-soft:  #edf2e9;
   --warning:       #7b6130;
@@ -68,7 +75,10 @@
   --ava-c6: #596a83;
 
   --msg-time:      #685d4c;
-  --msg-time-mine: color-mix(in srgb, var(--accent-text) 74%, transparent);
+  /* 自己气泡内的时间戳压在 accent 实底上：74% 时暗色档（墨字压 #df8260）实测只有
+     约 2.7:1。88% 在明暗两档的默认赤陶上都 ≥4:1，自定义强调色由 index.html 的
+     adapt() 按 WCAG 再往上顶，保证任何色感都不跌破。 */
+  --msg-time-mine: color-mix(in srgb, var(--accent-text) 88%, transparent);
   --bubble-proactive: #faf5ec;
   --bubble-proactive-border: #eadbc3;
 
@@ -143,6 +153,13 @@
   --z-switcher: 100;
   --z-photo: 120;
   --z-chat-pop: 90;
+  /* 错误边界是崩溃兜底，必须盖过一切浮层（含图片查看器）——档位表里唯一允许
+     超出常规区间的一档，但仍然走表，不许在组件里写裸 1000。 */
+  --z-error: 200;
+  /* 页内标题栏（无边框窗口 chrome）：同样封顶——弹窗/图片查看器开着也得能
+     点窗口控制关窗，这是原生标题栏一直有的能力。与 --z-error 同层，真相遇时
+     由 DOM 顺序裁决（ErrorBoundary 挂在树根之后，错误态盖住标题栏是合理的）。 */
+  --z-titlebar: 200;
 
   --alpha-disabled: .5;
   --focus-ring: var(--accent-ink);
@@ -185,6 +202,11 @@
   --accent-ink-hover: color-mix(in srgb, var(--accent-ink) 82%, var(--text));
   --accent-glow:   color-mix(in srgb, var(--accent) 22%, transparent);
 
+  /* 与浅色同一配方（var 在各自主题下解析成对应色值）；两个块都要声明——
+     :root[data-theme="light"] 选择器在暗色下不命中，少一份就是空值。 */
+  --sel-bg:     color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
+  --sel-border: color-mix(in srgb, var(--accent) 44%, var(--border));
+
   --success:       #86ab86;
   --success-soft:  #1d231b;
   --warning:       #d0a967;
@@ -218,7 +240,7 @@
   --ava-c6: #8296b8;
 
   --msg-time:      #b6aa99;
-  --msg-time-mine: color-mix(in srgb, var(--accent-text) 74%, transparent);
+  --msg-time-mine: color-mix(in srgb, var(--accent-text) 88%, transparent);
   --bubble-proactive: #231c14;
   --bubble-proactive-border: #3d3122;
 

@@ -4,6 +4,7 @@ import { Check, ChevronDown } from "lucide-react";
 import Avatar from "./Avatar";
 import { avatarToneStyle } from "../lib/avatar-tone";
 import { useDismiss } from "../hooks/useDismiss";
+import { useExitVisible } from "../hooks/useExitVisible";
 import { usePopPosition } from "../hooks/usePopPosition";
 import { contactId } from "../api";
 import { getCachedContacts, isContactsLoaded, subscribeContacts } from "../lib/contactsStore";
@@ -26,6 +27,8 @@ export default function ContactChip({ name, avatar, onPick, onManageContacts }: 
   onManageContacts: () => void;
 }): JSX.Element {
   const [open, setOpen] = useState(false);
+  // 下拉退场：open 置假先播 menuOut 淡出（与 menuIn 互为镜像），走完再摘 portal。
+  const exit = useExitVisible(open, "menuOut");
   const [contacts, setContacts] = useState<ContactItem[]>(getCachedContacts);
   const [loaded, setLoaded] = useState(isContactsLoaded);
   const { setRef, pos, place } = usePopPosition(POP_W);
@@ -66,13 +69,16 @@ export default function ContactChip({ name, avatar, onPick, onManageContacts }: 
         <span className="chip-name">{name}</span>
         <ChevronDown size={14} className={"chip-arrow" + (open ? " up" : "")} />
       </button>
-      {open && createPortal(
+      {exit.visible && createPortal(
         <div className="switch-pop contact-switch-pop" data-keep-menu=""
+          data-closing={exit.closing || undefined} aria-hidden={exit.closing || undefined}
+          onAnimationEnd={exit.onAnimationEnd}
           style={{ left: pos.left, top: pos.top, width: POP_W, transform: pos.flip ? "translateY(-100%)" : undefined }}>
           <div className="switch-cap">切换联系人</div>
           <div role="listbox" aria-label="选择联系人">
             {ordered.map((c) => (
               <button key={c.id} type="button" role="option" aria-selected={c.id === current}
+                tabIndex={exit.closing ? -1 : undefined}
                 className={"switch-item" + (c.id === current ? " on" : "")}
                 onClick={() => { setOpen(false); onPick(c.id); }}>
                 <Avatar className="switch-ava" src={c.avatar || undefined} name={c.name} style={avatarToneStyle(c.name)} />
@@ -86,7 +92,7 @@ export default function ContactChip({ name, avatar, onPick, onManageContacts }: 
               </div>
             )}
           </div>
-          <button type="button" className="switch-mgr"
+          <button type="button" className="switch-mgr" tabIndex={exit.closing ? -1 : undefined}
             onClick={() => { setOpen(false); onManageContacts(); }}>
             管理联系人
           </button>

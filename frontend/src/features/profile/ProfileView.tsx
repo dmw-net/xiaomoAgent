@@ -14,6 +14,7 @@ import { EMPTY_DRAFT, PERSONA_TOTAL_MAX, TABS, type Draft, type ProfileMode, typ
 import Modal from "../../components/Modal";
 import QqAvatarButton from "../../components/QqAvatarButton";
 import PickList from "../../components/PickList";
+import ToggleSwitch from "../../components/ToggleSwitch";
 import { WeChatSection } from "./WeChatSection";
 import { QQSection } from "./QQSection";
 import MemoryWorkspace from "../memory/MemoryWorkspace";
@@ -170,9 +171,11 @@ const PERSONA_MODES: Array<[boolean, string]> = [[false, "分段编辑"], [true,
  * ② number 输入框在打到「1.」这种半成品时会把 value 报成空串，配上派生 value 就等于清空。
  * 所以这里用 type=text + inputMode=decimal，五个自定义格共用同一条口径。
  */
-function NumField({ label, className, ariaLabel, min, max, precision = 0, suffix, shown, onCommit }: {
+function NumField({ label, className, ariaLabel, min, max, precision = 0, suffix, disabled, shown, onCommit }: {
   label: string; className: string; ariaLabel: string;
   min: number; max: number; precision?: number; suffix?: string;
+  /** 随所属能力开关一起禁用（如温度计关掉时）；禁用框失焦不会触发 commit，草稿保持原值。 */
+  disabled?: boolean;
   /** 当前值该显示成什么；哨兵值（0 / 跟随全局）传空串，别让"关闭"这个状态出现在数字框里。 */
   shown: string; onCommit: (n: number) => void;
 }): JSX.Element {
@@ -189,7 +192,7 @@ function NumField({ label, className, ariaLabel, min, max, precision = 0, suffix
   return (
     <label className="pf-custom">{label}
       <input className={"pf-comp-input " + className} type="text" inputMode="decimal"
-        aria-label={ariaLabel} title={`${min}~${max}`} placeholder={`${min}~${max}`}
+        aria-label={ariaLabel} title={`${min}~${max}`} placeholder={`${min}~${max}`} disabled={disabled}
         value={text ?? shown}
         onChange={(e) => setText(e.target.value.replace(/[^\d.]/g, ""))}
         onBlur={commit}
@@ -237,6 +240,82 @@ function WordChips({ value, onChange, ariaLabel, placeholder }: {
             if (e.key === "Enter" || /[,，、;；]/.test(e.key)) { e.preventDefault(); commit(); return; }
             if (e.key === "Backspace" && text === "" && words.length > 0) { const last = words[words.length - 1]; if (last !== undefined) remove(last); }
           }} />
+      )}
+    </div>
+  );
+}
+
+/** 「本轮会看到什么」预览的数据形状：settingsApi.previewPrompt 的返回（去掉系统内部规则后可读的部分）。 */
+type PreviewData = {
+  prompt: string;
+  history?: Array<{ role: string; text: string }>;
+  memoryEvents?: Array<{ id: number; kind: string; subject: string; content: string }>;
+  memoryNote?: string;
+  historyNote?: string;
+};
+
+/**
+ * 「本轮会看到什么」预览卡：按当前草稿与最近对话，展示下一轮该联系人实际会收到的可读部分。
+ *
+ * 为什么「对话」与「能力与记忆」两个子分区各放一张、又只允许这一份实现——
+ * 卡里三段内容各归一个分区管：「人设与关系」「最近对话」对着「对话」分区里的回放范围
+ * （调完轮数/占比能立刻看到带了几轮），「会想起的记忆」则对着「能力与记忆」里的
+ * 记忆提取/翻记忆；删掉任何一边，那一类调整就失去了唯一能提前验收的地方。
+ * 但过去是两段几乎相同的 JSX 各抄一份，改一处漏一处（漂移风险），所以抽成同一个组件：
+ * 数据同源（promptPreview 只有一份 state，草稿一改即清空过期预览）、渲染同一份逻辑，
+ * 两个页签看到的是同一张卡的两次呈现，不是两份数据。
+ */
+function PromptPreviewCard({ promptPreview, previewing, effective, who, onPreview }: {
+  promptPreview: PreviewData | null;
+  previewing: boolean;
+  effective: Draft;
+  who: string;
+  onPreview: () => void;
+}): JSX.Element {
+  return (
+    <div className="card card-pad pf-set-card pf-see-card">
+      <div className="pf-set-title">
+        <span>本轮会看到什么</span>
+        <button type="button" className="pf-ghost" disabled={previewing} onClick={onPreview}>
+          {previewing ? "整理中…" : "预览"}
+        </button>
+      </div>
+      <div className="pf-set-sub">
+        按当前草稿与最近对话重建下一轮会用到的信息。只展示人能读懂的部分，不展开系统内部规则。
+      </div>
+      {promptPreview && (
+        <div className="pf-see-grid">
+          <section className="pf-see-section">
+            <div className="pf-see-head"><b>人设与关系</b><span>每轮都会带上</span></div>
+            <dl>
+              <div><dt>背景</dt><dd>{shortPreview(effective.background) || "还没填写"}</dd></div>
+              <div><dt>人设</dt><dd>{shortPreview(effective.identity) || "还没填写"}</dd></div>
+              <div><dt>相处方式</dt><dd>{shortPreview(effective.relationship) || "还没填写"}</dd></div>
+            </dl>
+          </section>
+          <section className="pf-see-section">
+            <div className="pf-see-head"><b>会想起的记忆</b><span>{promptPreview.memoryEvents?.length ?? 0} 条</span></div>
+            {promptPreview.memoryNote && <p className="pf-see-note">{promptPreview.memoryNote}</p>}
+            {(promptPreview.memoryEvents?.length ?? 0) > 0 ? (
+              <ul className="pf-see-list">
+                {promptPreview.memoryEvents!.map((m) => (
+                  <li key={m.id}><span>{shortPreview(m.content, 180)}</span><small>{m.subject || m.kind}</small></li>
+                ))}
+              </ul>
+            ) : <p className="pf-see-empty">这次没有召回到长期记忆。</p>}
+          </section>
+          <section className="pf-see-section">
+            <div className="pf-see-head"><b>最近对话</b><span>{promptPreview.history?.length ?? 0} 条</span></div>
+            {(promptPreview.history?.length ?? 0) > 0 ? (
+              <ol className="pf-see-history">
+                {promptPreview.history!.slice(-6).map((h, i) => (
+                  <li key={i}><b>{h.role === "user" ? "你" : who}</b><span>{shortPreview(h.text, 220)}</span></li>
+                ))}
+              </ol>
+            ) : <p className="pf-see-empty">还没有可回放的对话。</p>}
+          </section>
+          {promptPreview.historyNote && <div className="pf-see-foot">{promptPreview.historyNote}</div>}
+        </div>
       )}
     </div>
   );
@@ -382,14 +461,9 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   const [bond, setBond] = useState<BondState>(EMPTY_BOND);
   const [consBusy, setConsBusy] = useState(false);
   const [consNote, setConsNote] = useState("");
-  // 提示词预览（按此联系人）：还原下一轮发消息时该联系人实际收到的完整内容
-  type PreviewData = {
-    prompt: string;
-    history?: Array<{ role: string; text: string }>;
-    memoryEvents?: Array<{ id: number; kind: string; subject: string; content: string }>;
-    memoryNote?: string;
-    historyNote?: string;
-  };
+  // 提示词预览（按此联系人）：还原下一轮发消息时该联系人实际收到的完整内容。
+  // 数据形状（PreviewData）与渲染（PromptPreviewCard）都提到模块层——「对话」与
+  // 「能力与记忆」两个分区渲染的是同一个组件、同一份 state，不再各抄一份 JSX。
   const [promptPreview, setPromptPreview] = useState<PreviewData | null>(null);
   const [previewing, setPreviewing] = useState(false);
   /** 未保存就点返回 / 模板会覆盖已有三段 → 都先拦一次。拦在动作上，不拦在提示上。 */
@@ -1152,63 +1226,20 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
               <div className="pf-set-title"><span>聊天显示</span></div>
               <div className="pf-set-sub">只影响聊天界面的显示，不改变对话内容。</div>
               <div className="pf-comp-grid">
+                {/* 每一项都是「这一项功能开/关」，统一滑块开关；写回仍是 features[key] 布尔。 */}
                 {CHAT_DISPLAY_ITEMS.map((item) => (
-                  <label key={item.key} className="pf-comp-item" title={item.hint}>
-                    <input type="checkbox" checked={features[item.key] === true}
-                      onChange={(e) => setFeatures({ ...features, [item.key]: e.target.checked })} />
-                    <span>{item.label}</span>
-                  </label>
+                  <ToggleSwitch key={item.key} className="pf-comp-item" title={item.hint}
+                    label={item.label} labelSide="right"
+                    checked={features[item.key] === true}
+                    onChange={(next) => setFeatures({ ...features, [item.key]: next })} />
                 ))}
               </div>
             </div>
           )}
 
           {!isAssistant && (
-            <div className="card card-pad pf-set-card pf-see-card">
-              <div className="pf-set-title">
-                <span>本轮会看到什么</span>
-                <button type="button" className="pf-ghost" disabled={previewing} onClick={runPromptPreview}>
-                  {previewing ? "整理中…" : "预览"}
-                </button>
-              </div>
-              <div className="pf-set-sub">
-                按当前草稿与最近对话重建下一轮会用到的信息。只展示人能读懂的部分，不展开系统内部规则。
-              </div>
-              {promptPreview && (
-                <div className="pf-see-grid">
-                  <section className="pf-see-section">
-                    <div className="pf-see-head"><b>人设与关系</b><span>每轮都会带上</span></div>
-                    <dl>
-                      <div><dt>背景</dt><dd>{shortPreview(effective.background) || "还没填写"}</dd></div>
-                      <div><dt>人设</dt><dd>{shortPreview(effective.identity) || "还没填写"}</dd></div>
-                      <div><dt>相处方式</dt><dd>{shortPreview(effective.relationship) || "还没填写"}</dd></div>
-                    </dl>
-                  </section>
-                  <section className="pf-see-section">
-                    <div className="pf-see-head"><b>会想起的记忆</b><span>{promptPreview.memoryEvents?.length ?? 0} 条</span></div>
-                    {promptPreview.memoryNote && <p className="pf-see-note">{promptPreview.memoryNote}</p>}
-                    {(promptPreview.memoryEvents?.length ?? 0) > 0 ? (
-                      <ul className="pf-see-list">
-                        {promptPreview.memoryEvents!.map((m) => (
-                          <li key={m.id}><span>{shortPreview(m.content, 180)}</span><small>{m.subject || m.kind}</small></li>
-                        ))}
-                      </ul>
-                    ) : <p className="pf-see-empty">这次没有召回到长期记忆。</p>}
-                  </section>
-                  <section className="pf-see-section">
-                    <div className="pf-see-head"><b>最近对话</b><span>{promptPreview.history?.length ?? 0} 条</span></div>
-                    {(promptPreview.history?.length ?? 0) > 0 ? (
-                      <ol className="pf-see-history">
-                        {promptPreview.history!.slice(-6).map((h, i) => (
-                          <li key={i}><b>{h.role === "user" ? "你" : who}</b><span>{shortPreview(h.text, 220)}</span></li>
-                        ))}
-                      </ol>
-                    ) : <p className="pf-see-empty">还没有可回放的对话。</p>}
-                  </section>
-                  {promptPreview.historyNote && <div className="pf-see-foot">{promptPreview.historyNote}</div>}
-                </div>
-              )}
-            </div>
+            <PromptPreviewCard promptPreview={promptPreview} previewing={previewing}
+              effective={effective} who={who} onPreview={runPromptPreview} />
           )}
 
           </div>
@@ -1278,15 +1309,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 <div className="pf-comp-grid">
                   {TOOL_ITEMS.map((row) =>
                     row.kind === "toggle" ? (
-                      <label key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint(who)}>
-                        <input
-                          type="checkbox"
-                          checked={features[row.key] === true}
-                          disabled={features.tools !== true}
-                          onChange={(e) => setFeatures({ ...features, [row.key]: e.target.checked, toolPreset: "custom" })}
-                        />
-                        <span className="pf-comp-name">{row.label}</span>
-                      </label>
+                      /* 行为级微调开关，仍是逐项 on/off；关掉哪一项档位自动变「自定义」的
+                          逻辑在 setFeatures 里，这里只换皮，toolPreset 写回形状不变。 */
+                      <ToggleSwitch key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")}
+                        title={row.hint(who)} label={row.label} labelSide="right"
+                        checked={features[row.key] === true}
+                        disabled={features.tools !== true}
+                        onChange={(next) => setFeatures({ ...features, [row.key]: next, toolPreset: "custom" })} />
                     ) : (
                       <div key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint}>
                         <span className="pf-comp-tag">全局设置</span>
@@ -1310,16 +1339,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
               <div className="pf-set-title"><span>能力授权</span></div>
               <div className="pf-set-sub">这一位可以「做哪类事」。默认全关，按需打开；改动会同步到上面的工具档位（变成「自定义」）。</div>
               <div className="pf-comp-grid">
+                {/* 能力授权是「允许 TA 做哪类事」的开/关：统一滑块；tools 全关时随行禁用。 */}
                 {ABILITY_ITEMS.map((row) => (
-                  <label key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint(who)}>
-                    <input
-                      type="checkbox"
-                      checked={features[row.key] === true}
-                      disabled={features.tools !== true}
-                      onChange={(e) => setFeatures({ ...features, [row.key]: e.target.checked, toolPreset: "custom" })}
-                    />
-                    <span className="pf-comp-name">{row.label}</span>
-                  </label>
+                  <ToggleSwitch key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")}
+                    title={row.hint(who)} label={row.label} labelSide="right"
+                    checked={features[row.key] === true}
+                    disabled={features.tools !== true}
+                    onChange={(next) => setFeatures({ ...features, [row.key]: next, toolPreset: "custom" })} />
                 ))}
               </div>
               {features.tools !== true && (
@@ -1368,15 +1394,12 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 </div>
                 <div className="pf-set-ctl pf-set-stack">
                   <div className="pf-comp-grid">
+                    {/* 五个增强项的单独开关：统一滑块；档位映射读的是同一批 features 字段。 */}
                     {FEATURE_ITEMS.map((item) => (
-                      <label key={item.key} className="pf-comp-item" title={item.hint(who)}>
-                        <input
-                          type="checkbox"
-                          checked={features[item.key] === true}
-                          onChange={(e) => setFeatures({ ...features, [item.key]: e.target.checked })}
-                        />
-                        <span className="pf-comp-name">{item.label}</span>
-                      </label>
+                      <ToggleSwitch key={item.key} className="pf-comp-item" title={item.hint(who)}
+                        label={item.label} labelSide="right"
+                        checked={features[item.key] === true}
+                        onChange={(next) => setFeatures({ ...features, [item.key]: next })} />
                     ))}
                   </div>
                   <div className="pf-set-row pf-set-inline">
@@ -1472,16 +1495,14 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                     value={bond.stage}
                     onChange={(e) => setBond({ ...bond, stage: e.target.value })}
                   />
-                  <input
-                    className="pf-comp-input pf-comp-tiny"
-                    type="text" inputMode="numeric"
-                    aria-label="亲密度，0 到 100"
-                    title="亲密度 0~100"
-                    disabled={!features.bond}
-                    placeholder="0~100"
-                    value={String(bond.warmth)}
-                    onChange={(e) => setBond({ ...bond, warmth: Math.min(100, Math.max(0, Number(e.target.value.replace(/[^\d]/g, "")) || 0)) })}
-                  />
+                  {/* 亲密度走 NumField 口径（失焦/回车才夹紧）：原来的 onChange 即时 clamp
+                      会吃掉打到一半的数字——清空立刻变 0，接着打就成了 0x，NumField 注释里
+                      记下的那个坑。warmth 只在底部「保存」时经 formPayload 落库，失焦夹紧
+                      只是写进草稿，不存在把夹紧值提前落库的问题。 */}
+                  <NumField label="" className="pf-comp-tiny" ariaLabel="亲密度，0 到 100"
+                    min={0} max={100} disabled={!features.bond}
+                    shown={String(bond.warmth)}
+                    onCommit={(n) => setBond({ ...bond, warmth: n })} />
                   <input
                     className="pf-comp-input pf-comp-small"
                     aria-label={who + "此刻的情绪"}
@@ -1499,51 +1520,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           )}
 
           {!isAssistant && (
-            <div className="card card-pad pf-set-card pf-see-card">
-              <div className="pf-set-title">
-                <span>本轮会看到什么</span>
-                <button type="button" className="pf-ghost" disabled={previewing} onClick={runPromptPreview}>
-                  {previewing ? "整理中…" : "预览"}
-                </button>
-              </div>
-              <div className="pf-set-sub">
-                按当前草稿与最近对话重建下一轮会用到的信息。只展示人能读懂的部分，不展开系统内部规则。
-              </div>
-              {promptPreview && (
-                <div className="pf-see-grid">
-                  <section className="pf-see-section">
-                    <div className="pf-see-head"><b>人设与关系</b><span>每轮都会带上</span></div>
-                    <dl>
-                      <div><dt>背景</dt><dd>{shortPreview(effective.background) || "还没填写"}</dd></div>
-                      <div><dt>人设</dt><dd>{shortPreview(effective.identity) || "还没填写"}</dd></div>
-                      <div><dt>相处方式</dt><dd>{shortPreview(effective.relationship) || "还没填写"}</dd></div>
-                    </dl>
-                  </section>
-                  <section className="pf-see-section">
-                    <div className="pf-see-head"><b>会想起的记忆</b><span>{promptPreview.memoryEvents?.length ?? 0} 条</span></div>
-                    {promptPreview.memoryNote && <p className="pf-see-note">{promptPreview.memoryNote}</p>}
-                    {(promptPreview.memoryEvents?.length ?? 0) > 0 ? (
-                      <ul className="pf-see-list">
-                        {promptPreview.memoryEvents!.map((m) => (
-                          <li key={m.id}><span>{shortPreview(m.content, 180)}</span><small>{m.subject || m.kind}</small></li>
-                        ))}
-                      </ul>
-                    ) : <p className="pf-see-empty">这次没有召回到长期记忆。</p>}
-                  </section>
-                  <section className="pf-see-section">
-                    <div className="pf-see-head"><b>最近对话</b><span>{promptPreview.history?.length ?? 0} 条</span></div>
-                    {(promptPreview.history?.length ?? 0) > 0 ? (
-                      <ol className="pf-see-history">
-                        {promptPreview.history!.slice(-6).map((h, i) => (
-                          <li key={i}><b>{h.role === "user" ? "你" : who}</b><span>{shortPreview(h.text, 220)}</span></li>
-                        ))}
-                      </ol>
-                    ) : <p className="pf-see-empty">还没有可回放的对话。</p>}
-                  </section>
-                  {promptPreview.historyNote && <div className="pf-see-foot">{promptPreview.historyNote}</div>}
-                </div>
-              )}
-            </div>
+            <PromptPreviewCard promptPreview={promptPreview} previewing={previewing}
+              effective={effective} who={who} onPreview={runPromptPreview} />
           )}
           </div>
           </div>

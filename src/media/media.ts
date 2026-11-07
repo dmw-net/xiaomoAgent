@@ -359,7 +359,8 @@ export function mediaUrlExists(url: string): boolean {
  * 回收图片文件：确认库里再无引用才落盘删除。引用检查用 LIKE '%<16位随机hex>%'——误命中概率为零。
  *
  * 认哪几处引用由**这一处**说了算，调用方不必各自想起来加判断：
- * messages / turns 的附件、联系人的头像、自拍参考图、画作台账、工具详情与 kv 里的持久路径。
+ * messages / turns 的附件、turns.variants 里的历史版本回复、联系人的头像、自拍参考图、
+ * 画作台账、工具详情与 kv 里的持久路径。
  * 之前只查前两处，于是「换参考图」「换头像」「这张图同时是画廊里的一张画」
  * 都得靠调用点自己补一条 `!isArtifactUrl(...)`，漏一个就删掉别人还在引用的文件。
  * 头像改成 /media 形态之后更需要这一收口：同一张图被两位联系人指着是可能的
@@ -374,6 +375,7 @@ export function releaseMediaFiles(urls: string[]): void {
   const probe = db.prepare(
     `SELECT EXISTS(SELECT 1 FROM messages  WHERE attachments LIKE ?) AS in_messages,
             EXISTS(SELECT 1 FROM turns     WHERE attachments LIKE ?) AS in_turns,
+            EXISTS(SELECT 1 FROM turns     WHERE variants    LIKE ?) AS in_variants,
             EXISTS(SELECT 1 FROM contacts  WHERE avatar     LIKE ?)  AS in_avatar,
             EXISTS(SELECT 1 FROM contacts  WHERE face_ref   LIKE ?)  AS in_face_ref,
             EXISTS(SELECT 1 FROM artifacts  WHERE url        LIKE ?) AS in_artifact,
@@ -384,9 +386,9 @@ export function releaseMediaFiles(urls: string[]): void {
     const found = resolveMediaFile(url);
     if (found === null) continue;
     const like = `%${nameOfUrl(url)}%`;
-    const ref = probe.get(like, like, like, like, like, like, like) as
-      { in_messages: number; in_turns: number; in_avatar: number; in_face_ref: number; in_artifact: number; in_tool_detail: number; in_kv: number };
-    if (ref.in_messages || ref.in_turns || ref.in_avatar || ref.in_face_ref || ref.in_artifact || ref.in_tool_detail || ref.in_kv) continue;
+    const ref = probe.get(like, like, like, like, like, like, like, like) as
+      { in_messages: number; in_turns: number; in_variants: number; in_avatar: number; in_face_ref: number; in_artifact: number; in_tool_detail: number; in_kv: number };
+    if (ref.in_messages || ref.in_turns || ref.in_variants || ref.in_avatar || ref.in_face_ref || ref.in_artifact || ref.in_tool_detail || ref.in_kv) continue;
     try {
       rmSync(found.file, { force: true });
     } catch { /* 删不掉就算了，留给下次 */ }
@@ -553,6 +555,31 @@ function collectMediaSources(): Map<string, MediaSource[]> {
         ? { kind: "voice", label: "语音消息", detail: contactDetail(row.contact_id) || undefined, contactId }
         : { kind: "turn", label: "回复任务", detail: contactDetail(row.contact_id) || undefined, contactId });
     }
+  }
+  // 回复版本存档（swipe）：旧版本回复的附件只住在 turns.variants 的 JSON 里，
+  // 主气泡行上已经没有了。少了这一条，重答带图的回复后，旧版本的图过保护期
+  // 就会被孤儿清扫删掉——切回旧版本时整版裂图。
+  for (const row of db.prepare(
+    "SELECT contact_id, variants FROM turns WHERE variants LIKE '%/media/%'",
+  ).all() as Array<{ contact_id: string | null; variants: string }>) {
+    try {
+      const parsed: unknown = JSON.parse(row.variants);
+      if (!Array.isArray(parsed)) continue;
+      for (const item of parsed) {
+        if (item === null || typeof item !== "object") continue;
+        const attachments = (item as { attachments?: unknown }).attachments;
+        if (typeof attachments !== "string" || attachments === "") continue;
+        for (const match of attachments.matchAll(MEDIA_REF_RE)) {
+          const name = match[1];
+          if (!name) continue;
+          addName(name, {
+            kind: "turn", label: "历史版本回复",
+            detail: contactDetail(row.contact_id) || undefined,
+            contactId: String(row.contact_id ?? ""),
+          });
+        }
+      }
+    } catch { /* 存坏的存档按无引用处理 */ }
   }
   for (const row of db.prepare(
     "SELECT id, name, avatar, face_ref FROM contacts WHERE avatar LIKE '%/media/%' OR face_ref LIKE '%/media/%'",

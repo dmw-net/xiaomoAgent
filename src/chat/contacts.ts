@@ -8,8 +8,10 @@
 // ——老用户升级后什么都不用做，数据原样都在。
 
 import { randomUUID } from "node:crypto";
+import { rmSync } from "node:fs";
 import { db, kvGet, kvSet, withTx } from "../core/db.ts";
-import { emptyMediaTrash, listMediaUrls, mediaUrlExists, releaseMediaFiles } from "../media/media.ts";
+import { emptyMediaTrash, mediaUrlExists, releaseMediaFiles } from "../media/media.ts";
+import { nativePath, walkMediaTree } from "../media/media-layout.ts";
 import { globalEmoteFrequency, sanitizeCharacter, defaultPersona, type CharacterCard, type EmoteFrequency } from "../settings/settings.ts";
 import { isToolPresetChoice, type ToolPresetChoice } from "../mind/tool-catalog.ts";
 
@@ -696,31 +698,42 @@ export function restoreDefaultCard(id: string): Contact | null {
  */
 export function factoryReset(): { contacts: number; mediaRemoved: number } {
   const people = (db.prepare("SELECT COUNT(*) AS c FROM contacts").get() as { c: number }).c;
-  const urls = new Set<string>();
-  for (const table of ["messages", "turns"] as const) {
-    const rows = db.prepare(`SELECT attachments FROM ${table} WHERE attachments IS NOT NULL`)
-      .all() as Array<{ attachments: string }>;
-    for (const r of rows) {
-      for (const m of r.attachments.matchAll(/\/media\/([a-z0-9]{16}\.(?:png|jpg|webp|gif|mp4|webm|mp3|wav|m4a|ogg|opus|weba))/g)) urls.add("/media/" + m[1]);
-    }
-  }
-  for (const r of db.prepare(`SELECT url FROM artifacts`).all() as Array<{ url: string }>) {
-    if (/^\/media\//.test(r.url)) urls.add(r.url);
-  }
-  for (const c of listContacts()) if (c.faceRef !== "") urls.add(c.faceRef);
-  // 目录里剩下的（没有任何行引用它们的）也一并收：清库之后它们同样是孤儿。
-  for (const u of listMediaUrls()) urls.add(u);
 
   withTx(() => {
-    for (const table of ["messages", "turns", "memory_events", "proactive_tasks", "conversations", "model_calls", "artifacts", "image_descriptions", "contacts"]) {
+    // 表清单要与 db.ts 的建表清单对齐（instance_lease 是运行实例锁、media_trash 台账
+    // 由 emptyMediaTrash 收，两者例外）。漏一张就有一块「清不掉的旧状态」：
+    //   proactive_state  —— 各联系人的主动节拍；default 这个 id 重置后会重新种出来，
+    //                       旧行还挂着的话新小茉会继承旧联系人的下次想法与 focus。
+    //   outbound_deliveries —— 持久出盒箱；里面的 pending 投递指向已删除的联系人会话，
+    //                       附件引用的文件又在同一事务里被回收，留着只会投失败或投死链。
+    //   assets           —— 表情素材库与媒体登记；引用的 /media 文件这轮全被回收，
+    //                       行留着就是一库死链条目。
+    for (const table of ["messages", "turns", "memory_events", "proactive_tasks", "proactive_state", "conversations", "model_calls", "artifacts", "image_descriptions", "assets", "outbound_deliveries", "contacts"]) {
       db.prepare(`DELETE FROM ${table}`).run();
     }
     db.prepare(`DELETE FROM kv WHERE k <> 'schema_version'`).run();
   });
   // 文件在事务外回收：清库万一回滚，引用还在，文件不该先没。
+  //
+  // 不能走 releaseMediaFiles：它按 assets.rel_path 解析盘上路径，而 assets 这会儿已经
+  // 清空了，子目录里的文件（图片/视频/语音/表情包——目录化布局之后就是全部）解析不出
+  // 来会被静默跳过，只有迁移前的遗留平铺文件删得掉。这里的语义是「库已整库清空、
+  // 盘上媒体必然全是孤儿」，按对账树直接删，不查引用。walkMediaTree 跳过 .trash，
+  // 回收站那一份由 emptyMediaTrash 单独收。
   const trashed = emptyMediaTrash();
-  releaseMediaFiles([...urls]);
-  return { contacts: people, mediaRemoved: urls.size + trashed.removed };
+  // 回收站目录整个收掉：台账只认登记过的文件，崩溃等意外留在 .trash 里的孤儿
+  // 不该在「全部清空」后还活着。目录下次有东西进站时会自建。
+  try { rmSync(nativePath(".trash"), { recursive: true, force: true }); } catch { /* 删不掉就算了 */ }
+  let removedFiles = 0;
+  for (const entry of walkMediaTree()) {
+    const file = nativePath(entry.relPath);
+    if (file === "") continue;
+    try {
+      rmSync(file, { force: true });
+      removedFiles += 1;
+    } catch { /* 删不掉就算了，别让整次重置因此失败 */ }
+  }
+  return { contacts: people, mediaRemoved: removedFiles + trashed.removed };
 }
 
 /** 这个联系人绑定的模型档 id（空串 = 跟随全局）。运行时解析用，不存在的联系人也返回空。 */

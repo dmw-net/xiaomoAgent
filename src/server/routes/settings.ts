@@ -115,6 +115,7 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
     character?: Record<string, unknown>;
     owner?: Record<string, unknown>;
     recentTurns?: unknown;
+    recentTurnsPct?: unknown;
     toolLoopTurns?: unknown;
     emoteFrequency?: unknown;
     reset?: unknown;
@@ -142,7 +143,7 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
     if (!check.ok) errors.push(...check.errors);
   }
 
-  const personaPatch: { character?: Partial<CharacterCard>; owner?: Partial<OwnerProfile>; recentTurns?: unknown } = {};
+  const personaPatch: { character?: Partial<CharacterCard>; owner?: Partial<OwnerProfile>; recentTurns?: unknown; recentTurnsPct?: unknown } = {};
   if (body.character !== undefined) {
     personaPatch.character = pickStrings(body.character) as Partial<CharacterCard>;
   }
@@ -150,6 +151,7 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
     personaPatch.owner = pickStrings(body.owner) as Partial<OwnerProfile>;
   }
   if (body.recentTurns !== undefined) personaPatch.recentTurns = body.recentTurns;
+  if (body.recentTurnsPct !== undefined) personaPatch.recentTurnsPct = body.recentTurnsPct;
   if (body.toolLoopTurns !== undefined) {
     const n = Number(body.toolLoopTurns);
     if (!Number.isInteger(n) || n < TOOL_LOOP_TURN_LIMITS.min || n > TOOL_LOOP_TURN_LIMITS.max) {
@@ -159,7 +161,7 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
   if (body.emoteFrequency !== undefined && !isEmoteFrequency(body.emoteFrequency)) {
     errors.push(`表情使用频率只能是 ${EMOTE_FREQUENCIES.join(" / ")}`);
   }
-  if (body.character !== undefined || body.owner !== undefined || body.recentTurns !== undefined) {
+  if (body.character !== undefined || body.owner !== undefined || body.recentTurns !== undefined || body.recentTurnsPct !== undefined) {
     const check = validatePersona(personaPatch);
     if (!check.ok) errors.push(...check.errors);
   }
@@ -172,11 +174,12 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
   if (body.model !== undefined) updateModel(normalizeModelPatch(body.model));
   if (body.toolLoopTurns !== undefined) setGlobalToolLoopTurns(body.toolLoopTurns);
   if (body.emoteFrequency !== undefined) setGlobalEmoteFrequency(body.emoteFrequency);
-  if (body.character !== undefined || body.owner !== undefined || body.recentTurns !== undefined) {
+  if (body.character !== undefined || body.owner !== undefined || body.recentTurns !== undefined || body.recentTurnsPct !== undefined) {
     updatePersona({
       character: personaPatch.character,
       owner: personaPatch.owner,
       ...(typeof body.recentTurns === "number" ? { recentTurns: body.recentTurns } : {}),
+      ...(typeof body.recentTurnsPct === "number" ? { recentTurnsPct: body.recentTurnsPct } : {}),
     });
   }
 

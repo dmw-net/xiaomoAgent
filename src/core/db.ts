@@ -387,6 +387,25 @@ ensureColumn("turns", "client_id", "client_id TEXT");
 // 流式思考草稿：running 期间给 /api/turn 下发累计推理，收尾后仍保留到前端完成草稿交接。
 ensureColumn("turns", "reasoning_draft", "reasoning_draft TEXT");
 
+// ── 回复多版本（swipe，2026-11-07）──────────────────────────
+// 重答不再销毁旧回复：重答前把这一轮现有的回复气泡序列化进 turns.variants
+// （JSON 数组，index 0 = 最初版本），新回复生成后追加进去，每轮封顶若干条。
+// 活跃版本的文本仍写回 messages.text —— recentMessages() 的上下文回放零改动，
+// 后续对话自动跟随当前选中的版本。
+ensureColumn("turns", "variants", "variants TEXT");
+ensureColumn("turns", "variant_index", "variant_index INTEGER NOT NULL DEFAULT 0");
+// 气泡上的渲染依据：每轮第一条 assistant 气泡带 variant_index / variant_count，
+// 前端靠它显示「◀ 2/3 ▶」切换条。全量变体载荷不下发（与 tool_detail 同一条膨胀纪律）。
+ensureColumn("messages", "variant_index", "variant_index INTEGER");
+ensureColumn("messages", "variant_count", "variant_count INTEGER NOT NULL DEFAULT 0");
+// 存量回复补齐版本元信息：每条回复天生是自己的第 1 版——聊天页常驻「1/1 + 生成入口」，
+// 老对话不补的话只有重答过的轮才有切换条。幂等：只碰还是 0 的首气泡行，重跑无副作用。
+db.exec(`UPDATE messages SET variant_index = 0, variant_count = 1
+  WHERE variant_count = 0 AND role = 'assistant' AND kind = 'chat' AND turn_id IS NOT NULL
+    AND id IN (SELECT MIN(id) FROM messages
+               WHERE role = 'assistant' AND kind = 'chat' AND turn_id IS NOT NULL
+               GROUP BY turn_id)`);
+
 // 联系人头像（dataURL，png/jpg/webp、≤150KB，客户端压到最长边 1280）。存库而非文件：
 // 「备份一个文件 = 全部数据」的纪律不因头像破例。
 ensureColumn("contacts", "avatar", "avatar TEXT");

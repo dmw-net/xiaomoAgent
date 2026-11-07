@@ -20,6 +20,7 @@ import {
   retractMessage,
   retryTurn,
   searchMessagesForContact,
+  setTurnVariant,
   turnStats,
   updateAssistantText,
   updateUserMessageText,
@@ -187,6 +188,36 @@ const turnCancelRoute: Route = ({ res, path, method }) => {
   return true;
 };
 
+const turnVariantRoute: Route = async ({ req, res, url, path, method }) => {
+  /** 切换这一轮回复的版本（swipe）：把选中版本写回气泡行，前端按轮窄取重绘。
+   *  归属校验与 turnGetRoute 同一套：turnId 虽是 UUID，不校验的话串号标签页能切到别人的回复。 */
+  if (!(method === "POST" && path.startsWith("/api/turn/") && path.endsWith("/variant"))) return false;
+  const id = decodeURIComponent(path.slice("/api/turn/".length, -"/variant".length));
+  const body = await readJson<{ index?: unknown }>(req);
+  const index = typeof body.index === "number" ? body.index : Number(body.index);
+  if (!Number.isInteger(index) || index < 0) {
+    sendJson(res, 400, { ok: false, error: "版本序号不合法" });
+    return true;
+  }
+  const turn = getTurn(id);
+  if (!turn) {
+    sendJson(res, 404, { ok: false, error: "处理单不存在" });
+    return true;
+  }
+  const asked = url.searchParams.get("contactId");
+  if (asked && turn.contact_id && turn.contact_id !== asked) {
+    sendJson(res, 404, { ok: false, error: "处理单不存在" });
+    return true;
+  }
+  try {
+    const result = setTurnVariant(id, index);
+    sendJson(res, 200, { ok: true, applied: result.applied, index });
+  } catch (error) {
+    sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+  return true;
+};
+
 const turnsRecentRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/turns/recent")) return false;
   const limit = clampInt(url.searchParams.get("limit"), LIST_LIMIT_DEFAULT, 1, LIST_LIMIT_MAX);
@@ -300,7 +331,7 @@ const messagesListRoute: Route = ({ res, url, path, method }) => {
 };
 
 const messageEditRoute: Route = async ({ req, res, url, path, method }) => {
-  /** 编辑一条自己发过的消息，并从那里重新开始对话。
+  /** 编辑一条自己发过的消息，并重新回答这一轮（旧回答进版本条，后续对话保留）。
    *  立刻返回（重新生成要调模型，可能十几秒），前端拿 turnId 去轮询 /api/turn/:id。
    *  已有记忆不回滚——界面上也必须把这一点告诉用户。 */
   if (!(method === "POST" && path.startsWith("/api/message/") && path.endsWith("/edit"))) return false;
@@ -332,8 +363,7 @@ const messageEditRoute: Route = async ({ req, res, url, path, method }) => {
     sendJson(res, 200, {
       ok: true,
       turnId: result.turnId,
-      superseded: result.superseded,
-      note: "已从这里重新开始，之后的消息不再进入上下文（已经记住的事不会回滚）",
+      note: "旧回答已存成版本，可左右切换；后面的对话保留（已经记住的事不会回滚）",
     });
   } catch (error) {
     sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
@@ -411,6 +441,7 @@ export const routes: Route[] = [
   turnRetryRoute,
   turnRegenerateRoute,
   turnCancelRoute,
+  turnVariantRoute,
   turnsRecentRoute,
   messagesSearchRoute,
   messagesAroundRoute,

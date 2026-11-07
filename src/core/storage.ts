@@ -13,6 +13,7 @@ import { config } from "./config.ts";
 import { compactDb, db } from "./db.ts";
 import { clearModelCallBodies, clearModelCallHistory, modelCallBodyStats } from "./logs.ts";
 import { mediaDir } from "../media/media.ts";
+import { walkMediaTree } from "../media/media-layout.ts";
 import { skillsDir } from "../mind/skills.ts";
 
 export const STORAGE_CLEANUP_OPS = ["diagnosticBodies", "modelCalls", "importBackups", "compact"] as const;
@@ -25,6 +26,8 @@ export type StorageOverview = {
   databaseBytes: number;
   walBytes: number;
   mediaBytes: number;
+  /** 递归媒体文件数（与「全部清空」实际会删的范围一致）。 */
+  mediaFiles: number;
   skillsBytes: number;
   diagnostics: { calls: number; withBodies: number; reqChars: number; resChars: number; reqBytes: number; resBytes: number };
   modelCalls: { count: number; oldestAt: number | null; newestAt: number | null };
@@ -129,6 +132,8 @@ export function storageOverview(): StorageOverview {
     databaseBytes: bytesOf(dbPath),
     walBytes: bytesOf(dbPath + "-wal") + bytesOf(dbPath + "-shm"),
     mediaBytes: treeBytes(mediaDir()),
+    /** 递归文件数（与「全部清空」实际会删的范围一致，确认弹窗按它报数）。 */
+    mediaFiles: walkMediaTree().length,
     skillsBytes: treeBytes(skillsDir()),
     diagnostics: modelCallBodyStats(),
     modelCalls: callStats,

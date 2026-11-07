@@ -11,6 +11,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { gunzipSync } from "node:zlib";
 
 const root = mkdtempSync(join(tmpdir(), "xiaomo-data-transfer-test-"));
 process.env.DB_PATH = join(root, "xiaomo.db");
@@ -56,6 +57,32 @@ try {
   assert.equal(existsSync(localSkill), false, "备份中没有技能时，本机旧技能必须被清空");
   console.log("  ✓ 空媒体/技能备份导入后，本机旧目录被清空");
 
+  // 非 ASCII 路径回归：tar 头曾按 ascii 编码写文件名，中文路径（media/图片/…）
+  // 被截成 0xFE 0x47 乱码——文件内容完好，但导入侧按 UTF-8 读回后媒体引用整体断裂。
+  // 头必须按 UTF-8 写，且导入后按原路径恢复。
+  const cjkMedia = join(root, "media", "图片", "测试动画.gif");
+  mkdirSync(join(root, "media", "图片"), { recursive: true });
+  writeFileSync(cjkMedia, "cjk media payload");
+  const exportedCjk = await fetch(`${base}/api/settings/data-export`);
+  assert.equal(exportedCjk.status, 200, "中文路径导出接口应成功");
+  const cjkArchive = Buffer.from(await exportedCjk.arrayBuffer());
+  const tarBytes = gunzipSync(cjkArchive);
+  assert.ok(
+    tarBytes.includes(Buffer.from("media/图片/测试动画.gif", "utf8")),
+    "tar 头必须按 UTF-8 保存非 ASCII 路径",
+  );
+  const importedCjk = await fetch(`${base}/api/settings/data-import`, {
+    method: "POST",
+    headers: { "content-type": "application/gzip" },
+    body: cjkArchive,
+  });
+  const cjkResult = await importedCjk.json();
+  assert.equal(importedCjk.status, 200, `中文路径导入接口应成功：${JSON.stringify(cjkResult)}`);
+  assert.equal(cjkResult.ok, true);
+  assert.equal(existsSync(cjkMedia), true, "中文路径媒体必须按原路径恢复");
+  assert.equal(readFileSync(cjkMedia, "utf8"), "cjk media payload");
+  console.log("  ✓ 中文媒体路径按 UTF-8 进 tar 头，导入后原路径恢复");
+
   // 桌面 WebView 不走 XHR：attachment 响应只能交给 Tauri 原生下载。
   const transferApi = readFileSync("frontend/src/api/dataTransfer.ts", "utf8");
   const appearance = readFileSync("frontend/src/features/settings/AppearanceSection.tsx", "utf8");
@@ -69,5 +96,8 @@ try {
   console.log("  ✓ 桌面端导出走原生下载并回报完成状态");
 } finally {
   await new Promise((resolve) => server.close(resolve));
-  rmSync(root, { recursive: true, force: true });
+  // 导入成功后服务端会重开数据库连接（这正是本次修复的行为）；
+  // Windows 上不先关掉句柄，rmSync 删临时目录会 EPERM。
+  try { (await import("../src/core/db.ts")).db.close(); } catch { /* 可能已关闭 */ }
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

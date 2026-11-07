@@ -61,6 +61,15 @@ function stamp(): string {
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
 }
 
+// 导入产生的 `.pre-import-*` / `.importing-*` 名字必须是**进程内唯一**的：
+// stamp() 只有秒级精度，同一秒内连续两次导入会得到同一个名字——Windows 上
+// rename 到已存在的目录直接 EPERM（文件能替换、目录不行），第二次导入整包失败。
+// 序号保证不撞名；前缀保持原样供 recoverInterruptedImport 识别。
+let importSeq = 0;
+function importToken(): string {
+  return `${stamp()}-${(++importSeq).toString(36)}`;
+}
+
 
 function listTree(root: string, prefix: string, stats: { files: number; bytes: number }): TarFile[] {
   if (!existsSync(root)) return [];
@@ -126,17 +135,25 @@ function writeOctal(buf: Buffer, offset: number, len: number, value: number): vo
 }
 
 function writeString(buf: Buffer, offset: number, len: number, value: string): void {
-  buf.write(value, offset, len, "ascii");
-  buf.fill(0, offset + Buffer.byteLength(value, "ascii"), offset + len);
+  // 必须按 UTF-8 写：USTAR 头里的路径是字节字段，ascii 编码会把非 ASCII 字符
+  // 截断到低 8 位（「图片」→ 0xFE 0x47），导入侧按 UTF-8 读回来就是乱码目录，
+  // 媒体引用会整体断掉。数字字段仍走 writeOctal 的 ascii，不受影响。
+  buf.write(value, offset, len, "utf8");
+  buf.fill(0, offset + Buffer.byteLength(value, "utf8"), offset + len);
 }
 
 function splitUstarName(name: string): { prefix: string; name: string } {
-  if (name.length <= 100) return { prefix: "", name };
-  for (let i = 100; i > 0; i--) {
+  // USTAR 的 100/155 上限是**字节**不是字符：中文路径按 UTF-8 每字 3 字节，
+  // 用字符串长度判断会写出超长头。从最右侧的 '/' 起往左找——最右斜杠给出
+  // 最短尾部，若它都超 100 字节则任何切分都装不下。
+  if (Buffer.byteLength(name, "utf8") <= 100) return { prefix: "", name };
+  for (let i = name.length - 1; i > 0; i--) {
     if (name[i] !== "/") continue;
     const prefix = name.slice(0, i);
     const tail = name.slice(i + 1);
-    if (prefix.length <= 155 && tail.length <= 100) return { prefix, name: tail };
+    if (Buffer.byteLength(prefix, "utf8") <= 155 && Buffer.byteLength(tail, "utf8") <= 100) {
+      return { prefix, name: tail };
+    }
   }
   throw new Error("归档内路径过长");
 }
@@ -372,8 +389,24 @@ function validateStagedDatabase(file: string): void {
   }
 }
 
-function renameIfExists(from: string, to: string): void {
-  if (existsSync(from)) renameSync(from, to);
+const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** 异步版 rename：Windows 上杀毒/索引服务会短暂握住刚写完或刚读过的文件句柄，目录改名可能瞬时报 EPERM/EBUSY。 */
+async function renameIfExists(from: string, to: string): Promise<void> {
+  if (!existsSync(from)) return;
+  for (let attempt = 0; ; attempt++) {
+    try {
+      renameSync(from, to);
+      return;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      const transient = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+      if (!transient || attempt >= 5) throw error;
+      // 必须异步让出事件循环：句柄可能是导出管道刚结束、还没跑完的流关闭
+      // finalizer 持有的——同步阻塞反而让它永远没机会释放。
+      await sleep(200 * (attempt + 1));
+    }
+  }
 }
 
 function rollbackRename(backupPath: string, livePath: string): void {
@@ -383,11 +416,11 @@ function rollbackRename(backupPath: string, livePath: string): void {
   } catch { /* 保留 .pre-import 备份，错误提示里会引导用户 */ }
 }
 
-function replaceWithStaged(stage: string): void {
+async function replaceWithStaged(stage: string): Promise<void> {
   const activeDb = resolve(config.dbPath);
   const root = dirname(activeDb);
   mkdirSync(root, { recursive: true });
-  const oldSuffix = `.pre-import-${stamp()}`;
+  const oldSuffix = `.pre-import-${importToken()}`;
   const dbBackup = `${activeDb}${oldSuffix}`;
   const stagedDb = join(stage, DB_ENTRY);
 
@@ -397,13 +430,13 @@ function replaceWithStaged(stage: string): void {
 
   // 原子化导入：先把新库拷到临时名，再 rename 到正式名。
   // 这样即使在拷贝过程中断电/崩溃，正式库要么是旧的、要么是新的，不会中间态。
-  const tempDb = `${activeDb}.importing-${stamp()}`;
+  const tempDb = `${activeDb}.importing-${importToken()}`;
   try {
     // 第一步：把新库拷到临时文件（如果这里失败，旧库还在）
     cpSync(stagedDb, tempDb);
     // 第二步：把旧库改名备份（如果这里失败，清理临时文件）
     try {
-      renameIfExists(activeDb, dbBackup);
+      await renameIfExists(activeDb, dbBackup);
     } catch (e) {
       rmSync(tempDb, { force: true });
       throw e;
@@ -430,7 +463,7 @@ function replaceWithStaged(stage: string): void {
       const to = resolve(toRaw);
       mkdirSync(dirname(to), { recursive: true });
       const old = `${to}${oldSuffix}`;
-      renameIfExists(to, old);
+      await renameIfExists(to, old);
       moved.push([old, to]);
       try {
         if (existsSync(from)) cpSync(from, to, { recursive: true });
@@ -443,6 +476,10 @@ function replaceWithStaged(stage: string): void {
 
     rmSync(`${activeDb}-wal`, { force: true });
     rmSync(`${activeDb}-shm`, { force: true });
+
+    // 成功路径同样必须重开连接：db.close() 之后进程还要继续服务，
+    // 不重开的话，用户重启前每个碰库的接口（包括再次导出）都是 "database is not open"。
+    reopenDb();
   } catch (error) {
     // 上面的 db.close() 已经执行；无论文件回滚是否成功，都必须把连接重新打开。
     // 否则进程带着 closed 句柄继续服务，之后每个接口都是 "database is not open"，
@@ -501,7 +538,7 @@ export async function importDataArchive(request: IncomingMessage): Promise<Impor
     }
     if (manifest.version !== ARCHIVE_VERSION) throw new Error("备份版本不受支持");
     validateStagedDatabase(join(stage, DB_ENTRY));
-    replaceWithStaged(stage);
+    await replaceWithStaged(stage);
     return {
       ...stats,
       note: `已导入 ${stats.files} 个文件（图片 ${stats.media}、技能 ${stats.skills}）。重启后生效；旧数据已在数据目录中保留为 .pre-import 备份。`,

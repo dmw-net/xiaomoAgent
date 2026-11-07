@@ -27,8 +27,16 @@ export type TurnRow = {
   attachments?: string | null;
   /** 附件元信息 JSON；语音消息的时长、转写与波形都在这里。 */
   attachment_meta?: string | null;
-  /** 被编辑作废的时间戳（supersedeAfter 打的）。非空 = 这一轮已不属于当前对话。 */
+  /** 历史遗留的作废时间戳（旧版「编辑后作废后续」所打，该机制已由版本切换取代）。
+   *  非空 = 这一轮已不属于当前对话；新数据不会再写入，编辑时仍会清掉它。 */
   superseded_at?: number | null;
+  /**
+   * 回复版本存档（swipe）：JSON 数组，index 0 = 最初版本，重答追加、封顶 5。
+   * 只在服务端内部流转（写入/切换），HTTP 面不下发全量载荷。
+   */
+  variants?: string | null;
+  /** 当前选中的版本序号（0 = 最初版本）。 */
+  variant_index?: number | null;
 };
 
 export function getTurn(id: string): TurnRow | null {

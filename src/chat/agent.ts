@@ -8,7 +8,7 @@ import { config } from "../core/config.ts";
 import { extractMemories, likePattern, recallExplained, recallSmart, recordExtractFailure } from "../mind/memory.ts";
 import { buildSystemPrompt, toChatMessages } from "../mind/persona.ts";
 import { loadToolExchanges, planToolReplay, trimToolStore } from "./tool-history.ts";
-import { activeProfileId, effectiveRecentTurns, listProfiles, modelConfig, modelReadyNow, resolveToolLoopTurns } from "../settings/settings.ts";
+import { activeProfileId, effectiveRecentTurnsSpec, listProfiles, modelConfig, modelReadyNow, resolveToolLoopTurns } from "../settings/settings.ts";
 import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "../settings/model.ts";
 import { appendImageDescriptions, describeChatImages, visionHandlingFor } from "../mind/image-understanding.ts";
 import { executeTool, visibleTools, toolDefsForApi, type ToolContext, type ToolResult } from "../mind/tools.ts";
@@ -188,6 +188,164 @@ export function deleteAssistantMessagesForTurn(turnId: string): number {
   return Number(result.changes);
 }
 
+// ── 回复多版本（swipe）─────────────────────────────────────────
+// 重答一轮时旧回复不再消失：它被序列化进 turns.variants 留档，新回复追加为下一个版本，
+// 用户可以在气泡下方左右切换。活跃版本的正文始终写回 messages.text ——
+// 上下文回放（recentMessages）只认那一列，所以「模型看到哪个版本」与「用户选中哪个版本」天然一致。
+
+/** 每轮最多保留的版本数：超了裁最旧的（连最初的版本一起裁，用户选过的口径）。 */
+export const TURN_VARIANT_CAP = 5;
+
+/** turns.variants 里一个版本的存档形状。texts 是落库时的分条气泡序列。 */
+export type TurnVariant = {
+  texts: string[];
+  /** 第一颗气泡上的附件与元信息（JSON 字符串原样存档，格式与 messages 同）。 */
+  attachments: string | null;
+  attachment_meta: string | null;
+  /** 这一版生成时的思考原文。 */
+  reasoning: string | null;
+  created_at: number;
+};
+
+/** turns.variants 是 JSON 字符串；解析失败或形状不对按「没有版本」处理，绝不抛进聊天主流程。 */
+function parseTurnVariants(raw: string | null | undefined): TurnVariant[] {
+  if (typeof raw !== "string" || raw === "") return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((item): item is TurnVariant => {
+      if (item === null || typeof item !== "object") return false;
+      return Array.isArray((item as Partial<TurnVariant>).texts);
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * 重答前把这一轮现有的回复气泡初始化为 variants[0]（只在没有存档时做一次）。
+ * 已经有存档的轮次，库里的气泡就是 variants[variant_index] 本身，不重复存。
+ * 这一轮没有回复（失败重试）时什么都不做。
+ * 导出面：retryTurn 是业务入口，这个函数直接导出只为回归测试能驱动存档路径。
+ */
+export function ensureTurnVariants(turnId: string): void {
+  const turn = getTurn(turnId);
+  if (!turn || (turn.variants !== null && turn.variants !== undefined && turn.variants !== "")) return;
+  const rows = q(
+    `SELECT text, attachments, attachment_meta, reasoning, created_at FROM messages
+     WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC`,
+  ).all(turnId) as Array<{ text: string; attachments: string | null; attachment_meta: string | null; reasoning: string | null; created_at: number }>;
+  if (rows.length === 0) return;
+  // 附件/元信息/思考只挂在第一颗气泡上（与落库时同一纪律），存档按同样的形状收。
+  const record: TurnVariant = {
+    texts: rows.map((row) => row.text),
+    attachments: rows[0]?.attachments ?? null,
+    attachment_meta: rows[0]?.attachment_meta ?? null,
+    reasoning: rows[0]?.reasoning ?? null,
+    created_at: rows[0]?.created_at ?? Date.now(),
+  };
+  q(`UPDATE turns SET variants = ?, variant_index = 0 WHERE id = ?`)
+    .run(JSON.stringify([record]), turnId);
+}
+
+/**
+ * 新回复落库后把它追加为下一个版本，并把活跃指针指过去；超过封顶数裁最旧的。
+ * texts 传分条后的气泡序列（重答旧轮时是整段一条）；附件/元信息/思考只挂第一颗。
+ * 导出面：同 ensureTurnVariants —— 仅为回归测试。
+ */
+export function appendTurnVariant(
+  turnId: string,
+  texts: string[],
+  attachments: string | null,
+  attachmentMeta: string | null,
+  reasoning: string | null,
+): void {
+  const turn = getTurn(turnId);
+  if (!turn) return;
+  const list = parseTurnVariants(turn.variants);
+  if (list.length === 0) return; // 不是版本化重答（普通首答/失败重试），不留档
+  list.push({
+    texts,
+    attachments: attachments && attachments !== "" ? attachments : null,
+    attachment_meta: attachmentMeta && attachmentMeta !== "" ? attachmentMeta : null,
+    reasoning: reasoning || null,
+    created_at: Date.now(),
+  });
+  while (list.length > TURN_VARIANT_CAP) list.shift();
+  const index = list.length - 1;
+  q(`UPDATE turns SET variants = ?, variant_index = ? WHERE id = ?`).run(JSON.stringify(list), index, turnId);
+  syncVariantMeta(turnId);
+}
+
+/**
+ * 把版本元信息写到这一轮第一条 assistant 气泡上：前端的切换条只渲染在那里。
+ * 没有存档的回复也算「1/1」——每条回复天生是自己的第 1 版，右位的生成入口常驻。
+ */
+export function syncVariantMeta(turnId: string): void {
+  const turn = getTurn(turnId);
+  const list = parseTurnVariants(turn?.variants);
+  const count = Math.max(1, list.length);
+  const index = list.length > 0 ? Math.min(Math.max(turn?.variant_index ?? 0, 0), count - 1) : 0;
+  q(
+    `UPDATE messages SET variant_index = ?, variant_count = ?
+     WHERE id = (SELECT MIN(id) FROM messages WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat')`,
+  ).run(index, count, turnId);
+}
+
+/**
+ * 切换这一轮回复的版本（swipe）：把选中版本写回气泡行。
+ *
+ * 与重答旧轮同一套「写回原位」纪律：切换绝不能「删掉再插」——消息表以自增 id 当时间轴，
+ * 重插会让这条回复掉到整段对话末尾，后面那些轮次当场对不上。所以第一颗气泡行原地 UPDATE，
+ * 多余的分条气泡删掉；只有这一轮仍是该联系人最新一轮时，多气泡版本才补插到末尾（那里本来就是末尾）。
+ * 工具卡与其它 assistant 行一并清掉：它们属于被换下的那次生成，与旧版本成对。
+ */
+export function setTurnVariant(turnId: string, index: number): { applied: boolean } {
+  const turn = getTurn(turnId);
+  if (!turn) throw new Error("处理单不存在");
+  if (turn.status === "running") throw new Error("这一轮还在生成中，先等它结束");
+  if (turn.superseded_at !== null && turn.superseded_at !== undefined) {
+    throw new Error("这一轮已被编辑取代，切换不了版本");
+  }
+  const list = parseTurnVariants(turn.variants);
+  if (list.length === 0) throw new Error("这一轮没有可切换的历史版本");
+  if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+    throw new Error("版本序号超出范围");
+  }
+  if (index === (turn.variant_index ?? 0)) return { applied: false };
+
+  const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
+  const conversationId = turn.conversation_id || localConversationId(contactId);
+  const variant = list[index];
+  if (variant === undefined) throw new Error("版本序号超出范围");
+  const first = q(
+    `SELECT id FROM messages WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC LIMIT 1`,
+  ).get(turnId) as { id: number } | undefined;
+  if (!first) throw new Error("这一轮的回复已经不在了，切换不了版本");
+  // 分条气泡合回整段：历史标记/上下文回放看到的就是这一版完整的话。
+  const joined = variant.texts.length === 1 ? variant.texts[0] ?? "" : variant.texts.join("\n\n");
+  // 仍是最新一轮时补插分条气泡（跟随原版本的打字节奏形状），首行只写第一段；
+  // 较早的轮次保持整段一条（与重答旧轮同一套写回原位纪律），写合并后的整段。
+  const resplit = variant.texts.length > 1 && isLatestTurnOfContact(contactId, turnId);
+  q(`DELETE FROM messages WHERE turn_id = ? AND role = 'assistant' AND id <> ?`).run(turnId, first.id);
+  q(
+    `UPDATE messages SET text = ?, attachments = ?, attachment_meta = ?, reasoning = ?, variant_index = ?, variant_count = ? WHERE id = ?`,
+  ).run(
+    resplit ? variant.texts[0] ?? "" : joined,
+    variant.attachments, variant.attachment_meta, variant.reasoning, index, list.length, first.id,
+  );
+  if (resplit) {
+    for (let i = 1; i < variant.texts.length; i += 1) {
+      insertMessage({
+        channel: turn.channel, role: "assistant", text: variant.texts[i] ?? "", turnId, contactId, conversationId,
+      });
+    }
+  }
+  q(`UPDATE turns SET reply = ?, variant_index = ? WHERE id = ?`).run(joined, index, turnId);
+  emitMessage(contactId, conversationId, first.id);
+  return { applied: true };
+}
+
 /**
  * 最近若干【轮】消息，用来拼上下文（一问一答算一轮，轮以 user 消息为边界）。
  *
@@ -204,14 +362,19 @@ export function countLiveTurns(contactId: string, conversationId = localConversa
 /** 生效回放轮数：联系人覆盖 > 全局应用内覆盖 > .env > 默认（与模型绑定同一套分层）。
  *  返回 ALL_TURNS(-1) 表示这位要带全部历史。
  *  features.turnPct > 0 时它优先：带「这段会话总轮数 × 百分比」的最近轮 ——
- *  轮数是固定形状，比例会随这段关系聊了多久自己伸缩。 */
+ *  轮数是固定形状，比例会随这段关系聊了多久自己伸缩。
+ *  联系人没覆盖时走全局 spec（比例/全部/轮数三态，判序与联系人级同构）。 */
 export function effectiveRecentTurnsFor(contactId: string, conversationId = localConversationId(contactId)): number {
   const c = getContact(contactId);
   const pct = c?.features.turnPct ?? 0;
   if (pct > 0) return Math.max(1, Math.ceil(countLiveTurns(contactId, conversationId) * pct / 100));
   const t = c?.recent_turns ?? 0;
   if (t === ALL_TURNS) return ALL_TURNS;
-  return t > 0 ? t : effectiveRecentTurns();
+  if (t > 0) return t;
+  const spec = effectiveRecentTurnsSpec();
+  if (spec.kind === "all") return ALL_TURNS;
+  if (spec.kind === "pct") return Math.max(1, Math.ceil(countLiveTurns(contactId, conversationId) * spec.pct / 100));
+  return spec.turns;
 }
 
 /**
@@ -257,7 +420,7 @@ import type { MessageRow } from "../../shared/api.ts";
 
 export type { MessageRow };
 
-const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, conversation_id, sender_id, sender_name, source_message_id, reply_to_message_id, at_bot, attachments, attachment_meta, turn_id, reasoning, tool_detail";
+const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, conversation_id, sender_id, sender_name, source_message_id, reply_to_message_id, at_bot, attachments, attachment_meta, turn_id, reasoning, tool_detail, variant_index, variant_count";
 
 /** attachments / attachment_meta 存的是 JSON 字符串；下发前解析，脏数据按无附件处理。 */
 function withParsedAttachments(row: MessageRow & { attachments: unknown; attachment_meta?: unknown }): MessageRow {
@@ -1484,7 +1647,19 @@ export function updateAssistantText(id: number, text: string): boolean {
   const res = q(
     `UPDATE messages SET text = ? WHERE id = ? AND role = 'assistant' AND kind = 'chat' AND superseded_at IS NULL`,
   ).run(text, id);
-  return res.changes > 0;
+  if (res.changes === 0) return false;
+  // 手改的文字同步回版本存档里活跃的那份：不然用户改完一切正常，左右一切版本，手改就丢了。
+  const row = q(`SELECT turn_id FROM messages WHERE id = ?`).get(id) as { turn_id: string | null } | undefined;
+  if (row?.turn_id) {
+    const turn = getTurn(row.turn_id);
+    const list = parseTurnVariants(turn?.variants);
+    const idx = turn?.variant_index ?? 0;
+    if (list.length > 0 && list[idx] !== undefined) {
+      list[idx] = { ...list[idx], texts: [text] };
+      q(`UPDATE turns SET variants = ? WHERE id = ?`).run(JSON.stringify(list), row.turn_id);
+    }
+  }
+  return true;
 }
 
 /**
@@ -1625,7 +1800,7 @@ function reasoningDraftWriter(turnId: string): (text: string) => void {
 
 export async function respondToTurn(
   turn: TurnRow,
-  opts: { isRetry?: boolean; collapseReply?: boolean } = {},
+  opts: { isRetry?: boolean; collapseReply?: boolean; variants?: boolean } = {},
 ): Promise<string> {
   const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
   const conversationId = turn.conversation_id || localConversationId(contactId);
@@ -1706,7 +1881,7 @@ export async function respondToTurn(
     emitTurn(contactId, conversationId, turn.id, "running");
     /**
      * 重答一条**较早**的轮次时，新回复必须留在它原来位置上。
-     * 消息表以自增 id 当时间轴（上下文窗口按 id 取、supersedeAfter 也按 id 比较），
+     * 消息表以自增 id 当时间轴（上下文窗口按 id 取、版本切换的写回也按 id 定位），
      * 「删掉再插」会让这条回复排到整段对话末尾，后面那些轮次当场对不上。
      * 所以这里沿用它第一个气泡那一行的 id 把整条写回去、多余的分条气泡删掉。
      * 代价是这一种重答不分条——故意的重答旧消息，不需要打字节奏。
@@ -1722,6 +1897,8 @@ export async function respondToTurn(
         .get(turn.id) as { id: number } | undefined)?.id ?? null)
       : null;
     if (opts.isRetry) {
+      // 版本化重答先把旧回复存进 turns.variants：必须赶在删除之前，晚了就没有可存的了。
+      if (opts.variants) ensureTurnVariants(turn.id);
       if (collapseIntoId !== null) {
         q(`DELETE FROM messages WHERE turn_id = ? AND role = 'assistant' AND id <> ?`).run(turn.id, collapseIntoId);
       } else {
@@ -1981,6 +2158,20 @@ export async function respondToTurn(
     // 留在库里既不会被回放，又会让备份一天天变大（卡片行与工具名仍保留）。
     trimToolStore(contactId);
     if (cancelIfAborted()) return "";
+    // 版本化重答收尾：把刚写完的这版追加进 turns.variants（被换下的那版已在起跑前存档）。
+    // 附件/元信息只挂第一颗气泡，与落库同一形状；重答旧轮时 parts 本就是整段一条。
+    // 非版本化回复也要落版本元信息：常驻的「1/1 + 生成入口」靠它渲染。
+    if (opts.variants) {
+      appendTurnVariant(
+        turn.id,
+        parts,
+        bubbleImages.length > 0 ? JSON.stringify(bubbleImages) : null,
+        bubbleImages.length > 0 && bubbleMeta.length > 0 ? JSON.stringify(bubbleMeta) : null,
+        reasoning || null,
+      );
+    } else {
+      syncVariantMeta(turn.id);
+    }
     q("UPDATE turns SET status = 'done', reply = ?, finished_at = ? WHERE id = ?").run(
       reply,
       Date.now(),
@@ -2160,7 +2351,10 @@ export async function retryTurn(turnId: string, opts: { regenerate?: boolean } =
   q(`UPDATE turns SET status = 'queued', reply = NULL, reasoning_draft = NULL, error = NULL, finished_at = NULL WHERE id = ?`).run(turnId);
   turn.status = "queued";
 
-  void respondToTurn(turn, { isRetry: true, collapseReply }).catch(() => {
+  // regenerate = 版本化重答：旧回复先存档、新回复追加为下一个版本（见 ensureTurnVariants /
+  // appendTurnVariant）。失败重试与编辑重答不是版本化重答：前者无话可存，后者上下文已变、
+  // 旧版本不再与这一轮对得上（editAndRegenerate 里清档）。
+  void respondToTurn(turn, { isRetry: true, collapseReply, variants: opts.regenerate === true }).catch(() => {
     // 失败已写进 turns.error，这里不再重复处理。
   });
   return true;
@@ -2227,63 +2421,20 @@ function resetTurnForEdit(turnId: string, text: string, attachments: string[]): 
 }
 
 /**
- * 把某条消息**之后**的一切从上下文里摘除。
+ * 编辑一条自己发过的消息，并重新回答这一轮。
  *
- * 这是「编辑后从这里重新开始对话」的核心动作。注意它**不删任何一行**，只打时间戳标记：
- * 于是历史还在（界面折叠可查、状态页可回溯），但 recentMessages() 不会再取到它们——
- * 模型从那一点开始，确实不知道后面发生过什么。
- *
- * @param exceptTurnId 不要动的处理单。传入被编辑的那一轮：它的 assistant 回复虽然
- *   在消息顺序上"在被改的那条之后"，但它正是要被重新生成的那一轮，不该被标记失效。
- *   （一开始没排除，结果那一轮既失效又在跑，状态页直接看不到它。）
- */
-export function supersedeAfter(messageId: number, exceptTurnId?: string): { messages: number; turns: number } {
-  return withTx(() => supersedeAfterInner(messageId, exceptTurnId));
-}
-
-function supersedeAfterInner(messageId: number, exceptTurnId?: string): { messages: number; turns: number } {
-  const now = Date.now();
-
-  // 必须按联系人收口：messages.id 是**全局**自增，不收口的话在 A 里保存一次编辑，
-  // B / C 里所有更晚的消息都会被一起折叠成「被编辑取代」——
-  // 「换了个联系人聊天，发现原联系人的消息被折叠了」就是这个 bug 的表现。
-  const scope = q(`SELECT contact_id FROM messages WHERE id = ?`).get(messageId) as
-    | { contact_id: string | null }
-    | undefined;
-  if (!scope) return { messages: 0, turns: 0 };
-  const cid = scope.contact_id;
-
-  // 先记下受影响的处理单：UPDATE 一旦跑过，就再也按 id 找不出它们属于哪些轮次了。
-  const turnRows = q(`SELECT DISTINCT turn_id FROM messages WHERE id > ? AND contact_id IS ? AND turn_id IS NOT NULL`)
-    .all(messageId, cid) as unknown as Array<{ turn_id: string }>;
-
-  const messageResult = q(
-      `UPDATE messages SET superseded_at = ?, superseded_kind = 'edit' WHERE id > ? AND contact_id IS ? AND superseded_at IS NULL`,
-    )
-    .run(now, messageId, cid);
-
-  let turns = 0;
-  const ids = turnRows.map((row) => row.turn_id).filter((id) => id !== exceptTurnId);
-  if (ids.length > 0) {
-    const placeholders = ids.map(() => "?").join(",");
-    const turnResult = q(`UPDATE turns SET superseded_at = ? WHERE id IN (${placeholders}) AND superseded_at IS NULL`)
-      .run(now, ...ids);
-    turns = Number(turnResult.changes);
-  }
-
-  return { messages: Number(messageResult.changes), turns };
-}
-
-/**
- * 编辑一条自己发过的消息，并从这一点重新开始对话。
- *
- * 三步是一个动作，不能拆开做：
+ * 语义与「重新生成」对齐（版本式，不是作废式）：
  *   1) 改写这条消息的文本
- *   2) 把它之后的一切标记为失效（不再进上下文）
- *   3) 重新生成这一轮的回复
+ *   2) 旧回复进 turn 级版本存档（可左右切换，见 ensureTurnVariants / appendTurnVariant）
+ *   3) 重新生成这一轮的回复；**编辑点之后的对话原样保留**——不再整体作废折叠，
+ *      上下文回放继续包含后面的轮次（2026-11-07 起，「已被编辑取代」不再产生，
+ *      只有历史库里遗留的 superseded_kind='edit' 行还会折叠显示）。
  *
  * 为什么第 3 步不能省：只改文本不重新生成的话，上下文末尾留着的是"针对旧文本的回复"，
  * 模型下一轮看到的是一段自相矛盾的对话 —— 改了还不如不改。
+ *
+ * 已知取舍：旧回复对应的旧提问文字会被覆盖（回复版本只存回答不存提问），
+ * 切回旧版本回答时，问题显示的是新文字。
  *
  * **记忆不回滚（有意如此）**：已经被抽取成记忆的事件保持原样。三条理由——
  *   a. 记忆是"当时真实发生过的关系事件"，你说过那句话，抽取没有错；
@@ -2294,7 +2445,6 @@ function supersedeAfterInner(messageId: number, exceptTurnId?: string): { messag
  */
 export function editAndRegenerate(input: { messageId: number; text: string; attachments?: string[] }): {
   turnId: string;
-  superseded: { messages: number; turns: number };
 } {
   const message = getMessage(input.messageId);
   if (!message) throw new Error("这条消息不存在");
@@ -2318,14 +2468,8 @@ export function editAndRegenerate(input: { messageId: number; text: string; atta
     : (newUrls.length > 0 ? JSON.stringify(newUrls) : null);
   updateMessageText(input.messageId, input.text, attachmentsJson);
 
-  // 顺序要紧：**先**清掉这一轮的旧回复，**再**标记失效。
-  //   理由一：那条回复马上要被重新生成，它属于"被替换"而不是"被取代"，
-  //   先删掉，superseded 的计数才反映真实发生的事（否则计数会虚高一条）。
-  //   理由二：只清同一轮的产物，其它轮次一律不动——它们只是被标记失效，没有消失。
-  if (turnId !== null && existing !== null) deleteAssistantMessagesForTurn(turnId);
-
-  const superseded = supersedeAfter(input.messageId, turnId ?? undefined);
-
+  // 旧回复不在这里删：respondToTurn 的 isRetry 块会先把它存进版本存档再删除——
+  // 与重新生成同一套时序，提前删就没有可存的了。下游轮次一行都不动。
   let target = turnId;
   if (target === null || existing === null) {
     target = randomUUID();
@@ -2345,12 +2489,16 @@ export function editAndRegenerate(input: { messageId: number; text: string; atta
   const turn = getTurn(target);
   if (turn) {
     // 故意不 await：重新生成要调模型，可能十几秒。接口要立刻把 turnId 还给前端。
-    void respondToTurn(turn, { isRetry: true }).catch(() => {
+    // collapseReply 与 retryTurn 同判：较早的轮次写回原气泡位置（下游保留所以必须原位），
+    // variants=true 让旧回复进版本存档、新回复成为下一个可切换的版本。
+    const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
+    const collapseReply = !!turn.contact_id && !isLatestTurnOfContact(contactId, target);
+    void respondToTurn(turn, { isRetry: true, collapseReply, variants: true }).catch(() => {
       // 失败已写进 turns.error，前端轮询 /api/turn/:id 能看到。
     });
   }
 
-  return { turnId: target, superseded };
+  return { turnId: target };
 }
 
 /**

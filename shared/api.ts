@@ -57,6 +57,13 @@ export type MessageRow = {
    * 只给界面点开回看，不进上下文回放，且每联系人只保留最近若干轮（滚出即 null）。
    */
   tool_detail?: string | null;
+  /**
+   * 该轮保留的回复版本数（重答存档，封顶 5）。>1 时气泡下出现「◀ 2/3 ▶」切换条；
+   * 只在该轮第一条 assistant 气泡上有值，其余行为 0，避免一轮里每个气泡都挂一条。
+   */
+  variant_count?: number | null;
+  /** 当前选中的版本序号（0 = 最初版本）。模型后续对话看到的正是这个版本的文本。 */
+  variant_index?: number | null;
 };
 
 /** 处理单在 HTTP 面上的最小形状；/api/turns/recent 实际返回超集（含 text/reply）。 */

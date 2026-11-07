@@ -226,14 +226,27 @@ export type OwnerProfile = {
 export type PersonaSettings = {
   character: CharacterCard;
   owner: OwnerProfile;
-  /** 回放最近多少【轮】对话。0 = 不覆盖，跟随 .env / 内置默认。 */
+  /** 回放最近多少【轮】对话。-1 = 全部历史；0 = 不覆盖，跟随 .env / 内置默认。 */
   recentTurns: number;
+  /** 全局按会话比例回放（%）。> 0 时优先于 recentTurns——与联系人级 turnPct 同一判序。 */
+  recentTurnsPct: number;
 };
 
-/** 生效的回放轮数：应用内覆盖 > .env > 默认。 */
-export function effectiveRecentTurns(): number {
-  const t = personaConfig().recentTurns;
-  return t > 0 ? t : config.recentTurnsInContext;
+/** 全局回放策略的解析结果：与联系人级「跟随全局」的三种给法一一对应。 */
+export type RecentTurnsSpec =
+  | { kind: "turns"; turns: number }
+  | { kind: "pct"; pct: number }
+  | { kind: "all" };
+
+/** 全局回放策略：比例 > 全部 > 固定轮数 > .env / 内置默认。
+ *  与联系人级 effectiveRecentTurnsFor 的判序刻意同构——「跟随全局」只是把同一套
+ *  策略整体下放，两处不会各说各话。 */
+export function effectiveRecentTurnsSpec(): RecentTurnsSpec {
+  const persona = personaConfig();
+  if (persona.recentTurnsPct > 0) return { kind: "pct", pct: persona.recentTurnsPct };
+  if (persona.recentTurns === -1) return { kind: "all" };
+  if (persona.recentTurns > 0) return { kind: "turns", turns: persona.recentTurns };
+  return { kind: "turns", turns: config.recentTurnsInContext };
 }
 
 /**
@@ -388,9 +401,15 @@ export function setGlobalToolLoopTurns(value: unknown): void {
 export function resolveToolLoopTurns(assistant: boolean): number {
   return assistant ? ASSISTANT_TOOL_LOOP_TURNS : globalToolLoopTurns();
 }
-/** 界面上限 1~30 轮；0/非法值一律归 0（= 不覆盖）。 */
+/** 界面上限 1~30 轮，-1 = 全部历史；0/非法值一律归 0（= 不覆盖，跟随默认）。 */
 function sanitizeRecentTurns(value: unknown): number {
+  if (value === -1) return -1;
   return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 30 ? value : 0;
+}
+
+/** 全局回放比例：1~100 取整，0/非法值归 0（= 不按比例）。 */
+function sanitizeRecentTurnsPct(value: unknown): number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 1 && value <= 100 ? value : 0;
 }
 
 /**
@@ -554,6 +573,7 @@ export function defaultPersona(): PersonaSettings {
       notes: "",
     },
     recentTurns: 0,
+    recentTurnsPct: 0,
   };
 }
 
@@ -600,6 +620,7 @@ export function personaConfig(): PersonaSettings {
     character: sanitizeCharacter({ ...base.character, ...(stored?.character ?? {}) }),
     owner: sanitizeOwner({ ...base.owner, ...(stored?.owner ?? {}) }),
     recentTurns: sanitizeRecentTurns(stored?.recentTurns),
+    recentTurnsPct: sanitizeRecentTurnsPct(stored?.recentTurnsPct),
   };
 }
 
@@ -653,6 +674,7 @@ export function updatePersona(patch: {
   character?: Partial<CharacterCard>;
   owner?: Partial<OwnerProfile>;
   recentTurns?: number;
+  recentTurnsPct?: number;
 }): PersonaSettings {
   const stored = readJson<PersonaSettings>(KV_PERSONA) ?? {};
   const next: PersonaSettings = {
@@ -661,12 +683,26 @@ export function updatePersona(patch: {
     character: { ...(stored.character ?? {} as CharacterCard) },
     owner: { ...(stored.owner ?? {} as OwnerProfile) },
     recentTurns: sanitizeRecentTurns(stored.recentTurns),
+    recentTurnsPct: sanitizeRecentTurnsPct(stored.recentTurnsPct),
   };
 
   if (patch.recentTurns !== undefined) {
     const t = sanitizeRecentTurns(patch.recentTurns);
     if (t === 0) delete (next as Partial<PersonaSettings>).recentTurns;
     else next.recentTurns = t;
+  }
+  // 比例与轮数互斥由解析判序保证（pct>0 优先）；写比例时把轮数归零，避免快照里
+  // 同时挂着两个"生效值"让人读不懂哪个在跑。
+  if (patch.recentTurnsPct !== undefined) {
+    const p = sanitizeRecentTurnsPct(patch.recentTurnsPct);
+    if (p === 0) delete (next as Partial<PersonaSettings>).recentTurnsPct;
+    else {
+      next.recentTurnsPct = p;
+      if (next.recentTurns > 0) delete (next as Partial<PersonaSettings>).recentTurns;
+    }
+  }
+  if (patch.recentTurns !== undefined && sanitizeRecentTurns(patch.recentTurns) > 0) {
+    delete (next as Partial<PersonaSettings>).recentTurnsPct;
   }
 
   for (const [key, value] of Object.entries(patch.character ?? {})) {
@@ -1253,6 +1289,7 @@ export function validatePersona(patch: {
   character?: Partial<CharacterCard>;
   owner?: Partial<OwnerProfile>;
   recentTurns?: unknown;
+  recentTurnsPct?: unknown;
 }): ValidationResult {
   const errors: string[] = [];
   const char = patch.character ?? {};
@@ -1260,8 +1297,15 @@ export function validatePersona(patch: {
 
   if (patch.recentTurns !== undefined) {
     const v = patch.recentTurns;
-    if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 30) {
-      errors.push("回放轮数只能是 0~30 的整数（0 = 跟随默认）");
+    if (typeof v !== "number" || !Number.isInteger(v) || v < -1 || v > 30) {
+      errors.push("回放轮数只能是 -1（全部）、0（跟随默认）或 1~30 的整数");
+    }
+  }
+
+  if (patch.recentTurnsPct !== undefined) {
+    const v = patch.recentTurnsPct;
+    if (typeof v !== "number" || !Number.isInteger(v) || v < 0 || v > 100) {
+      errors.push("回放比例只能是 0（关闭）或 1~100 的整数");
     }
   }
 

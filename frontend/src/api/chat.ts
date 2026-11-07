@@ -86,6 +86,11 @@ export function regenerateTurn(id: string, cid?: string): Promise<unknown> {
   return postJson(cq("/api/turn/" + encodeURIComponent(id) + "/regenerate", cid));
 }
 
+/** 切换这一轮回复的版本（swipe）：后端把选中版本写回气泡行，前端按轮窄取重绘。 */
+export function setTurnVariant(id: string, index: number, cid?: string): Promise<{ ok: boolean; applied: boolean; index: number }> {
+  return postJson(cq("/api/turn/" + encodeURIComponent(id) + "/variant", cid), { index });
+}
+
 /** 说一句话：立刻返回 202 + turnId，回复走轮询。attachments 为 /api/media 返回的 URL 列表。 */
 export function say(text: string, attachments?: string[], cid?: string, clientId?: string, conversationId?: string, attachmentMeta?: MessageAttachmentMeta[]): Promise<{ turnId: string }> {
   return postJson(cqc("/api/say", cid, conversationId), {

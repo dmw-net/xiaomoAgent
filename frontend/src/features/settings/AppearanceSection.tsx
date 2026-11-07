@@ -9,6 +9,7 @@ import DiagnosticsButton from "../../components/DiagnosticsButton";
 import MediaMaintenanceDialog from "../../components/MediaMaintenanceDialog";
 import StorageCleanupDialog from "../../components/StorageCleanupDialog";
 import { pickDirectory, relaunchApp } from "../../lib/native-dialog";
+import { revealInFolder } from "../../lib/reveal-folder";
 import { dataTransferApi, settingsApi, wallpaperApi } from "../../api";
 import { disableNotifications, enableNotifications, getNotifyPref, notificationSupported } from "../../lib/notify";
 
@@ -87,6 +88,8 @@ export default function AppearanceSection({
   const [transferBusy, setTransferBusy] = useState(false);
   const [exportBusy, setExportBusy] = useState(false);
   const [transferStatus, setTransferStatus] = useState<{ kind: "info" | "ok" | "bad"; text: string; percent?: number; indeterminate?: boolean }>({ kind: "info", text: "" });
+  // 桌面端原生下载完成后 Tauri 会回报落盘绝对路径；浏览器端拿不到真实路径（只有文件名），保持 null。
+  const [savedBackupPath, setSavedBackupPath] = useState<string | null>(null);
   const [lastBackupAt, setLastBackupAt] = useState<number | null>(getLastBackupAt);
   const nativeDownloadSeen = useRef(false);
   const nativeDownloadTimer = useRef<number | null>(null);
@@ -129,6 +132,7 @@ export default function AppearanceSection({
         nativeDownloadTimer.current = null;
       }
       if (event.phase === "started") {
+        setSavedBackupPath(null);
         setExportBusy(true);
         setTransferInfo(event.path ? `正在保存到：${event.path}` : "正在保存备份…", 5, true);
         return;
@@ -137,6 +141,7 @@ export default function AppearanceSection({
       if (event.phase === "finished") {
         markBackupCompleted();
         setLastBackupAt(getLastBackupAt());
+        setSavedBackupPath(event.path || null);
         setTransferOk(event.path ? `备份已保存：${event.path}` : "备份已保存到系统下载目录", 100);
       } else {
         setTransferError(event.message || "桌面下载没有完成，请重试。");
@@ -288,8 +293,17 @@ export default function AppearanceSection({
     setImportFile(file);
   };
 
+  /** 在系统文件管理器里定位刚保存的备份文件（桌面端才有真实路径）。 */
+  const openSavedBackupFolder = (): void => {
+    if (!savedBackupPath) return;
+    void revealInFolder(savedBackupPath).then((r) => {
+      if (!r.ok) setTransferError(r.error);
+    });
+  };
+
   const doExport = (): void => {
     if (exportBusy) return;
+    setSavedBackupPath(null);
     if (dataTransferApi.isDesktopRuntime()) {
       nativeDownloadSeen.current = false;
       setExportBusy(true);
@@ -631,6 +645,11 @@ export default function AppearanceSection({
                 </div>
               )}
             </div>
+            {savedBackupPath && (
+              <button type="button" className="btn sm" onClick={openSavedBackupFolder}>
+                在文件夹中打开
+              </button>
+            )}
           </div>
         )}
       </section>

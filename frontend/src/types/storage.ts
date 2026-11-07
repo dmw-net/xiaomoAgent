@@ -9,6 +9,8 @@ export type StorageOverview = {
   databaseBytes: number;
   walBytes: number;
   mediaBytes: number;
+  /** 递归媒体文件数（与「全部清空」实际会删的范围一致）。 */
+  mediaFiles: number;
   skillsBytes: number;
   diagnostics: { calls: number; withBodies: number; reqChars: number; resChars: number; reqBytes: number; resBytes: number };
   modelCalls: { count: number; oldestAt: number | null; newestAt: number | null };

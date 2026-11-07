@@ -6,7 +6,7 @@ import Modal from "../../components/Modal";
 import DiagnosticsButton from "../../components/DiagnosticsButton";
 import LoadingSkeleton from "../../components/LoadingSkeleton";
 import { getJson, settingsApi } from "../../api";
-import { cachedStatus, loadStatus, resetCounters as resetCountersStore } from "../../lib/statusStore";
+import { cachedStatus, loadStatus, ResetRefetchError, resetCounters as resetCountersStore } from "../../lib/statusStore";
 import { cachedCaps, loadCaps, type Caps } from "../../lib/capsStore";
 import { clockOf, dayLabel, dayOf } from "../../lib/datetime";
 import { copyText } from "../../lib/clipboard";
@@ -331,7 +331,13 @@ export default function StatusView({ active = true, contactId, contactName, cont
     setPingOut(null);
     resetCountersStore(contactId)
       .then((d) => { setStatus(d); setStatusErr(""); setPingOut({ cls: "ping-out good", text: "提醒已忽略。历史记录都还在。" }); })
-      .catch((e: Error) => setPingOut({ cls: "ping-out bad", text: "忽略提醒失败：" + e.message }))
+      .catch((e: Error) => setPingOut({
+        cls: "ping-out bad",
+        // 重取失败 ≠ 忽略失败：水印已经落定，缺的只是这份按联系人算的快照。
+        text: e instanceof ResetRefetchError
+          ? `提醒已忽略，但这份状态刷不出来：${e.message}`
+          : "忽略提醒失败：" + e.message,
+      }))
       .finally(() => setBusy(""));
   };
 

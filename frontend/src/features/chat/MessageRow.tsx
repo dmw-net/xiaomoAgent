@@ -1,5 +1,5 @@
 import { memo, useMemo, useState, type CSSProperties } from "react";
-import { Volume2, Loader2 } from "lucide-react";
+import { ChevronLeft, ChevronRight, RefreshCw, Volume2, Loader2 } from "lucide-react";
 import Avatar from "../../components/Avatar";
 import VoiceMessageBubble from "../../components/VoiceMessageBubble";
 import { useLongPress } from "../../hooks/useLongPress";
@@ -10,7 +10,7 @@ import { avatarToneStyle } from "../../lib/avatar-tone";
 import type { MessageAttachmentMeta, MessageRow } from "../../types";
 
 /** 一条普通消息气泡（含撤回态）。编辑态不走这里——它需要编辑器状态，留在 ChatView。 */
-function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, thinkingOpen, onThinkingOpenChange, showSenderName = true, enter = false, enterDelay = 0 }: {
+function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, thinkingOpen, onThinkingOpenChange, showSenderName = true, enter = false, enterDelay = 0, variantCount = 0, variantIndex = 0, onVariantChange, onVariantGenerate }: {
   m: MessageRow;
   gap: boolean;
   /** 本条是「刚追加进来」的新消息，挂一次入场动效（判定见 ChatView 的 enterIds）。 */
@@ -42,6 +42,14 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   ttsPlaying?: boolean;
   ttsBusy?: boolean;
   onPlayTts?: (m: MessageRow) => void;
+  /** 回复版本切换（swipe）：该轮保留的版本数与当前序号。只在每轮第一条 assistant
+      气泡上有值（后端只写这一条），其余行传 0，切换条自然不渲染。 */
+  variantCount?: number;
+  variantIndex?: number;
+  onVariantChange?: (m: MessageRow, index: number) => void;
+  /** 版本条右位的「再来一版」：当前已是最新版本时，右箭头换成重新生成入口
+      （走 ChatView 的确认弹窗，与菜单「重新生成」同一条路）。 */
+  onVariantGenerate?: (m: MessageRow) => void;
 }): JSX.Element {
   const cls = "msg-row " + (m.role === "user" ? "me" : "contact") + (m.kind === "proactive" ? " proactive" : "")
     + (gap ? " gap" : "") + (enter ? " msg-enter" : "");
@@ -134,6 +142,34 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
           onContextMenu={(e) => e.stopPropagation()}>
           {ttsBusy ? <Loader2 size={15} className="spin" /> : <Volume2 size={15} />}
         </button>
+      )}
+      {/* 版本切换条（swipe）：每条回复常驻——1/1 表示还没有别的版本，右位是生成入口（↻）；
+          重答后变 2/3、3/3…左箭头回看历史版本。挂气泡内文字下方，与 .tts-btn 同区。 */}
+      {variantCount >= 1 && m.role === "assistant" && m.kind === "chat" && m.superseded_at === null && (
+        <div className="variant-bar" role="group" aria-label="回复版本切换"
+          onContextMenu={(e) => e.stopPropagation()}>
+          <button type="button" className="v-btn" title="上一个版本"
+            aria-label="上一个版本" disabled={variantIndex <= 0}
+            onClick={(e) => { e.stopPropagation(); onVariantChange?.(m, variantIndex - 1); }}>
+            <ChevronLeft size={13} />
+          </button>
+          <span className="v-idx">{variantIndex + 1}/{variantCount}</span>
+          {variantIndex >= variantCount - 1 ? (
+            /* 已是最新版本：右位不再灰着，改成「再来一版」的入口——
+               点击走重新生成的确认弹窗，新回答追加为下一个版本。 */
+            <button type="button" className="v-btn generate" title="重新生成一个新版本"
+              aria-label="重新生成一个新版本"
+              onClick={(e) => { e.stopPropagation(); onVariantGenerate?.(m); }}>
+              <RefreshCw size={12} />
+            </button>
+          ) : (
+            <button type="button" className="v-btn" title="下一个版本"
+              aria-label="下一个版本"
+              onClick={(e) => { e.stopPropagation(); onVariantChange?.(m, variantIndex + 1); }}>
+              <ChevronRight size={13} />
+            </button>
+          )}
+        </div>
       )}
     </div>
   );

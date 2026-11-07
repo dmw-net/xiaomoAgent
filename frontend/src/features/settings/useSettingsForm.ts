@@ -1,5 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
-import { settingsApi } from "../../api";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { settingsApi, storageApi } from "../../api";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
 import type { EmoteFrequency, ModelCaps, SettingsSnapshot, ThinkingModeId, ThinkingParamId } from "../../types";
 
@@ -41,6 +41,8 @@ export function useSettingsForm(onChanged: () => void): {
   modelBanner: Banner;
   setModelBanner: (b: Banner) => void;
   personaBanner: Banner;
+  /** 重置设置 / 全部清空的结果提示：按钮在系统页头部，提示也要落在系统页上。 */
+  resetBanner: Banner;
   modelList: { show: boolean; ids: string[] };
   /** 危险操作确认弹窗的状态与动作，由 SettingsView 渲染成 <Modal>。 */
   ask: { title: string; note: string; run: () => void } | null;
@@ -97,8 +99,14 @@ export function useSettingsForm(onChanged: () => void): {
    */
   const [ask, setAsk] = useState<{ title: string; note: string; run: () => void } | null>(null);
   const askDangerous = useCallback((title: string, note: string, run: () => void): void => { setAsk({ title, note, run }); }, []);
+  // run() 不能写进 setState 的 updater 里：updater 必须纯，StrictMode 会把它调用两遍，
+  // 危险操作（清库、删除）就会真的执行两次。ref 里拿当前待办，updater 只负责关弹窗。
+  const askRef = useRef(ask);
+  askRef.current = ask;
   const acceptAsk = useCallback((): void => {
-    setAsk((a) => { a?.run(); return null; });
+    const pending = askRef.current;
+    setAsk(null);
+    pending?.run();
   }, []);
   const cancelAsk = useCallback((): void => { setAsk(null); }, []);
   const [modelList, setModelList] = useState<{ show: boolean; ids: string[] }>({ show: false, ids: [] });
@@ -305,24 +313,33 @@ export function useSettingsForm(onChanged: () => void): {
     askDangerous("重置设置？", "会清掉你改过的全部设置，回到刚装好时的样子。联系人和聊天记录不受影响。", () => doResetAll());
   };
 
+  /**
+   * 重置/全部清空的结果提示走独立的 resetBanner：这两个按钮在「系统与数据」页头部，
+   * 而 personaBanner 只在「我的资料」页渲染——从前成功失败都写进那边，用户点了确认
+   * 之后停在系统页，什么都看不到（失败也一样被吞），只能靠猜。
+   */
+  const [resetBanner, setResetBanner] = useState<Banner>(null);
+
   const doResetAll = (): void => {
     setBusy("reset");
+    setResetBanner(null);
     settingsApi.resetSettings()
-      .then((d) => { fill(d); setPersonaBanner({ kind: "ok", text: "已恢复默认。" }); })
-      .catch((e: Error) => setPersonaBanner({ kind: "bad", text: e.message }))
+      .then((d) => { fill(d); setResetBanner({ kind: "ok", text: "已恢复默认。" }); })
+      .catch((e: Error) => setResetBanner({ kind: "bad", text: e.message }))
       .finally(() => setBusy(""));
   };
 
   /**
    * 恢复出厂设置：比「恢复默认」狠一档——那个只清设置覆盖值，这个连对话、记忆、画作、
    * 微信绑定、联系人本身一起清掉，然后重新种子内置联系人。
-   * 确认文案里逐项列清楚丢什么：一句话的「确定吗」挡不住不可逆。
+   * 确认文案里逐项列清楚丢什么：一句话的「确定吗」挡不住不可逆。盘上的媒体文件
+   * （聊天图片、语音、导入的表情包）单独点名并报实数——用户最容易被「画过的画」
+   * 四个字盖过去的就是自己攒的表情包。报数失败就退回不带数字的说法，别挡确认。
    */
-  const factoryResetAll = (): void => askDangerous(
-    "全部清空？",
-    "这一步找不回来，会清掉：所有聊天和长期记忆、画过的画、模型和密钥、各项设置、微信绑定。相当于第一次打开这个应用。",
-    () => {
+  const factoryResetAll = (): void => {
+    const run = () => {
       setBusy("reset");
+      setResetBanner(null);
       settingsApi.factoryReset()
         .then((d) => {
           fill(d);
@@ -333,12 +350,19 @@ export function useSettingsForm(onChanged: () => void): {
           // 那一整段被清掉的对话会原样重现，直到第一次拉取落地（拉取失败就永远留着）。
           window.dispatchEvent(new Event(DATA_WIPED_EVENT));
           onChanged();
-          setPersonaBanner({ kind: "ok", text: d.note || "已恢复出厂设置。" });
+          setResetBanner({ kind: "ok", text: d.note || "已恢复出厂设置。" });
         })
-        .catch((e: Error) => setPersonaBanner({ kind: "bad", text: e.message }))
+        .catch((e: Error) => setResetBanner({ kind: "bad", text: e.message }))
         .finally(() => setBusy(""));
-    },
-  );
+    };
+    const mediaClause = (n: number): string =>
+      n > 0 ? `，以及盘上的 ${n} 个媒体文件（聊天图片、语音、导入的表情包）` : "";
+    storageApi.overview()
+      .then((d) => askDangerous("全部清空？",
+        `这一步找不回来，会清掉：所有聊天和长期记忆、画过的画、模型和密钥、各项设置、微信绑定${mediaClause(d.mediaFiles)}。相当于第一次打开这个应用。`, run))
+      .catch(() => askDangerous("全部清空？",
+        "这一步找不回来，会清掉：所有聊天和长期记忆、画过的画、模型和密钥、各项设置、微信绑定，以及盘上的媒体文件（聊天图片、语音、导入的表情包）。相当于第一次打开这个应用。", run));
+  };
 
   /** 换我的头像：上传 → 存全局 owner → 快照同步。 */
   const saveOwnerAvatar = async (dataUrl: string): Promise<void> => {
@@ -347,7 +371,7 @@ export function useSettingsForm(onChanged: () => void): {
   };
 
   return {
-    saved, loadErr, busy, reload, modelBanner, setModelBanner, personaBanner, modelList,
+    saved, loadErr, busy, reload, modelBanner, setModelBanner, personaBanner, resetBanner, modelList,
     oName, setOName, oImpression, setOImpression, oNotes, setONotes, oGender, setOGender,
     testModel, fetchModelList, resetModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode, saveToolLoopTurns, saveEmoteFrequency,
     ask, askDangerous, acceptAsk, cancelAsk,

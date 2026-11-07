@@ -90,8 +90,10 @@ export type SettingsSnapshot = {
   persona: {
     character: Record<string, string>;
     owner: { name?: string; impression?: string; notes?: string; avatar?: string; gender?: "female" | "male" | "other" };
-    /** 回放最近 N 轮（0/缺省 = 跟随 .env 默认）。 */
+    /** 回放最近 N 轮（-1 = 全部历史；0/缺省 = 跟随 .env 默认）。 */
     recentTurns?: number;
+    /** 全局按会话比例回放（%）。> 0 时优先于 recentTurns，与联系人级 turnPct 同一判序。 */
+    recentTurnsPct?: number;
   };
   /** .env / 内置默认的回放轮数（0 = 跟随默认时界面用来显示）。 */
   defaultRecentTurns?: number;

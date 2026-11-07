@@ -120,13 +120,13 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
         })}
         {copyableText !== "" && m.kind !== "tool" && item("记成记忆", "写进长期记忆", null, () => { close(); onRemember(m); })}
         {!hasVoice && m.role === "user" && m.superseded_at === null && item("编辑", "只改这句文字，后面的对话原样保留", null, () => onEdit(m, true))}
-        {!hasVoice && m.role === "user" && m.superseded_at === null && item("改后重聊", "改这句，后面从这句重来", null, () => onEdit(m, false))}
+        {!hasVoice && m.role === "user" && m.superseded_at === null && item("改后重聊", "改这句并重答这一轮，旧回答留成版本，后面保留", null, () => onEdit(m, false))}
         {m.role === "assistant" && m.superseded_at === null && m.kind === "chat" && m.text !== "" &&
           item("编辑回复", "只改这一句，不重新生成", null, () => onEdit(m))}
-        {/* 重新生成：任何一轮都能重答（后端就是这样放的）。较早的轮次会把新回复写回它
-            原来的位置，后面那些轮保留不动——它们当初是基于旧回答说的。一句话说清这两半。 */}
+        {/* 重新生成：任何一轮都能重答（后端就是这样放的）。旧回答会留成版本存档，
+            气泡下方可左右切换；较早的轮次会把新回复写回它原来的位置，后面那些轮保留不动。 */}
         {m.superseded_at === null && m.turn_id !== null && (m.role === "user" || m.kind === "chat") &&
-          item("重新生成", "这条回答会换成新的，后面的不动", null, () => { close(); onRegenerate(m); })}
+          item("重新生成", "生成新的回答，旧版本保留可切换", null, () => { close(); onRegenerate(m); })}
         {item("撤回", "把这条撤掉，联系人不会再记得", null, () => { close(); onRetract(m); })}
         {item("删除", "这条和联系人的回答一起删，找不回来了", "danger",
           () => onRequestDelete(m))}

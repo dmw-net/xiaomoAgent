@@ -6,6 +6,7 @@ import { fmtTokens } from "../../lib/format";
 import { profilePicks } from "../../lib/providers";
 import type { ContextUsage } from "../../types";
 import type { BondState, CompanionFeatures } from "../../api/contacts";
+import type { ToolPresetChoice } from "../../api/tools";
 import { buildMd, exportPersonaMd, parseMd, TEMPLATE } from "../../lib/persona-doc";
 import { fileToAvatarDataUrl } from "../../lib/avatar";
 import { avatarToneStyle } from "../../lib/avatar-tone";
@@ -45,18 +46,16 @@ const EMPTY_BOND: BondState = { stage: "", warmth: 50, mood: "", updated_at: nul
 /** 档位选项的唯一真源在 tool-catalog.ts，经 /api/tools 的 choices 下发（见 useToolState）；
  *  这里不再复刻一份 label/desc——那份复刻漂移过，两边各说各话。 */
 
-/** 联系人「对话设置」的第二层导航：先按改动目的分组，避免一张页里堆满旋钮。 */
-type ContactSettingsSection = "context" | "reply" | "tools" | "care" | "channels";
+/** 联系人「对话设置」的第二层导航：只按改动目的分三组，工程参数全部沉进各组的高级折叠区。 */
+type ContactSettingsSection = "chat" | "abilities" | "channels";
 const CONTACT_SETTINGS_SECTIONS: Array<{
   key: ContactSettingsSection;
   label: string;
   hint: string;
   icon: typeof MessageSquareText;
 }> = [
-  { key: "context", label: "模型与上下文", hint: "模型、回复方式、回放轮数", icon: BrainCircuit },
-  { key: "reply", label: "回复与显示", hint: "温度、禁用词、聊天气泡", icon: MessageSquareText },
-  { key: "tools", label: "工具与联网", hint: "看时间、翻记忆、联网、提醒", icon: Wand2 },
-  { key: "care", label: "记忆与陪伴", hint: "记忆提取、生活线与关系状态", icon: HeartHandshake },
+  { key: "chat", label: "对话", hint: "模型、回复方式、回放范围", icon: BrainCircuit },
+  { key: "abilities", label: "能力与记忆", hint: "工具档位、联网画图语音、记忆陪伴", icon: Wand2 },
   { key: "channels", label: "连接方式", hint: "微信、QQ 与消息通道", icon: Link2 },
 ];
 
@@ -69,8 +68,23 @@ const FEATURE_ITEMS: Array<{ key: keyof CompanionFeatures; label: string; hint: 
   { key: "bond", label: "关系温度计", hint: (p) => `亲密度和心情随聊天变化，${p}的语气也跟着变` },
 ];
 
-/** 工具清单：联系人手上每一个能"做点事"的工具一行。开关都绑到现有 features 字段，不另立真源。
- *  pointer 行是「不归这一位管」的全局项：只说明 + 给直达出口，不复制成可写控件。 */
+/** 记忆陪伴的预设包：两个档位各是一组 features 的打包映射（字段仍是唯一真源，
+ *  高级区仍可逐项改）。以后新增陪伴字段，在这里加映射即可，界面不会出现没地方放的开关。 */
+const CARE_PRESETS: Array<{ key: "standard" | "deep"; label: string; desc: string }> = [
+  { key: "standard", label: "标准", desc: "只记新发生的事，其余不启用——默认就是这一档。" },
+  { key: "deep", label: "深度陪伴", desc: "记忆整理、生活线、窗口梗概、关系温度计整族打开，适合长期陪伴的那一位。" },
+];
+
+/** 能力授权：联系人能不能"做这类事"的四个主开关，一级卡片直出（绑到 features 现有字段）。 */
+const ABILITY_ITEMS: Array<{ key: keyof CompanionFeatures; label: string; hint: (who: string) => string }> = [
+  { key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。一个开关管住搜索和读网页两项。" },
+  { key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
+  { key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。自拍参考图在「人格设定 → 角色形象」。` },
+  { key: "voice", label: "发语音", hint: (p) => `${p}可以把想说的话合成一条语音发出去：QQ 里是原生语音条，应用里是可播放的语音气泡。要先在 设置 → 能力模型 → 语音合成 配好 TTS。默认关，开了才声明工具。开启后回复气泡右下角会出现播放按钮，点击即可收听。` },
+];
+
+/** 工具清单（高级区）：真正"逐项拧"才需要碰的行为开关 + 不归这一位管的全局项。
+ *  开关都绑到现有 features 字段，不另立真源；pointer 行只说明 + 给直达出口。 */
 type ToolRow =
   | { kind: "toggle"; key: keyof CompanionFeatures; label: string; hint: (who: string) => string }
   | { kind: "pointer"; label: string; hint: string; link?: { text: string; tab: "media" | "tools"; toolsTab?: "skills" } };
@@ -78,11 +92,7 @@ type ToolRow =
 const TOOL_ITEMS: ToolRow[] = [
   { kind: "toggle", key: "clock", label: "看时间", hint: (who) => `系统提示词里常驻的现在时间、和「查一下现在几点」的工具一起关；关了${who}就不知道今天几号星期几，也接不住「现在几点」这种问题。` },
   { kind: "toggle", key: "memorySearch", label: "翻记忆", hint: (who) => `拿不准的事，${who}可以自己翻记忆库核对；这里只关「主动去翻」这条路，每轮自动带上的相关记忆归「记忆召回」管，记不记新的归「记忆提取」管。` },
-  { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。一个开关管住搜索和读网页两项。" },
-  { kind: "toggle", key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
-  { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。自拍参考图在「人格设定 → 角色形象」。` },
   { kind: "pointer", label: "表情包", hint: "发表情不归这位联系人单独管：唯一开关在 设置 → 媒体与表情 → 发表情频率（关闭 / 少发 / 自然 / 主动），对所有联系人一致生效。素材在同一页管理，能发哪几种看这位的 QQ 连接卡。", link: { text: "去设置", tab: "media" } },
-  { kind: "toggle", key: "voice", label: "发语音", hint: (p) => `${p}可以把想说的话合成一条语音发出去：QQ 里是原生语音条，应用里是可播放的语音气泡。要先在 设置 → 能力模型 → 语音合成 配好 TTS。默认关，开了才声明工具。开启后回复气泡右下角会出现播放按钮，点击即可收听。` },
   { kind: "pointer", label: "技能", hint: "把自定义技能当成一份做法说明书；有可用技能时自动挂载，内容与启停在 设置 → 工具与扩展 → 技能。", link: { text: "管理技能", tab: "tools", toolsTab: "skills" } },
 ];
 
@@ -266,7 +276,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   // 其条目自己即时写库，表单的保存入口是底部脏值条（见 pf-dock）。
   const [page, setPage] = useState<ProfilePage>(() =>
     initialPage ?? (getProfilePage(contactId) as ProfilePage | null) ?? "persona");
-  const [settingsSection, setSettingsSection] = useState<ContactSettingsSection>("context");
+  const [settingsSection, setSettingsSection] = useState<ContactSettingsSection>("chat");
   // 带着目的跳进来（initialPage）优先；否则回到这位**上次看的分区**——刚在「记忆」里删完，
   // 退出再进来不该重新点两下才回到那一屏。
   useEffect(() => { setProfilePage(contactId, page); }, [contactId, page]);
@@ -289,9 +299,20 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   const [modelOptions, setModelOptions] = useState<Array<{ value: string; label: string }>>([]);
   /** 「跟随全局」不是一句空标签：同时显示全局模型名和是否可用。 */
   const [globalModel, setGlobalModel] = useState({ name: "", ready: false, echo: false });
-  // 回放轮数：0 = 跟随全局；globalTurns 用来把「跟随全局」标成具体数字
+  // 回放轮数：0 = 跟随全局；globalReplay 是全局默认策略（设置页「全局回放范围」同一真源），
+  // 「跟随全局」 chip 要把它说破——跟的是轮数、比例还是全部，不能让人去设置页对一遍。
   const [recentTurns, setRecentTurns] = useState(0);
-  const [globalTurns, setGlobalTurns] = useState(6);
+  const [globalReplay, setGlobalReplay] = useState<{ mode: "turns" | "pct" | "all"; turns: number; pct: number }>({ mode: "turns", turns: 6, pct: 0 });
+  const applyGlobalReplay = (s: { persona?: { recentTurns?: number; recentTurnsPct?: number }; defaultRecentTurns?: number }): void => {
+    const turns = s.persona?.recentTurns ?? 0;
+    const pct = s.persona?.recentTurnsPct ?? 0;
+    if (pct > 0) setGlobalReplay({ mode: "pct", turns, pct });
+    else if (turns === -1) setGlobalReplay({ mode: "all", turns, pct });
+    else setGlobalReplay({ mode: "turns", turns: turns > 0 ? turns : (s.defaultRecentTurns || 6), pct: 0 });
+  };
+  const globalReplayLabel = globalReplay.mode === "all" ? "跟随全局 · 全部历史"
+    : globalReplay.mode === "pct" ? `跟随全局 · 会话 ${globalReplay.pct}%`
+      : `跟随全局 · ${globalReplay.turns} 轮`;
   /** 「全部轮数」这一档的代价要看得见：整段历史多大、多少轮（进「对话设置」拉一次）。 */
   const [usage, setUsage] = useState<ContextUsage | null>(null);
   // 陪伴能力（可插拔借鉴功能包）：开关 + 作息 + 生活线 + 温度计
@@ -300,6 +321,48 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   // 这里通常直接吃缓存；快照没到就先不渲染 chips，好过渲染一份会漂移的复刻。
   const toolState = useToolState();
   const TOOL_PRESET_OPTIONS = toolState?.choices ?? [];
+  /**
+   * 联系人档位轴（与设置页台账同一套心智）：跟随全局 + 三档 + 全关 + 自定义。
+   * 「全关」与旧的联系人总闸合并——存储仍是 tools + toolPreset 两个字段，
+   * 选中档位时一次写齐（tools:true + toolPreset），选「全关」只关 tools。
+   * 「自定义」是存量数据（逐项改过）的展示态：只能经「逐项调整」进入。
+   */
+  const CONTACT_PRESET_AXIS: Array<{ key: ToolPresetChoice; label: string }> = [
+    ...TOOL_PRESET_OPTIONS.filter((o) => o.key !== "custom").map((o) => ({ key: o.key, label: o.label })),
+    { key: "off" as const, label: "全关" },
+    { key: "custom" as const, label: "自定义" },
+  ];
+  /** 当前生效档：tools=false 即「全关」（无论 toolPreset 存的什么），其余照 toolPreset。 */
+  const contactPreset: ToolPresetChoice = features.tools === false ? "off" : features.toolPreset ?? "follow";
+  const pickContactPreset = (key: ToolPresetChoice): void => {
+    if (key === "off") setFeatures({ ...features, tools: false });
+    else if (key !== "custom") setFeatures({ ...features, tools: true, toolPreset: key });
+  };
+  /**
+   * 记忆陪伴的当前档：五个字段全默认 = 标准，整族全开 = 深度陪伴，混合 = 自定义。
+   * 预设只是 features 的打包映射——高级区逐项改动后自然落到「自定义」，不另立状态。
+   */
+  const carePreset: "standard" | "deep" | "custom" = (() => {
+    const on = (k: keyof CompanionFeatures): boolean => features[k] === true;
+    if (on("consolidate") && on("lifeline") && on("recap") && on("bond")) {
+      return on("memoryExtract") ? "deep" : "custom";
+    }
+    if (!on("consolidate") && !on("lifeline") && !on("recap") && !on("bond")) {
+      return on("memoryExtract") ? "standard" : "custom";
+    }
+    return "custom";
+  })();
+  const pickCarePreset = (key: "standard" | "deep"): void => {
+    const deep = key === "deep";
+    setFeatures({
+      ...features,
+      memoryExtract: true,
+      consolidate: deep,
+      lifeline: deep,
+      recap: deep,
+      bond: deep,
+    });
+  };
   /**
    * 生效模型档的工具硬闸（caps.tools）：false 时「允许使用工具」开了也不带工具，
    * 总开关下面的清单全是摆设——必须在卡里说破，不能让人对着开关排障。
@@ -384,7 +447,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     void settingsApi.fetchSettings()
       .then((s) => {
         setModelOptions(profilePicks(s.profiles ?? [], s.providerNames ?? {}));
-        setGlobalTurns(s.persona?.recentTurns || s.defaultRecentTurns || 6);
+        applyGlobalReplay(s);
         setGlobalModel({ name: s.model?.name || "", ready: s.modelReady === true, echo: s.model?.mode === "echo" });
       })
       .catch((e: Error) => setError("可选模型与全局轮数读取失败：" + e.message));
@@ -403,7 +466,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     const sync = (): void => {
       void settingsApi.fetchSettings()
         .then((s) => {
-          setGlobalTurns(s.persona?.recentTurns || s.defaultRecentTurns || 6);
+          applyGlobalReplay(s);
           setGlobalModel({ name: s.model?.name || "", ready: s.modelReady === true, echo: s.model?.mode === "echo" });
           setModelOptions(profilePicks(s.profiles ?? [], s.providerNames ?? {}));
         })
@@ -430,7 +493,11 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       if (totalTurns === 0) return `带这段会话最近 ${features.turnPct}% 的轮数（正在读入轮数…）`;
       return `这段会话 ${totalTurns} 轮 × ${features.turnPct}% = 带最近 ${Math.max(1, Math.ceil(totalTurns * features.turnPct / 100))} 轮`;
     }
-    if (turnMode === "global") return `当前全局默认会带最近 ${globalTurns} 轮`;
+    if (turnMode === "global") {
+      if (globalReplay.mode === "all") return "当前全局默认回放全部历史";
+      if (globalReplay.mode === "pct") return `当前全局默认按会话 ${globalReplay.pct}% 回放`;
+      return `当前全局默认会带最近 ${globalReplay.turns} 轮`;
+    }
     if (turnMode === "all" && usage?.fullHistory) {
       return `全部历史 ≈ ${fmtTokens(usage.fullHistory.tokens)} token · ${usage.fullHistory.turns} 轮`
         + (usage.fullHistory.tokens > 20000 ? "（每次调用的输入都会涨到这个量级）" : "");
@@ -941,10 +1008,10 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           {!contactId.startsWith("assistant") && <QQSection contactId={contactId} />}
           </div>
 
-          <div className="pf-settings-pane" hidden={settingsSection !== "context"}>
+          <div className="pf-settings-pane" hidden={settingsSection !== "chat"}>
 
           <div className="card card-pad pf-set-card">
-            <div className="pf-set-title">模型与上下文</div>
+            <div className="pf-set-title">模型与回复</div>
             <div className="pf-set-row">
               <div className="pf-set-label">
                 <span title="该联系人用哪个模型说话；跟随全局 = 用设置里的主模型。">使用模型</span>
@@ -974,9 +1041,13 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 ))}
               </div>
             </div>
+          </div>
+
+          <div className="card card-pad pf-set-card">
+            <div className="pf-set-title">回放范围</div>
             <div className="pf-set-row">
               <div className="pf-set-label">
-                <span title={`记得最近几轮对话，调大更连贯、也更费。当前全局默认 ${globalTurns} 轮。`}>回放轮数</span>
+                <span title={`记得最近的对话，调大更连贯、也更费。${globalReplayLabel.replace(" · ", "：")}。`}>回放轮数</span>
                 {turnHint && <small className="pf-set-cost">{turnHint}</small>}
               </div>
               <div className="pf-set-ctl pf-set-stack">
@@ -984,7 +1055,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   {TURN_MODES.map(([key, label]) => (
                     <button key={key} type="button" role="radio" aria-checked={turnMode === key}
                       className={"prof-chip" + (turnMode === key ? " on" : "")}
-                      onClick={() => pickTurnMode(key)}>{key === "global" ? `跟随全局 · ${globalTurns} 轮` : label}</button>
+                      onClick={() => pickTurnMode(key)}>{key === "global" ? globalReplayLabel : label}</button>
                   ))}
                 </div>
                 {turnMode === "turns" && (
@@ -1013,34 +1084,14 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 )}
               </div>
             </div>
-            <div className="pf-set-row">
-              <div className="pf-set-label">
-                <span title="对话历史最多占多大一块，剩下的留给记忆和回复；和轮数谁先到算谁。">历史占比上限</span>
-                {tokenHint && <small className="pf-set-cost">{tokenHint}</small>}
-              </div>
-              <div className="pf-set-ctl" role="group" aria-label="历史占比上限">
-                <button type="button" aria-pressed={features.tokenPct === 0}
-                  className={"prof-chip" + (features.tokenPct === 0 ? " on" : "")}
-                  onClick={() => setFeatures({ ...features, tokenPct: 0 })}>关</button>
-                {PCT_PRESETS.map((p) => (
-                  <button key={p} type="button" aria-pressed={features.tokenPct === p}
-                    className={"prof-chip" + (features.tokenPct === p ? " on" : "")}
-                    onClick={() => setFeatures({ ...features, tokenPct: p })}>{p}%</button>
-                ))}
-                <NumField label="自定义" className="pf-comp-tiny" ariaLabel="自定义历史占比上限，1 到 100"
-                  min={1} max={100} suffix="%" shown={features.tokenPct > 0 ? String(features.tokenPct) : ""}
-                  onCommit={(n) => setFeatures({ ...features, tokenPct: n })} />
-              </div>
-            </div>
           </div>
 
-          </div>
-
-          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "reply"}>
-          {/* 生成设置：这两个旋钮管"怎么说"，与用哪个模型无关，所以单独一张卡 */}
-          {!isAssistant && (
-            <div className="card card-pad pf-set-card">
-              <div className="pf-set-title">回复生成</div>
+          {/* 高级参数收进折叠区：温度、禁用词、历史上限都是"真要调的人"才需要碰的旋钮，
+              首屏只留模型、回复方式、回放范围三个决策。助手也要能改历史上限，所以不整体隔离。 */}
+          <details className="pf-advanced-settings">
+            <summary>高级（温度 · 禁用词 · 历史上限）</summary>
+            <div className="pf-advanced-body">
+            {!isAssistant && (
               <div className="pf-set-row">
                 <div className="pf-set-label">
                   <span title="越高越有创意、越低越稳。全局默认 0.8。">温度</span>
@@ -1060,6 +1111,8 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                     onCommit={(n) => setFeatures({ ...features, temperature: n })} />
                 </div>
               </div>
+            )}
+            {!isAssistant && (
               <div className="pf-set-row">
                 <div className="pf-set-label">
                   <span title={`这些词${who}会尽量不说。聊天和主动说的话都管；是提醒不是拦截，仍可能说漏。`}>禁用词</span>
@@ -1071,8 +1124,28 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                     onChange={(raw) => setFeatures({ ...features, bannedWords: raw })} />
                 </div>
               </div>
+            )}
+            <div className="pf-set-row">
+              <div className="pf-set-label">
+                <span title="对话历史最多占多大一块，剩下的留给记忆和回复；和轮数谁先到算谁。">历史占比上限</span>
+                {tokenHint && <small className="pf-set-cost">{tokenHint}</small>}
+              </div>
+              <div className="pf-set-ctl" role="group" aria-label="历史占比上限">
+                <button type="button" aria-pressed={features.tokenPct === 0}
+                  className={"prof-chip" + (features.tokenPct === 0 ? " on" : "")}
+                  onClick={() => setFeatures({ ...features, tokenPct: 0 })}>关</button>
+                {PCT_PRESETS.map((p) => (
+                  <button key={p} type="button" aria-pressed={features.tokenPct === p}
+                    className={"prof-chip" + (features.tokenPct === p ? " on" : "")}
+                    onClick={() => setFeatures({ ...features, tokenPct: p })}>{p}%</button>
+                ))}
+                <NumField label="自定义" className="pf-comp-tiny" ariaLabel="自定义历史占比上限，1 到 100"
+                  min={1} max={100} suffix="%" shown={features.tokenPct > 0 ? String(features.tokenPct) : ""}
+                  onCommit={(n) => setFeatures({ ...features, tokenPct: n })} />
+              </div>
             </div>
-          )}
+            </div>
+          </details>
 
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
@@ -1090,23 +1163,64 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </div>
           )}
 
+          {!isAssistant && (
+            <div className="card card-pad pf-set-card pf-see-card">
+              <div className="pf-set-title">
+                <span>本轮会看到什么</span>
+                <button type="button" className="pf-ghost" disabled={previewing} onClick={runPromptPreview}>
+                  {previewing ? "整理中…" : "预览"}
+                </button>
+              </div>
+              <div className="pf-set-sub">
+                按当前草稿与最近对话重建下一轮会用到的信息。只展示人能读懂的部分，不展开系统内部规则。
+              </div>
+              {promptPreview && (
+                <div className="pf-see-grid">
+                  <section className="pf-see-section">
+                    <div className="pf-see-head"><b>人设与关系</b><span>每轮都会带上</span></div>
+                    <dl>
+                      <div><dt>背景</dt><dd>{shortPreview(effective.background) || "还没填写"}</dd></div>
+                      <div><dt>人设</dt><dd>{shortPreview(effective.identity) || "还没填写"}</dd></div>
+                      <div><dt>相处方式</dt><dd>{shortPreview(effective.relationship) || "还没填写"}</dd></div>
+                    </dl>
+                  </section>
+                  <section className="pf-see-section">
+                    <div className="pf-see-head"><b>会想起的记忆</b><span>{promptPreview.memoryEvents?.length ?? 0} 条</span></div>
+                    {promptPreview.memoryNote && <p className="pf-see-note">{promptPreview.memoryNote}</p>}
+                    {(promptPreview.memoryEvents?.length ?? 0) > 0 ? (
+                      <ul className="pf-see-list">
+                        {promptPreview.memoryEvents!.map((m) => (
+                          <li key={m.id}><span>{shortPreview(m.content, 180)}</span><small>{m.subject || m.kind}</small></li>
+                        ))}
+                      </ul>
+                    ) : <p className="pf-see-empty">这次没有召回到长期记忆。</p>}
+                  </section>
+                  <section className="pf-see-section">
+                    <div className="pf-see-head"><b>最近对话</b><span>{promptPreview.history?.length ?? 0} 条</span></div>
+                    {(promptPreview.history?.length ?? 0) > 0 ? (
+                      <ol className="pf-see-history">
+                        {promptPreview.history!.slice(-6).map((h, i) => (
+                          <li key={i}><b>{h.role === "user" ? "你" : who}</b><span>{shortPreview(h.text, 220)}</span></li>
+                        ))}
+                      </ol>
+                    ) : <p className="pf-see-empty">还没有可回放的对话。</p>}
+                  </section>
+                  {promptPreview.historyNote && <div className="pf-see-foot">{promptPreview.historyNote}</div>}
+                </div>
+              )}
+            </div>
+          )}
+
           </div>
 
-          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "tools"}>
+          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "abilities"}>
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
-              <div className="pf-set-title"><span>工具</span></div>
-              <div className="pf-set-sub">先选一个档位；多数情况不必逐项调。上面的「允许使用工具」就是这一位的全关开关，全局台账的档位是上限，这一位只能更严。</div>
-              <div className="pf-comp-grid">
-                <label className="pf-comp-item pf-tools-master" title="关掉后一个工具都拿不到：看时间、翻记忆、联网这些全部不可用。">
-                  <input type="checkbox" checked={features.tools === true}
-                    onChange={(e) => setFeatures({ ...features, tools: e.target.checked })} />
-                  <span className="pf-comp-name">允许使用工具</span>
-                </label>
-              </div>
+              <div className="pf-set-title"><span>工具档位</span></div>
+              <div className="pf-set-sub">选一档就生效，多数情况不必逐项调。全局档位是上限：这一位只能比全局更严，不能更松。</div>
               {modelTools !== null && !modelTools.on && features.tools === true && (
                 <div className="pf-tools-warn">
-                  当前生效模型档「{modelTools.model}」没勾「工具调用」，总开关开了也不会带任何工具——去 设置 → 模型档 把「工具调用」勾上。
+                  当前生效模型档「{modelTools.model}」没勾「工具调用」，选哪一档都不会带任何工具——去 设置 → 主对话模型 把「工具调用」勾上。
                 </div>
               )}
 
@@ -1117,22 +1231,30 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 ) : (
                   <>
                     <div className="pf-preset-chips" role="radiogroup" aria-label="这位联系人的工具档位">
-                      {TOOL_PRESET_OPTIONS.map((option) => (
-                        <button key={option.key} type="button" role="radio"
-                          aria-checked={features.toolPreset === option.key}
-                          className={"pf-preset-chip" + (features.toolPreset === option.key ? " is-on" : "")}
-                          disabled={features.tools !== true}
-                          onClick={() => setFeatures({ ...features, toolPreset: option.key })}>
-                          {option.label}
-                        </button>
-                      ))}
+                      {/* 「全关」与各档合并成一条轴（与设置页台账同一套心智）：
+                          存储仍是 tools + toolPreset 两个字段，选中时一次写齐，不再单设总闸。 */}
+                      {CONTACT_PRESET_AXIS.map((option) => {
+                        const on = contactPreset === option.key;
+                        return (
+                          <button key={option.key} type="button" role="radio"
+                            aria-checked={on}
+                            className={"pf-preset-chip" + (on ? " is-on" : "")}
+                            disabled={option.key === "custom"}
+                            title={option.key === "custom" ? "逐项开关在下方「逐项调整」里改动" : undefined}
+                            onClick={() => pickContactPreset(option.key)}>
+                            {option.label}
+                          </button>
+                        );
+                      })}
                     </div>
                     <div className="pf-preset-desc">
                       {/* 「跟随全局」把当前全局档一起说破：不用去设置页对一遍才知道自己跟的是哪档。 */}
                       {(() => {
-                        const option = TOOL_PRESET_OPTIONS.find((o) => o.key === features.toolPreset);
+                        if (contactPreset === "off") return "关掉后一个工具都拿不到：看时间、翻记忆、联网这些全部不可用。";
+                        if (contactPreset === "custom") return "这一位按逐项开关在跑；要改请展开下方「逐项调整」。";
+                        const option = TOOL_PRESET_OPTIONS.find((o) => o.key === contactPreset);
                         if (option === undefined) return "";
-                        if (features.toolPreset !== "follow" || toolState === null) return option.desc;
+                        if (contactPreset !== "follow" || toolState === null) return option.desc;
                         const global = toolState.presets.find((p) => p.key === toolState.globalPreset);
                         return global === undefined ? option.desc : `当前全局是「${global.label}」。${option.desc}`;
                       })()}
@@ -1144,10 +1266,10 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
               <details className="pf-tools-advanced">
                 <summary>逐项调整（改动后自动变为「自定义」）</summary>
                 <div className="pf-tools-note">
-                  这里的开关按「类」管：6 个开关对应 7 个内置工具（联网一个开关管住搜索和读网页）；
-                  加上表情 2 项、技能 1 项，就是台账里陪伴侧的全部内置工具。
-                  单独关过的项会一直记着，切到别的档位也不会自动放开。
-                  台账多出来的项是助手的管理操作（不归这一位管）与扩展带来的工具（跟随档位）。
+                  联网、到点提醒、图像生成、发语音的开关在下方「能力授权」卡里，这里不重复。
+                  这一组的看时间、翻记忆是行为级微调：关掉哪一项档位就自动变成「自定义」，
+                  单独关过的项切到别的档位也不会自动放开。
+                  台账里多出来的项是助手的管理操作（不归这一位管）与扩展带来的工具（跟随档位）。
                   <button type="button" className="tw-link"
                     onClick={() => window.dispatchEvent(new CustomEvent("xiaomo:open-settings", { detail: { tab: "tools" } }))}>
                     查看完整台账
@@ -1183,32 +1305,89 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </div>
           )}
 
-          </div>
-
-          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "care"}>
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
-              <div className="pf-set-title">
-                <span>陪伴能力</span>
-                <button type="button" className="pf-ghost" onClick={runConsolidate} disabled={consBusy}>
-                  <BookOpen size={13} strokeWidth={1.8} />{consBusy ? "整理中…" : "立即整理记忆"}
-                </button>
-              </div>
-              <div className="pf-set-sub">按需开启。只有「记忆提取」默认开启。</div>
-              {consNote && <div className="pf-comp-note">{consNote}</div>}
-
+              <div className="pf-set-title"><span>能力授权</span></div>
+              <div className="pf-set-sub">这一位可以「做哪类事」。默认全关，按需打开；改动会同步到上面的工具档位（变成「自定义」）。</div>
               <div className="pf-comp-grid">
-                {FEATURE_ITEMS.map((item) => (
-                  <label key={item.key} className="pf-comp-item" title={item.hint(who)}>
+                {ABILITY_ITEMS.map((row) => (
+                  <label key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint(who)}>
                     <input
                       type="checkbox"
-                      checked={features[item.key] === true}
-                      onChange={(e) => setFeatures({ ...features, [item.key]: e.target.checked })}
+                      checked={features[row.key] === true}
+                      disabled={features.tools !== true}
+                      onChange={(e) => setFeatures({ ...features, [row.key]: e.target.checked, toolPreset: "custom" })}
                     />
-                    <span className="pf-comp-name">{item.label}</span>
+                    <span className="pf-comp-name">{row.label}</span>
                   </label>
                 ))}
               </div>
+              {features.tools !== true && (
+                <div className="pf-comp-note">工具档位是「全关」：先把档位切到别的档，这里才开得动。</div>
+              )}
+            </div>
+          )}
+
+          </div>
+
+          <div className="pf-settings-pane" hidden={isAssistant || settingsSection !== "abilities"}>
+          {!isAssistant && (
+            <div className="card card-pad pf-set-card">
+              <div className="pf-set-title">
+                <span>记忆与陪伴</span>
+              </div>
+              <div className="pf-set-sub">五个增强项按档打包，选一档就生效；要逐项改请展开高级。</div>
+
+              {/* 预设只是 features 五个字段的打包映射，不是新状态：高级区逐项改动后自然显示「自定义」。 */}
+              <div className="pf-preset-chips" role="radiogroup" aria-label="记忆与陪伴的档位">
+                {CARE_PRESETS.map((preset) => (
+                  <button key={preset.key} type="button" role="radio"
+                    aria-checked={carePreset === preset.key}
+                    className={"pf-preset-chip" + (carePreset === preset.key ? " is-on" : "")}
+                    onClick={() => pickCarePreset(preset.key)}>
+                    {preset.label}
+                  </button>
+                ))}
+                <button type="button" role="radio" aria-checked={carePreset === "custom"} disabled
+                  className={"pf-preset-chip" + (carePreset === "custom" ? " is-on" : "")}
+                  title="逐项开关在下方「高级」里改动">
+                  自定义
+                </button>
+              </div>
+              <div className="pf-preset-desc">
+                {CARE_PRESETS.find((p) => p.key === carePreset)?.desc
+                  ?? "这一位按逐项开关在跑；要调整请展开下方「高级」。"}
+              </div>
+
+              <details className="pf-advanced-settings">
+                <summary>高级（逐项开关 · 主动上限 · 作息 · 生成内容）</summary>
+                <div className="pf-advanced-body">
+              <div className="pf-set-row">
+                <div className="pf-set-label">
+                  <span title="五个增强项的单独开关；改动后档位会显示为「自定义」。">逐项开关</span>
+                </div>
+                <div className="pf-set-ctl pf-set-stack">
+                  <div className="pf-comp-grid">
+                    {FEATURE_ITEMS.map((item) => (
+                      <label key={item.key} className="pf-comp-item" title={item.hint(who)}>
+                        <input
+                          type="checkbox"
+                          checked={features[item.key] === true}
+                          onChange={(e) => setFeatures({ ...features, [item.key]: e.target.checked })}
+                        />
+                        <span className="pf-comp-name">{item.label}</span>
+                      </label>
+                    ))}
+                  </div>
+                  <div className="pf-set-row pf-set-inline">
+                    <span className="pf-set-cost">记重了、翻篇了想让 TA 自己收拾？</span>
+                    <button type="button" className="pf-ghost" onClick={runConsolidate} disabled={consBusy}>
+                      <BookOpen size={13} strokeWidth={1.8} />{consBusy ? "整理中…" : "立即整理记忆"}
+                    </button>
+                  </div>
+                </div>
+              </div>
+              {consNote && <div className="pf-comp-note">{consNote}</div>}
 
               <div className="pf-set-row">
                 <div className="pf-set-label">
@@ -1229,9 +1408,6 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                 </div>
               </div>
 
-              <details className="pf-advanced-settings">
-                <summary>生活线与关系状态（可选）</summary>
-                <div className="pf-advanced-body">
               <div className="pf-set-row pf-set-col">
                 <div className="pf-set-label">
                   <span title={`${who}会据此说「我刚到家」这类有生活感的话。`}>{who}的作息（可选）</span>

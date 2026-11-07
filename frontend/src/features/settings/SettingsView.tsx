@@ -67,7 +67,7 @@ const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "owner", title: "我的资料", meta: "头像、称呼、指代方式、印象与备注", anchor: "settings-owner", keywords: "名字 昵称 头像 QQ 个人 人设 我" },
   { group: "model", modelTab: "model", title: "主对话模型", meta: "供应商、接口地址、API Key、模型列表", anchor: "settings-models", keywords: "模型 大模型 接口 密钥 供应商 deepseek 火山 ollama 思考 参数" },
   { group: "model", modelTab: "capability", title: "能力模型", meta: "看图、听音、说话、画图、记忆检索", anchor: "settings-capabilities", keywords: "视觉 语音 识别 合成 图像 生成 向量 能力" },
-  { group: "tools", title: "工具与扩展总览", meta: "工具总闸、全局档位、按联系人例外", anchor: "settings-tools-overview", keywords: "工具 扩展 开关 总览 台账 档位 总闸 门控 矩阵 插拔 权限" },
+  { group: "tools", title: "工具与扩展总览", meta: "全局档位（含全关）、逐项开关、按联系人例外", anchor: "settings-tools-overview", keywords: "工具 扩展 开关 总览 台账 档位 总闸 全关 门控 矩阵 插拔 权限" },
   { group: "tools", title: "工具循环轮次", meta: "全局模型轮次、自定义与速度取舍", anchor: "settings-tool-loop", keywords: "工具 调用 轮次 循环 模型请求 上限 重试 多步 超时" },
   { group: "media", title: "发表情频率", meta: "自然、少发或主动，只影响聊天表达倾向", anchor: "settings-emote-frequency", keywords: "表情 表情包 发表情 频率 主动 少发 接梗 情绪" },
   { group: "tools", title: "技能", meta: "SKILL.md、技能目录、重新扫描", anchor: "settings-skills", keywords: "技能 skill 提示词 工具 目录" },
@@ -357,6 +357,12 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
           </div>
         )}
       </div>
+
+      {form.resetBanner && (
+        <div className={"banner show " + form.resetBanner.kind} role={form.resetBanner.kind === "bad" ? "alert" : "status"}>
+          <div className="body">{form.resetBanner.text}</div>
+        </div>
+      )}
 
       {narrow && mobileHub ? (
         <div className="settings-hub">

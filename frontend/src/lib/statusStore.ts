@@ -32,6 +32,12 @@ export function loadStatus(contactId: string): Promise<StatusData> {
 }
 
 /**
+ * 「忽略提醒」的后半步（重取状态）失败的标记：水印与计数已经落定，
+ * 界面要把「已忽略」和「没刷出来」分开说，不能报成整体失败。
+ */
+export class ResetRefetchError extends Error {}
+
+/**
  * 「重新计数」：把失败读数的起点挪到现在，红点清零，然后重拉一次状态。
  * 后端只动水印与记忆提取的连续失败计数器，model_calls / turns 一条不删。
  * 水印是全局的（不按联系人分档），所以缓存要整份作废，不然切到别的联系人
@@ -40,7 +46,9 @@ export function loadStatus(contactId: string): Promise<StatusData> {
 export async function resetCounters(contactId: string): Promise<StatusData> {
   await postJson<{ ok: boolean }>("/api/status/reset-counters", {});
   cache.clear();
-  return loadStatus(contactId);
+  return loadStatus(contactId).catch((e: Error) => {
+    throw new ResetRefetchError(e.message);
+  });
 }
 
 /** 设置里改了模型之后调用：总览里的模型档、就绪状态都跟着作废。 */

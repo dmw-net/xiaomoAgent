@@ -466,7 +466,7 @@ input, textarea {
 .composer-bar { display: flex; align-items: center; gap: var(--space-5); padding: var(--space-2) 0 2px; }
 .composer-bar .tip { font-size: var(--text-sm); color: var(--text-subtle); }
 #send {
-  margin-left: auto; flex: none;
+  flex: none;
   padding: var(--space-2) var(--space-8); border-radius: var(--radius-sm);
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, var(--accent-lift)) 0%, var(--accent) 100%);
   color: var(--accent-text);
@@ -479,19 +479,24 @@ input, textarea {
 #send:active:not(:disabled) { scale: .96; }
 #send.busy { background: var(--bg-sunken); color: var(--text-subtle); }
 
-/* 停止：只在一轮还在飞时出现，与「发送」并排落在右侧。
-   margin-left:auto 收到 #stop 上，再用紧邻规则抵消掉 #send 那份——
-   两个 auto 会把「停止」推到行中间。 */
-#stop {
-  margin-left: auto; flex: none;
-  padding: var(--space-2) var(--space-6); border-radius: var(--radius-sm);
-  background: transparent; color: var(--text-subtle);
-  border: 1px solid var(--border);
-  font-size: var(--text-md);
-  transition: color var(--dur-fast), border-color var(--dur-fast);
+/* 停止不再单独占一个按钮：它占用发送槽本身（.stopping），位置永不移动，只换脸。
+   底色用沉色而不是强调色——「停」是个减速动作，不该长得比「发送」还积极；
+   hover 转危险色，给一个"这是中断"的预告。 */
+#send.stopping {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-sunken); color: var(--text-muted);
 }
-#stop:hover { color: var(--danger); border-color: var(--danger); }
-#stop + #send { margin-left: var(--space-2); }
+#send.stopping:hover:not(:disabled) {
+  background: var(--bg-sunken);
+  color: var(--danger);
+  box-shadow: none;
+}
+/* 发送槽外层包装：承担靠右（margin-left:auto）。手机上 composer 一行放不下时，
+   整层折到下一行并保持靠右——折行只是保险丝，状态融合后正常情况用不上。 */
+.composer-actions {
+  margin-left: auto; flex: none;
+  display: flex; align-items: center; gap: var(--space-2);
+}
 
 /* ── 消息操作（长按 / 点击 / 右键）────────────────────────────
    入口不是常驻角标，而是整条消息可点：气泡 cursor:pointer，hover 描一圈。

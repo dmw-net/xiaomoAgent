@@ -635,10 +635,15 @@ button.tool-btn {
   box-shadow: none;
 }
 
-#stop {
-  min-height: 36px;
-  border-radius: 10px;
-  padding: 6px 14px;
+/* 停止占用发送槽：压住上面的 accent hover 重定义，保持沉色、hover 转危险色 */
+#send.stopping,
+#send.stopping:hover:not(:disabled) {
+  background: var(--bg-sunken);
+  box-shadow: none;
+}
+
+#send.stopping:hover:not(:disabled) {
+  color: var(--danger);
 }
 
 .to-bottom {
@@ -2624,6 +2629,13 @@ a.btn:hover {
     font-size: 15px;
   }
 
+  /* 一行塞不下时（busy 时「停止 + 请稍候…」并排最挤）折到第二行，
+     而不是把整行从输入卡片右侧顶出去。 */
+  .composer-bar {
+    flex-wrap: wrap;
+    row-gap: 6px;
+  }
+
   #send {
     min-height: 38px;
     padding-inline: 16px;
@@ -3474,10 +3486,6 @@ a.btn:hover {
 @media (max-width: 760px), (max-height: 520px) {
   .pf-settings .pf-comp-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .pf-settings .pf-tools-master {
-    grid-column: 1 / -1;
   }
 
   .pf-settings .pf-comp-item {

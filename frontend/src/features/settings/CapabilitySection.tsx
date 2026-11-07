@@ -37,11 +37,33 @@ const draftOf = (p: CapabilityEndpoint, provider: string): Draft => ({
 
 type Banner = { kind: "ok" | "bad"; text: string } | null;
 
+/** 主模型侧已接入的供应商（按接口地址去重）：给「复用」chips 用，
+ *  地址与密钥一起照抄——能力卡配端点最常见的痛点就是把同一把 key 再敲一遍。 */
+type ReuseProvider = { baseUrl: string; apiKey: string; label: string };
+
+const reuseProvidersOf = (form: SettingsForm): ReuseProvider[] => {
+  const names = form.saved?.providerNames ?? {};
+  const seen = new Set<string>();
+  const out: ReuseProvider[] = [];
+  for (const p of form.saved?.profiles ?? []) {
+    const base = normBase(p.baseUrl ?? "");
+    if (base === "" || seen.has(base)) continue;
+    seen.add(base);
+    out.push({
+      baseUrl: p.baseUrl ?? "",
+      apiKey: p.apiKey ?? "",
+      label: names[base] || p.label || p.name || base,
+    });
+  }
+  return out;
+};
+
 /** 添加 / 编辑一份端点档：服务商 chips 填地址与常用模型名，可先测再存。 */
-function EndpointForm({ group, initial, names, onClose, onSaved }: {
+function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
   group: CapabilityPresetGroup;
   initial: Draft;
   names: Record<string, string>;
+  reuse: ReuseProvider[];
   onClose: () => void;
   onSaved: (text: string) => void;
 }): JSX.Element {
@@ -127,6 +149,19 @@ function EndpointForm({ group, initial, names, onClose, onSaved }: {
             }))}>{p.label}</button>
         ))}
       </div>
+      {reuse.length > 0 && (
+        <div className="preset-row cap-reuse-row">
+          <span className="preset-row-label">复用主模型已接入的（地址与密钥一起带过来）：</span>
+          {reuse.map((r) => (
+            <button key={r.baseUrl} type="button" className="preset"
+              title={`接口地址与密钥照抄「${r.label}」在主对话模型里的配置`}
+              aria-pressed={normBase(r.baseUrl) === normBase(f.baseUrl) ? "true" : "false"}
+              onClick={() => setF((prev) => ({
+                ...prev, baseUrl: r.baseUrl, apiKey: r.apiKey, provider: prev.provider || r.label,
+              }))}>{r.label}</button>
+          ))}
+        </div>
+      )}
       <div className="form-row">
         <div className="field">
           <label>供应商名（可选）
@@ -312,7 +347,7 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
       </div>
 
       {editing !== null && (
-        <EndpointForm group={group} initial={editing} names={names} onClose={() => setEditing(null)}
+        <EndpointForm group={group} initial={editing} names={names} reuse={reuseProvidersOf(form)} onClose={() => setEditing(null)}
           onSaved={(text) => {
             setEditing(null);
             void settingsApi.fetchSettings()

@@ -543,6 +543,9 @@ button.tool-card.open { border-style: solid; border-bottom-left-radius: 0; borde
 }
 #settings .card .subhead:not(:first-child) { margin-top: var(--space-8); }
 .preset-row { display: flex; flex-wrap: wrap; gap: var(--space-3); margin-bottom: var(--space-6); }
+/* 能力端点表单的「复用主模型已接入」行：一行说明 + chips，chips 沿用 button.preset。 */
+.cap-reuse-row { align-items: center; row-gap: var(--space-2); }
+.preset-row-label { font-size: 12px; color: var(--text-muted); }
 
 button.preset {
   padding: var(--space-2) var(--space-5); border-radius: var(--radius-full);
@@ -769,6 +772,35 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
    tts-btn right(8) + tts-btn width(28) = 按钮左边缘距 bubble 右 36px，
    而 msg-time 右边缘默认距 14px（bubble padding-right），差额必须让出去。 */
 .bubble:has(> .tts-btn) > .msg-time { margin-right: calc(8px + 28px - 14px); }
+
+/* 版本切换条（swipe）：重答留档后在气泡内文字下方出现，◀ 1/2 ↻。
+   胶囊形底板 + 圆形按钮位（按钮平时透明，圆不圆全看底板——底板必须是个胶囊）。
+   跟随气泡左缘（联系人侧），只在 assistant 气泡里渲染。 */
+.variant-bar {
+  display: inline-flex; align-items: center; gap: 2px;
+  margin-top: var(--space-2);
+  padding: 2px var(--space-2);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg-hover) 55%, transparent);
+}
+.variant-bar .v-idx {
+  font-size: var(--text-xs); line-height: 1;
+  color: var(--text-subtle); user-select: none;
+  font-variant-numeric: tabular-nums;
+  padding: 0 2px;
+}
+.variant-bar .v-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  flex: none;
+  width: 20px; height: 20px; padding: 0; border: none; border-radius: 999px;
+  background: transparent; color: var(--text-subtle); cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.variant-bar .v-btn:hover:not(:disabled) { background: var(--bg-hover); color: var(--text-muted); }
+.variant-bar .v-btn:disabled { opacity: var(--alpha-disabled); cursor: default; }
+/* 右位的「再来一版」（重新生成入口）：跟灰箭头区分开，让人看出它是动作不是导航 */
+.variant-bar .v-btn.generate { color: var(--accent-ink); }
+.variant-bar .v-btn.generate:hover { background: color-mix(in srgb, var(--accent-ink) 12%, transparent); color: var(--accent-ink); }
 .spin { animation: spin 0.9s linear infinite; }
 @keyframes spin { 100% { transform: rotate(360deg); } }
 
@@ -1823,9 +1855,8 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 999px;
   padding: 2px var(--space-3);
 }
-/* 工具总开关占满一整行，和下面的单工具清单分开一档 */
-.pf-tools-master { grid-column: 1 / -1; }
-/* 总开关关着时，单工具清单整块降透明度：能看见还有什么、但明确不可操作 */
+/* 联系人工具卡已无独立总闸（全关并入档位轴），总开关的占位样式随之移除 */
+/* 总闸关着（档位=全关）时，单工具清单整块降透明度：能看见还有什么、但明确不可操作 */
 .pf-comp-off { opacity: var(--alpha-disabled, 0.55); }
 .pf-comp-off input[type="checkbox"] { cursor: not-allowed; }
 /* 模型档没勾「工具调用」时的提示行：这是排障关键信息，用危险色调而不是灰注脚 */

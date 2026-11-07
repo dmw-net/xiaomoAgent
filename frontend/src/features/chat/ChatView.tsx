@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, RotateCcw, Search, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, RotateCcw, Search, Square, X } from "lucide-react";
 import { ApiError, chatApi, contactsApi, memoryApi, proactiveApi, settingsApi } from "../../api";
 import { refreshContacts } from "../../lib/contactsStore";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
@@ -85,6 +85,8 @@ function sameRow(a: MessageRow, b: MessageRow): boolean {
   return a.text === b.text && a.role === b.role && a.kind === b.kind
     && a.created_at === b.created_at && a.turn_id === b.turn_id
     && a.superseded_at === b.superseded_at && a.superseded_kind === b.superseded_kind
+    && (a.variant_index ?? 0) === (b.variant_index ?? 0)
+    && (a.variant_count ?? 0) === (b.variant_count ?? 0)
     && aa.length === ba.length && aa.every((x, i) => x === ba[i]);
 }
 
@@ -1321,6 +1323,24 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       });
   }, [addNotice, busyGuard, cid, watch]);
 
+  /** 切换这一轮回复的版本（swipe）：后端把选中版本写回气泡行，按轮窄取重绘。
+   *  行号不变的原地 UPDATE 增量拉取看不见，所以必须显式 pullAffected（与编辑同一条路）。 */
+  const changeVariant = useCallback((m: MessageRow, index: number): void => {
+    if (!m.turn_id || busyGuard()) return;
+    setBusy(true);
+    chatApi.setTurnVariant(m.turn_id, index, cid)
+      .then(() => pullAffected(m.turn_id))
+      .catch(() => addNotice("没切换成，稍后再试", { info: true }))
+      .finally(() => setBusy(false));
+  }, [addNotice, busyGuard, cid, pullAffected]);
+
+  /** 版本条右位的「再来一版」：与菜单「重新生成」同一条确认弹窗，
+   *  确认后 doRegenerate 重答，旧版本留档、新回答追加为下一个版本。 */
+  const requestVariantGenerate = useCallback((m: MessageRow): void => {
+    if (busyGuard()) return;
+    setPendingConfirm({ kind: "regenerate", m });
+  }, [busyGuard]);
+
   useLayoutEffect(() => {
     if (editingId === null) return;
     const row = logRef.current?.querySelector(`[data-id="${editingId}"]`);
@@ -1472,20 +1492,19 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         });
       return;
     }
-    // 改自己的话会重放整段后续：这时跳底才是对的
+    // 改后重聊 = 版本式重答（与重新生成同构）：旧回复进版本条、新回答落回这一轮的位置，
+    // 编辑点之后的对话原样保留——不再作废折叠。
     stickRef.current = true;
     userHoldRef.current = false;
     chatApi.editMessage(id, text, imgs, cid)
       .then((data) => {
         pendingTurnRef.current = data.turnId;
-        // 被编辑那一轮的旧回复是服务端**硬删**的（deleteAssistantMessagesForTurn），
-        // 而 pullAll 用的 mergeRows 只增不删（为保住"载入更早"的分页），删掉的行不再返回却赖在本地——
-        // 表现就是"改了没重开"：旧回复还整条挂着，新回复又追加在下面。先本地按同一口径撤下。
+        // 旧回复会被服务端删掉（先存进版本条再硬删），而 mergeRows 只增不删（为保住
+        // "载入更早"的分页），删掉的行不再返回却赖在本地——先本地按同一口径撤下。
         if (editedTurn) setMsgs((prev) => prev.filter((x) => x.turn_id !== editedTurn || x.role !== "assistant"));
-        return pullAllRef.current?.().then(() => {
-          setTyping(true);
-          watch(data.turnId);
-        });
+        setTyping(true);
+        // fullRedraw：重答较早的轮次时新回复写回原气泡行，行号不变，增量拉取看不见。
+        return pullAffected(editedTurn).then(() => watch(data.turnId, { fullRedraw: true }));
       })
       .catch((error: Error) => {
         pendingTurnRef.current = null;
@@ -2527,7 +2546,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 <div className="editbox-head">
                   <div className="editbox-heading">
                     <span className="editbox-title"><Pencil size={13} strokeWidth={1.9} />编辑{mine ? "我的消息" : "这条回复"}</span>
-                    <span className="editbox-mode">{editTextOnly ? "仅改文字 · 后续保留" : mine ? "保存后从这句重新回复" : "仅修改文本 · 不重新生成"}</span>
+                    <span className="editbox-mode">{editTextOnly ? "仅改文字 · 后续保留" : mine ? "保存后重答这一轮 · 旧回答留成版本" : "仅修改文本 · 不重新生成"}</span>
                   </div>
                   <button type="button" className="editbox-close" title="取消编辑" aria-label="取消编辑" onClick={cancelEdit}>
                     <X size={15} />
@@ -2565,7 +2584,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 <div className="editbox-foot">
                   <span className="editbox-hint">
                     {mine
-                      ? (editTextOnly ? "保存后不会重新生成回复。" : "保存后会从这句重新往下聊，图片可直接粘贴。")
+                      ? (editTextOnly ? "保存后不会重新生成回复。" : "保存后重答这一轮，旧回答留成版本；后面的对话保留。图片可直接粘贴。")
                       : "只修改这条回复的文字，不会重新生成。"}
                   </span>
                   <span className="editbox-count" aria-label={`${editDraft.length} 个字符`}>{editDraft.length}</span>
@@ -2598,7 +2617,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             showThinking={showThinking}
             thinkingOpen={m.turn_id ? thinkingOpenTurns[m.turn_id] : undefined}
             onThinkingOpenChange={setThinkingOpen}
-            showSenderName={isGroupChat} />
+            showSenderName={isGroupChat}
+            variantCount={m.variant_count ?? 0}
+            variantIndex={m.variant_index ?? 0}
+            onVariantChange={changeVariant}
+            onVariantGenerate={requestVariantGenerate} />
         );
       }
     }
@@ -3206,18 +3229,24 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 document.body
               )}
             </div>
-            {(typing || busy) && pendingTurnRef.current !== null ? (
-              <button type="button" id="stop" title="不要这次回答了" onClick={stopTurn}>
-                停止
-              </button>
-            ) : null}
-            {/* 发送键的 disabled 走的是本地操作闸门（撤回/删除/编辑/重试共用 busy），
-                所以这里不能写「发送中…」——那句只该在真的在发消息时说，而 send() 是即时的。 */}
-            <button type="button" id="send" title={busy ? "有别的操作还在收尾，稍等一下" : "发送"}
-              disabled={busy || transcribing || voiceBusy}
-              className={busy ? "busy" : ""} onClick={submitDraft}>
-              {busy ? "请稍候…" : "发送"}
-            </button>
+            {/* 发送槽只有一个按钮位，按状态换脸、位置永不移动（对齐 iMessage/ChatGPT 的收敛做法）：
+                回合在飞（typing/busy 且有 pendingTurn）→ ■ 停止，点它=不要这次回答了；
+                本地操作收尾（撤回/删除/编辑/重试共用的 busy，没有 pendingTurn）→ 小 spinner。
+                spinner 只说「在忙」不说「发送中」——send() 是即时的，写文案会说谎，图形不会。
+                不再出现「停止 + 请稍候…」两个按钮描述同一个 busy。 */}
+            <div className="composer-actions">
+              {(typing || busy) && pendingTurnRef.current !== null ? (
+                <button type="button" id="send" className="stopping" title="不要这次回答了" onClick={stopTurn}>
+                  <Square size={14} strokeWidth={0} fill="currentColor" aria-hidden />
+                </button>
+              ) : (
+                <button type="button" id="send" title={busy ? "有别的操作还在收尾，稍等一下" : "发送"}
+                  disabled={busy || transcribing || voiceBusy}
+                  className={busy ? "busy" : ""} onClick={submitDraft}>
+                  {busy ? <Loader2 size={16} className="spin" aria-hidden /> : "发送"}
+                </button>
+              )}
+            </div>
           </div>
         )}
         </>
@@ -3242,7 +3271,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             {pendingConfirm.kind === "edit-switch"
               ? "当前正在编辑的内容还没保存，切换后会丢弃；新打开的这一条不会立即改动。"
               : pendingConfirm.kind === "regenerate"
-                ? "当前这条回答会被新的回答替换，后面的对话保持不动。重新生成期间不能发送其他消息。"
+                ? "会生成一个新的回答，原来的留成旧版本（最多留 5 个），可以在气泡下方左右切换。重新生成期间不能发送其他消息。"
                 : `撤回后${characterName}不会再记得这句，但会留下一条“已撤回”记录。`}
           </div>
           <div className="del-row">

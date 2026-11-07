@@ -9,21 +9,8 @@
 .tw-choice-row { margin: 0; }
 .tw-choice-row.is-danger .choice[aria-pressed="true"] { color: var(--danger); }
 
-/* 台账顶部的总闸：与档位卡分开，二元决策不该混进程度选择里。
-   同一套卡语言（icon + 标题一句话 + 右侧控件），别再像半张卡。 */
-.lg-master {
-  background: var(--bg-elevated); border: 1px solid var(--border);
-  border-radius: 16px; padding: 16px 20px;
-  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-}
-.lg-master-icon {
-  flex: 0 0 auto; width: 32px; height: 32px; border-radius: 10px;
-  background: var(--accent-soft); color: var(--accent-ink);
-  display: flex; align-items: center; justify-content: center;
-}
-.lg-master-copy { flex: 1 1 260px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
-.lg-master-copy b { font-size: 14px; font-weight: 500; color: var(--text); }
-.lg-master-copy span { font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+/* 台账已无独立总闸：「全关」并入档位轴的最左档（见 ToolOverviewSection），
+   这里的总闸卡样式随之移除，档位卡沿用 .lg-preset-card。 */
 .lg-fixed {
   justify-self: end; font-size: 11px; color: var(--success);
   padding: 4px 9px; border-radius: 999px; background: var(--success-soft);
@@ -455,6 +442,9 @@
 .pf-preset-chip:disabled { opacity: .5; cursor: not-allowed; }
 .pf-preset-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .pf-preset-desc { font-size: 12px; line-height: 1.65; color: var(--text-muted); }
+/* 高级折叠区里的行内动作行（如「立即整理记忆」）：说明文字与按钮同行，弱化为一句话。 */
+.pf-set-inline { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.pf-set-inline .pf-set-cost { font-size: 12px; color: var(--text-muted); }
 .pf-tools-advanced { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
 /* 折叠区顶部的一句话语义说明：把「上限」规则与数量的对应关系讲在明面上，
    联系人页的 6 个类开关和台账的 21 项才能在心里对上账。 */
@@ -473,8 +463,8 @@
   .ext-cards { grid-template-columns: 1fr; }
   .tw-matrix-row { grid-template-columns: minmax(110px, 1.2fr) repeat(7, minmax(42px, 1fr)); }
   .tw-panel { padding: 14px; }
-  .lg-segmented { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); }
-  .lg-panel, .lg-preset-card, .ac-panel, .lg-master { padding: 14px; }
+  .lg-segmented { grid-auto-flow: row; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .lg-panel, .lg-preset-card, .ac-panel { padding: 14px; }
   .lg-row { grid-template-columns: 10px minmax(0, 1fr) auto; row-gap: 4px; }
   .lg-row .lg-state { grid-column: 2; grid-row: 2; text-align: left; }
   .lg-row .choice-row, .lg-row .lg-fixed, .lg-row .tw-link { grid-column: 3; grid-row: 1 / 3; align-self: center; }

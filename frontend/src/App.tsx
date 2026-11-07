@@ -77,6 +77,17 @@ export default function App(): JSX.Element {
   const [assistantOpen, setAssistantOpen] = useState(false);
   /** 当前联系人的名字与头像 + 全站未读数：全部由 contactsStore 的唯一轮询链供数。 */
   const applyContactMeta = useCallback((list: ContactItem[]): void => {
+    // 当前作用域指向的人不在列表里了（典型：设置页「全部清空」把老联系人整库清掉，
+    // 而那条路不经过资料页的 leaveChat，current 还悬在旧 id 上）——之后状态页、
+    // 对话页对这个 id 的每个请求都吃 404「联系人不存在」。收回到重新种出的 default。
+    // 助手线程（assistant / assistant:<id>）不在联系人表里，是合法作用域，别动。
+    if (list.length > 0) {
+      const id = contactId();
+      if (id !== "" && !id.startsWith("assistant") && !list.some((x) => x.id === id)) {
+        setContactId("default");
+        setCurrent("default");
+      }
+    }
     const c = list.find((x) => x.id === contactId());
     if (c) {
       setCharacterName(c.name || "小茉");

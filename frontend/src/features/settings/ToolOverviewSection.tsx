@@ -2,31 +2,40 @@
 //
 // 一张表回答三件事：现在有哪些手、哪些被收回、为什么没生效。
 // 目录、档位、状态理由全部由 /api/tools 下发，前端不维护第二份工具名。
-// 全局开关是**上限**：这里关掉，任何联系人档位都开不回来。
+// 全局档位是**上限**：这里收掉的，任何联系人档位都开不回来。
 //
 // 只读的部分（模型档硬闸、能力就绪、联系人档位）不在这里复制成可写控件，
 // 只给一句话说明与直达入口，避免两处状态打架。
 //
-// 首屏只回答两个问题：工具开没开、在什么档。21 行逐项明细收进折叠区——
-// 真要逐项拧的人才展开它；扩展带来的工具在明细里没有第二个开关，
+// 首屏只回答一个问题：在什么档。「全关」与三档合并成一条档位轴（存储仍是
+// toolsEnabled + globalPreset 两个字段，写入时一次请求带齐）；21 行逐项明细收进
+// 折叠区——真要逐项拧的人才展开它；扩展带来的工具在明细里没有第二个开关，
 // 状态列写明来源，启停一律回「扩展」页（双开关是「开了扩展却看不到工具」
 // 这类困惑的根源，现在一条因果只有一处闸）。
 
 import { useCallback, useEffect, useState } from "react";
-import { CircleDot, Hand, RefreshCw, ShieldAlert, SlidersHorizontal } from "lucide-react";
+import { CircleDot, RefreshCw, ShieldAlert, SlidersHorizontal } from "lucide-react";
 import { contactsApi, toolsApi } from "../../api";
 import type { ToolCatalogEntry, ToolPreset, ToolPresetChoice, ToolState } from "../../api/tools";
 import { loadToolState, putToolState } from "../../lib/toolsStore";
 import ToolLoopSection from "./ToolLoopSection";
 import type { SettingsForm } from "./useSettingsForm";
 
-/** 台账使用的档位短语直接吃后端下发的 choices；「off」只出现在存量联系人身上
- *  （新档位里它已并入总闸），不进 choices，这里补一个纯展示的兜底。 */
+/** 「全关」与三档合并成一条档位轴（off / quiet / balanced / full）。
+ *  存储上仍是两个字段（toolsEnabled + globalPreset），写入时一次请求带上；
+ *  界面不再出现「总闸」这张卡——总闸×档位×逐项的三层门控，用户只需要理解一层。 */
+type PresetChoice = ToolPreset | "off";
+
 function choiceLabelsOf(state: ToolState): Record<ToolPresetChoice, string> {
   const labels = {} as Record<ToolPresetChoice, string>;
   for (const choice of state.choices) labels[choice.key] = choice.label;
   labels.off = "全关";
   return labels;
+}
+
+/** 当前生效档：总闸关着就显示「全关」，否则显示所选档。 */
+function currentPresetOf(state: ToolState): PresetChoice {
+  return state.toolsEnabled ? state.globalPreset : "off";
 }
 
 /** 状态列的「一步修复」出口：这句理由的后端真源在 routes/tools.ts，
@@ -124,17 +133,16 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
       .finally(() => setBusy(""));
   };
 
-  const setPreset = (preset: ToolPreset): void => {
-    if (state === null || preset === state.globalPreset) return;
-    const label = state.presets.find((p) => p.key === preset)?.label ?? preset;
-    write("preset", { globalPreset: preset }, `全局档位已设为「${label}」，下一轮对话生效。`);
-  };
-
-  const setMaster = (enabled: boolean): void => {
-    if (state === null || enabled === state.toolsEnabled) return;
-    write("master", { toolsEnabled: enabled }, enabled
-      ? "工具总闸已开启。"
-      : "工具总闸已关闭：陪伴侧不再声明任何工具，助手的管理操作仍保留。");
+  /** 档位轴的唯一写入口：全关=只关总闸，其余档位=开总闸并选中该档。
+   *  两个字段一次请求写齐，台账状态由服务端重算返回，不存在中间态。 */
+  const setPreset = (preset: PresetChoice): void => {
+    if (state === null || preset === currentPresetOf(state)) return;
+    const label = preset === "off" ? "全关" : state.presets.find((p) => p.key === preset)?.label ?? preset;
+    const patch: { toolsEnabled: boolean; globalPreset?: ToolPreset } = { toolsEnabled: preset !== "off" };
+    if (preset !== "off") patch.globalPreset = preset;
+    write("preset", patch, preset === "off"
+      ? "已全关：陪伴侧不再声明任何工具，助手的管理操作仍保留。"
+      : `全局档位已设为「${label}」，下一轮对话生效。`);
   };
 
   const toggleTool = (name: string, enable: boolean): void => {
@@ -173,16 +181,23 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
   const labels = choiceLabelsOf(state);
   const companions = state.tools.filter((t) => t.scope === "companion");
   const assistants = state.tools.filter((t) => t.scope === "assistant");
-  const current = state.presets.find((p) => p.key === state.globalPreset);
+  const currentPreset = currentPresetOf(state);
   const exceptions = state.contacts.filter((c) => c.preset !== "follow");
   const disabledCount = state.disabledTools.length;
+
+  /** 档位轴：全关在最左（最严），三档依次放开。描述直接吃后端下发的文案。 */
+  const presetAxis: Array<{ key: PresetChoice; label: string; desc: string }> = [
+    { key: "off", label: "全关", desc: "陪伴侧一个工具都不声明，助手的管理操作仍保留。" },
+    ...state.presets.map((p) => ({ key: p.key as PresetChoice, label: p.label, desc: p.desc })),
+  ];
+  const currentDesc = presetAxis.find((p) => p.key === currentPreset)?.desc ?? "";
 
   return (
     <div className="tw-board" id="settings-tools-overview">
       <div className="tw-board-head">
         <div className="tw-board-head-copy">
           <h2>工具台账</h2>
-          <p>一眼看清小茉现在有哪些手、哪些被收回、为什么没生效。这里的开关是全局上限，联系人只能更严，不能更松。</p>
+          <p>一眼看清小茉现在有哪些手、哪些被收回、为什么没生效。这里的档位是全局上限，联系人只能更严，不能更松。</p>
         </div>
         <div className="tw-board-head-aside">
           <button type="button" className="btn sm" onClick={load} disabled={busy !== ""}>
@@ -194,21 +209,6 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
       {err !== "" && <div className="ext-banner is-bad" role="alert">{err}</div>}
       {note !== "" && <div className="ext-banner is-ok" role="status">{note}</div>}
 
-      {/* 总闸是二元决策，单独成卡：icon + 一句话 + 右侧开关，与下面的档位卡同一套视觉语言。 */}
-      <div className="lg-master">
-        <span className="lg-master-icon"><Hand size={15} /></span>
-        <div className="lg-master-copy">
-          <b>允许使用工具</b>
-          <span>关掉就是全关：陪伴侧一个工具都不声明。助手的管理操作仍保留，随时能在这里改回来。</span>
-        </div>
-        <div className="choice-row" role="group" aria-label="工具总闸">
-          <button type="button" className="choice" aria-pressed={!state.toolsEnabled} disabled={busy !== ""}
-            onClick={() => setMaster(false)}>关闭</button>
-          <button type="button" className="choice" aria-pressed={state.toolsEnabled} disabled={busy !== ""}
-            onClick={() => setMaster(true)}>开启</button>
-        </div>
-      </div>
-
       <div className="lg-preset-card">
         <div className="lg-preset-head">
           <span className="lg-preset-icon"><SlidersHorizontal size={15} /></span>
@@ -218,17 +218,17 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
           </div>
         </div>
         <div className="lg-segmented" role="radiogroup" aria-label="全局工具档位">
-          {state.presets.map((preset) => (
+          {presetAxis.map((preset) => (
             <button key={preset.key} type="button" role="radio"
-              aria-checked={state.globalPreset === preset.key}
-              className={"lg-seg" + (state.globalPreset === preset.key ? " is-on" : "")}
-              disabled={busy !== "" || !state.toolsEnabled} onClick={() => setPreset(preset.key)}>
+              aria-checked={currentPreset === preset.key}
+              className={"lg-seg" + (currentPreset === preset.key ? " is-on" : "")}
+              disabled={busy !== ""} onClick={() => setPreset(preset.key)}>
               {preset.label}
             </button>
           ))}
         </div>
         <div className="lg-preset-desc">
-          <CircleDot size={13} /> <span>{state.toolsEnabled ? current?.desc ?? "" : "总闸已关闭，档位暂不生效；打开上方总闸后恢复。"}</span>
+          <CircleDot size={13} /> <span>{currentDesc}</span>
         </div>
         <div className="lg-preset-foot">
           <span>全局已单独关闭 <b>{disabledCount}</b> 项</span>
@@ -310,7 +310,7 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
       <div className="lg-footnote">
         <ShieldAlert size={14} />
         <div>
-          最终是否生效还要看三层：模型档是否允许工具调用、专项能力是否配好、这位联系人选了哪一档。
+          最终是否生效还要看两道：模型档是否允许工具调用、这位联系人选了哪一档（专项能力没配好的会在台账里标出来）。
           工具台账里标「允许」不等于这一轮一定出现。
           <span className="lg-links">
             <button type="button" className="tw-link" onClick={onGoModel}>主对话模型</button>

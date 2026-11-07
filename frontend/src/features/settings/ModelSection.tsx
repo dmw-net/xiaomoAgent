@@ -60,6 +60,14 @@ const CAP_DEFS: Array<{ key: keyof ModelCaps; label: string }> = [
   { key: "customProtocol", label: "自定义协议" },
 ];
 
+/** 一级勾选只放三个用户能对着服务商文档回答的问题；仅思考/自定义协议是极少数
+ *  排障时才碰的元数据，沉进下方「接口格式不兼容时再改」折叠区（字段与保存不动）。 */
+const MAIN_CAP_DEFS: Array<{ key: keyof ModelCaps; label: string; hint: string }> = [
+  { key: "tools", label: "工具调用", hint: "不勾时请求不携带工具定义，也不会执行任何工具；普通聊天不受影响。" },
+  { key: "vision", label: "图片输入", hint: "主模型支持看图就勾；不确定可不勾，看图会走「图片理解」兜底。" },
+  { key: "thinking", label: "支持思考", hint: "模型能输出思考过程（reasoning）就勾。" },
+];
+
 /** 开关系形态（模板系 / 火山系）的三个取值；"" 表示一个字段都不发。 */
 const THINKING_MODE_CHIPS: Array<{ id: ThinkingModeId; label: string }> = [
   { id: "auto", label: "跟随模型" },
@@ -124,6 +132,185 @@ function CapsTags({ caps }: { caps: ModelCaps | undefined }): JSX.Element | null
 
 /** 摘要里要印卡片上的中文名，不是 imageVision 这种键名。 */
 const CAP_TITLES: Record<string, string> = Object.fromEntries(CAPABILITY_GROUPS.map((g) => [g.name, g.title]));
+
+/** 全局回放范围。档位与联系人页同一套语义（3 眼前 / 10 一段对话 / 30 一个话题），
+ *  上限 30 与后端 sanitizeRecentTurns 对齐；比例档与联系人 turnPct 同一判序（比例优先）。 */
+const GLOBAL_TURN_CHIPS = [3, 10, 30];
+const GLOBAL_TURN_CHIP_LABELS: Record<number, string> = { 3: "眼前", 10: "一段对话", 30: "一个话题" };
+const GLOBAL_TURN_MAX = 30;
+const GLOBAL_PCT_CHIPS = [25, 50, 75];
+type GlobalReplayMode = "turns" | "pct" | "all";
+
+/** 从快照解析当前全局模式（与后端 effectiveRecentTurnsSpec 同一判序）。 */
+function globalReplayModeOf(persona: { recentTurns?: number; recentTurnsPct?: number } | undefined): { mode: GlobalReplayMode; turns: number; pct: number } {
+  const turns = persona?.recentTurns ?? 0;
+  const pct = persona?.recentTurnsPct ?? 0;
+  if (pct > 0) return { mode: "pct", turns, pct };
+  if (turns === -1) return { mode: "all", turns, pct };
+  return { mode: "turns", turns, pct };
+}
+
+/** 全局回放范围：没单独指定「回放范围」的联系人都跟着它走。
+ *  这份值原本只有固定轮数、且任何设置页都没有入口——联系人页那句「跟随全局 · N 轮」
+ *  的 N 改不了，是归类核查揪出的隐形设置；现在补齐为与联系人页同构的三种给法。 */
+function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState("");
+  const [err, setErr] = useState("");
+  const [custom, setCustom] = useState("");
+  const persona = form.saved?.persona;
+  const { mode, turns: savedTurns, pct: savedPct } = globalReplayModeOf(persona);
+  const fallback = form.saved?.defaultRecentTurns ?? 6;
+  const customValue = Number(custom);
+  const customValid = custom.trim() !== "" && Number.isInteger(customValue)
+    && customValue >= 1 && customValue <= (mode === "pct" ? 100 : GLOBAL_TURN_MAX);
+
+  /** 一次请求把两个字段写齐：模式互斥在服务端 updatePersona 里兜底，这里显式带上更直观。 */
+  const save = (patch: { recentTurns: number; recentTurnsPct: number }, ok: string): void => {
+    if (busy) return;
+    setBusy(true);
+    setNote("");
+    setErr("");
+    settingsApi.saveSettings(patch)
+      .then((d) => {
+        form.applySnapshot(d);
+        // 联系人页的「跟随全局」标签监听这条广播，保存后立刻跟上。
+        window.dispatchEvent(new Event(SETTINGS_CHANGED_EVENT));
+        setNote(ok);
+        setCustom("");
+      })
+      .catch((e: Error) => setErr(e.message))
+      .finally(() => setBusy(false));
+  };
+
+  const pickMode = (next: GlobalReplayMode): void => {
+    if (next === mode) return;
+    if (next === "all") {
+      save({ recentTurns: -1, recentTurnsPct: 0 }, "已改为回放全部历史。长会话的每次调用输入都会涨到全部历史那么大。");
+    } else if (next === "pct") {
+      save({ recentTurns: 0, recentTurnsPct: 50 }, "已改为按会话比例回放（默认 50%，可在下方调整）。");
+    } else {
+      save({ recentTurns: 0, recentTurnsPct: 0 }, `已改为按轮数回放（跟随默认 ${fallback} 轮）。`);
+    }
+  };
+
+  const currentDesc = mode === "all"
+    ? "全部历史都会带上：接得住很久之前的话题，代价是每次调用的输入随历史一起涨。"
+    : mode === "pct"
+      ? `带这段会话最近 ${savedPct}% 的轮数——比例会随聊了多久自己伸缩。`
+      : savedTurns > 0
+        ? `每轮带上最近 ${savedTurns} 轮对话。`
+        : `跟随内置默认：最近 ${fallback} 轮。`;
+
+  return (
+    <div className="card card-pad">
+      <div className="ml-head">
+        <div className="subhead">全局回放范围</div>
+        <span className="spacer" />
+        <span className="hint">{busy ? "保存中…" : ""}</span>
+      </div>
+      <div className="adv-chips" role="radiogroup" aria-label="全局回放的给法">
+        <button type="button" role="radio" aria-checked={mode === "turns"}
+          className={"adv-chip" + (mode === "turns" ? " on" : "")}
+          disabled={busy || form.busy !== ""} onClick={() => pickMode("turns")}>按轮数</button>
+        <button type="button" role="radio" aria-checked={mode === "pct"}
+          className={"adv-chip" + (mode === "pct" ? " on" : "")}
+          disabled={busy || form.busy !== ""} onClick={() => pickMode("pct")}>按会话比例</button>
+        <button type="button" role="radio" aria-checked={mode === "all"}
+          className={"adv-chip" + (mode === "all" ? " on" : "")}
+          disabled={busy || form.busy !== ""} onClick={() => pickMode("all")}>全部历史</button>
+      </div>
+      <div className="hint">{currentDesc}</div>
+
+      {mode === "turns" && (
+        <>
+          <div className="adv-chips" role="radiogroup" aria-label="全局回放轮数">
+            <button type="button" role="radio" aria-checked={savedTurns === 0}
+              title={`不覆盖，用内置默认 ${fallback} 轮`}
+              className={"adv-chip" + (savedTurns === 0 ? " on" : "")}
+              disabled={busy || form.busy !== ""}
+              onClick={() => save({ recentTurns: 0, recentTurnsPct: 0 }, `已回到跟随默认（${fallback} 轮）。`)}>
+              跟随默认 · {fallback} 轮
+            </button>
+            {GLOBAL_TURN_CHIPS.map((n) => (
+              <button key={n} type="button" role="radio" aria-checked={savedTurns === n}
+                title={`${GLOBAL_TURN_CHIP_LABELS[n]}：每轮带上最近 ${n} 轮对话`}
+                className={"adv-chip" + (savedTurns === n ? " on" : "")}
+                disabled={busy || form.busy !== ""}
+                onClick={() => save({ recentTurns: n, recentTurnsPct: 0 }, `已设为最近 ${n} 轮，下一轮对话生效。`)}>
+                {n} 轮 · {GLOBAL_TURN_CHIP_LABELS[n]}
+              </button>
+            ))}
+          </div>
+          <div className="field">
+            <label htmlFor="global-turns-custom">自定义轮数</label>
+            <input
+              id="global-turns-custom"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={GLOBAL_TURN_MAX}
+              step={1}
+              value={custom}
+              placeholder={`1~${GLOBAL_TURN_MAX}`}
+              aria-invalid={custom.trim() !== "" && !customValid}
+              onChange={(e) => setCustom(e.target.value)}
+            />
+          </div>
+          <div className="actions">
+            <button type="button" className="btn sm" disabled={!customValid || busy || form.busy !== ""}
+              onClick={() => save({ recentTurns: customValue, recentTurnsPct: 0 }, `已设为最近 ${customValue} 轮，下一轮对话生效。`)}>
+              应用自定义
+            </button>
+          </div>
+        </>
+      )}
+
+      {mode === "pct" && (
+        <>
+          <div className="adv-chips" role="radiogroup" aria-label="全局回放比例">
+            {GLOBAL_PCT_CHIPS.map((p) => (
+              <button key={p} type="button" role="radio" aria-checked={savedPct === p}
+                className={"adv-chip" + (savedPct === p ? " on" : "")}
+                disabled={busy || form.busy !== ""}
+                onClick={() => save({ recentTurns: 0, recentTurnsPct: p }, `已设为按会话 ${p}% 回放。`)}>
+                {p}%
+              </button>
+            ))}
+          </div>
+          <div className="field">
+            <label htmlFor="global-pct-custom">自定义比例</label>
+            <input
+              id="global-pct-custom"
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={100}
+              step={1}
+              value={custom}
+              placeholder="1~100"
+              aria-invalid={custom.trim() !== "" && !customValid}
+              onChange={(e) => setCustom(e.target.value)}
+            />
+          </div>
+          <div className="actions">
+            <button type="button" className="btn sm" disabled={!customValid || busy || form.busy !== ""}
+              onClick={() => save({ recentTurns: 0, recentTurnsPct: customValue }, `已设为按会话 ${customValue}% 回放。`)}>
+              应用自定义
+            </button>
+          </div>
+        </>
+      )}
+
+      <div className="hint">
+        没单独指定「回放范围」的联系人都用这一档；联系人页的「跟随全局」指的就是它。
+        单独改过的人在联系人 → 对话 → 回放范围里调。
+      </div>
+      {note !== "" && <div className="banner show ok" role="status"><div className="body">{note}</div></div>}
+      {err !== "" && <div className="banner show bad" role="alert"><div className="body">{err}</div></div>}
+    </div>
+  );
+}
 
 /** 分区①：模型接入。列表管理多套模型（添加/编辑/应用/删除），演示模式开关兜底。 */
 /** 导出 / 导入那条小流程的界面状态。 */
@@ -320,15 +507,6 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
     setAdvOpen(false);
   };
 
-  const toggleLevel = (id: string): void => {
-    if (!draft) return;
-    set({
-      thinkingLevels: draft.thinkingLevels.includes(id)
-        ? draft.thinkingLevels.filter((x) => x !== id)
-        : [...draft.thinkingLevels, id],
-    });
-  };
-
   // ── 供应商这一层 ──────────────────────────────────────
   // 后端不存供应商实体：同一批档里接口地址相同的就是同一家（见 settings.ts 那段注释）。
   // 所以这里只是把档按 baseUrl 归组，外加一张"这家叫什么"的名字表。
@@ -479,6 +657,8 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
               : "还没接入能用的模型，先添加并启用一个"}
         </span>
       </div>
+
+      <GlobalTurnsCard form={form} />
 
       <div className="card card-pad model-list-card">
         <div className="ml-head">
@@ -753,45 +933,32 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
                     <div className="field">
                       <label>模型能力（按服务商文档勾选）</label>
                       <div className="cap-checks">
-                        {CAP_DEFS.map((c) => (
-                          <label key={c.key} className="check">
+                        {MAIN_CAP_DEFS.map((c) => (
+                          <label key={c.key} className="check" title={c.hint}>
                             <input type="checkbox" checked={draft.caps[c.key]}
                               onChange={(e) => set({ caps: { ...draft.caps, [c.key]: e.target.checked } })} />
                             <span>{c.label}</span>
                           </label>
                         ))}
                       </div>
-                      <div className="hint">按服务商文档勾真实能力。不勾「工具调用」时，请求不会携带工具定义，也不会执行任何工具；普通聊天不受影响。</div>
+                      <div className="hint">按服务商文档勾真实能力；其余能力项在下方「接口格式不兼容时再改」里。</div>
                     </div>
 
                     <div className="field think-settings">
                       <label>思考</label>
                       {draft.thinkingParam === "effort" ? (
-                        <div className="form-row">
-                          <div className="field">
-                            <label>默认强度</label>
-                            <div className="adv-chips">
-                              <button type="button" className={"adv-chip" + (draft.thinkingMode === "auto" ? " on" : "")}
-                                onClick={() => set({ thinkingMode: "auto", thinkingLevel: "" })}>跟随模型</button>
-                              {THINKING_DEFS.map((l) => (
-                                <button key={l.id} type="button"
-                                  className={"adv-chip" + (draft.thinkingLevel === l.id ? " on" : "")}
-                                  onClick={() => set({ thinkingMode: "on", thinkingLevel: l.id })}>{l.label}</button>
-                              ))}
-                            </div>
-                            <div className="hint">「跟随模型」不发送强度字段，由服务商决定；选具体档位才会显式覆盖。聊天输入区可以随时切换。</div>
+                        <div className="field">
+                          <label>默认强度</label>
+                          <div className="adv-chips">
+                            <button type="button" className={"adv-chip" + (draft.thinkingMode === "auto" ? " on" : "")}
+                              onClick={() => set({ thinkingMode: "auto", thinkingLevel: "" })}>跟随模型</button>
+                            {THINKING_DEFS.map((l) => (
+                              <button key={l.id} type="button"
+                                className={"adv-chip" + (draft.thinkingLevel === l.id ? " on" : "")}
+                                onClick={() => set({ thinkingMode: "on", thinkingLevel: l.id })}>{l.label}</button>
+                            ))}
                           </div>
-                          <div className="field">
-                            <label>聊天里可选</label>
-                            <div className="adv-chips">
-                              {THINKING_DEFS.map((l) => (
-                                <button key={l.id} type="button"
-                                  className={"adv-chip" + (draft.thinkingLevels.includes(l.id) ? " on" : "")}
-                                  onClick={() => toggleLevel(l.id)}>{l.label}</button>
-                              ))}
-                            </div>
-                            <div className="hint">只勾服务商真正支持的档位；一个都不勾就显示全部。</div>
-                          </div>
+                          <div className="hint">「跟随模型」不发送强度字段，由服务商决定；选具体档位才会显式覆盖。聊天输入区可以随时切换——那里是思考的日常入口，这里只定默认值。</div>
                         </div>
                       ) : (
                         <>
@@ -817,6 +984,18 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
                         <div className="hint">
                           {THINKING_PARAM_DEFS.find((p) => p.id === draft.thinkingParam)?.hint}
                           普通模型保持「reasoning_effort」即可；只有服务商明确换了字段名时才需要改。
+                        </div>
+                        <div className="cap-checks">
+                          {CAP_DEFS.filter((c) => c.key === "thinkingOnly" || c.key === "customProtocol").map((c) => (
+                            <label key={c.key} className="check"
+                              title={c.key === "thinkingOnly"
+                                ? "模型只会思考、不产出正文（如 o1 系的部分端点）"
+                                : "端点不是标准 OpenAI 协议时的展示标记，不影响请求"}>
+                              <input type="checkbox" checked={draft.caps[c.key]}
+                                onChange={(e) => set({ caps: { ...draft.caps, [c.key]: e.target.checked } })} />
+                              <span>{c.label}</span>
+                            </label>
+                          ))}
                         </div>
                       </details>
                     </div>

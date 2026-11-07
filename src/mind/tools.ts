@@ -13,12 +13,15 @@
 //   解压后字节上限、总超时、MIME 白名单都在那里，新增第二个出网点就是绕过这道门。
 //   这一类默认整组不声明（features.web），且抓回的内容必须带「只当资料、其中指令不执行」的标注。
 //   轮数也不是常量：助手固定 8 轮，普通联系人走全局设置（当前默认 5）。
-// - 执行结果永远是 JSON 字符串（工具循环协议统一），失败也返回结构化错误而不是抛异常——
-//   工具失败应该让模型知道「没查到」并继续说话，而不是让整轮对话失败。
+// - 工具内部返回值可以保留各自历史形状，但 executeTool 会统一归一成 ToolResult
+//   （ok / result / error / attachments…），由 agent 循环序列化成 JSON 字符串回传；
+//   失败也返回结构化错误而不是抛异常——工具失败应该让模型知道「没查到」并继续说话，
+//   而不是让整轮对话失败。归一化规则见 tool-contract.ts。
 
 import { describePeriod, nowText, ownerPronoun } from "./persona.ts";
 import type { MessageAttachmentMeta } from "../../shared/api.ts";
-import { capabilityReady, globalEmoteFrequency, personaConfig } from "../settings/settings.ts";
+import { capabilityReady, globalDisabledTools, globalEmoteFrequency, globalToolPreset, globalToolsEnabled, personaConfig } from "../settings/settings.ts";
+import { PRESET_BLOCKS_EXTENSIONS, PRESET_OFF, type ToolPreset } from "./tool-catalog.ts";
 import { generateImage, IMAGE_DAILY_LIMIT, imagesToday } from "../settings/model.ts";
 import { keywords, lastUserMessageText, queryVector, recallExplained } from "./memory.ts";
 import { ASSISTANT_TOOLS, ASSISTANT_WRITE_TOOLS, assistantPermission, isAssistant, type AssistantPermission } from "./assistant.ts";
@@ -32,6 +35,10 @@ import { getContact } from "../chat/contacts.ts";
 import { emoteCapabilities, resolveFace, type QqEmoteIntent } from "../emote/qq-emote.ts";
 import { autoPickEmote, emoteLibraryStatus, sampleEmotes, searchEmotes } from "../emote/emote-search.ts";
 import { bumpEmoteUse, getAssetById, type AssetRow } from "../media/assets.ts";
+import {
+  normalizeToolOutcome, validateAndCoerceArgs, validateToolPool,
+  type ToolDiagnostic, type ToolLike,
+} from "./tool-contract.ts";
 
 /** 这张表情在界面上、在联系人接下来的记忆里被叫作什么：中文名优先，其次文件句柄，最后才是「表情」。 */
 function emoteDisplayName(asset: AssetRow): string {
@@ -99,12 +106,26 @@ export type ToolContext = {
  * 由 executeTool 从工具返回值里的 `files` 字段提取，agent 循环收集后写进消息，
  * 所以工具**不需要**自己碰 messages 表。
  */
-export type ToolResult = { ok: true; result: unknown; attachments?: string[]; attachmentMeta?: MessageAttachmentMeta[]; /** 附件已经由工具自己发进渠道（如 send_emote 的原生表情），气泡照挂、通道投递跳过，防重复发送。 */ deliveredToChannel?: boolean } | { ok: false; error: string };
+/**
+ * 工具执行的**对外唯一形状**。executeTool 先把工具内部五花八门的返回值归一化，
+ * 下游（agent 循环、工具卡、历史存档）只认这一份：
+ * - `ok` 管界面上的成功/失败，业务软失败与扩展的 {error} 都算 false；
+ * - `result` 永远是给模型看的**完整载荷**，不压缩成一句 error —— send_emote 的候选、
+ *   keywordMiss 的 hint 都要靠它才能继续往下走；
+ * - `error` 只是卡片上一句人话，失败时必有。
+ */
+export type ToolResult = {
+  ok: boolean;
+  result: unknown;
+  error?: string;
+  attachments?: string[];
+  attachmentMeta?: MessageAttachmentMeta[];
+  /** 附件已经由工具自己发进渠道（如 send_emote 的原生表情），气泡照挂、通道投递跳过，防重复发送。 */
+  deliveredToChannel?: boolean;
+};
 
-export type ToolDef = {
-  name: string;
-  description: string;
-  parameters: Record<string, unknown>; // JSON Schema
+/** 与 tool-contract.ts 的 ToolLike 结构兼容（那里不 import 业务模块，便于单测）。 */
+export type ToolDef = ToolLike & {
   /** 允许是 async：出图要等服务商几秒。同步工具照旧返回普通值。 */
   execute: (args: Record<string, unknown>, context: ToolContext) => unknown | Promise<unknown>;
 };
@@ -138,13 +159,15 @@ const TOOLS: ToolDef[] = [
     name: "search_memory",
     description:
       "在你们的关系记忆里检索。当你不确定是否记得某件事、需要回忆细节（约定、偏好、用户说过的事）时调用。query 用具体的关键词（2~6 个字），比如「周日 吃饭」「加班」，优先用用户说过的原词（人名、食物、日期、地点）。" +
+      "不给 query 也可以：会拿用户最近一句原话兜底（流式聚合偶尔会把参数丢成空串）。" +
       "返回空结果时不要立刻断言「没有记忆」：换一组更具体的词再查一次（最多换两三次），都查不到再如实说。",
     parameters: {
+      // 不写 required：这个工具真的允许空参（execute 有原话兜底）。从前声明必填、
+      // 实现却兜底，是典型的「声明与实现不一致」；加上通用参数校验后会被自己拦下。
       type: "object",
       properties: {
-        query: { type: "string", description: "检索关键词，2~12 个字" },
+        query: { type: "string", description: "检索关键词，2~12 个字；不给则用用户最近一句原话" },
       },
-      required: ["query"],
       additionalProperties: false,
     },
     execute: async (args, context) => {
@@ -190,10 +213,13 @@ const TOOLS: ToolDef[] = [
     parameters: {
       type: "object",
       properties: {
-        text: { type: "string", description: "到点要说出口的提醒内容，一句话" },
+        text: { type: "string", description: "到点要说出口的提醒内容，一句话（必填）" },
         to_local: { type: "string", description: "绝对时间，格式 YYYY-MM-DD HH:MM（本地时区）" },
-        in_minutes: { type: "number", description: "或：多少分钟后提醒（1~525600）" },
+        in_minutes: { type: "number", description: "或：多少分钟后提醒（1~525600）", minimum: 1, maximum: 525600 },
       },
+      // 两个时间参数二选一留给运行时校验（execute 已判）：写 oneOf/anyOf 会被部分
+      // OpenAI 兼容服务商直接拒掉整份 tools 声明，代价远大于收益。
+      required: ["text"],
       additionalProperties: false,
     },
     execute: (args, context) => {
@@ -618,46 +644,86 @@ const SELFIE_FRAMING =
  * 技能与联网都是全局形态：磁盘上那份说明、那张能出网的网卡，对所有会话都成立，
  * 所以联网只在陪伴这一路按联系人开关，助手那边由白名单自己带。
  */
-function visibleTools(contactId?: string, permissionOverride?: AssistantPermission): ToolDef[] {
+export function visibleTools(contactId?: string, permissionOverride?: AssistantPermission): ToolDef[] {
+  // 全局逐项禁用是**上限**：助手与陪伴两条分支都先吃这一层。
+  const disabled = new Set(globalDisabledTools());
   const skillTools = usableSkills().length > 0 ? [SKILL_TOOL] : [];
+  const keep = (t: ToolDef): boolean => t.name === "app_status" || !disabled.has(t.name);
+
   if (contactId && isAssistant(contactId)) {
     // 只读档把写工具整组摘掉：不声明 = 模型调不到，比运行时拦截干净。
     const base = (permissionOverride ?? assistantPermission()) === "readonly"
       ? ASSISTANT_TOOLS.filter((t) => !ASSISTANT_WRITE_TOOLS.has(t.name))
       : ASSISTANT_TOOLS;
-    return [...base, ...WEB_TOOLS, ...skillTools];
+    // app_status 常开：读真实配置状态是助手开口的前提，关掉它等于把助手废掉。
+    return [...base.filter(keep), ...WEB_TOOLS.filter(keep), ...skillTools.filter(keep)];
   }
+
+  // 工具总闸（台账顶部的二元开关）：关掉时陪伴侧一个工具都不声明。
+  // 助手分支在上面已经返回，管理入口不会被一起关掉。
+  if (!globalToolsEnabled()) return [];
   const features = contactId ? getContact(contactId)?.features : undefined;
-  // 联系人级总开关（资料页「工具」卡的第一行）：false = 连工具声明都不进请求、
-  // executeTool 也查不到（同一个池子），这位联系人彻底没有「手」。默认开是历史行为。
+  // 联系人级总开关：false = 一个工具都不声明、executeTool 也查不到（同一个池子）。
   if (contactId && features?.tools === false) return [];
-  const off = new Set<string>();
-  // 看时间 / 翻记忆：默认开（历史行为），资料页可按联系人单独关。
-  // 关 = 连工具声明都摘掉（模型调不到）；系统提示词的 [现在] 行由 persona.ts 按同一开关 gating。
-  if (features?.clock === false) off.add("get_current_time");
-  if (features?.memorySearch === false) off.add("search_memory");
-  if (features?.reminders !== true) off.add("schedule_reminder");
-  if (features?.imageGen !== true || !capabilityReady("imageGeneration")) off.add("generate_image");
-  // 表情包：全局唯一开关（设置 → 发表情频率）。「关闭」时两个工具一起摘掉——
-  // 检索工具和发送工具是一对，只留一个等于让她「能查不能发」或「能发只能猜」。
+
+  // 档位解析：follow → 全局档；custom → 沿用六个逐项开关（存量联系人升级后的默认）；
+  // 其余四档 → PRESET_OFF 决定基准集合。
+  const choice = features?.toolPreset ?? "follow";
+  const preset: ToolPreset | "custom" = choice === "follow" ? globalToolPreset() : choice;
+  if (preset === "off" ) return [];
+
+  const off = new Set<string>(disabled);
+  if (preset === "custom") {
+    // 旧语义原样保留，一个字段都没删。
+    if (features?.clock === false) off.add("get_current_time");
+    if (features?.memorySearch === false) off.add("search_memory");
+    if (features?.reminders !== true) off.add("schedule_reminder");
+    if (features?.imageGen !== true) off.add("generate_image");
+    if (features?.voice !== true) off.add("send_voice");
+    if (features?.web !== true) { off.add("web_search"); off.add("web_fetch"); }
+  } else {
+    for (const name of PRESET_OFF[preset]) off.add(name);
+    // 档位是上限：这两项显式关过就继续关（系统提示的 [现在] 行跟同一个开关）。
+    // 其余显式 true **不能**越过档位放开，否则「安静」档会被旧数据悄悄撬开。
+    if (features?.clock === false) off.add("get_current_time");
+    if (features?.memorySearch === false) off.add("search_memory");
+  }
+  // 与档位无关的两道硬约束：没配好能力就声明，等于给模型一个必然失败的调用；
+  // 表情频率 off 时两个表情工具一起下线（它们是检索 + 发送的一对）。
+  if (!capabilityReady("imageGeneration")) off.add("generate_image");
+  if (!capabilityReady("textToSpeech")) off.add("send_voice");
   if (globalEmoteFrequency() === "off") { off.add("send_emote"); off.add("emote_search"); }
-  // 发语音：默认关（TTS 秒级外部调用 + 性格开关），且语音合成的能力档没配好时自动消失。
-  if (features?.voice !== true || !capabilityReady("textToSpeech")) off.add("send_voice");
-  if (features?.web !== true) { off.add("web_search"); off.add("web_fetch"); }
-  // 联网那一组不在 TOOLS 里（它默认整组不声明，只有开关打开才进来），所以候选池要显式并上它。
-  // 少并一次的结果是 off.add 在过滤一个池子里根本不存在的名字——开关怎么开都拿不到工具，
-  // 而这条只有「打开档」的断言能抓到（关闭档看起来一样绿）。
+
+  // 联网那一组默认不在 TOOLS 里，候选池必须显式并上，否则开关怎么开都拿不到工具。
   const pool = [...TOOLS, ...WEB_TOOLS];
-  const base = off.size === 0 ? pool : pool.filter((t) => !off.has(t.name));
-  // 扩展工具（MCP / webhook / JS）跟在最后：名字自带 mcp__/ext__ 前缀，不会与内置撞名；
-  // 联系人工具总开关在上面已经 return [] 了，脚本许可未开时 extensions 也不产出 script 工具，
-  // 这里不用再筛一遍。
-  return [...base, ...skillTools, ...extensionToolDefs()];
+  const base = pool.filter((t) => !off.has(t.name));
+  const extensionsBlocked = preset !== "custom" && PRESET_BLOCKS_EXTENSIONS[preset];
+  const extras = [
+    ...skillTools,
+    ...(extensionsBlocked ? [] : extensionToolDefs()),
+  ].filter(keep);
+  return [...base, ...extras];
 }
 
-/** OpenAI tools 协议的声明格式（function calling）。设置助手有自己的一套白名单工具。 */
-export function toolDefsForApi(contactId?: string, permissionOverride?: AssistantPermission): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
-  return visibleTools(contactId, permissionOverride).map((tool) => ({
+/**
+ * 静态工具全集：不受联系人开关影响，只给启动自检与回归测试看。
+ * visibleTools() 会按开关裁掉一批，拿它自检会漏掉默认关闭的那几个工具。
+ */
+export function staticToolPool(): ToolDef[] {
+  return [...TOOLS, ...WEB_TOOLS, SKILL_TOOL, ...ASSISTANT_TOOLS];
+}
+
+export const STATIC_TOOL_NAMES: ReadonlySet<string> = new Set(staticToolPool().map((t) => t.name));
+
+/** 启动期工具池健康报告：名称唯一/合法、schema 形状、卡片摘要登记。只诊断不抛。 */
+export function toolPoolDiagnostics(): ToolDiagnostic[] {
+  return validateToolPool(staticToolPool(), { staticNames: STATIC_TOOL_NAMES });
+}
+
+/** OpenAI tools 协议的声明格式（function calling）。设置助手有自己的一套白名单工具。
+ * pool 是现成的工具池快照（本轮只算一次，声明与执行共用）；不传就现算，给脚本与冒烟用。 */
+export function toolDefsForApi(contactId?: string, permissionOverride?: AssistantPermission, pool?: ToolDef[]): Array<{ type: "function"; function: { name: string; description: string; parameters: Record<string, unknown> } }> {
+  return (pool ?? visibleTools(contactId, permissionOverride)).map((tool) => ({
     type: "function" as const,
     function: { name: tool.name, description: tool.description, parameters: tool.parameters },
   }));
@@ -724,43 +790,83 @@ export function recordEmoteTurn(context: ToolContext, raw: unknown): void {
   state.sent += 1;
 }
 
-/** 执行一个工具调用。永不抛异常——失败返回结构化错误，让模型知情并继续。 */
-export async function executeTool(name: string, argsJson: string, context: ToolContext): Promise<ToolResult> {
-  const tool = visibleTools(context.contactId, context.assistantPermission).find((t) => t.name === name);
-  if (!tool) return { ok: false, error: `未知工具：${name}` };
+/** 失败一律走这里：界面拿一句人话 error，模型仍拿得到 result 里的完整载荷。 */
+function toolFailure(error: string, payload?: unknown): ToolResult {
+  return { ok: false, result: payload ?? { error }, error };
+}
+
+/**
+ * 时间预算。底层各有超时（web.ts / 模型层 / MCP / webhook），统一入口仍要有一道兜底：
+ * 扩展工具写个死循环不该把整轮对话挂死。内置工具绝大多数不设 timeoutMs ——
+ * 出图实测一整轮可到 90 秒，误杀比超时更糟，所以只给外来工具配。
+ * race 不会取消底层 Promise，超时只代表「本轮不再等它」。
+ */
+async function runToolWithBudget(tool: ToolDef, args: Record<string, unknown>, context: ToolContext): Promise<unknown> {
+  if (tool.timeoutMs === undefined) return await tool.execute(args, context);
+  const budget = tool.timeoutMs;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(tool.execute(args, context)),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`工具执行超过 ${budget}ms，已放弃等待`)), budget);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
+ * 执行一个工具调用。永不抛异常——失败返回结构化错误，让模型知情并继续。
+ *
+ * 这里是工具契约的唯一执行点，四件事按顺序做：找工具 → 校验/纠正参数 → 带预算执行
+ * → 归一化返回值。工具内部仍可保留各自的历史返回形状，但下游只见 ToolResult 一种。
+ *
+ * pool 是「本轮的工具池快照」：同一轮里所有调用必须看到同一份清单——声明构建与
+ * 逐个执行之间工具池若被改动（停用扩展、切换开关），前后的调用会看到不同的世界。
+ * 不传就现算（脚本与冒烟用）。
+ */
+export async function executeTool(name: string, argsJson: string, context: ToolContext, pool?: ToolDef[]): Promise<ToolResult> {
+  const tool = (pool ?? visibleTools(context.contactId, context.assistantPermission)).find((t) => t.name === name);
+  if (!tool) return toolFailure(`未知工具：${name}`);
   // 整轮门控前置：拦下就直接回结构化错误，连 tool.execute 都不跑（不花额度、不刷屏）。
   if (name === "send_emote") {
     const blocked = emoteGate(context);
-    if (blocked !== null) return { ok: false, error: blocked };
+    if (blocked !== null) return toolFailure(blocked);
   }
 
-  let args: Record<string, unknown> = {};
+  let parsed: unknown = {};
   try {
-    args = argsJson && argsJson.trim() !== "" ? (JSON.parse(argsJson) as Record<string, unknown>) : {};
+    parsed = argsJson && argsJson.trim() !== "" ? (JSON.parse(argsJson) as unknown) : {};
   } catch {
-    return { ok: false, error: "工具参数不是合法 JSON" };
+    return toolFailure("工具参数不是合法 JSON");
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return toolFailure("工具参数必须是 JSON 对象");
+  }
+  // 声明里的 required / type / enum / 数值边界在这里真正生效，不必每个 execute 手写兜底。
+  // additionalProperties:false 只剥掉多余字段，不判失败（模型偶尔多给一两个字段）。
+  const checked = validateAndCoerceArgs(tool.parameters, parsed as Record<string, unknown>);
+  if (checked.error !== null) {
+    if (name === "send_emote") recordEmoteTurn(context, { ok: false });
+    return toolFailure(`参数不对：${checked.error}`);
   }
 
   try {
-    const raw = await tool.execute(args, context);
+    const raw = await runToolWithBudget(tool, checked.args, context);
     if (name === "send_emote") recordEmoteTurn(context, raw);
-    // 返回带 files 的工具 = 有产物要挂到本轮回复上。模型只看到 result（它拿不到地址也无所谓，
-    // 助手自己的图从不回放），文件本体由 agent 循环写进 messages.attachments。
-    if (raw !== null && typeof raw === "object" && Array.isArray((raw as { files?: unknown }).files)) {
-      const produced = raw as { files: unknown[]; result: unknown; deliveredToChannel?: unknown; meta?: unknown };
-      const urls = produced.files.filter((f): f is string => typeof f === "string" && f.startsWith("/media/"));
-      if (urls.length === 0) return { ok: true, result: produced.result };
-      const metas = Array.isArray(produced.meta)
-        ? (produced.meta as MessageAttachmentMeta[]).filter((m): m is MessageAttachmentMeta =>
-            m !== null && typeof m === "object" && typeof (m as { url?: unknown }).url === "string")
-        : undefined;
-      return produced.deliveredToChannel === true
-        ? { ok: true, result: produced.result, attachments: urls, ...(metas !== undefined && metas.length > 0 ? { attachmentMeta: metas } : {}), deliveredToChannel: true }
-        : { ok: true, result: produced.result, attachments: urls, ...(metas !== undefined && metas.length > 0 ? { attachmentMeta: metas } : {}) };
-    }
-    return { ok: true, result: raw };
+    const outcome = normalizeToolOutcome(raw);
+    return {
+      ok: outcome.ok,
+      result: outcome.payload,
+      ...(outcome.error !== null ? { error: outcome.error } : {}),
+      ...(outcome.files !== null ? { attachments: outcome.files } : {}),
+      ...(outcome.meta !== null ? { attachmentMeta: outcome.meta as MessageAttachmentMeta[] } : {}),
+      ...(outcome.deliveredToChannel ? { deliveredToChannel: true } : {}),
+    };
   } catch (error) {
     if (name === "send_emote") emoteTurnState(context).exhausted = true;
-    return { ok: false, error: error instanceof Error ? error.message : String(error) };
+    return toolFailure(error instanceof Error ? error.message : String(error));
   }
 }

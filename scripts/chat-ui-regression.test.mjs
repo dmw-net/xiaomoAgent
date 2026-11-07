@@ -153,7 +153,13 @@ assert(/对所有设置助手会话生效/.test(assistantPermissionSource), "权
 assert(/next === "auto"[\s\S]*?setConfirmAuto\(true\)/.test(assistantPermissionSource), "进入完全自主前必须二次确认");
 assert(/权限变更从下一条消息开始生效/.test(assistantPermissionSource), "UI 必须说明权限从下一条消息生效");
 assert(/\.asst-perm-chip\.is-auto[\s\S]*?var\(--danger\)/.test(componentsCss), "完全自主 chip 必须常显危险色");
-assert(/assistantPermissionSnapshot/.test(agentSource) && /toolDefsForApi\(contactId, permissionSnapshot\)/.test(agentSource), "当前轮必须使用启动时的权限快照声明工具");
+// 声明与执行共用一份「本轮工具池快照」之后，toolDefsForApi 多了第三个参数；
+// 断言仍要钉住「用启动时的权限快照」，只是不再把参数个数写死。
+assert(
+  /assistantPermissionSnapshot/.test(agentSource)
+  && /toolDefsForApi\(contactId, permissionSnapshot(?:,\s*turnTools)?\)/.test(agentSource),
+  "当前轮必须使用启动时的权限快照声明工具",
+);
 assert(/visibleTools\(context\.contactId, context\.assistantPermission\)/.test(toolsSource), "工具执行也必须读取同一份权限快照");
 assert(/context\.assistantPermission \?\? assistantPermission\(\)/.test(assistantSource), "危险动作确认策略必须跟随本轮权限快照");
 assert(/INFO_NOTICE_TTL_MS\s*=\s*2600/.test(noticesSource), "信息 toast 应保留 2.6 秒自动消失");
@@ -190,9 +196,15 @@ assert(
 assert(/imagesOnly=\{!showTools\}/.test(chatSource), "工具卡应支持只渲染候选图（不显示卡片本身）");
 assert(/if \(imagesOnly\) \{/.test(toolCardSource), "ToolCard 需要一条只出图的渲染分支");
 // 表情工具曾因两处漏登记，把工具结果的原始 JSON 显示成「做了点事 · {"via":"native"...}」。
-// 服务端改好之后还要守住：中文标签要登记，历史已落库的 JSON 摘要要有显示兜底。
-assert(/send_emote:\s*"发了张表情"/.test(toolCardSource), "ToolCard 要给 send_emote 登记中文标签");
-assert(/emote_search:\s*"翻了翻表情库"/.test(toolCardSource), "ToolCard 要给 emote_search 登记中文标签");
+// 动作短语的真源已收口到后端 TOOL_META 的 chat 字段（经 /api/tools 下发），
+// 前端不再复刻一份映射——守两件事：后端登记在 tool-catalog，前端消费 toolsStore。
+const toolCatalogSource = readFileSync("src/mind/tool-catalog.ts", "utf8");
+assert(/send_emote:.*chat:\s*"发了张表情"/.test(toolCatalogSource),
+  "tool-catalog 要给 send_emote 登记聊天动作短语（唯一真源）");
+assert(/emote_search:.*chat:\s*"翻了翻表情库"/.test(toolCatalogSource),
+  "tool-catalog 要给 emote_search 登记聊天动作短语（唯一真源）");
+assert(/chatLabelsOf/.test(toolCardSource) && /chatLabelsOf/.test(readFileSync("frontend/src/lib/toolsStore.ts", "utf8")),
+  "ToolCard 的动作短语必须走 toolsStore 的 chatLabelsOf，不得再维护本地映射");
 assert(
   toolCardSource.includes('/^\\s*[{[]/.test(rawSummary)'),
   "早期落库的 JSON 摘要要兜住，别把调试串显示给用户",
@@ -373,7 +385,7 @@ assert(/missing: missingOnly/.test(mediaLibrarySource) && /失效/.test(mediaLib
 assert(/content-missing/.test(mediaLibrarySource) && /\.content-missing/.test(componentsCss), "失效卡片要渲染明确占位，不能只剩浏览器的破图图标");
 assert(/文件命名/.test(mediaLibrarySource) && /scopeCounts\.file/.test(mediaLibrarySource), "导入文件名要有独立分类，不能显示成手动维护");
 assert(/智能识别选中/.test(mediaLibrarySource) && /only: selectedIds, force: true/.test(mediaLibrarySource), "批量勾选后要能对选中项强制智能识别");
-assert(/selectAllFiltered/.test(mediaLibrarySource) && /全选筛选结果/.test(mediaLibrarySource), "全选要覆盖当前筛选的全部结果，不能只选已加载的 25 张");
+assert(/selectAllFiltered/.test(mediaLibrarySource) && /全选 \$\{totalInScope\}/.test(mediaLibrarySource), "全选要覆盖当前筛选的全部结果，不能只选已加载的 25 张");
 assert(/content-pick/.test(mediaLibrarySource) && /\.content-pick/.test(componentsCss), "卡片上要有批量选择框");
 
 

@@ -134,10 +134,20 @@ function asLookupError(error: unknown, hostname: string): Error {
  * 请求头值先洗一遍：外部数据（搜索结果里的原图页地址）常带转义与控制字符，
  * 而 Node 对脏头是直接抛 `Invalid character in header content`——那报错长得像我们的 bug，
  * 实际是数据问题，洗掉就变成一次正常的降级请求。
+ *
+ * 同时过滤敏感头名：防止通过 extraHeaders 注入 Host/Connection/Content-Length 等
+ * 控制请求路由的头（Node 允许 headers 里的 Host 覆盖 URL 的 host）。
  */
+const FORBIDDEN_HEADER_NAMES = new Set([
+  "host", "connection", "content-length", "transfer-encoding",
+  "keep-alive", "proxy-authenticate", "proxy-authorization", "te", "trailer", "upgrade",
+]);
+
 function sanitizeHeaders(headers: Record<string, string>): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [name, value] of Object.entries(headers)) {
+    const lowerName = name.toLowerCase();
+    if (FORBIDDEN_HEADER_NAMES.has(lowerName)) continue;
     const clean = String(value ?? "").replace(/[\u0000-\u001f\u007f]/g, "").trim().slice(0, 2000);
     if (clean !== "") out[name] = clean;
   }

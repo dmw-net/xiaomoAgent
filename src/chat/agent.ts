@@ -8,13 +8,15 @@ import { config } from "../core/config.ts";
 import { extractMemories, likePattern, recallExplained, recallSmart, recordExtractFailure } from "../mind/memory.ts";
 import { buildSystemPrompt, toChatMessages } from "../mind/persona.ts";
 import { loadToolExchanges, planToolReplay, trimToolStore } from "./tool-history.ts";
-import { effectiveRecentTurns, modelConfig, modelReadyNow, resolveToolLoopTurns } from "../settings/settings.ts";
+import { activeProfileId, effectiveRecentTurns, listProfiles, modelConfig, modelReadyNow, resolveToolLoopTurns } from "../settings/settings.ts";
 import { callModel, callModelWithTools, callSettings, contactModelSettings, friendlyModelError, ModelError, toolCapsSettings, toolsUnsupportedFor, type CallOptions, type ChatMessage, type MessageContentPart } from "../settings/model.ts";
 import { appendImageDescriptions, describeChatImages, visionHandlingFor } from "../mind/image-understanding.ts";
-import { executeTool, toolDefsForApi, type ToolContext, type ToolResult } from "../mind/tools.ts";
+import { executeTool, visibleTools, toolDefsForApi, type ToolContext, type ToolResult } from "../mind/tools.ts";
+import { DEFAULT_TOOL_RESULT_BUDGET } from "../mind/tool-contract.ts";
+import { redactToolArguments } from "../core/secrets.ts";
 import { trimDraftBeforeToolCall } from "../core/text-tool-calls.ts";
 import { bannedWordsNote, parseBannedWords } from "../core/banned-words.ts";
-import { ALL_TURNS, companionPromptExtras, contactCard, DEFAULT_CONTACT_ID, emoteFrequencyForContact, getContact } from "./contacts.ts";
+import { ALL_TURNS, companionPromptExtras, contactCard, contactModelProfile, DEFAULT_CONTACT_ID, emoteFrequencyForContact, getContact } from "./contacts.ts";
 import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssistantToActiveProfile, type AssistantPermission } from "../mind/assistant.ts";
 import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "../core/reply-segmentation.ts";
@@ -432,28 +434,28 @@ export function contactOfMessage(messageId: number): string | null {
  * 传了 = 只看这一个联系人的轮次——聊天页的失败横幅靠它，
  * 不过滤就会把别人的失败轮当成"本会话上一条回复失败了"，重试还会重跑别人的轮。
  */
-export function recentTurns(limit = 15, offset = 0, contactId?: string, conversationId?: string): TurnRow[] {
+export function recentTurns(
+  limit = 15,
+  offset = 0,
+  contactId?: string,
+  conversationId?: string,
+  opts: { activeOnly?: boolean } = {},
+): TurnRow[] {
   const safeLimit = Math.min(100, Math.max(1, limit));
   const safeOffset = Math.max(0, offset);
-  if (contactId !== undefined && conversationId !== undefined) {
-    return q(
-        `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
-         FROM turns WHERE superseded_at IS NULL AND contact_id = ? AND conversation_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      )
-      .all(contactId, conversationId, safeLimit, safeOffset) as unknown as TurnRow[];
-  }
-  if (contactId !== undefined) {
-    return q(
-        `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
-         FROM turns WHERE superseded_at IS NULL AND contact_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?`,
-      )
-      .all(contactId, safeLimit, safeOffset) as unknown as TurnRow[];
-  }
+  // 条件按需拼：contactId / conversationId 逐级收窄，activeOnly 只留在飞（queued/running）的轮。
+  // activeOnly 是聊天页接管在飞处理单用的：重答**较早**轮次时，那一轮的 created_at 还是它
+  // 当初的时间，按 created_at DESC 取“最新一条”永远看不到它——只能按状态查。
+  const conds = ["superseded_at IS NULL"];
+  const params: Array<string | number> = [];
+  if (contactId !== undefined) { conds.push("contact_id = ?"); params.push(contactId); }
+  if (conversationId !== undefined) { conds.push("conversation_id = ?"); params.push(conversationId); }
+  if (opts.activeOnly) conds.push("status IN ('queued','running')");
   return q(
       `SELECT id, channel, text, status, reply, error, created_at, finished_at, contact_id, conversation_id
-       FROM turns WHERE superseded_at IS NULL ORDER BY created_at DESC LIMIT ? OFFSET ?`,
+       FROM turns WHERE ${conds.join(" AND ")} ORDER BY created_at DESC LIMIT ? OFFSET ?`,
     )
-    .all(safeLimit, safeOffset) as unknown as TurnRow[];
+    .all(...params, safeLimit, safeOffset) as unknown as TurnRow[];
 }
 
 export type TurnStats = {
@@ -741,6 +743,12 @@ export type ContextUsage = {
   limit: number;
   /** limit 来自保守估算而非模型真实窗口——界面必须说破，否则用户以为那是天花板。 */
   limitIsFallback: boolean;
+  /**
+   * 这些数字是按哪一份模型档算的（绑定档 > 当前生效档；解析不到时为 null）。
+   * 界面靠 id 让「去设置」直接落到这一档——同名的档很多（hy3 / 本地中转 · agent2api/hy3），
+   * 只说「去设置填输入上限」会把人送到全局在用的那一档，改完了圆环照样是 32K。
+   */
+  profile: { id: string; label: string } | null;
   used: number;
   /** 本次纳入上下文的历史轮数（一问一答算一轮）。 */
   turns: number;
@@ -806,6 +814,9 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
     conv?.kind === "group" ? rows : rows.map((row) => ({ ...row, sender_name: null }));
   const proxied = imageProxiedHistory(replaySource(history), directReplay, visionMode !== "none");
   const budget = inputBudget(settings);
+  // 与 settings/model.ts 的 attribution 同一口径：联系人绑了档就是它，没绑才是全局当前生效档。
+  const profileId = contactModelProfile(cid) || (activeProfileId() ?? "");
+  const profileRow = profileId === "" ? null : listProfiles().find((p) => p.id === profileId) ?? null;
   // 与 respondToTurn 同一套：历史占比上限也要在圆环这边生效，否则"设置里限了、圆环不认"。
   const histCap = historyTokenCapFor(cid, settings);
   // 与 respondToTurn 同一套：估算按合并气泡后的形状算，圆环才不会和真实请求对不上。
@@ -857,6 +868,7 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
     model: settings.name,
     limit: budget.limit,
     limitIsFallback: budget.isFallback,
+    profile: profileRow ? { id: profileRow.id, label: profileRow.label } : null,
     used: contextTotal(p),
     parts,
     visionMode,
@@ -991,25 +1003,39 @@ export function toolSummary(name: string, result: unknown): string {
     const r = result as { name?: string; description?: string } | null;
     return r?.name ? `加载了技能「${r.name}」` : "加载了技能";
   }
+  if (name === "manage_extensions" || name === "import_extension" || name === "edit_extension_tool" || name === "set_script_gate") {
+    const r = (result ?? {}) as {
+      ok?: boolean; error?: string; needsConfirmation?: { title?: string };
+      id?: string; created?: boolean; allowScripts?: boolean; deleted?: string;
+      extensions?: unknown; diagnostics?: unknown; action?: string; tools?: unknown[];
+    };
+    // confirm 档下这不是失败：凭证在用户手里，卡片该说「等你点」，而不是一片红字。
+    if (r.needsConfirmation !== undefined) return `已发出确认卡片：${r.needsConfirmation.title ?? "等用户点了再继续"}`;
+    if (r.ok === false) return `没做成：${r.error ?? "原因不明"}`;
+    if (name === "import_extension") return `${r.created === true ? "导入" : "更新"}了扩展「${r.id ?? ""}」`;
+    if (name === "set_script_gate") return r.allowScripts ? "已开启 JS 工具执行许可" : "已关闭 JS 工具执行许可";
+    if (name === "manage_extensions") {
+      if (typeof r.deleted === "string") return `删除了扩展「${r.deleted}」`;
+      if (Array.isArray(r.extensions)) return "查看了扩展清单与诊断";
+      if (Array.isArray(r.diagnostics)) return `重连了扩展「${r.id ?? ""}」`;
+      return `调整了扩展「${r.id ?? ""}」的开关`;
+    }
+    return r.action === "delete" ? "删除了一个扩展工具" : "保存了扩展工具";
+  }
   // 兜底绝不回灌原始 JSON：以前 send_emote 没登记时，工具卡上直接显示
   // 「做了点事 · {"via":"native","native":true,"note":"…"}」——那是给模型的载荷，不是给用户的话。
-  // 新加工具忘了登记也只损失信息量，不会再把调试串糊到聊天里。
+  // 未登记的工具（尤其是动态扩展）至少报出名字，别用一句「执行完成」盖住它做了什么；
+  // 静态工具漏登记由 toolPoolDiagnostics() 在启动时提醒。
   const r = (result ?? {}) as { ok?: unknown; error?: unknown };
-  if (r.ok === false) return `没做成：${String(r.error ?? "原因不明")}`;
-  return "执行完成";
+  if (r.ok === false || typeof r.error === "string") return `没做成：${String(r.error ?? "原因不明")}`;
+  return `「${name}」执行完成`;
 }
 
 /**
- * 「软失败」：工具没抛异常，而是自己回 {ok:false,error}（send_emote 发不出去、
- * generate_image 没画成、配置类工具都是这个形状）。executeTool 只把抛异常算失败，
- * 于是这类结果会带着绿勾混进工具卡；落库前认出来，让卡片显示成失败并带原因。
- * 返回 null 表示不是软失败；返回字符串就是那句人话错误。
+ * 「软失败」的识别已上移到 executeTool → normalizeToolOutcome：工具自报
+ * {ok:false,error} 与扩展的 {error:"…"} 都在统一入口判成 ok:false，卡片直接用
+ * result.ok / result.error。从前这里的一层补丁只会漏掉不带 ok 字段的错误形状。
  */
-function softToolFailure(result: unknown): string | null {
-  if (result === null || typeof result !== "object") return null;
-  const r = result as { ok?: unknown; error?: unknown };
-  return r.ok === false ? String(r.error ?? "执行失败") : null;
-}
 
 /** 工具卡只有一行：失败原因若是一整段给模型的操作指引，只留第一句，别把卡片撑成一面墙。 */
 function cardFailureSummary(text: string): string {
@@ -1125,60 +1151,44 @@ async function guardOverflow<T>(sent: ChatMessage[], send: () => Promise<T>): Pr
 }
 
 /**
- * 工具调用参数回传前脱敏：密钥类字段的值换成占位，JSON 形状保持合法。
+ * 工具参数回传前脱敏已下沉到 core/secrets.ts：与 logs.ts 共用同一条字段规则，
+ * 且改成**递归**（从前只遍历顶层，嵌在 manifest.mcp.headers 里的密钥会漏）。
  *
- * 为什么需要它：助手工具 `configure_model` 的 arguments 里带着用户刚贴的 apiKey。
- * 协议要求把 assistant 的 tool_calls 原样回传下一轮，于是那份密钥会跟着每一轮请求
- * 发给**当前生效的服务商**——而那家可能正是用户想替换掉的那家。
- * 密钥已经写进配置表，对话里不再需要它；模型也不会因为看不到值而不会用这个工具
- * （它要的参数在上一轮已经给出，这一轮只是协议回显）。
- *
- * 与 logs.ts 的 redactSecrets 是同一条规则的两个边界：那边管「别落库」，
- * 这边管「别出网」。改一处记得改另一处。
+ * 为什么必须脱敏：助手工具 `configure_model` 的 arguments 里带着用户刚贴的 apiKey，
+ * 协议要求把 assistant.tool_calls 原样回传下一轮，那份密钥会跟着每一轮请求发给
+ * 当前生效的服务商——而那家可能正是用户想替换掉的那家。
  */
-function redactToolArguments(argsJson: string): string {
-  const SECRET_KEY = /^[A-Za-z_]*(?:api[_-]?key|secret|password|authorization|token)[A-Za-z_]*$/i;
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(argsJson);
-  } catch {
-    return argsJson; // 不是合法 JSON 就没法按字段脱敏，原样返回（executeTool 会报错给它看）
-  }
-  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return argsJson;
-  const redacted: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
-    redacted[key] = typeof value === "string" && SECRET_KEY.test(key) && value !== "" ? "<已省略>" : value;
-  }
-  return JSON.stringify(redacted);
-}
 
 /**
  * 工具结果进上下文前的体积上限。
  *
  * ⚠️ 为什么必须有：`trimHistoryToBudget()` 在循环**开始前**就跑完了，而工具结果是
- * 循环里一条条追加的——`load_skill` 最多回 24000 字、`web_fetch` 最多 20000 字，
+ * 循环里一条条追加的——`load_skill` 允许 24000 字正文、`web_fetch` 最多回 10000 字，
  * 都发生在裁剪之后。于是一个小窗口模型（本地 8K、或输入上限 32K 的档）上，
  * 一道完全合规的配置就能让每一轮都超长：guardOverflow 只会去丢最旧的**历史轮**
  * （约两百 token），对着两万字的工具载荷杯水车薪，重试两次后本轮直接失败。
  * 更糟的是多轮累积：8 轮循环各带一份就是十几万字符，中间没有任何一道闸门。
  *
  * 截断时明确告诉联系人"还有但没给"，别让联系人以为看到的就是全部——否则联系人会基于半份资料下结论。
+ *
+ * 预算按工具可配（ToolDef.resultBudget）：默认 4000 字，读网页/加载技能这类
+ * 天生大载荷的工具单独放宽。**工具的 description 里承诺的上限必须与这里一致**——
+ * 从前 web_fetch 说最多 20000 字、实际一律砍到 4000，模型按一份不存在的资料作答。
  */
-const TOOL_RESULT_MAX_CHARS = 4_000;
-
-function capToolResult(value: unknown, toolName: string): string {
+function capToolResult(value: unknown, toolName: string, budget: number = DEFAULT_TOOL_RESULT_BUDGET): string {
+  const limit = Math.max(200, Math.min(100_000, Math.round(budget)));
   let text: string;
   try {
     text = JSON.stringify(value) ?? "";
   } catch {
     text = String(value);
   }
-  if (text.length <= TOOL_RESULT_MAX_CHARS) return text;
-  const kept = text.slice(0, TOOL_RESULT_MAX_CHARS);
+  if (text.length <= limit) return text;
+  const kept = text.slice(0, limit);
   return JSON.stringify({
     truncated: true,
     tool: toolName,
-    note: `这个工具的返回太长了（原文 ${text.length} 字），这里只给前 ${TOOL_RESULT_MAX_CHARS} 字。就按这些判断，还想要更多就换个更具体的问法。`,
+    note: `这个工具的返回太长了（原文 ${text.length} 字），这里只给前 ${limit} 字。就按这些判断，还想要更多就换个更具体的问法。`,
     partial: kept,
   });
 }
@@ -1267,7 +1277,10 @@ async function runAgentLoop(
   const effective = callSettings(options);
   // 门控读哪份 caps 由 toolCapsSettings 统一裁决：能力显式绑档=空 caps（不带）、
   // 能力隐式回落主模型端点=按联系人聊天档意图、普通调用=请求落到的配置本身。
-  const declaredTools = toolDefsForApi(contactId, permissionSnapshot);
+  // 本轮工具池只算一次：声明与逐个执行共用同一份快照。既省掉每次 executeTool 现扫
+  // 技能目录/读 kv 的开销，也保证一轮里工具池被改动时前后调用看到同一个世界。
+  const turnTools = visibleTools(contactId, permissionSnapshot);
+  const declaredTools = toolDefsForApi(contactId, permissionSnapshot, turnTools);
   // 模型没就绪（演示模式/密钥缺失）就别进循环：callModel 自己会回那句"先接模型"的提示。
   if (!modelReadyNow(effective)) {
     return guardOverflow(base, () => callModel(base, options));
@@ -1335,7 +1348,7 @@ async function runAgentLoop(
         calls.map((call) => ({ call, started: 0, result: null, elapsedMs: 0 }));
       const runSlot = async (slot: (typeof slots)[number]): Promise<void> => {
         slot.started = Date.now();
-        slot.result = await executeTool(slot.call.name, slot.call.args, context);
+        slot.result = await executeTool(slot.call.name, slot.call.args, context, turnTools);
         slot.elapsedMs = Date.now() - slot.started;
       };
       if (shouldYield()) return "";
@@ -1376,9 +1389,13 @@ async function runAgentLoop(
         console.log(`[agent] 工具 ${call.name} → ${result.ok ? "ok" : `失败：${result.error}`}`);
         // 回传模型的那份结果与存档的那份必须是**同一个字符串**：历史回放时逐字复现，
         // 两次各自截断一次就会出现「上一轮看到 4000 字、下一轮回放成 8000 字」的错位。
-        const toolResultText = capToolResult(result.ok ? result.result : { error: result.error }, call.name);
-        // 工具自报的业务失败也要在卡片上显成失败；模型那边仍拿完整的 {ok:false,error} 去重试。
-        const softError = result.ok ? softToolFailure(result.result) : null;
+        // executeTool 已把四种历史返回形状归一成 ToolResult：result 永远是完整载荷
+        //（失败时仍带 hint / candidates），ok 只是卡片与日志的判别位。
+        const toolResultText = capToolResult(
+          result.result,
+          call.name,
+          turnTools.find((t) => t.name === call.name)?.resultBudget,
+        );
         // 工具卡实时落库：界面能"看见联系人在查"，过程不再是黑箱。
         // kind=tool 的行不进 recentMessages（正文回放用它），但工具往返靠这几列单独取——
         // 历史里要让模型看见真正的 assistant.tool_calls + tool 结果，而不是一句正文占位符。
@@ -1394,10 +1411,8 @@ async function runAgentLoop(
           conversationId,
           text: JSON.stringify({
             tool: call.name,
-            ok: result.ok && softError === null,
-            summary: softError !== null
-              ? cardFailureSummary(softError)
-              : (result.ok ? toolSummary(call.name, result.result) : cardFailureSummary(String(result.error || "执行失败"))),
+            ok: result.ok,
+            summary: result.ok ? toolSummary(call.name, result.result) : cardFailureSummary(result.error ?? "执行失败"),
             elapsedMs: slot.elapsedMs,
           }),
           toolDetail: result.ok ? (toolDetail(call.name, result.result) || null) : null,
@@ -2031,7 +2046,7 @@ export async function respondToTurn(
       // 记忆提取是历史行为、默认开（仅用户主动关才停）：
       // 关掉后记忆库停止生长，温度计随对话的刷新（withBond）也随它停。
       if (feat?.memoryExtract !== false) {
-        void extractMemories({
+        const extractInput = {
           turnId: turn.id,
           userText: turn.text,
           assistantText: reply,
@@ -2044,7 +2059,24 @@ export async function respondToTurn(
           conversationTitle: conversation?.title,
           senderName: triggerSender?.sender_name ?? undefined,
           sourceMessageId: turn.trigger_message_id ?? undefined,
-        }).catch((error: unknown) => recordExtractFailure(error, contactId));
+        };
+        // 记忆抽取失败时重试 2 次（间隔 1s、2s），仍失败才记入失败计数。
+        // 对陪伴型应用，记忆是核心资产，一次网络抖动不该让记忆永久丢失。
+        void (async () => {
+          for (let attempt = 0; attempt < 3; attempt += 1) {
+            try {
+              await extractMemories(extractInput);
+              return;
+            } catch (error) {
+              if (attempt < 2) {
+                // 等待 1s、2s 后重试
+                await new Promise((resolve) => setTimeout(resolve, 1000 * (attempt + 1)));
+                continue;
+              }
+              recordExtractFailure(error, contactId);
+            }
+          }
+        })();
       }
 
       // 窗口边缘梗概：本轮真正没带上的那些旧对话，攒够一批就压进「上次说到」。

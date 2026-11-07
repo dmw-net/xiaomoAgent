@@ -45,10 +45,17 @@ const cases = [
     expect: (out) => out.includes("/^```(?:json)?") && out.includes('let after="x"') && out.includes('xm("'),
   },
   {
-    name: "插值里嵌模板 → 整条不编辑但必须正确跳过",
+    name: "插值里嵌模板 → 内层模板的静态段必须编码（门 E 同款漏编）",
     src: "let a=`外层 ${`" + LONG + "`} 尾巴`;let b=1;",
-    expectCount: 0,
-    expect: (out) => out.includes("let b=1;") && out.includes("外层"),
+    expectCount: 1,
+    expect: (out) => out.includes("let b=1;") && out.includes("外层") &&
+      !out.includes(LONG) && out.includes('xm("'),
+  },
+  {
+    name: "短静态段 + 插值内长引号串 → 必须编码插值里的串",
+    src: "let a=`  主动性：${x ? \"开（节奏由联系人自己定，到点由闹钟唤醒）\" : \"关闭\"}`;",
+    expectCount: 1,
+    expect: (out) => !out.includes("开（节奏由联系人自己定") && out.includes('xm("'),
   },
   {
     name: "对象键位置的长中文不碰（换成调用是语法错误）",

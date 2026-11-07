@@ -19,6 +19,7 @@ import { routes as diagnosticsRoutes } from "./routes/diagnostics.ts";
 import { outboundRoutes } from "./routes/outbound.ts";
 import { routes as skillsRoutes } from "./routes/skills.ts";
 import { routes as extensionsRoutes } from "./routes/extensions.ts";
+import { toolsRoutes } from "./routes/tools.ts";
 import { routes as assetsRoutes } from "./routes/assets.ts";
 import { routes as contentRoutes } from "./routes/content.ts";
 import { routes as modelRoutes } from "./routes/model.ts";
@@ -90,6 +91,8 @@ export const ROUTES: Route[] = [
   // 用户自定义技能 / 扩展（保留字顺序在表内已固定）
   ...skillsRoutes,
   ...extensionsRoutes,
+  // 工具台账：目录与全局开关（路径是固定字面量，不会吃扩展的 <id> 通配）
+  ...toolsRoutes,
   // 资产：一个页面要的全部（视角是参数）
   ...assetsRoutes,
   // 联系人的画 + 内容库

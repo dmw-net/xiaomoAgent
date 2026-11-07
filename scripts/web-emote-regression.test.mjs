@@ -58,10 +58,12 @@ if (PHASE === "1") {
       JSON.stringify({ url: "https://example.com/a.gif" }),
       { contactId: "web-emote-test", conversationId: conv.id, turnId: null },
     );
-    // executeTool 对未抛异常的工具调用外层恒 ok:true，业务结果在 result 里。
-    assert.strictEqual(r3.ok, true, "工具调用本身成功执行");
-    assert.strictEqual(r3.result.ok, false, "http 外链在应用端应被拒：" + JSON.stringify(r3));
+    // 工具契约统一后，业务软失败也归一化成外层 ok:false（卡片不再打绿勾）；
+    // result 仍是完整载荷，模型照旧拿得到 {ok:false,error} 去改给 /media。
+    assert.strictEqual(r3.ok, false, "http 外链在应用端应被拒，外层也判失败：" + JSON.stringify(r3));
+    assert.strictEqual(r3.result.ok, false, "载荷保留业务失败形状");
     assert.match(String(r3.result.error), /(应用端|\/media)/, "拒因点明换成 /media");
+    assert.match(String(r3.error), /(应用端|\/media)/, "卡片拿到同一句人话错误");
 
     console.log("表情渠道分流（应用端 web）：全部通过");
   };

@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { db, kvGet, kvSet, withTx } from "../core/db.ts";
 import { emptyMediaTrash, listMediaUrls, mediaUrlExists, releaseMediaFiles } from "../media/media.ts";
 import { globalEmoteFrequency, sanitizeCharacter, defaultPersona, type CharacterCard, type EmoteFrequency } from "../settings/settings.ts";
+import { isToolPresetChoice, type ToolPresetChoice } from "../mind/tool-catalog.ts";
 
 export const DEFAULT_CONTACT_ID = "default";
 /** 内置设置助手的保留联系人 id（实现在 assistant.ts；放这里是为了归档保护不绕圈）。 */
@@ -134,6 +135,12 @@ export type CompanionFeatures = {
   lastConsolidatedAt: number | null;
   /** 整理失败后的退避截止时间：单独一个键，免得把"上次整理时间"改成没发生过的值。 */
   consolidateRetryAt: number | null;
+  /**
+   * 工具档位：follow = 跟随全局档（新建联系人的默认）；四档之一 = 这一位单独指定；
+   * custom = 沿用下面那六个逐项开关（存量联系人升级时的默认，配置一个不丢）。
+   * 档位是上限：显式 false 的逐项开关还能更严，显式 true 不能越过档位放开。
+   */
+  toolPreset: ToolPresetChoice;
 };
 
 export const FEATURE_DEFAULTS: CompanionFeatures = {
@@ -160,6 +167,7 @@ export const FEATURE_DEFAULTS: CompanionFeatures = {
   schedule: "",
   lastConsolidatedAt: null,
   consolidateRetryAt: null,
+  toolPreset: "follow",
 };
 
 /** 关系温度计（阶段 / 亲密度 / 情绪三段）。空 stage = 还没建立。 */
@@ -197,7 +205,37 @@ export function sanitizeFeatures(input: unknown): CompanionFeatures {
   out.lastConsolidatedAt = Number.isFinite(at) && at > 0 ? Math.trunc(at) : null;
   const retry = Number(src.consolidateRetryAt);
   out.consolidateRetryAt = Number.isFinite(retry) && retry > 0 ? Math.trunc(retry) : null;
+  out.toolPreset = isToolPresetChoice(src.toolPreset) ? src.toolPreset : "follow";
   return out;
+}
+
+/**
+ * 存量联系人升级到「档位」模型时的一次性迁移。
+ *
+ * 旧配置是六个逐项开关的任意组合，不一定对得上任何一档。强行映射到最近的档，
+ * 等于替用户把某个工具从关翻成开（联网、出图尤其危险），所以统统标成 custom：
+ * 继续按原来的逐项开关跑，界面上显示「沿用旧设置」，用户想统一时自己点「跟随全局」。
+ * 新建联系人不受影响，默认 follow。
+ */
+export function migrateToolPresets(): number {
+  const KV = "contacts.migrated.toolPreset";
+  if (kvGet(KV) !== null) return 0;
+  const rows = db.prepare("SELECT id, features FROM contacts").all() as Array<{ id: string; features: string | null }>;
+  let changed = 0;
+  for (const row of rows) {
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = row.features ? (JSON.parse(row.features) as Record<string, unknown>) : {};
+    } catch {
+      continue;
+    }
+    if (isToolPresetChoice(parsed.toolPreset)) continue;
+    parsed.toolPreset = "custom";
+    db.prepare("UPDATE contacts SET features = ? WHERE id = ?").run(JSON.stringify(parsed), row.id);
+    changed += 1;
+  }
+  kvSet(KV, "1");
+  return changed;
 }
 
 export function sanitizeBond(input: unknown): BondState {
@@ -488,8 +526,24 @@ export function updateContact(
       : Math.min(MAX_TURNS, Math.max(0, Math.trunc(Number(patch.recentTurns) || 0))))
     : existing.recent_turns;
   const gender = patch.gender !== undefined ? normalizeGender(patch.gender) : existing.gender;
+  // 动了逐项工具开关 = 这位联系人要自定义组合，自动落到 custom 档。
+  // 少了这一步，用户在「均衡」档里把联网关掉会被档位重新打开——开关看起来生效了，
+  // 下一轮又被覆盖，是最难查的那种"设置没用"。显式传了 toolPreset 时以传入为准。
+  const TOOL_SWITCH_KEYS = ["tools", "clock", "memorySearch", "reminders", "imageGen", "voice", "web"] as const;
+  // 资料页保存时会整体回传 features（所有键都在），所以「字段存在」不是改动信号：
+  // 按值是否真的变了判断，否则每保存一次都会把用户选的档位悄悄改回 custom。
+  const featurePatch = patch.features;
+  const touchedSwitches = featurePatch !== undefined
+    && featurePatch.toolPreset === undefined
+    && TOOL_SWITCH_KEYS.some((key) =>
+      Object.prototype.hasOwnProperty.call(featurePatch, key)
+      && featurePatch[key] !== existing.features[key]);
   const features = patch.features !== undefined
-    ? sanitizeFeatures({ ...existing.features, ...patch.features })
+    ? sanitizeFeatures({
+        ...existing.features,
+        ...patch.features,
+        ...(touchedSwitches && patch.features.toolPreset === undefined ? { toolPreset: "custom" as const } : {}),
+      })
     : existing.features;
   const lifeline = patch.lifeline !== undefined ? patch.lifeline.trim().slice(0, 800) : existing.lifeline;
   const recap = patch.recap !== undefined ? patch.recap.trim().slice(0, 200) : existing.recap;

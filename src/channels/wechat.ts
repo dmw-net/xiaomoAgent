@@ -14,7 +14,7 @@
 // 这里只管 iLink 自己的报文与状态机。
 
 import { randomBytes } from "node:crypto";
-import { kvGet, kvSet } from "../core/db.ts";
+import { kvGet, kvSet, kvSwap } from "../core/db.ts";
 import { getTurn } from "../chat/turn-store.ts";
 import { getChannel } from "./types.ts";
 import { getContact } from "../chat/contacts.ts";
@@ -75,7 +75,9 @@ type PublicWeChatLink = Omit<WeChatLink, "baseUrl" | "cursor" | "recentMessageId
 type StoredLink = WeChatLink & { token: string; contextToken: string };
 
 type Store = {
-  version: 1;
+  /** 落库格式版本：每次写回 +1，用来判断「库里的东西是不是我读到的那一份」（乐观锁）。
+   *  早先写成字面量 1（那时只在初始化时写一次），加了自增后必须放开成 number。 */
+  version: number;
   links: StoredLink[];
 };
 
@@ -99,7 +101,21 @@ type TypingSession = {
   keepalive: ReturnType<typeof setInterval> | null;
 };
 
-const emptyStore = (): Store => ({ version: 1, links: [] });
+/** 从落库原文里取版本号：没有这个字段/解析不出就当 0（老库没有版本号）。
+ *  只用来决定下一条原文写几，不做「谁更新」的判断——那是 CAS 的事。 */
+function versionOf(raw: string | null): number {
+  if (raw === null || raw === "") return 0;
+  try {
+    const parsed = JSON.parse(raw) as { version?: unknown };
+    return typeof parsed.version === "number" && Number.isFinite(parsed.version) ? parsed.version : 0;
+  } catch {
+    return 0;
+  }
+}
+
+/** 把行集合拍成「id → JSON」快照：用来判断某行有没有被本进程改过。 */
+const snapshotOf = (rows: Map<string, StoredLink>): Map<string, string> =>
+  new Map([...rows].map(([id, row]) => [id, JSON.stringify(row)]));
 
 /** 本地 id：6 字节随机十六进制，够短也够不撞（同库里最多几十条）。 */
 const newId = (): string => randomBytes(6).toString("hex");
@@ -159,28 +175,48 @@ function parseLinks(raw: string | null, limit: number): Map<string, StoredLink> 
  *   · 别人绑的 → 下一次对齐就能看见，收件循环跟着起来；
  *   · 我们改的 → 不会被别人的旧副本盖回去；
  *   · 我们删的 → 不会因为库里还有就复活（墓碑）。
+ *
+ * 导出给并发回归：合并规则与 CAS 语义值得单独钉住（scripts/wechat-links-cas.test.mjs）。
  */
-class LinkTable {
+export class LinkTable {
   private rows: StoredLink[] = [];
+  /**
+   * 库里那份的样子（JSON 快照），**只记库里的值、不记本地改动**：跟它不一样的行
+   * 就是本进程改过/新增的，重新对齐时由本地版盖上去。
+   *
+   * 为什么不像早先那样在 absorb 里把合并结果写回基线：写回撞车后要重读，若上一次
+   * absorb 已经把自己还没落库的改动记成「基线」，重读就会把它当成「库里的旧值」磨掉。
+   * 另外也不能只靠 keep/drop 打标记——调用方大量是拿到行对象后**原地改字段**再 save
+   * （link.contextToken = ...），标记法看不见这种改动。
+   */
   private synced = new Map<string, string>();
   private tombstones = new Set<string>();
   private opened = false;
   private readonly read: () => string | null;
   private readonly write: (value: string) => void;
+  /**
+   * 原子「比较并交换」：库里的值仍是我读到的那一份时才写入。
+   * 不传就退化成「先读后写」，只适合单进程（内存实现/测试）；真库一定要接上。
+   */
+  private readonly cas?: (expected: string | null, value: string) => boolean;
   private readonly limit: number;
 
-  constructor(options: { read: () => string | null; write: (value: string) => void; limit: number }) {
+  constructor(options: {
+    read: () => string | null;
+    write: (value: string) => void;
+    cas?: (expected: string | null, value: string) => boolean;
+    limit: number;
+  }) {
     this.read = options.read;
     this.write = options.write;
+    this.cas = options.cas;
     this.limit = options.limit;
   }
 
-  /** 首次读库；此后的重新读只发生在 merge。 */
+  /** 首次读库；此后的重新读只发生在 merge / save。 */
   open(): void {
     if (this.opened) return;
-    const incoming = parseLinks(this.read(), this.limit);
-    this.rows = [...incoming.values()];
-    this.markSynced(incoming);
+    this.absorb(this.read());
     this.opened = true;
   }
 
@@ -203,6 +239,7 @@ class LinkTable {
     this.open();
     this.rows = [...this.rows.filter((existing) => existing.id !== row.id), row];
     if (this.rows.length > this.limit) this.rows = this.rows.slice(-this.limit);
+    this.tombstones.delete(row.id); // 删了又绑回来：墓碑必须让路
   }
 
   drop(id: string): void {
@@ -223,33 +260,77 @@ class LinkTable {
   /** 只对齐不写：让别的窗口刚刷新的凭证立刻对投递可见。 */
   merge(): void {
     this.open();
-    const merged = parseLinks(this.read(), this.limit);
+    this.absorb(this.read());
+  }
+
+  /**
+   * 对齐 + 写回；这次删除已经落库，墓碑可以清掉。
+   *
+   * 并发：从「读」到「写」之间，另一个窗口可能刚改过库（它自己的扫码、删除）。
+   * 所以写回是**带上读到的原文做的条件写**——原文没变才落盘；变了就重读、重新合并、再试一次。
+   * 两次都撞上就退回整包覆盖并留一行 warn：宁可让最后一手生效，也不能把正在回复的消息卡死。
+   */
+  save(): void {
+    this.open();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const raw = this.read();
+      this.absorb(raw);
+      if (this.commit(raw)) return;
+    }
+    console.warn("[wechat] 绑定表连续两次被其他窗口改写，按最后一次读到的版本覆盖写入");
+    this.forceWrite(this.read());
+  }
+
+  /** 出厂重置：不读库（当前视图当全部），但版本号仍然向前走——退回 1 会让另一个窗口的旧副本显得更新。 */
+  reset(): void {
+    this.rows = [];
+    this.synced.clear();
+    this.tombstones.clear();
+    this.opened = true;
+    this.forceWrite(this.read());
+  }
+
+  /** 以库为准重算视图：库里的行 + 本进程改过/新增的行 − 墓碑。 */
+  private absorb(raw: string | null): void {
+    const fromDb = parseLinks(raw, this.limit);
+    const merged = new Map(fromDb);
     for (const row of this.rows) {
+      // 基线是「库里的那份」：对不上就是本进程改过（含原地改字段），本地版优先。
       if (this.synced.get(row.id) !== JSON.stringify(row)) merged.set(row.id, row);
     }
     for (const id of this.tombstones) merged.delete(id);
     this.rows = [...merged.values()].slice(0, this.limit);
-    this.markSynced(merged);
+    this.synced = snapshotOf(fromDb);
   }
 
-  /** 对齐 + 写回；这次删除已经落库，墓碑可以清掉。 */
-  save(): void {
-    this.merge();
-    this.write(JSON.stringify({ version: 1, links: this.rows } as Store));
+  /** 组装落库原文。版本号只负责「向前走」，冲突由 CAS 发现，不靠数字比大小。 */
+  private snapshot(raw: string | null): string {
+    const store: Store = { version: versionOf(raw) + 1, links: this.rows };
+    return JSON.stringify(store);
+  }
+
+  /** 条件写：成功返回 true。没接 cas（单进程实现）就退化成普通写。 */
+  private commit(raw: string | null): boolean {
+    const next = this.snapshot(raw);
+    if (this.cas) {
+      if (!this.cas(raw, next)) return false;
+    } else {
+      this.write(next);
+    }
+    this.markPersisted();
+    return true;
+  }
+
+  /** 不比对、直接覆盖（重置与连续撞车后的兜底，都是「这一手必须生效」的场合）。 */
+  private forceWrite(raw: string | null): void {
+    this.write(this.snapshot(raw));
+    this.markPersisted();
+  }
+
+  /** 写入成功后：库里的就是现在这份视图，基线跟上，墓碑清掉。 */
+  private markPersisted(): void {
+    this.synced = snapshotOf(new Map(this.rows.map((row) => [row.id, row])));
     this.tombstones.clear();
-  }
-
-  /** 出厂重置：不读库，把当前视图当成全部。 */
-  reset(): void {
-    this.rows = [];
-    this.markSynced(new Map());
-    this.tombstones.clear();
-    this.opened = true;
-    this.write(JSON.stringify(emptyStore()));
-  }
-
-  private markSynced(rows: Map<string, StoredLink>): void {
-    this.synced = new Map([...rows].map(([id, row]) => [id, JSON.stringify(row)]));
   }
 }
 
@@ -260,6 +341,8 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
   const links = new LinkTable({
     read: () => kvGet(KV_LINKS),
     write: (value) => kvSet(KV_LINKS, value),
+    // 两个窗口共用一个库：写回必须是条件写，否则会把对方刚扫进来/刚删掉的那条盖回去。
+    cas: (expected, value) => kvSwap(KV_LINKS, expected, value),
     limit: LINK_CAP,
   });
 

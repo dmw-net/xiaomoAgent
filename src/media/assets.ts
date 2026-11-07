@@ -249,6 +249,56 @@ export function findEmoteAssetByHash(hash: string, exceptUrl: string): AssetRow 
   return row === undefined ? null : rowToAsset(row);
 }
 
+/**
+ * 按内容哈希找回一个还在盘上的资产（不限表情）。
+ *
+ * 头像那条链每取一次都会落成一个**新文件名**，按 URL 去重一个也挡不住；只有内容指纹
+ * 认得出「这还是那张」。命中后调用方应当复用它、把刚下载的那份释放掉，
+ * 否则每打开一次资料页就在媒体目录里多一份副本。
+ */
+export function findAssetByHash(hash: string, exceptUrl: string): AssetRow | null {
+  if (hash === "") return null;
+  const row = db.prepare(
+    "SELECT * FROM assets WHERE hash = ? AND missing = 0 AND url <> ? ORDER BY created_at ASC LIMIT 1",
+  ).get(hash, exceptUrl) as Record<string, unknown> | undefined;
+  return row === undefined ? null : rowToAsset(row);
+}
+
+/**
+ * 按来源凭据找回已入库的那一份（例：`qq:123456` 那次抓下来的头像）。
+ * 命中时调用方连网络都不必走——这也是「同一个号取 N 次只该有一个文件」的第一道闸。
+ *
+ * 取**最新**的一条：来源凭据的语义是「这个来源现在长什么样」。旧的那份本该由
+ * `releaseAssetOriginRef` 在换图时让位；万一库里还留着历史重复行（升级前抓的），
+ * 也必须是新的赢——按 created_at ASC 取会一直把旧头像还回去，用户改了头像却看不见。
+ */
+export function findAssetByOriginRef(originRef: string): AssetRow | null {
+  if (originRef === "") return null;
+  const row = db.prepare(
+    // rowid 做第二排序键：同一毫秒内抓下来的两份 created_at 会完全相等，不加这一层就随 SQLite 心情。
+    "SELECT * FROM assets WHERE origin_ref = ? AND missing = 0 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+  ).get(originRef) as Record<string, unknown> | undefined;
+  return row === undefined ? null : rowToAsset(row);
+}
+
+/**
+ * 让出某个来源凭据：除了 exceptUrl 之外，其它登记着同一来源的行都清空它。
+ *
+ * 只在「这个来源的东西变了」时调用（QQ 那边换了头像）：新文件认领凭据之前，旧的先交出来。
+ * 不清的话库里会有两行都写着 `qq:<号>`，按凭据查到的永远是其中一行——
+ * 用户明明刷新过，下次进资料页看到的又是旧头像。
+ * 旧文件本身不动：可能还有联系人的头像指着它，该不该删由引用检查说了算。
+ *
+ * 返回让位的行数（正常情况下是 0 或 1）。
+ */
+export function releaseAssetOriginRef(originRef: string, exceptUrl: string): number {
+  if (originRef === "") return 0;
+  const result = db.prepare(
+    "UPDATE assets SET origin_ref = '', updated_at = ? WHERE origin_ref = ? AND url <> ?",
+  ).run(Date.now(), originRef, exceptUrl);
+  return Number(result.changes);
+}
+
 /** 内容哈希：去重、渠道凭证缓存、跨源比对都靠它，所以只在真正需要时算（读一次文件）。 */
 export function contentHash(buffer: Buffer): string {
   return createHash("md5").update(buffer).digest("hex");

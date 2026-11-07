@@ -1,4 +1,4 @@
-import { cq, deleteJson, getJson, postJson, putJson } from "./client";
+import { cq, deleteJson, getJson, postJson, putJson, LONG_TASK_TIMEOUT_MS } from "./client";
 import type { ContextUsage, MessageAttachmentMeta, MessageRow, ThinkingControl, ThinkingQuickChoice, TurnRow } from "../types";
 
 /** 联系人作用域 + 可选会话作用域；会话 id 为空时走服务端本地默认会话。 */
@@ -93,7 +93,7 @@ export function say(text: string, attachments?: string[], cid?: string, clientId
     ...(attachments && attachments.length ? { attachments } : {}),
     ...(attachmentMeta && attachmentMeta.length ? { attachmentMeta } : {}),
     ...(clientId ? { clientId } : {}),
-  });
+  }, LONG_TASK_TIMEOUT_MS);
 }
 
 /** 上传一张图片（二进制直传），返回 /media URL。 */
@@ -122,12 +122,12 @@ export async function uploadVoice(blob: Blob): Promise<{ url: string; mime: stri
 
 /** 录音 dataURL → 文字。 */
 export function transcribe(audioDataUrl: string): Promise<{ text: string }> {
-  return postJson("/api/asr", { audio: audioDataUrl });
+  return postJson("/api/asr", { audio: audioDataUrl }, LONG_TASK_TIMEOUT_MS);
 }
 
 /** 文本 → mp3 dataURL（语音合成）。 */
 export function synthesize(text: string): Promise<{ dataUrl: string }> {
-  return postJson("/api/tts", { text });
+  return postJson("/api/tts", { text }, LONG_TASK_TIMEOUT_MS);
 }
 
 /** 编辑自己说过的话：从这句重新开始，立刻返回 turnId。

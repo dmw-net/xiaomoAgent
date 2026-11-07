@@ -107,7 +107,7 @@ function groupLabel(group: SettingsGroup): string {
  * 桌面端是一张“设置地图”：左侧搜索 + 可自解释的分类导航，右侧只呈现一个任务域。
  * 手机端先看分类总览，再进入单项，避免把五组内容排成一条无限长表单。
  */
-export default function SettingsView({ onChanged, initialTab, navSeq = 0, revealAdvanced, onOwnerAvatar}: {
+export default function SettingsView({ onChanged, initialTab, navSeq = 0, revealAdvanced, onOwnerAvatar, loadError, onRetryLoad }: {
   onChanged: () => void;
   initialTab?: SettingsTab;
   /** 导航意图序号：同目的地再次跳转（点头像回「我的资料」）也要生效，光靠 initialTab 相等不行。 */
@@ -115,6 +115,10 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
   /** 外部（上下文提示「去设置」）要求展开模型档的高级参数。 */
   revealAdvanced?: boolean;
   onOwnerAvatar: (dataUrl: string) => void;
+  /** 设置加载失败时的错误提示（null = 无错误）。 */
+  loadError?: string | null;
+  /** 重试加载设置的回调。 */
+  onRetryLoad?: () => void;
 }): JSX.Element {
   const form = useSettingsForm(onChanged);
   const narrow = useNarrow();
@@ -187,12 +191,16 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
     setPendingAnchor(entry.anchor);
   };
 
-  if (form.loadErr) return (
+  // 优先显示 App 层传入的加载错误（初始读取失败），再显示 form 层的错误（保存后重新加载失败）
+  const effectiveLoadError = loadError ?? form.loadErr;
+  const effectiveRetry = loadError ? onRetryLoad : form.reload;
+
+  if (effectiveLoadError) return (
     <div id="settings" ref={rootRef}>
       <div className="head-row"><div className="t"><h1>设置</h1></div></div>
       <div className="banner show bad" role="alert"><div className="body">
-        设置没读出来：{form.loadErr}{" "}
-        <button type="button" className="chip" onClick={form.reload}>重试</button>
+        设置没读出来：{effectiveLoadError}{" "}
+        <button type="button" className="chip" onClick={effectiveRetry}>重试</button>
       </div></div>
     </div>
   );

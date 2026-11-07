@@ -26,6 +26,7 @@ import { db, kvGet, kvSet } from "../core/db.ts";
 import { config } from "../core/config.ts";
 // desktop-prefs 只 import config.ts（不回头碰 settings），所以这里不会成环。
 import { desktopPrefsSnapshot, type DesktopPrefs } from "../core/desktop-prefs.ts";
+import { GLOBAL_TOOL_PRESET_DEFAULT, KNOWN_TOOL_NAMES, isToolPreset, type ToolPreset } from "../mind/tool-catalog.ts";
 
 const KV_MODEL = "settings.model";
 const KV_PERSONA = "settings.persona";
@@ -291,6 +292,70 @@ export function setGlobalEmoteFrequency(value: unknown): void {
   writeJson(KV_EMOTE_FREQUENCY, sanitizeEmoteFrequency(value));
 }
 
+// ── 工具台账的全局状态 ──────────────────────────────────────────
+// 两份状态都在 kv 里、跟着 db 一起备份，与上面表情频率同一套读写纪律。
+// disabledTools 是**上限**：这里关掉，任何联系人档位都开不回来；
+// 助手工具也吃这一份（app_status 除外），由助手控制台逐项管理。
+
+const KV_DISABLED_TOOLS = "agent.disabled_tools";
+const KV_GLOBAL_TOOL_PRESET = "agent.tool_preset";
+/** 工具总闸：二元决策，独立于三档之外。关掉时陪伴侧一个工具都不声明。 */
+const KV_TOOLS_ENABLED = "agent.tools_enabled";
+
+export function globalToolsEnabled(): boolean {
+  const raw = kvGet(KV_TOOLS_ENABLED);
+  if (raw === null) return true;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    return typeof parsed === "boolean" ? parsed : true;
+  } catch {
+    return true;
+  }
+}
+
+export function setGlobalToolsEnabled(value: unknown): void {
+  writeJson(KV_TOOLS_ENABLED, value !== false);
+}
+
+function cleanToolName(value: unknown): string | null {
+  if (typeof value !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value)) return null;
+  // 静态工具必须在目录里；动态扩展名带命名空间前缀，允许但同样限制字符集与长度。
+  return KNOWN_TOOL_NAMES.has(value) || /^(mcp|ext)__/.test(value) ? value : null;
+}
+
+export function globalDisabledTools(): string[] {
+  const raw = kvGet(KV_DISABLED_TOOLS);
+  if (raw === null) return [];
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return [...new Set(parsed.map(cleanToolName).filter((n): n is string => n !== null))];
+  } catch {
+    return [];
+  }
+}
+
+export function setGlobalDisabledTools(value: unknown): void {
+  const list = Array.isArray(value) ? value : [];
+  writeJson(KV_DISABLED_TOOLS, [...new Set(list.map(cleanToolName).filter((n): n is string => n !== null))]);
+}
+
+export function globalToolPreset(): ToolPreset {
+  const raw = kvGet(KV_GLOBAL_TOOL_PRESET);
+  if (raw === null) return GLOBAL_TOOL_PRESET_DEFAULT;
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    // 上一版把「全关」存成过档位 off；现在它由独立总开关表达，这里退回默认档。
+    return isToolPreset(parsed) && parsed !== "off" ? parsed : GLOBAL_TOOL_PRESET_DEFAULT;
+  } catch {
+    return GLOBAL_TOOL_PRESET_DEFAULT;
+  }
+}
+
+export function setGlobalToolPreset(value: unknown): void {
+  writeJson(KV_GLOBAL_TOOL_PRESET, isToolPreset(value) ? value : GLOBAL_TOOL_PRESET_DEFAULT);
+}
+
 /** 界面写进来的值：非整数或越界一律当"没设过"（回默认 5），不悄悄收紧也不悄悄放开。 */
 export function sanitizeToolLoopTurns(value: unknown): number {
   const n = Number(value);
@@ -401,6 +466,12 @@ export type SettingsSnapshot = {
   toolLoopTurnLimits: { min: number; max: number };
   /** 全局表情使用倾向；联系人开启表情工具后，它会被注入系统提示。 */
   emoteFrequency: EmoteFrequency;
+  /** 全局逐项禁用的工具名：台账上的写入点，任何联系人档位都开不回来。 */
+  disabledTools: string[];
+  /** 工具总闸：false = 陪伴侧全关（助手的管理操作不受影响，保留自救入口）。 */
+  toolsEnabled: boolean;
+  /** 全局工具档位；标了「跟随全局」的联系人吃这一档。 */
+  globalToolPreset: ToolPreset;
   /** 哪些字段被用户在应用里改过（界面用来标记"已覆盖"）。 */
   overridden: { model: string[]; persona: string[] };
   /** 收藏的模型配置档（密钥只给掩码；active 指出当前生效是哪一份，null=没在用任何档）。 */
@@ -1330,6 +1401,9 @@ export function settingsSnapshot(): SettingsSnapshot {
     toolLoopTurns: globalToolLoopTurns(),
     toolLoopTurnLimits: TOOL_LOOP_TURN_LIMITS,
     emoteFrequency: globalEmoteFrequency(),
+    disabledTools: globalDisabledTools(),
+    toolsEnabled: globalToolsEnabled(),
+    globalToolPreset: globalToolPreset(),
     overridden: {
       model: Object.keys(storedModel),
       persona: [

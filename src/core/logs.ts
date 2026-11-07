@@ -8,6 +8,7 @@
 
 import { config } from "./config.ts";
 import { db, ensureColumn, kvGet, kvSet } from "./db.ts";
+import { redactSecrets } from "./secrets.ts";
 
 export type ModelCallRow = {
   id: number;
@@ -127,22 +128,14 @@ export function stripInlineDataUrls(json: string): string {
 }
 
 /**
- * 密钥字段一律换成占位——这是 `model_calls` 唯一的脱敏闸门，所有调用方都从这过。
+ * 密钥字段一律换成占位——`model_calls` 的入库闸门，所有调用方都从这过。
+ * 实现已下沉到 core/secrets.ts：工具参数回传用的是同一条字段规则（那边走递归，
+ * 能遮住嵌在 manifest.mcp.headers 里的密钥）。改规则只改一处。
  *
  * 为什么必须在这而不是各调用点：`configure_model` 这类助手工具把 `apiKey` 放在工具参数里，
  * 而工具轮没有正文时 `detail` / `res_full` 会被填成 `工具名(参数原文)`，
- * 于是**用户刚贴的密钥明文落进状态页「调用记录」渲染的那一列**，保留 30 天 / 2 万行。
- * `req_full` 更糟：下一轮回放的 messages 里还带着那份参数，等于把 A 家的 key 发给 B 家服务商。
- * 只靠「不要在回复里复述」这句软指令是挡不住的——它此刻就在模型的上下文窗口里。
- *
- * 顺带遮 `Bearer <token>`：模型偶尔会把请求头回映到回复里，那是服务商报文，拦在入库前。
+ * 于是用户刚贴的密钥明文会落进状态页「调用记录」那一列，保留 30 天 / 2 万行。
  */
-function redactSecrets(text: string): string {
-  return text
-    .replace(/"([A-Za-z_]*(?:api[_-]?key|secret|password|authorization)[A-Za-z_]*)"\s*:\s*"[^"]*"/gi, '"$1":"<已省略>"')
-    .replace(/Bearer\s+[A-Za-z0-9._\-]{8,}/g, "Bearer <已省略>");
-}
-
 export function logModelCall(row: {
   turnId?: string | null;
   purpose: string;

@@ -15,8 +15,10 @@
 //   extensions.allowScripts 锁死；打开它必须走显式确认接口，不能只改前端开关。
 
 import vm from "node:vm";
+import { createHash } from "node:crypto";
 import { kvGet, kvSet } from "../core/db.ts";
 import { McpClient, type McpEndpoint } from "./mcp.ts";
+import { MAX_TOOL_NAME_CHARS, validateToolPool } from "./tool-contract.ts";
 import type { ExtensionDiagnostic, ExtensionSnapshot, ExtensionSnapshotEntry, ExtensionToolKind } from "../../shared/api.ts";
 
 export type { ExtensionDiagnostic, ExtensionSnapshot, ExtensionSnapshotEntry, ExtensionToolKind };
@@ -31,6 +33,10 @@ const MAX_MCP_TOOLS_PER_EXTENSION = 64;
 const MAX_WEBHOOK_TIMEOUT_MS = 60_000;
 const MAX_SCRIPT_TIMEOUT_MS = 10_000;
 const DEFAULT_TOOL_TIMEOUT_MS = 15_000;
+/** MCP 客户端单次请求 10s（mcp.ts 的 REQUEST_TIMEOUT_MS），统一入口留一点余量。 */
+const MCP_TOOL_TIMEOUT_MS = 12_000;
+/** MCP 远端工具名清洗后保留的长度，避免拼接前缀后超过 64 字。 */
+const MAX_MCP_LOCAL_NAME_CHARS = 40;
 
 const EXTENSION_ID = /^[a-z][a-z0-9-]{1,47}$/;
 const TOOL_NAME = /^[a-z][a-z0-9_]{0,39}$/;
@@ -124,10 +130,26 @@ function validateHeaders(raw: unknown, label: string): Record<string, string> {
   return out;
 }
 
+/**
+ * 自定义工具的 schema 在**导入时**就规范化，与内置工具同一套要求。
+ * 从前只检查 `type === "object"`，properties/required 写错照样登记，等模型调用时才炸。
+ */
 function validateParameters(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) throw new Error("parameters 必须是 JSON Schema 对象");
   if (raw.type !== "object") throw new Error("parameters 的 type 必须是 object（工具参数永远是一个对象）");
-  return raw;
+  if (raw.properties !== undefined && !isPlainObject(raw.properties)) throw new Error("parameters.properties 必须是对象");
+  if (raw.required !== undefined && !Array.isArray(raw.required)) throw new Error("parameters.required 必须是数组");
+  const out: Record<string, unknown> = { ...raw, type: "object" };
+  if (out.properties === undefined) out.properties = {}; // 无参数工具，不是「任意对象」
+  if (Array.isArray(out.required)) {
+    const props = out.properties as Record<string, unknown>;
+    const valid = out.required.filter((k): k is string => typeof k === "string" && k in props);
+    if (valid.length !== out.required.length) throw new Error("parameters.required 里有不在 properties 中的字段");
+    out.required = valid;
+  }
+  if (out.additionalProperties === undefined) out.additionalProperties = false;
+  if (JSON.stringify(out).length > 20_000) throw new Error("parameters 超过 20000 字符上限");
+  return out;
 }
 
 function validateHandler(raw: unknown): ExtensionHandler {
@@ -198,9 +220,19 @@ export function validateManifest(raw: unknown): ExtensionManifest {
   return manifest;
 }
 
-/** 把模型声明的参数名空间化，防止与内置工具或别的扩展撞名。 */
+/**
+ * 把模型声明的工具名空间化，防止与内置工具或别的扩展撞名；同时保证最终结果
+ * 满足 OpenAI function.name 的 64 字上限。从前 `ext__<48字id>__<40字name>` 能到 95 字，
+ * 部分服务商收到就直接 400。超长时截短并补一段短哈希，避免两个长名字撞成同一个。
+ */
 export function extensionToolName(extensionId: string, toolName: string, kind: ExtensionToolKind): string {
-  return `${kind === "mcp" ? "mcp" : "ext"}__${extensionId}__${toolName}`;
+  const prefix = `${kind === "mcp" ? "mcp" : "ext"}__${extensionId}__`;
+  if (prefix.length >= MAX_TOOL_NAME_CHARS) return prefix.slice(0, MAX_TOOL_NAME_CHARS);
+  const budget = MAX_TOOL_NAME_CHARS - prefix.length;
+  if (toolName.length <= budget) return prefix + toolName;
+  const hash = createHash("sha256").update(toolName).digest("hex").slice(0, 4);
+  const room = Math.max(1, budget - 5);
+  return `${prefix}${toolName.slice(0, room)}_${hash}`;
 }
 
 function secretInUrlWarning(url: string): ExtensionDiagnostic | null {
@@ -355,7 +387,50 @@ export function snapshot(): ExtensionSnapshot {
 
 // ─── 工具池桥接：把启用中的扩展翻译成 ToolDef ───
 
-type DiscoveredMcpTool = { name: string; description: string; inputSchema: Record<string, unknown> };
+type DiscoveredMcpTool = {
+  /** 清洗后、要拼进 function.name 的本地短名。 */
+  name: string;
+  /** MCP 服务器认识的原名：tools/call 必须用它，清洗过的名字服务器不认。 */
+  remoteName: string;
+  description: string;
+  inputSchema: Record<string, unknown>;
+};
+
+/**
+ * 远端 MCP 工具名不归我们管：可能带点、斜杠、空格甚至中文，而 OpenAI 的
+ * function.name 只收 ^[A-Za-z0-9_-]{1,64}$。原样拼进声明，部分服务商直接 400，
+ * 模型也调不到。这里只改「声明用的名字」，调用仍走 remoteName。
+ */
+function sanitizeMcpToolName(raw: string): string {
+  const cleaned = raw.trim().replace(/[^A-Za-z0-9_-]+/g, "_").replace(/^_+|_+$/g, "");
+  return cleaned === "" ? "" : cleaned.slice(0, MAX_MCP_LOCAL_NAME_CHARS);
+}
+
+/**
+ * inputSchema 也要过一道：MCP 服务端可能给 $ref / oneOf / 顶层非 object，
+ * 或干脆缺 type。缺的补上，明显不合法的（非对象、顶层不是 object、体积失控）
+ * 直接跳过这只手，并在诊断里留痕——宁可少一个工具，也别让整份 tools 声明被拒。
+ */
+function normalizeInputSchema(raw: unknown): Record<string, unknown> | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const schema: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
+  if (schema.type !== undefined && schema.type !== "object") return null;
+  schema.type = "object";
+  if (schema.properties === undefined) schema.properties = {};
+  else if (typeof schema.properties !== "object" || schema.properties === null || Array.isArray(schema.properties)) return null;
+  if (Array.isArray(schema.required)) {
+    const props = schema.properties as Record<string, unknown>;
+    const valid = schema.required.filter((k): k is string => typeof k === "string" && k in props);
+    if (valid.length === 0) delete schema.required;
+    else schema.required = valid;
+  } else if (schema.required !== undefined) {
+    delete schema.required;
+  }
+  try {
+    if (JSON.stringify(schema).length > 20_000) return null;
+  } catch { return null; }
+  return schema;
+}
 
 /**
  * MCP 工具清单的短缓存：一次 tools/list 是一次跨网络往返，不能让每轮对话的
@@ -394,11 +469,31 @@ function cachedMcpTools(extensionId: string): DiscoveredMcpTool[] {
 
 async function refreshMcpTools(id: string, endpoint: McpEndpoint): Promise<DiscoveredMcpTool[]> {
   const discovered = await mcpClientFor(endpoint).listTools();
-  const trimmed = discovered.slice(0, MAX_MCP_TOOLS_PER_EXTENSION).map((t) => ({
-    name: t.name,
-    description: t.description ?? "",
-    inputSchema: t.inputSchema,
-  }));
+  const trimmed: DiscoveredMcpTool[] = [];
+  const used = new Set<string>();
+  for (const t of discovered.slice(0, MAX_MCP_TOOLS_PER_EXTENSION)) {
+    const remoteName = typeof t.name === "string" ? t.name : "";
+    let local = sanitizeMcpToolName(remoteName);
+    if (local === "") continue;
+    // 两个远端名字清洗后可能撞车（a.b 与 a/b 都成 a_b）：给后者加序号，保持一一对应。
+    if (used.has(local)) {
+      let n = 2;
+      while (used.has(`${local}_${n}`)) n += 1;
+      local = `${local}_${n}`;
+    }
+    used.add(local);
+    const inputSchema = normalizeInputSchema(t.inputSchema);
+    if (inputSchema === null) {
+      console.warn(`[extensions] MCP 工具「${remoteName}」的 inputSchema 不是可用的 object schema，已跳过`);
+      continue;
+    }
+    trimmed.push({
+      name: local,
+      remoteName,
+      description: typeof t.description === "string" ? t.description : "",
+      inputSchema,
+    });
+  }
   mcpToolCache.set(id, { at: Date.now(), tools: trimmed });
   return trimmed;
 }
@@ -436,9 +531,11 @@ export function extensionToolDefs(): import("./tools.ts").ToolDef[] {
       for (const discovered of cachedMcpTools(id)) {
         defs.push({
           name: extensionToolName(id, discovered.name, "mcp"),
-          description: discovered.description || discovered.name,
+          description: discovered.description || discovered.remoteName,
           parameters: discovered.inputSchema,
-          execute: async (args) => await mcpResultToText(await mcpClientFor(endpoint).callTool(discovered.name, args)),
+          timeoutMs: MCP_TOOL_TIMEOUT_MS,
+          // 声明名是清洗过的，远端只认原名。
+          execute: async (args) => await mcpResultToText(await mcpClientFor(endpoint).callTool(discovered.remoteName, args)),
         });
       }
     }
@@ -449,13 +546,20 @@ export function extensionToolDefs(): import("./tools.ts").ToolDef[] {
         name,
         description: tool.description,
         parameters: tool.parameters,
+        timeoutMs: tool.handler.timeoutMs + 2_000,
         execute: async (args) => tool.handler.kind === "webhook"
           ? await runWebhook(tool.handler, args)
           : await runScript(tool.handler, args),
       });
     }
   }
-  return defs;
+  // 外来工具也要过同一套机器校验：名字撞车 / 超长 / schema 写坏，宁可当场丢掉并打日志，
+  // 也不要让一份坏声明把整轮对话换成 400。warning（如未设 additionalProperties）不刷屏。
+  const errors = validateToolPool(defs).filter((d) => d.level === "error");
+  if (errors.length === 0) return defs;
+  const bad = new Set(errors.map((d) => d.tool));
+  for (const d of errors) console.warn(`[extensions] 丢弃不合规工具「${d.tool}」：${d.message}`);
+  return defs.filter((t) => !bad.has(t.name));
 }
 
 // ─── 执行体 ───
@@ -468,11 +572,13 @@ async function runWebhook(handler: Extract<ExtensionHandler, { kind: "webhook" }
     signal: AbortSignal.timeout(handler.timeoutMs),
   });
   const text = await response.text();
-  if (!response.ok) return { error: `webhook 返回 HTTP ${response.status}`, body: text.slice(0, 2000) };
+  // 统一带 ok 判别位：从前只回 { error: ... }，工具卡的软失败识别只认 ok === false，
+  // 于是 webhook 报错在界面上是一枚绿勾「执行完成」。
+  if (!response.ok) return { ok: false, error: `webhook 返回 HTTP ${response.status}`, body: text.slice(0, 2000) };
   try {
     return text === "" ? { ok: true } : JSON.parse(text);
   } catch {
-    return { result: text.slice(0, 20_000) };
+    return { ok: true, result: text.slice(0, 20_000) };
   }
 }
 
@@ -507,7 +613,10 @@ function mcpResultToText(result: { content?: Array<{ type?: string; text?: strin
     else parts.push(`[该内容为 ${item?.type ?? "unknown"} 类型，本版本不展示]`);
   }
   const text = parts.join("\n");
-  return result?.isError ? { error: text } : { result: text };
+  // 与 webhook 同一份判别位：isError 不是「返回了一段文本」，是这次调用失败了。
+  return result?.isError
+    ? { ok: false, error: text || "MCP 工具报告失败" }
+    : { ok: true, result: text };
 }
 
 /** 供测试收尾：清空全部模块内缓存（kv 是现读的，不需要清）。 */

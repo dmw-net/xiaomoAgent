@@ -327,9 +327,16 @@ export function planCjkEncoding(src, { minCjk = DEFAULT_MIN_CJK, callName = "xm"
       if (t.end < 0) { i = src.length; continue; }
       if (isTaggedTemplate(src, i)) { i = t.end + 1; continue; }
       const statics = t.chunks.filter((c) => c.contentStart !== undefined);
+      // 值不值得编：静态段**或插值表达式**任一有货。只看静态段会漏掉
+      // `  主动性：${x ? "开（节奏由联系人自己定…）" : "关闭"}` 这种——
+      // 静态段只有 3 个汉字（< minCjk），整条被跳过，插值里 17 汉字的引号串
+      // 就原样留在产物里（实测门 E 揪出过 1 段）。
       const interesting = statics.some((c) => {
         const v = decodeEscapes(src.slice(c.contentStart, c.contentEnd), { template: true });
         return v !== null && countCjk(v) >= minCjk;
+      }) || t.chunks.some((c) => {
+        if (c.start === undefined) return false;
+        return planCjkEncoding(src.slice(c.start, c.end), { minCjk, callName, key }).length > 0;
       });
       if (!interesting) { i = t.end + 1; continue; }
       const pieces = [];

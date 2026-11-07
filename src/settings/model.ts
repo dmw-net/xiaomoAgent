@@ -74,6 +74,12 @@ export type CallOptions = {
    * 调用不传，行为与今天一字不差。界面那一侧拿它当"她正在写的这一句"，见 agent.ts 的 draftWriter。
    */
   onDelta?: (accumulated: string) => void;
+  /**
+   * 内部用：允许这次请求越过档位上的「输出上限」。
+   * 只给截断后扩容那一枪用（见 callModel 的 OUTPUT_TRUNCATED 分支）——
+   * 4k 这种上限对思考模型等于没给，扩到它等于没扩。用户自己填的档位仍管着其余所有请求。
+   */
+  allowAboveOutputCap?: boolean;
 };
 
 /**
@@ -129,6 +135,7 @@ export type ModelErrorCode =
   | "TIMEOUT"
   | "EMPTY_RESPONSE"
   | "OUTPUT_TRUNCATED"
+  | "MODERATION_CUT"
   | "CANCELLED"
   | "UNKNOWN";
 
@@ -282,27 +289,40 @@ function attribution(options: CallOptions): { contactId: string | null; profileI
   return { contactId, profileId: bound !== "" ? bound : activeProfileId() };
 }
 
-/** 日常聊天没填「输出上限」时的兜底回复长度。 */
-const DEFAULT_MAX_TOKENS = 1024;
-
-/** 非聊天用途（识别、整理、主动判断等）没填「输出上限」时的兜底预算。 */
-export const NON_CHAT_DEFAULT_MAX_TOKENS = 16384;
-
 /**
  * max_tokens 的唯一算法：
- * - 档上的「输出上限」(cap) 是硬顶；
- * - 调用方显式传了 maxTokens 就用它（再被 cap 收口）；
- * - 没传时：聊天 → cap（没填 cap 就 1024），非聊天 → 16384（没填 cap 就 16384）。
+ * - 档上填了「输出上限」(cap)：它是硬顶，调用方显式传的 maxTokens 也要被它收口；
+ * - 档上**留空**：返回 undefined = 请求体里整个不带这个字段，交给服务商按上下文窗口决定。
  *
- * 所以调用方**不再各自写死小预算**，统一交给这里：
- * 日常聊天走 cap，非聊天走 16k 兜底；截断时自动扩到 cap 或翻倍（见 OUTPUT_TRUNCATED 重试）。
+ * 留空不再替服务商猜一个数，是刻意的：从前这里兜底 1024（非聊天 16k），
+ * 而思考模型常把这点额度全烧在 reasoning 上，正文一个字都没轮到——
+ * 用户付了一次请求的钱，只换来一句「模型没写完」，而且那个数还挡住了自动扩容
+ * （扩到 cap 又等于没扩）。界面上的「留空=不填」从此和真实请求一致。
  * 两个请求体构造点（attempt / callModelWithTools）都必须走这里。
  */
-function resolveMaxTokens(settings: ModelSettings, options: CallOptions): number {
-  const isChat = options.purpose === "chat";
-  const fallback = isChat ? DEFAULT_MAX_TOKENS : NON_CHAT_DEFAULT_MAX_TOKENS;
-  const cap = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : fallback;
-  return Math.min(options.maxTokens ?? cap, cap);
+function resolveMaxTokens(settings: ModelSettings, options: CallOptions): number | undefined {
+  const cap = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : 0;
+  const asked = options.maxTokens !== undefined && options.maxTokens > 0 ? options.maxTokens : 0;
+  // 扩容那一枪能越过档位上限：否则「扩到 16k」会被 min(16k, 4k) 夹回去，等于没扩。
+  const capped = (value: number): number => (cap > 0 && options.allowAboveOutputCap !== true ? Math.min(value, cap) : value);
+  if (asked > 0) return capped(asked);
+  if (cap > 0) return cap;
+  // 留空本来就不发；只有已知「这一家不收不带 max_tokens 的请求」时才补一个兜底值。
+  return maxTokensRequiredFor(settings) ? MUST_SEND_MAX_TOKENS : undefined;
+}
+
+/**
+ * 「必须带 max_tokens」时的兜底值：16k，不跟着档位上限走。
+ * 4k 这种数对思考模型等于没给——光 reasoning 就能烧掉几千 token，正文一个字都剩不下。
+ * 所以真正需要填一个数的时候（截断后扩容、或端点要求必填），给的必须是能写完的大小。
+ */
+export const MUST_SEND_MAX_TOKENS = 16_384;
+
+/** 已知「不收不带 max_tokens 的请求」的端点（键同 toolsKey：换地址/换模型自然失效）。 */
+const maxTokensRequiredEndpoints = new Set<string>();
+
+function maxTokensRequiredFor(settings: ModelSettings): boolean {
+  return maxTokensRequiredEndpoints.has(toolsKey(settings));
 }
 
 export async function callModel(messages: ChatMessage[], options: CallOptions = {}): Promise<string> {
@@ -330,16 +350,38 @@ export async function callModel(messages: ChatMessage[], options: CallOptions = 
     });
   } catch (error) {
     // 思考模型可能把本次输出额度全花在 reasoning 上，正文一个字都没轮到。
-    // 这不是让用户手动重试的错误：自动扩额度再试一次——
-    // 档上填了「输出上限」就扩到那个硬顶；没填就按当前值翻倍（非聊天兜底 16k，翻倍仍有得吃），
-    // 只重试一次，不会循环。
+    // 扩容目标 16k 起步，不跟着档位上限走：4k 这种上限对思考模型太窄，扩到它等于没扩。
+    // - 档位填得比 16k 大 → 按档位来，用户亲手设的上限说了算；
+    // - 留空（压根没发这个字段）→ 按 16k 试一次，总比再问一遍同样的空手强。
+    // 只在目标确实比这次发出的大时才重发，不会循环。
     if (error instanceof ModelError && error.code === "OUTPUT_TRUNCATED") {
-      const current = resolveMaxTokens(settings, options);
-      const next = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : current * 2;
-      if (next > current) {
-        console.warn(`[model] ${options.purpose ?? "chat"} 的输出被思考用完，自动把上限从 ${current} 提到 ${next} 重试一次`);
-        return await attempt(messages, { ...options, maxTokens: next }, true);
+      const cap = settings.maxOutputTokens > 0 ? settings.maxOutputTokens : 0;
+      const current = resolveMaxTokens(settings, options) ?? 0;
+      const target = Math.max(cap, MUST_SEND_MAX_TOKENS);
+      if (target > current) {
+        console.warn(`[model] ${options.purpose ?? "chat"} 的输出被思考用完（本次 ${current || "未发字段"}），提到 ${target} 重试一次`);
+        try {
+          return await attempt(messages, { ...options, maxTokens: target, allowAboveOutputCap: true }, true);
+        } catch (retryError) {
+          // 扩容这一枪要是被服务商拒了（"max_tokens 太大" / 超窗口），
+          // 「该把上限调大或换模型」的原始截断提示比一句看不懂的 400 有用，别把报错换掉。
+          if (retryError instanceof ModelError && (retryError.code === "BAD_REQUEST" || retryError.code === "CONTEXT_OVERFLOW")) {
+            console.warn(`[model] 扩容到 ${target} 被拒（${retryError.code}），按原始截断错误返回`);
+            throw error;
+          }
+          throw retryError;
+        }
       }
+    }
+    // 少数中转不接受「不带 max_tokens」的请求：补一个兜底值重发，并记住这一家。
+    if (
+      error instanceof ModelError &&
+      error.code === "BAD_REQUEST" &&
+      saysMaxTokensRequired(error.bodyExcerpt)
+    ) {
+      maxTokensRequiredEndpoints.add(toolsKey(settings));
+      console.warn(`[model] 端点要求必须带 max_tokens（${settings.name}），按 ${MUST_SEND_MAX_TOKENS} 重试一次，这一档之后都带上`);
+      return await attempt(messages, { ...options, maxTokens: Math.max(resolveMaxTokens(settings, options) ?? 0, MUST_SEND_MAX_TOKENS) }, true);
     }
     // 兼容重试：有些服务商不接受 max_tokens / temperature，会返回 400，
     // 且错误正文里会点到字段名。命中就去掉这两个字段重试一次。
@@ -668,10 +710,12 @@ async function attempt(
   // 只有要草稿的调用才问服务商要流：抽取/主动性/ping/视觉不传 onDelta，一个字段都不多发。
   const streaming = options.onDelta !== undefined && !streamUnsupportedFor(settings);
 
+  const maxTokens = resolveMaxTokens(settings, options);
   const body: Record<string, unknown> = {
     model: settings.name,
     messages,
-    max_tokens: resolveMaxTokens(settings, options),
+    // 「输出上限」留空时这个字段整个不出现（见 resolveMaxTokens）。
+    ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
     temperature: options.temperature ?? 0.8,
     // 不带 stream_options：实测本机这两家（gemai 网关 / Agnes）流式里默认就带 usage，
     // 而这个字段有些自建网关会当非法参数拒掉。真的遇到"流式里没有 usage"的服务商，
@@ -782,6 +826,24 @@ async function attempt(
         message: truncated
           ? `模型把输出额度用完了（finish_reason=length${budget ? `，${budget}` : ""}）`
           : `模型返回内容为空（HTTP ${response.status}）`,
+        status: response.status,
+        elapsedMs,
+        url,
+        model: settings.name,
+        bodyExcerpt: text.slice(0, 300),
+      });
+      logModelCall({ turnId: options.turnId, purpose, ok: false, code: error.code, status: response.status, model: settings.name, url, elapsedMs, message: error.message, detail: text.slice(0, 500), resFull: text, requestBody: body, contactId: attr.contactId, profileId: attr.profileId });
+      throw error;
+    }
+
+    // 安全/敏感内容拦截：服务商在流式中途以 finish_reason=sensitive / content_filter 截断，
+    // 正文非空但被"掐断"，静默入库会让用户以为答完了。这里视为截断，抛错让调用方提示。
+    const moderationReasons = ["sensitive", "content_filter", "safety"];
+    const moderationReason = moderationReasons.includes(choice?.finish_reason ?? "");
+    if (moderationReason) {
+      const error = new ModelError({
+        code: "MODERATION_CUT",
+        message: `回答被服务商安全策略截断（finish_reason=${choice!.finish_reason}），内容不完整`,
         status: response.status,
         elapsedMs,
         url,
@@ -918,6 +980,7 @@ export function toolsUnsupportedFor(settings: ModelSettings): boolean {
 export function resetToolsUnsupported(): void {
   toolsUnsupportedEndpoints.clear();
   streamUnsupportedEndpoints.clear();
+  maxTokensRequiredEndpoints.clear();
 }
 
 export async function callModelWithTools(
@@ -991,12 +1054,14 @@ async function callModelWithToolsInner(
   let streamStarted = false;
   const streaming = options.onDelta !== undefined && !streamUnsupportedFor(settings);
 
+  const maxTokens = resolveMaxTokens(settings, options);
   const body: Record<string, unknown> = {
     model: settings.name,
     messages,
     tools,
     tool_choice: "auto",
-    max_tokens: resolveMaxTokens(settings, options),
+    // 「输出上限」留空时这个字段整个不出现（见 resolveMaxTokens）。
+    ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
     temperature: options.temperature ?? 0.8,
     ...(streaming ? { stream: true } : {}),
   };
@@ -1194,6 +1259,21 @@ function extractErrorMessage(text: string): string {
   return "";
 }
 
+/**
+ * 这一家是不是在说「必须带 max_tokens」。
+ *
+ * 极少数中转（多见于非 OpenAI 原生协议）不收不带这个字段的请求，直接 400。
+ * 我们默认留空就不发，于是这类端点一开局就撞墙——补一个 16k 重发一次，
+ * 并把这一档记下来（键同 toolsKey），后面每轮都带上，不用每轮白撞一次 400。
+ * 与 saysToolsUnsupported 同理：要求同时命中字段名 + 必填语义，
+ * 光认 "max_tokens" 不行——我们自己的请求体里就带着它。
+ */
+function saysMaxTokensRequired(body: string): boolean {
+  const lower = body.toLowerCase();
+  if (!/max[_\s]?(new_)?tokens/.test(lower)) return false;
+  return /required|must be set|must be provided|missing|not provided|不能为空|必填|未提供|缺失/.test(lower);
+}
+
 function hasUnsupportedParam(body: string): boolean {
   const lower = body.toLowerCase();
   return (
@@ -1258,7 +1338,11 @@ export function friendlyModelError(error: unknown, turnId?: string | null): stri
     case "EMPTY_RESPONSE":
       return `模型返回空内容（HTTP ${error.status}）：可能被内容策略拦了，换个说法再试。${retryHint}`;
     case "OUTPUT_TRUNCATED":
-      return `这次思考时间太长，模型没来得及写完结果。系统已经自动加大输出上限重试过一次；如果仍看到这条，请到「设置 → 模型与能力」把模型档的「输出上限」调大，或换一个思考更快的模型。`;
+      // 不提「已经自动重试过」：档位已经比 16k 大时不会有第二枪（见 callModel 的扩容分支），
+      // 这里只给能改变结果的下一步。
+      return `这次模型把输出额度全花在思考上了，正文还没开始写就到了上限。到「设置 → 模型与能力」把这一档的「输出上限」调到 16k 以上——留空时上限由服务商自己决定，有的给得很小，填上反而更稳；如果已经够大，说明这个模型思考太重，换一个思考更快的模型更划算。`;
+    case "MODERATION_CUT":
+      return `回答被服务商安全策略截断，内容不完整。换个说法重新提问，或换一个内容策略宽松的模型。${retryHint}`;
     default:
       return `发送失败：${error.message}`;
   }

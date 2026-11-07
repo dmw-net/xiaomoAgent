@@ -813,14 +813,15 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   // 不清的话切回对话页，那一整段被清掉的对话会原样重现，新消息还会接在它后面
   // （lastIdRef 也是从那批陈旧行里取的）。
   useEffect(() => {
-    const onWiped = (): void => {
-      msgsSeed.clear();
-      setMsgs([]);
-      lastIdRef.current = 0;
-      pendingsRef.current = [];
-      setPendings([]);
-      setOlderLeft(0);
-    };
+  const onWiped = (): void => {
+    msgsSeed.clear();
+    draftSeed.clear();
+    setMsgs([]);
+    lastIdRef.current = 0;
+    pendingsRef.current = [];
+    setPendings([]);
+    setOlderLeft(0);
+  };
     window.addEventListener(DATA_WIPED_EVENT, onWiped);
     return () => window.removeEventListener(DATA_WIPED_EVENT, onWiped);
   }, []);

@@ -356,11 +356,14 @@ export const WEB_TOOLS: ToolDef[] = [
       "web_search 给出的链接要看细节时调用，或用户直接贴了网址。" +
       "只能读公开的 http/https 页面：读不了需要登录的、本机内网的、以及会一直跳转的地址。" +
       "正文过长会截断，截断时会告诉你截了。",
+    // 声明的上限必须与实际给到模型的预算一致：从前这里写 20000，agent 统一把整份
+    // 结果砍到 4000，模型按一份根本没拿到的资料作答。现在这个工具单独放宽到 12000 字预算。
+    resultBudget: 12_000,
     parameters: {
       type: "object",
       properties: {
         url: { type: "string", description: "完整网址，以 http:// 或 https:// 开头" },
-        max_chars: { type: "number", description: "最多给多少字，默认 6000，上限 20000" },
+        max_chars: { type: "number", description: "最多给多少字，默认 3000，上限 10000", minimum: 500, maximum: 10_000 },
       },
       required: ["url"],
       additionalProperties: false,
@@ -368,7 +371,7 @@ export const WEB_TOOLS: ToolDef[] = [
     execute: async (args) => {
       const url = String(args.url ?? "").trim();
       if (url === "") return { ok: false, error: "url 不能为空" };
-      const maxChars = clamp(Number(args.max_chars ?? 6_000), 500, 20_000);
+      const maxChars = clamp(Number(args.max_chars ?? 3_000), 500, 10_000);
       try {
         const page = await fetchText(url);
         const text = page.text.replace(/\s+/g, " ").trim();

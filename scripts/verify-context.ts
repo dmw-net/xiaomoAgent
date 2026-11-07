@@ -57,14 +57,13 @@ const mockFetch: typeof fetch = async (input: RequestInfo | URL, init?: RequestI
 };
 globalThis.fetch = mockFetch;
 
-const { updateModel, updatePersona } = await import("../src/settings/settings.ts");
+const { updateModel, updatePersona, saveProfile } = await import("../src/settings/settings.ts");
 const { createContact, updateContact, getContact, companionPromptExtras } = await import("../src/chat/contacts.ts");
 const { createTurn, getTurn, insertMessage, contextUsage, recentMessages, respondToTurn, editAndRegenerate, retryTurn } = await import("../src/chat/agent.ts");
 const { listInflightCalls } = await import("../src/core/logs.ts");
 const { addMemoryEvent, deleteMemoryEvent, extractFailures, extractMemories, keywords, listMemoryEventsFiltered, memoryStats, recall, recordExtractFailure } = await import("../src/mind/memory.ts");
 const { maybeRefreshRecap } = await import("../src/chat/recap.ts");
 const { callModelJson } = await import("../src/settings/model.ts");
-const { NON_CHAT_DEFAULT_MAX_TOKENS } = await import("../src/settings/model.ts");
 const { maybeRunConsolidation } = await import("../src/chat/consolidate.ts");
 const { buildSystemPrompt } = await import("../src/mind/persona.ts");
 const { db } = await import("../src/core/db.ts");
@@ -426,9 +425,18 @@ check("空结果进入 emptyRate 统计，而不是失败计数",
   emptyStats.extractSamples >= 2 && emptyStats.emptyRate !== null && emptyStats.emptyRate > 0,
   `samples=${emptyStats.extractSamples} emptyRate=${emptyStats.emptyRate}`);
 
-console.log("\n[16] 非聊天默认 16k、截断自动扩到 cap：保留思考，不手写小预算");
-check("非聊天默认预算给思考和 JSON 留足空间（不再是 400/1200）",
-  NON_CHAT_DEFAULT_MAX_TOKENS >= 16384, `NON_CHAT_DEFAULT_MAX_TOKENS=${NON_CHAT_DEFAULT_MAX_TOKENS}`);
+console.log("\n[16] 输出上限留空=不发 max_tokens；截断扩到 16k 起步；必填端点自动兜底");
+// 留空就是真的不填：请求体里连这个字段都没有，上限交给服务商按窗口决定。
+// 从前这里兜底 1024（非聊天 16k）——思考模型把额度烧光后正文一个字都写不出来，
+// 而那个数又把扩容夹了回去（next 永远 ≤ cap），错误文案却写着「已自动加大重试过」。
+updateModel({ maxOutputTokens: 0 });
+responder = () => json({ should: false, reason: "不必主动", focus: "", nextCheckHours: 6 });
+const noCap = await callModelJson<{ should?: boolean }>([{ role: "user", content: "判断一下" }], { purpose: "proactive" });
+check("留空 → 请求体里没有 max_tokens 这个字段",
+  !("max_tokens" in lastBody) && noCap.should === false,
+  JSON.stringify(Object.keys(lastBody)));
+
+// 档上填了上限、调用方却传了更小的显式预算：这种情况才值得自动扩到档位上限。
 updateModel({ thinkingParam: "templateKw", thinkingMode: "on", maxOutputTokens: 4096 });
 let decideAttempts = 0;
 responder = () => {
@@ -450,13 +458,32 @@ const retryBody = lastBody as {
   max_tokens?: number;
   chat_template_kwargs?: { enable_thinking?: boolean };
 };
-check("思考吃光 400 tokens 后自动扩到 cap(4096) 重试并成功",
+check("思考吃光 400 tokens 后扩到 16k（不跟 4k 的档位上限走）重试并成功",
   decideAttempts === 2 && recoveredDecision.should === false,
   `attempts=${decideAttempts} result=${JSON.stringify(recoveredDecision)}`);
 check("重试仍保持思考开启，用户体验不被偷偷降级",
-  retryBody.max_tokens === 4096 && retryBody.chat_template_kwargs?.enable_thinking === true,
+  retryBody.max_tokens === 16384 && retryBody.chat_template_kwargs?.enable_thinking === true,
   JSON.stringify(retryBody.chat_template_kwargs) + ` max_tokens=${retryBody.max_tokens}`);
 updateModel({ maxOutputTokens: 0, thinkingMode: "", thinkingParam: "effort" });
+
+// 少数中转不收「不带 max_tokens」的请求：自动补 16k 重发一次，并把这一档记下来，
+// 之后留空的请求也会带上——不然每一轮都要白撞一次 400。
+// 假端点按真实行为实现：请求里没有 max_tokens 就 400，有就正常回。
+const requiresMaxTokens = (): MockReply => "max_tokens" in lastBody
+  ? json({ should: false })
+  : { status: 400, body: '{"error":{"message":"max_tokens is required"}}' };
+let requiredHits = 0;
+responder = () => { requiredHits += 1; return requiresMaxTokens(); };
+const requiredOk = await callModelJson<{ should?: boolean }>([{ role: "user", content: "再判断一次" }], { purpose: "proactive" });
+const requiredBody = lastBody as { max_tokens?: number };
+check("端点要求必带 max_tokens → 自动补 16k 重发",
+  requiredHits === 2 && requiredBody.max_tokens === 16384 && requiredOk.should === false,
+  `hits=${requiredHits} max_tokens=${requiredBody.max_tokens}`);
+requiredHits = 0;
+await callModelJson<{ should?: boolean }>([{ role: "user", content: "第三次判断" }], { purpose: "proactive" });
+const rememberedBody = lastBody as { max_tokens?: number };
+check("记住之后留空也带上 16k，不再每轮撞 400",
+  requiredHits === 1 && rememberedBody.max_tokens === 16384, `hits=${requiredHits}`);
 
 console.log("\n[17] 梗概重叠守卫：已原文回放的那段不再重复注入");
 updateContact(cid, { features: { recap: true }, recap: "上次说到：两人约好周三去西湖" });
@@ -471,6 +498,22 @@ check("省略窗口边界时不做这项判断（手写梗概照旧可见）",
   companionPromptExtras(getContact(cid)!).recap.includes("西湖"));
 updateContact(cid, { features: { recap: false } });
 check("开关关掉后整段不出现（不留空壳）", companionPromptExtras(getContact(cid)!, anchor + 9).recap === "");
+
+console.log("\n[18] 圆环点名「按哪一档算的」：同名档很多，界面要能直接落到那一档");
+const boundProfile = saveProfile({ label: "绑定档", baseUrl: "http://fake.test/v1", apiKey: "test-key", name: "bound-model", maxInputTokens: 0 });
+updateContact(cid, { modelProfile: boundProfile.id });
+const boundUsage = contextUsage(cid);
+check("绑定档优先于全局：profile 报的是联系人绑的那一份",
+  boundUsage.profile?.id === boundProfile.id && boundUsage.profile?.label === "绑定档",
+  JSON.stringify(boundUsage.profile));
+check("这一档的输入上限空着 → 分母仍是 32K 兜底（界面据此说出「按 3.2 万估」）",
+  boundUsage.limit === 32_000 && boundUsage.limitIsFallback === true, `${boundUsage.limit}`);
+saveProfile({ id: boundProfile.id, label: "绑定档", maxInputTokens: 131072 });
+const filledUsage = contextUsage(cid);
+check("给它填上 128K → 分母跟着变（不用去动全局那一档）",
+  filledUsage.limit === 131072 && filledUsage.limitIsFallback === false && filledUsage.profile?.id === boundProfile.id,
+  `${filledUsage.limit} fallback=${filledUsage.limitIsFallback}`);
+updateContact(cid, { modelProfile: "" });
 
 console.log(`\n${failures === 0 ? "全部通过 ✅" : `${failures} 项失败 ❌`}`);
 process.exit(failures === 0 ? 0 : 1);

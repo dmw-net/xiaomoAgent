@@ -58,6 +58,10 @@ export default function App(): JSX.Element {
    *  也要生效。initialTab 相同的时候 effect 不会重跑，得靠这个计数器顶它一下。 */
   const [settingsNavSeq, setSettingsNavSeq] = useState(0);
   const [settingsAdvanced, setSettingsAdvanced] = useState(false);
+  /** 标记本次导航已携带设置意图（tab/advanced 已设好），navigateTo 不要覆盖。 */
+  const navIntendsSettingsRef = useRef(false);
+  /** 设置页加载失败时的错误提示（null = 无错误）。 */
+  const [settingsLoadError, setSettingsLoadError] = useState<string | null>(null);
   /** 访问过的顶层视图保留挂载：切走只是 display:none，回来不再重新挂载、拉数据。 */
   const [visitedViews, setVisitedViews] = useState<Set<ViewKey>>(() => new Set([view]));
   /** 窄屏「对话」双页流：list=整屏会话列表，chat=整屏会话（微信手机端点进/返回）。 */
@@ -163,7 +167,25 @@ export default function App(): JSX.Element {
         // 直到用户在收尾那一步按下「开始聊天」。
         if (d.onboardingDone !== true) setOnboarding(true);
       })
-      .catch(() => {});
+      .catch((error: unknown) => {
+        // 设置读取失败时显示轻量提示，而不是静默吞掉——用户需要知道为什么设置页是空的
+        console.error("[app] 设置读取失败：", error);
+        setSettingsLoadError("设置读取失败，点击重试");
+      });
+  }, []);
+
+  const retrySettings = useCallback((): void => {
+    setSettingsLoadError(null);
+    void settingsApi.fetchSettings()
+      .then((d) => {
+        setOwnerName(d.persona?.owner?.name || "");
+        setOwnerAvatar(d.persona?.owner?.avatar || "");
+        if (d.onboardingDone !== true) setOnboarding(true);
+      })
+      .catch((error: unknown) => {
+        console.error("[app] 重试设置读取失败：", error);
+        setSettingsLoadError("设置读取失败，点击重试");
+      });
   }, []);
 
   // 下面这些回调都要进 ChatView / Sidebar 的 props。它们必须是稳定引用：
@@ -207,7 +229,13 @@ export default function App(): JSX.Element {
     if (key === "settings") setSettingsTab("owner");
     // 「展开高级参数」是 openModelSettings 的一次性意图，不是常驻状态。
     // 不复位的话，此后每次进设置页点「主对话模型」都会不请自开编辑弹窗并抢焦点。
-    setSettingsAdvanced(false);
+    // 但 openModelSettings / openSettingsTab 已经设了 tab 和 advanced，不能被这里覆盖。
+    // 用一个 ref 标记「本次导航已携带设置意图」，navigateTo 据此跳过重置。
+    if (!navIntendsSettingsRef.current) {
+      setSettingsAdvanced(false);
+    } else {
+      navIntendsSettingsRef.current = false;
+    }
     navigate(key);
   }, [navigate]);
 
@@ -301,6 +329,7 @@ export default function App(): JSX.Element {
     setSettingsTab("owner");
     setSettingsNavSeq((n) => n + 1);
     setProfile(null);
+    navIntendsSettingsRef.current = true;
     navigate("settings");
   }, [navigate]);
 
@@ -311,6 +340,7 @@ export default function App(): JSX.Element {
     setSettingsAdvanced(true);
     setSettingsNavSeq((n) => n + 1);
     setProfile(null);
+    navIntendsSettingsRef.current = true;
     navigate("settings");
   }, [navigate]);
 
@@ -319,6 +349,7 @@ export default function App(): JSX.Element {
     setSettingsTab(tab);
     setSettingsNavSeq((n) => n + 1);
     setProfile(null);
+    navIntendsSettingsRef.current = true;
     navigate("settings");
   }, [navigate]);
 
@@ -444,7 +475,7 @@ export default function App(): JSX.Element {
         )}
         {(visitedViews.has("settings") || view === "settings") && (
           <div className={"view" + (view === "settings" && !profile ? " active" : "")} id="view-settings">
-            <SettingsView onChanged={refreshContactMeta} initialTab={settingsTab} navSeq={settingsNavSeq} revealAdvanced={settingsAdvanced} onOwnerAvatar={setOwnerAvatar} />
+            <SettingsView onChanged={refreshContactMeta} initialTab={settingsTab} navSeq={settingsNavSeq} revealAdvanced={settingsAdvanced} onOwnerAvatar={setOwnerAvatar} loadError={settingsLoadError} onRetryLoad={retrySettings} />
           </div>
         )}
         {(visitedViews.has("chat") || view === "chat") && (

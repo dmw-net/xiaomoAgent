@@ -44,9 +44,12 @@ console.log("=== 可靠性内核回归测试 ===\n");
   const delay1 = backoffDelay(1);
   const delay2 = backoffDelay(2);
   
-  assert(delay0 >= 500 && delay0 <= 1500, `延迟应在 [500,1500] 区间（attempt=0），实际=${delay0}ms`);
-  assert(delay1 > delay0, `延迟应递增（attempt=1）`);
-  assert(delay2 >= delay1, `延迟应非递减（attempt=2）`);
+  // 抖动是设计的一部分（equal jitter：一半固定 + 一半随机），所以「后一次一定比前一次大」
+  // 并不总是成立——相邻档的抖动区间天生有重叠。真正该钉住的是每一档的区间：
+  // 下界 = capped/2，上界 = capped（randomInt 上界不取），这样重试不会越等越急。
+  assert(delay0 >= 500 && delay0 < 1000, `延迟应在 [500,1000)（attempt=0），实际=${delay0}ms`);
+  assert(delay1 >= 1000 && delay1 < 2000, `延迟应在 [1000,2000)（attempt=1），实际=${delay1}ms`);
+  assert(delay2 >= 1500 && delay2 < 3000, `延迟应在 [1500,3000)（attempt=2），实际=${delay2}ms`);
   
   console.log(`  ✓ 限流错误分类正确，退避曲线 ${delay0}/${delay1}/${delay2}ms\n`);
 }

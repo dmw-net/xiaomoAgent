@@ -195,12 +195,17 @@ export function deliveryAllowed(
 export type DeliveryResult = {
   ok: boolean;
   error: string;
+  /** 已成功发送的段数（失败时可用于断点续发）。 */
+  sentSegments?: number;
 };
 
 /**
  * 一次出站投递的完整流程：分段 → 顺序发送 → 成/败都落到调用方手里。
  * 一段失败就停（后面的段没必要再试），并把第一处错误原样交出去——"哪句话没送出去、为什么"
  * 必须能写进 lastError。这个函数自己不抛错：调用方按通道的规矩决定怎么记账。
+ *
+ * 断点续发：失败时返回 sentSegments（已成功发送的段数），调用方可以据此从断点续发，
+ * 避免重试时重复发送已成功的段。
  */
 export async function deliverOutbound(args: {
   segments: string[];
@@ -210,21 +215,26 @@ export async function deliverOutbound(args: {
   onFailed: (message: string) => void;
   /** raw：发送层挂在错误上的原始响应报文（error.raw），详情弹窗靠它展示"服务商到底回了什么"。 */
   log: (ok: boolean, message: string, elapsedMs: number, raw?: string) => void;
+  /** 从第几段开始发（断点续发用）。默认 0。 */
+  startFrom?: number;
 }): Promise<DeliveryResult> {
-  let sent = 0;
+  let sent = args.startFrom ?? 0;
   try {
-    for (const segment of args.segments) {
+    for (let i = sent; i < args.segments.length; i += 1) {
+      // noUncheckedIndexedAccess 下下标取值是 string | undefined；i 有上界，这里只是把类型收窄。
+      const segment = args.segments[i];
+      if (segment === undefined) continue;
       await args.send(segment, sent);
       sent += 1;
     }
     args.onDelivered();
     args.log(true, "", args.elapsed());
-    return { ok: true, error: "" };
+    return { ok: true, error: "", sentSegments: sent };
   } catch (error) {
     const message = (error instanceof Error ? error.message : String(error)).slice(0, 300);
     const raw = (error as { raw?: unknown }).raw;
     args.onFailed(message);
     args.log(false, message, args.elapsed(), typeof raw === "string" ? raw.slice(0, 2000) : undefined);
-    return { ok: false, error: message };
+    return { ok: false, error: message, sentSegments: sent };
   }
 }

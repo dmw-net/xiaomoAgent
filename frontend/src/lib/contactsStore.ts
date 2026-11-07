@@ -28,7 +28,8 @@ export function isContactsLoaded(): boolean {
 export function subscribeContacts(fn: (contacts: ContactItem[]) => void): () => void {
   listeners.add(fn);
   fn(cache);
-  if (timer === null) {
+  // 引用计数：第一个订阅者启动 timer，最后一个退出时清理
+  if (listeners.size === 1 && timer === null) {
     timer = setInterval(() => {
       // 默认后台不轮询省电；开启系统通知后必须继续看新消息，否则通知永远没有触发源。
       if (!document.hidden || getNotifyPref()) refreshContacts();
@@ -36,6 +37,11 @@ export function subscribeContacts(fn: (contacts: ContactItem[]) => void): () => 
   }
   return (): void => {
     listeners.delete(fn);
+    // 最后一个订阅者退出时清理 timer，避免后台空转
+    if (listeners.size === 0 && timer !== null) {
+      clearInterval(timer);
+      timer = null;
+    }
   };
 }
 

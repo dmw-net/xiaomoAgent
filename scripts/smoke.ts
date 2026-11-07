@@ -1826,10 +1826,42 @@ try {
   check("系统提示词包含时间段语义（不再只是一串数字）", envPrompt.includes("现在是"));
   check("系统提示词包含他最后说话的间隔", envPrompt.includes("10 分钟前说过话"));
 
-  const { executeTool, toolDefsForApi } = await import("../src/mind/tools.ts");
-  check("工具声明符合 OpenAI tools 协议", toolDefsForApi().every(
+  const { executeTool, toolDefsForApi, staticToolPool, toolPoolDiagnostics } = await import("../src/mind/tools.ts");
+  const declared = toolDefsForApi();
+  check("工具声明符合 OpenAI tools 协议", declared.every(
     (d) => d.type === "function" && typeof d.function.name === "string" && typeof d.function.parameters === "object",
   ));
+  // 从前只断言「三个字段存在」，写坏名字 / 撞名 / schema 缺 type 都能绿灯通过。
+  // 现在与启动自检同一套 validator：静态池 0 error，且每个声明名真的合法。
+  const poolErrors = toolPoolDiagnostics().filter((d) => d.level === "error");
+  check("工具池自检 0 error（名称唯一 / 合法 / schema 合规 / 卡片已登记）", poolErrors.length === 0,
+    poolErrors.map((d) => `${d.tool}: ${d.message}`).join(" | "));
+  check("声明出去的名字都满足 ^[A-Za-z0-9_-]{1,64}$",
+    declared.every((d) => /^[A-Za-z0-9_-]{1,64}$/.test(d.function.name)));
+  check("静态工具无重名", new Set(staticToolPool().map((t) => t.name)).size === staticToolPool().length);
+
+  // 工具台账端点：目录、四档、全局开关的写入与恢复（写完必须还原，别污染后面的用例）。
+  const ledger0 = await (await fetch(`${BASE}/api/tools`)).json() as Record<string, any>;
+  check("台账端点下发目录与逐项状态", ledger0.ok === true && Array.isArray(ledger0.tools)
+    && ledger0.tools.length >= 21 && typeof ledger0.status === "object");
+  check("台账端点下发三档、总闸与联系人档位", Array.isArray(ledger0.presets) && ledger0.presets.length === 3
+    && typeof ledger0.toolsEnabled === "boolean" && Array.isArray(ledger0.contacts));
+  const presetBefore = ledger0.globalPreset as string;
+  const disabledBefore = (ledger0.disabledTools ?? []) as string[];
+  const enabledBefore = ledger0.toolsEnabled as boolean;
+  const writeTools = async (payload: unknown): Promise<Record<string, any>> =>
+    (await (await fetch(`${BASE}/api/tools`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(payload),
+    })).json()) as Record<string, any>;
+  const wroteMaster = await writeTools({ toolsEnabled: false });
+  check("总闸关闭（全关）可写入并立刻回读", wroteMaster.toolsEnabled === false
+    && wroteMaster.status.get_current_time === "总闸已关闭");
+  const wroteDisabled = await writeTools({ disabledTools: ["send_voice"] });
+  check("全局逐项禁用可写入并回读", (wroteDisabled.disabledTools as string[]).includes("send_voice"));
+  const restored = await writeTools({ globalPreset: presetBefore, disabledTools: disabledBefore, toolsEnabled: enabledBefore });
+  check("档位、禁用清单与总闸可完整还原", restored.globalPreset === presetBefore
+    && JSON.stringify(restored.disabledTools) === JSON.stringify(disabledBefore)
+    && restored.toolsEnabled === enabledBefore);
 
   const timeTool = await executeTool("get_current_time", "{}", { lastUserAt: Date.now() - 600_000, contactId: "default" });
   check(
@@ -2427,6 +2459,12 @@ try {
     const st = await (await fetch(`${BASE}/api/status?contactId=default`)).json();
     check("状态页负载里的「最近失败」被水印划掉", st.modelFailures === 0 && st.lastModelError === null,
       JSON.stringify({ f: st.modelFailures, e: st.lastModelError }));
+    // 回复任务的失败提醒也吃同一份水印：否则点了「忽略提醒」，那条旧处理单
+    // 失败仍会挂在概览上（历史统计照旧保留，只是不再进提醒条）。
+    check("状态页下发忽略水印，且划得掉此前的回复任务失败",
+      typeof st.failureWatermarkAt === "number" && st.failureWatermarkAt > 0
+        && (st.turns?.lastFailedAt ?? 0) <= st.failureWatermarkAt,
+      JSON.stringify({ w: st.failureWatermarkAt, lastFailedAt: st.turns?.lastFailedAt }));
     // 水印之后的新失败要立刻重新可见，否则"重新计数"会变成"永久掩盖"
     logModelCall({ purpose: "chat", ok: false, code: "SMOKE_FAIL2", elapsedMs: 9, model: "usage-model", message: "冒烟：水印之后又失败一条" });
     check("重新计数之后再失败仍然标得出来", modelFailureCount() === 1 && modelCallWindow(24).fail === 1,
@@ -2526,11 +2564,12 @@ try {
   const updR = await executeTool("update_contact", JSON.stringify({ contact: "助手建的", relationship: "同事" }), A);
   check("update_contact 只改传入字段", updR.ok === true);
   const badTarget = await executeTool("activate_model", JSON.stringify({ model: "不存在的档" }), A);
-  check("找不到目标时返回候选而不是乱选", badTarget.ok === true && (badTarget.result as { ok?: boolean }).ok === false);
+  // 工具契约统一后，业务软失败也归一化成外层 ok:false；result 仍是完整载荷（模型看它）。
+  check("找不到目标时返回候选而不是乱选", badTarget.ok === false && (badTarget.result as { ok?: boolean }).ok === false);
   const crossUse = await executeTool("configure_model", JSON.stringify({ label: "x", baseUrl: "https://a.com/v1", model: "m" }), D);
   check("普通联系人用不了助手工具（未知工具）", crossUse.ok === false);
   const selfBind = await executeTool("bind_contact_model", JSON.stringify({ contact: "assistant", model: "助手配的" }), A);
-  check("助手拒绝改自己的模型绑定", selfBind.ok === true && (selfBind.result as { ok?: boolean }).ok === false);
+  check("助手拒绝改自己的模型绑定", selfBind.ok === false && (selfBind.result as { ok?: boolean }).ok === false);
   const { pinAssistantToActiveProfile, ASSISTANT_CONTACT_ID: ACID } = await import("../src/mind/assistant.ts");
   const { contactModelProfile: cmpA } = await import("../src/chat/contacts.ts");
   pinAssistantToActiveProfile();
@@ -3304,11 +3343,11 @@ try {
       check(`当天计数到达上限 ${IMAGE_DAILY_LIMIT} 张`, imagesToday(cid) === IMAGE_DAILY_LIMIT, String(imagesToday(cid)));
       const hitsAtCap = img.hits;
       const over = await executeTool("generate_image", JSON.stringify({ prompt: "越界的一张" }), ctx);
-      // 与 schedule_reminder 同构的双层结构：外层 ok 只说"执行没炸"，业务成败在 result 里，
-      // 而模型看到的就是 result 那份——所以它知道"今天画满了"并能照常把话接下去。
-      const overInner = over.ok === true ? (over.result as { ok?: boolean; error?: string } | undefined) : undefined;
+      // 业务软失败在统一入口归一化成外层 ok:false，result 仍是完整载荷——
+      // 模型看到的就是 result 那份，所以它知道"今天画满了"并能照常把话接下去。
+      const overInner = over.result as { ok?: boolean; error?: string } | undefined;
       check("超上限是结构化失败而不是抛异常（模型要能知情并继续说话）",
-        overInner?.ok === false && String(overInner?.error ?? "").includes("上限"), JSON.stringify(over));
+        over.ok === false && overInner?.ok === false && String(overInner?.error ?? "").includes("上限"), JSON.stringify(over));
       check("超限那一次根本没出门（闸门排在请求之前，不烧服务商额度）", img.hits === hitsAtCap, `${hitsAtCap} → ${img.hits}`);
 
       // 服务商只给外链（b64_json 是空串）这一种形状——本机对 agnes-image 实测遇到过。
@@ -3584,10 +3623,12 @@ try {
             return;
           }
           const wantsStream = body.stream === true;
-          seenFlags.push(wantsStream ? "true" : "absent");
           const model = String(body.model);
           const afterTool = ((body.messages ?? []) as Array<{ role: string }>).some((m) => m.role === "tool");
           const isExtract = body.tools === undefined;
+          // 只记「聊天」这一路：记忆抽取走的是无 tools 的另一条分支，它本来就不带 stream，
+          // 记进来会让断言窗口和后台抽取的时序纠缠（凭空多出一个 absent，看着像「第二次又问了」）。
+          if (!isExtract) seenFlags.push(wantsStream ? "true" : "absent");
           const put = async (chunk: string): Promise<void> => { res.write(chunk); await nap(model === "mock-long" ? 320 : 100); };
           const whole = (text: string, usage: Record<string, number>): void => {
             res.writeHead(200, { "content-type": "application/json" });
@@ -3723,8 +3764,10 @@ try {
       check("控制组：非流式那一路 running 期恒没有草稿",
         c.samples.filter((s) => s.status === "running").every((s) => s.reply === null),
         JSON.stringify(c.samples));
+      // 这里只数「聊天」请求（后台抽取不带 stream，已经不进 flags 了），所以是第一轮一发 "true"
+      // ＋ 第二轮一发 "absent"；整包回退是「要了流、对面给了整包」当场认下，不会再多发一次。
       check("第一次仍问 stream，被记成不支持后第二次不再问",
-        flags.length >= 3 && flags[0] === "true" && flags.slice(1).every((f) => f === "absent"),
+        flags.length >= 2 && flags[0] === "true" && flags.slice(1).every((f) => f === "absent"),
         JSON.stringify(flags));
 
       // D. 取消：半截草稿必须一起抹掉（"取消不留痕"这条不变式不能因为流式而破）
@@ -4569,14 +4612,14 @@ try {
       body.ok === true && body.content === "先确认在哪个城市再说；没把握就直说没把握，不要编一个数字。",
       JSON.stringify(body.content));
     const missName = await executeTool("load_skill", JSON.stringify({ name: "不存在的技能" }), CHAT);
-    const miss = (missName.ok ? missName.result : { error: missName.error }) as { ok?: boolean; error?: string };
+    const miss = missName.result as { ok?: boolean; error?: string };
     check("技能名对不上时给结构化错误 + 可用清单",
-      miss.ok === false && String(miss.error).includes("weather-advice"), String(miss.error));
+      missName.ok === false && miss.ok === false && String(miss.error).includes("weather-advice"), String(miss.error));
     // 参数不参与拼路径：这一发只能落到「没这个技能」，不会去读目录外的任何东西。
     const traverse = await executeTool("load_skill", JSON.stringify({ name: "../../smoke" }), CHAT);
-    const tr = (traverse.ok ? traverse.result : { error: traverse.error }) as { ok?: boolean; error?: string };
+    const tr = traverse.result as { ok?: boolean; error?: string };
     check("路径穿越样式的名字被拒（技能名不是文件路径）",
-      tr.ok === false && String(tr.error).includes("没有这个技能"), String(tr.error));
+      traverse.ok === false && tr.ok === false && String(tr.error).includes("没有这个技能"), String(tr.error));
 
     const statusR = await executeTool("app_status", "{}", ASST);
     const snap = (statusR.ok ? statusR.result : {}) as {

@@ -6,7 +6,15 @@
 
 import { createReadStream, existsSync } from "node:fs";
 import { join as joinPath, resolve } from "node:path";
-import { mediaFileInfo, readMedia, releaseMediaFiles } from "../../media/media.ts";
+import { kvGet, kvSet } from "../../core/db.ts";
+import { mediaFileInfo, mediaUrlExists, readMedia, releaseMediaFiles } from "../../media/media.ts";
+import {
+  claimAsset,
+  findAssetByHash,
+  findAssetByOriginRef,
+  getAssetByUrl,
+  releaseAssetOriginRef,
+} from "../../media/assets.ts";
 import { describeWebFailure, downloadImageToMedia } from "../../mind/search.ts";
 import { linkPreviewFor } from "../../mind/link-preview.ts";
 import {
@@ -44,6 +52,129 @@ function missingDistHtml(): string {
 <p>构建完成后刷新本页面即可。</p>
 </body>
 </html>`;
+}
+
+/** 「这个号没有头像」：与网络/解析失败区分开，前者是 404（用户改号就行），后者是 502。 */
+class QqAvatarUnavailable extends Error {}
+
+/** 来源凭据：QQ 号落到 assets.origin_ref，同一个号不管取多少次都指向同一个文件。 */
+function avatarOrigin(qq: string): string {
+  return `qq:${qq}`;
+}
+
+/** 同号码的请求合并成一个。资料页挂载时“协议端账号”和“我的 QQ”会同时取同一个号。 */
+const avatarInFlight = new Map<string, Promise<string>>();
+
+/**
+ * 本地这份头像多久要跟 QQ 那边对一次账。
+ *
+ * 这是「按号复用」的代价：用户可能在 QQ 端换了头像，而按号复用意味着我们不再去看。
+ * 所以给它一个保质期：期内完全不走网络（这是止血的那一刀——过去每次进资料页 55KB）；
+ * 过期了真的重新下一遍，内容一样就只把对账时间擦新（盘上一个字节不多）。
+ * 12 小时的选择：这是张头像，不是消息；界面上的「换头像」按钮随时能强制刷新。
+ */
+const AVATAR_RECHECK_MS = 12 * 60 * 60 * 1000;
+
+/**
+ * 上次跟 QQ 对过账的时刻。
+ * 只存一个数字：kv 的值会被引用检查当成路径来扫（`v LIKE '%<文件名>%'`），
+ * 真要存 URL 的话，那张旧头像从此就算「还有人引用」，永远清不掉。
+ */
+function avatarCheckedKey(qq: string): string {
+  return `avatar.qq.checked.${qq}`;
+}
+
+function avatarCheckedAt(qq: string): number {
+  const raw = kvGet(avatarCheckedKey(qq));
+  const at = raw === null ? 0 : Number(raw);
+  return Number.isFinite(at) ? at : 0;
+}
+
+/** 本地这份还新鲜吗。没有记录（0）永远算过期——第一次一定要真去取。 */
+function avatarFresh(qq: string): boolean {
+  return Date.now() - avatarCheckedAt(qq) < AVATAR_RECHECK_MS;
+}
+
+/**
+ * 取一个 QQ 号的头像并落成本地 /media 文件，返回可直接显示的路径。
+ *
+ * 四道闸，少一道盘上就会长副本（2026-11-06 在真库里查到同一张头像存了 36 份）：
+ *   ① 号码级：`assets.origin_ref = qq:<号>` 命中、文件还在、且还在保质期内 → 直接复用，连网络都不走；
+ *   ② 并发级：同号码的 in-flight 合并，并发的两个请求不会各下一遍；
+ *   ③ 内容级：下回来先算内容指纹，命中已有资产就复用它、把刚落的这份释放掉
+ *      ——同一个人两个号、或者历史遗留的副本，都能靠指纹收敛回一个文件；
+ *   ④ 来源唯一：内容真的变了（QQ 那边换了头像）才让旧的交出 `origin_ref`、新的顶上。
+ *      少了这一道，库里会有两行都写着同一个号，刷新过也白搭。
+ *
+ * refresh=true 只跳过①的保质期：用户明确说“我刚换了头像”，那就得真的重新下一遍；
+ * 但③④ 仍然生效，头像没变时还是指向同一个文件（不会因为刷新就多一份）。
+ */
+async function qqAvatarFor(qq: string, refresh = false): Promise<string> {
+  const origin = avatarOrigin(qq);
+  const cached = (): string => {
+    const row = findAssetByOriginRef(origin);
+    return row !== null && mediaUrlExists(row.url) ? row.url : "";
+  };
+  if (!refresh) {
+    const known = cached();
+    if (known !== "" && avatarFresh(qq)) return known;
+  }
+  const key = refresh ? `r:${qq}` : qq;
+  const running = avatarInFlight.get(key);
+  if (running !== undefined) return running;
+
+  const task = (async (): Promise<string> => {
+    try {
+      // 排到队尾时前一个请求可能刚刚把同一个号落定：再看一眼，别白下一遍。
+      const again = cached();
+      if (!refresh && again !== "" && avatarFresh(qq)) return again;
+
+      let fresh: string;
+      try {
+        fresh = await downloadImageToMedia(`https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=640`);
+      } catch (error) {
+        // 对账时网络抽风不能把资料页打成 502：本地那份还能显就先用它，下回再对。
+        // 但 refresh 是用户明确要的“重新取一份”，取不到就得报错——不能静默回一张旧的。
+        if (again !== "" && !refresh) return again;
+        throw error;
+      }
+
+      // 没有头像的号拿到的是 QQ 那张占位图：实测两个不存在号回来的**字节完全一致**
+      // （971B 的 PNG），而真有头像的在 s=640 下都是几十 KB。判据特意写得窄
+      // （PNG 且 < 4KB），宁可漏判也不误伤一张真头像。
+      const file = readMedia(fresh);
+      if (file !== null && file.mime === "image/png" && file.buffer.length < 4096) {
+        releaseMediaFiles([fresh]);
+        // 对账时才发现号上没头像（对方把头像撤了）：旧的那份先接着显，别让界面裂图。
+        // 不擦对账时间——下一轮还会再试，真的改了号也会及时报错。
+        if (again !== "" && !refresh) return again;
+        throw new QqAvatarUnavailable("这个 QQ 号取不到头像（QQ 回的是默认占位图）——号码可能不对，也可能这个号没设过头像");
+      }
+
+      // 这一趟对账算完成了：不管变没变，保质期从此刻起。
+      kvSet(avatarCheckedKey(qq), String(Date.now()));
+
+      const raw = getAssetByUrl(fresh);
+      const same = raw === null || raw.hash === "" ? null : findAssetByHash(raw.hash, fresh);
+      if (same !== null && mediaUrlExists(same.url)) {
+        // 内容没变——或者这张图早就以别的身份在库里（同一张头像被两个号用）。
+        // 让刚下的这份退场，同时把凭据从旧的那一行递给留下的这一行。
+        releaseAssetOriginRef(origin, same.url);
+        claimAsset(same.url, { source: "avatar", originRef: origin });
+        releaseMediaFiles([fresh]);
+        return same.url;
+      }
+      // 内容真的变了：旧的先交出凭据，否则下一次查到的还是它。旧文件不删——
+      // 可能还有联系人拿它当头像，该不该清交给引用检查。
+      releaseAssetOriginRef(origin, fresh);
+      claimAsset(fresh, { source: "avatar", originRef: origin });
+      return fresh;
+    } finally {
+      avatarInFlight.delete(key);
+    }
+  })();
+  avatarInFlight.set(key, task);
+  return task;
 }
 
 const staticRoute: Route = async ({ req, res, url, path, method }) => {
@@ -104,28 +235,26 @@ const staticRoute: Route = async ({ req, res, url, path, method }) => {
    * 拦掉；而且全项目只有 web.ts 一扇出网门（地址校验 / 字节上限 / MIME 白名单都在那儿）。
    * 为什么落成本地文件而不是把外站直链给联系人：QQ 换头像、哪天换域名，直链就是一张裂图；
    * /media 的那份跟着数据目录走，也才有东西可备份。
+   *
+   * 但「落盘」不等于「每次都落新的」：去重全在 qqAvatarFor 里，见那段注释。
    */
   if (method === "POST" && path === "/api/avatar/qq") {
-    const body = await readJson<{ qq?: unknown }>(req);
+    const body = await readJson<{ qq?: unknown; refresh?: unknown }>(req);
     const qq = String(body.qq ?? "").trim();
+    const refresh = body.refresh === true;
     if (!/^[1-9]\d{4,10}$/.test(qq)) {
       sendJson(res, 400, { ok: false, error: "QQ 号看着不对：应当是 5~11 位数字" });
       return true;
     }
     try {
-      const mediaUrl = await downloadImageToMedia(`https://q1.qlogo.cn/g?b=qq&nk=${qq}&s=640`);
-      // 没有头像的号拿到的是 QQ 那张占位图：实测两个不存在的号回来的**字节完全一致**
-      // （971B 的 PNG），而真有头像的在 s=640 下都是几十 KB。判据特意写得窄
-      // （PNG 且 < 4KB），宁可漏判也不误伤一张真头像。
-      const file = readMedia(mediaUrl);
-      if (file !== null && file.mime === "image/png" && file.buffer.length < 4096) {
-        releaseMediaFiles([mediaUrl]);
-        sendJson(res, 404, { ok: false, error: "这个 QQ 号取不到头像（QQ 回的是默认占位图）——号码可能不对，也可能这个号没设过头像" });
-        return true;
-      }
+      const mediaUrl = await qqAvatarFor(qq, refresh);
       sendJson(res, 200, { ok: true, url: mediaUrl });
       return true;
     } catch (error) {
+      if (error instanceof QqAvatarUnavailable) {
+        sendJson(res, 404, { ok: false, error: error.message });
+        return true;
+      }
       sendJson(res, 502, { ok: false, error: describeWebFailure(error) });
       return true;
     }

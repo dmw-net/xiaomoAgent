@@ -395,12 +395,26 @@ function replaceWithStaged(stage: string): void {
   db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
   db.close();
 
+  // 原子化导入：先把新库拷到临时名，再 rename 到正式名。
+  // 这样即使在拷贝过程中断电/崩溃，正式库要么是旧的、要么是新的，不会中间态。
+  const tempDb = `${activeDb}.importing-${stamp()}`;
   try {
-    renameIfExists(activeDb, dbBackup);
+    // 第一步：把新库拷到临时文件（如果这里失败，旧库还在）
+    cpSync(stagedDb, tempDb);
+    // 第二步：把旧库改名备份（如果这里失败，清理临时文件）
     try {
-      cpSync(stagedDb, activeDb);
+      renameIfExists(activeDb, dbBackup);
     } catch (e) {
+      rmSync(tempDb, { force: true });
+      throw e;
+    }
+    // 第三步：把临时文件 rename 为正式库（原子操作）
+    try {
+      renameSync(tempDb, activeDb);
+    } catch (e) {
+      // rename 失败：尝试把旧库恢复回去
       rollbackRename(dbBackup, activeDb);
+      rmSync(tempDb, { force: true });
       throw e;
     }
 
@@ -440,6 +454,38 @@ function replaceWithStaged(stage: string): void {
     }
     throw new Error(`导入替换失败：${error instanceof Error ? error.message : String(error)}。旧数据保留在 *${oldSuffix} 文件/目录旁`);
   }
+}
+
+/**
+ * 启动时检测上次导入是否留下残局：.pre-import-* 备份存在但 .importing-* 临时文件也在，
+ * 说明上次导入在 rename 后、清理前崩溃了。此时正式库已经是新库，备份可以安全清理；
+ * 如果只有 .importing-* 文件（没有对应的 .pre-import-*），说明崩溃在拷贝阶段，
+ * 正式库还是旧的，清理临时文件即可。
+ */
+export function recoverInterruptedImport(): { cleaned: string[]; note: string } {
+  const activeDb = resolve(config.dbPath);
+  const root = dirname(activeDb);
+  if (!existsSync(root)) return { cleaned: [], note: "" };
+  const files = readdirSync(root);
+  const cleaned: string[] = [];
+  for (const name of files) {
+    // 清理残留的 .importing-* 临时文件（拷贝中断的产物）
+    if (name.includes(".importing-")) {
+      try {
+        rmSync(join(root, name), { force: true });
+        cleaned.push(name);
+      } catch { /* 忽略清理失败 */ }
+    }
+  }
+  // 如果存在 .pre-import-* 备份且正式库存在，说明上次导入成功了，备份可以清理
+  // （用户可能已经重启并确认数据正常，备份只是占空间）
+  // 注意：这里不自动清理 .pre-import-*，因为用户可能需要它恢复数据。
+  // 只在日志里提示。
+  const preImportBackups = files.filter((n) => n.includes(".pre-import-"));
+  if (preImportBackups.length > 0 && existsSync(activeDb)) {
+    console.warn(`[import-recovery] 检测到 ${preImportBackups.length} 个 .pre-import-* 备份，正式库已存在。如果数据正常，可手动清理这些备份。`);
+  }
+  return { cleaned, note: cleaned.length > 0 ? `已清理 ${cleaned.length} 个残留临时文件` : "" };
 }
 
 /** 一键导入：先流式解到临时目录并校验，再替换库与媒体/技能目录。完成后必须重启。 */

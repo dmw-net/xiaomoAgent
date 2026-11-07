@@ -58,11 +58,15 @@ import { strictContactId } from "../context.ts";
 import { clampInt, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
 
-/** 两处共用：「最近失败」过一遍水印——点过重新计数之后，那条旧失败不该继续标红。 */
+/** 两处共用：「最近失败」过一遍水印——点过重新计数之后，那条旧失败不该继续标红。
+ *  水印本身也下发：回复任务的失败提醒由前端按「最后一次失败是否晚于水印」判断，
+ *  否则「忽略提醒」只清模型调用那一半，状态页会立刻把旧的处理单失败再报一遍。 */
 function lastErrorView() {
+  const watermark = failureWatermark();
   const lastCall = lastModelCall();
-  const lastFailure = lastCall && lastCall.ok === 0 && lastCall.created_at >= failureWatermark() ? lastCall : null;
+  const lastFailure = lastCall && lastCall.ok === 0 && lastCall.created_at >= watermark ? lastCall : null;
   return {
+    failureWatermarkAt: watermark,
     modelFailures: modelFailureCount(),
     lastModelError: lastFailure
       ? {

@@ -301,6 +301,25 @@ export function kvSet(key: string, value: string): void {
   db.prepare("INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = excluded.v").run(key, value);
 }
 
+/**
+ * 比较并交换：只有当库里的值与 expected 完全一致时才写入 value。
+ *
+ * 比对与落盘在同一条 SQL 里完成，SQLite 保证原子——不需要额外加锁，也就不会出现
+ * 「先 SELECT 再 UPDATE」那种两个进程同时读到旧值、各自以为自己是唯一写者的窗口。
+ * expected 传 null 表示「这条记录原本不存在」。
+ *
+ * 返回 true = 写入成功；false = 期间被别人改过（调用方应重读后重试）。
+ */
+export function kvSwap(key: string, expected: string | null, value: string): boolean {
+  if (expected === null) {
+    // 只有真正插入了一行才算成功：记录已经存在说明别人先写进去了。
+    const inserted = db.prepare("INSERT INTO kv (k, v) VALUES (?, ?) ON CONFLICT(k) DO NOTHING").run(key, value);
+    return Number(inserted.changes) === 1;
+  }
+  const updated = db.prepare("UPDATE kv SET v = ? WHERE k = ? AND v = ?").run(value, key, expected);
+  return Number(updated.changes) === 1;
+}
+
 // 迁移记账：当前结构靠 ensureColumn 增量补列（幂等），这个号留给未来
 // 需要"知道旧库处在哪个版本"才能做的破坏性迁移。
 if (kvGet("schema_version") === null) kvSet("schema_version", "1");

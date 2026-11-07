@@ -202,7 +202,21 @@ const turnsRecentRoute: Route = ({ res, url, path, method }) => {
     if (conv === null) return true;
     conversationId = conv;
   }
-  sendJson(res, 200, { ok: true, turns: recentTurns(limit, offset, contactId, conversationId), stats: turnStats() });
+  // status=active：只留在飞（queued/running）的处理单。聊天页切走再切回（或刷新页面）时
+  // 靠它接管重答中的**较早**轮次——那种轮的 created_at 很老，「最新一条」里看不到。
+  const activeOnly = url.searchParams.get("status") === "active";
+  const turns = recentTurns(limit, offset, contactId, conversationId, { activeOnly });
+  // 在飞的那一轮随同一响应带回：聊天页两路合一，省一次往返。
+  // 只在按联系人查询时才算（状态页的总览用不到它）；status=active 查询本身就是要它。
+  const active = contactId !== undefined && !activeOnly
+    ? (recentTurns(1, 0, contactId, conversationId, { activeOnly: true })[0] ?? null)
+    : undefined;
+  sendJson(res, 200, {
+    ok: true,
+    turns,
+    ...(active !== undefined ? { active } : {}),
+    stats: turnStats(),
+  });
   return true;
 };
 

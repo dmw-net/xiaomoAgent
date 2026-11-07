@@ -233,4 +233,48 @@ media.reconcileAssets();
 assert.strictEqual(assets.getAssetByUrl(still), null, "父资产没了，静帧的行跟着销账");
 assert.strictEqual(media.mediaAbsPath(still), null, "静帧文件本身也从盘上收掉");
 
+// ── 9) 同一份内容只该有一个文件：QQ 头像去重靠的两把钥匙 ───────────────────
+// /api/avatar/qq 每取一次都会落成一个新文件名，按 URL 永远去不了重——真库上同一张头像
+// 因此存了 36 份。下面两条查询就是「按来源凭据」「按内容指纹」两道闸的地基。
+const AVATAR_BYTES = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("avatar-payload")]);
+const dupA = media.saveImage(AVATAR_BYTES, "image/jpeg").url;
+const dupB = media.saveImage(AVATAR_BYTES, "image/jpeg").url;
+assert.notStrictEqual(dupA, dupB, "两次落盘是两个不同的文件名——按 URL 去重挡不住这件事");
+const hashB = assets.getAssetByUrl(dupB).hash;
+assert.strictEqual(assets.findAssetByHash(hashB, dupB)?.url, dupA, "同内容能找到先入库的那一份");
+assert.strictEqual(assets.findAssetByHash(hashB, dupA)?.url, dupB, "排除自己以后找到的是另一份");
+assert.strictEqual(assets.findAssetByHash("", dupA), null, "没有哈希就不猜");
+
+// 按来源凭据（QQ 号）找回：同一个号取第二次不该再下一个文件。
+assets.claimAsset(dupB, { source: "avatar", originRef: "qq:10001" });
+assert.strictEqual(assets.findAssetByOriginRef("qq:10001")?.url, dupB, "按号能找回已入库的那份");
+assert.strictEqual(assets.getAssetByUrl(dupB).source, "avatar", "来源一并认领成头像");
+assert.strictEqual(assets.findAssetByOriginRef("qq:99999"), null, "没取过的号找不到");
+// 文件没了就不能再复用：否则接口会回一条裂图路径，比重新下一张更糟。
+assets.claimAsset(dupA, { originRef: "qq:10002" });
+rmSync(media.mediaAbsPath(dupA), { force: true });   // 落在 图片/ 下，别按根目录拼路径
+media.reconcileAssets();
+assert.strictEqual(assets.findAssetByOriginRef("qq:10002"), null, "文件不在盘上的旧记录不算命中");
+
+// ── 9b) 用户在 QQ 端换了头像：新的必须真的顶上来 ─────────────────────────
+// 按号复用最大的风险就在这：不再去看，就永远看不到新头像。所以换图这条路上有两件事要做——
+// 新的赢，旧的让位。只做前一半（多一行也写着同一个号）的话，刷新一次就再也刷不回来了。
+const NEW_AVATAR = Buffer.concat([Buffer.from([0xff, 0xd8, 0xff, 0xe0]), Buffer.from("avatar-new")]);
+const dupC = media.saveImage(NEW_AVATAR, "image/jpeg").url;
+assert.notStrictEqual(assets.getAssetByUrl(dupC).hash, hashB, "换了头像＝字节真的不一样");
+
+// 模拟旧实现留下的状态：两行都写着同一个号。
+assets.claimAsset(dupC, { source: "avatar", originRef: "qq:10001" });
+assert.strictEqual(assets.findAssetByOriginRef("qq:10001")?.url, dupC, "历史遗留的重复凭据：新的那条赢");
+assert.strictEqual(assets.releaseAssetOriginRef("qq:10001", dupC), 1, "换图时正好让出一行");
+assert.strictEqual(assets.getAssetByUrl(dupB).originRef, "", "旧头像不再是这个号的当前头像");
+assert.strictEqual(assets.getAssetByUrl(dupC).originRef, "qq:10001", "新的那份仍持有凭据");
+assert.strictEqual(assets.findAssetByOriginRef("qq:10001")?.url, dupC, "换过之后再查还是新的，不会缩回旧图");
+// 让位只清凭据，不碰文件和别的账：旧图可能还是某位联系人的头像。
+assert.ok(media.mediaUrlExists(dupB), "让位不删文件——该不该清由引用检查说了算");
+assert.strictEqual(assets.getAssetByUrl(dupB).source, "avatar", "来源记账不被顺手抹掉");
+// 没有反复清理的空转：已经只剩一行持有时，再让位是 0 行。
+assert.strictEqual(assets.releaseAssetOriginRef("qq:10001", dupC), 0, "只剩它自己时无事可做");
+assert.strictEqual(assets.releaseAssetOriginRef("", dupC), 0, "空凭据不碰任何行");
+
 console.log("资产注册表回归：全部通过");

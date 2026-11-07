@@ -23,12 +23,66 @@ import { kvGet, kvSet } from "./db.ts";
 const KV_LAN = "settings.lan";
 const KV_PORT = "settings.port";
 const KV_TUNNEL = "settings.tunnelHosts";
+const KV_LOGIN_ATTEMPTS = "settings.lanLoginAttempts";
 /** 手机登录后拿到的 cookie 名。 */
 export const LAN_COOKIE = "xiaomo_lan";
 /** 不带 cookie 也能访问的路径：登录页与登录接口本身。 */
 export const LAN_LOGIN_PATH = "/__lan";
 /** 回环地址集合：与 server.ts 的判定同一口径。 */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "::1"]);
+
+// ── 登录限流 ─────────────────────────────────────────────────
+// 访问码是低熵的（6–12 位数字），公网隧道场景下无限流等于把门拆了。
+// 策略：同一来源 IP 连续失败 5 次后，要求等待 30 秒才能再试。
+// 用 KV 存计数（重启不丢），用内存存锁定截止时间（重启即解除，合理）。
+const LOGIN_MAX_ATTEMPTS = 5;
+const LOGIN_LOCKOUT_MS = 30_000;
+const loginAttempts = new Map<string, number>();
+const loginLockouts = new Map<string, number>();
+
+/** 记录一次登录尝试。返回 true 表示已锁定。 */
+export function recordLoginAttempt(clientKey: string): { locked: boolean; remainingMs: number } {
+  const now = Date.now();
+  const lockoutEnd = loginLockouts.get(clientKey);
+  if (lockoutEnd !== undefined && lockoutEnd > now) {
+    return { locked: true, remainingMs: lockoutEnd - now };
+  }
+  if (lockoutEnd !== undefined && lockoutEnd <= now) {
+    loginLockouts.delete(clientKey);
+    loginAttempts.delete(clientKey);
+  }
+  const count = (loginAttempts.get(clientKey) ?? 0) + 1;
+  loginAttempts.set(clientKey, count);
+  if (count >= LOGIN_MAX_ATTEMPTS) {
+    loginLockouts.set(clientKey, now + LOGIN_LOCKOUT_MS);
+    return { locked: true, remainingMs: LOGIN_LOCKOUT_MS };
+  }
+  return { locked: false, remainingMs: 0 };
+}
+
+/** 登录成功后清除该来源的计数。 */
+export function clearLoginAttempts(clientKey: string): void {
+  loginAttempts.delete(clientKey);
+  loginLockouts.delete(clientKey);
+}
+
+/** 登录是否被锁定（用于登录接口前置检查）。 */
+export function isLoginLocked(clientKey: string): { locked: boolean; remainingMs: number } {
+  const now = Date.now();
+  const lockoutEnd = loginLockouts.get(clientKey);
+  if (lockoutEnd !== undefined && lockoutEnd > now) {
+    return { locked: true, remainingMs: lockoutEnd - now };
+  }
+  return { locked: false, remainingMs: 0 };
+}
+
+/** 从请求中提取客户端标识（优先用 X-Forwarded-For 第一跳，否则用 socket 地址）。 */
+export function loginClientKey(req: IncomingMessage): string {
+  const xff = req.headers["x-forwarded-for"];
+  // 串头可能是空串、也可能是不带逗号的单跳；noUncheckedIndexedAccess 下首项要自己兜底。
+  if (typeof xff === "string" && xff !== "") return (xff.split(",")[0] ?? "").trim();
+  return req.socket.remoteAddress ?? "unknown";
+}
 
 type Stored = { enabled: boolean; code: string };
 
@@ -96,7 +150,7 @@ export function rotateLanCode(): { enabled: boolean; code: string } {
 
 /**
  * 把访问码改成用户自己记得住的数字（生日、门牌号都行）。
- * 下限 6 位不是洁癖：登录接口没有限流，而隧道是公网可达的——4 位数字几秒就能穷举完。
+ * 下限 6 位不是洁癖：配合登录限流，6 位数字在公网隧道场景下有基本防护。
  * 改码后 cookie 派生的 token 随之失效，已连设备下次请求会回到登录页（这是换码的含义）。
  */
 export function setLanCode(input: string): { ok: boolean; error: string } {

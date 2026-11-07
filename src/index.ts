@@ -26,12 +26,14 @@ import { claimPrimary, isPrimary, leaseIsFreeOrOurs, primaryPid, releasePrimary,
 import { pruneModelCalls } from "./core/logs.ts";
 import { purgeExpiredMediaTrash, reconcileAssets } from "./media/media.ts";
 import { migrateMediaLayout } from "./media/media-layout.ts";
-import { DEFAULT_CONTACT_ID, ensureDefaultContact } from "./chat/contacts.ts";
+import { recoverInterruptedImport } from "./core/data-transfer.ts";
+import { DEFAULT_CONTACT_ID, ensureDefaultContact, migrateToolPresets } from "./chat/contacts.ts";
 import { wechat } from "./channels/wechat.ts";
 import { qq, qqUsesBackend } from "./channels/qq.ts";
 import { autostartNapcatIfInstalled } from "./channels/napcat.ts";
 import { ensureDefaultConversations } from "./chat/conversations.ts";
 import { startOutboundLoop, stopOutboundLoop } from "./channels/outbound.ts";
+import { STATIC_TOOL_NAMES, toolPoolDiagnostics } from "./mind/tools.ts";
 
 // 兜底日志：单机应用「带病存活 + 看得见错误」好过静默崩溃。
 // 崩在这里意味着代码里有违背假设的路径——把它打进日志（状态页可查最近错误），不退出。
@@ -125,9 +127,21 @@ const pruned = weHoldLease ? pruneProactiveBacklog() : { orphans: 0, folded: 0 }
 if (pruned.orphans + pruned.folded > 0) {
   console.log(`[startup] 主动性修复：孤儿清理 ${pruned.orphans} 条、旧任务并入节拍 ${pruned.folded} 条`);
 }
+// 启动时检测上次导入是否留下残局（.pre-import-* 备份 + .importing-* 临时文件）。
+// 崩溃在 rename 后、清理前时，正式库已经是新库，临时文件可以安全清理。
+if (weHoldLease) {
+  const recovery = recoverInterruptedImport();
+  if (recovery.note) console.log(`[startup] 导入恢复：${recovery.note}`);
+}
 // 存量数据迁移（幂等，kv 标记防重跑）：工具调用能力从「元数据」升格为「硬闸」的这一版，
 // 把老数据里从未勾选过的 false 翻正，否则联系人设置里的工具开关全部失效。
 if (weHoldLease) migrateCapsToolsDefault();
+// 工具档位迁移（幂等）：存量联系人的六个逐项开关组合不一定对得上任何一档，
+// 全部标成 custom 继续按老逻辑跑，不替用户把联网/出图/提醒翻成开。
+if (weHoldLease) {
+  const presetMigrated = migrateToolPresets();
+  if (presetMigrated > 0) console.log(`[startup] 工具档位：${presetMigrated} 位存量联系人保留原设置（custom）`);
+}
 // 媒体目录布局迁移（一次性，kv 标记防重跑）：平铺文件按「表情包/<文件夹>、图片、视频…」归位，
 // 先 VACUUM INTO 一份库备份再动文件。必须排在资产对账**之前**——对账的销账逻辑假设布局已定。
 if (weHoldLease) {
@@ -200,8 +214,26 @@ server.listen(lan.effectivePort(), lan.bindHost(), () => {
   console.log(`  主动性：${config.proactive.enabled ? "开（节奏由联系人自己定，到点由闹钟唤醒）" : "关闭"}`);
   console.log(`  设置：/settings（在应用里改模型与角色卡）`);
   console.log("──────────────────────────────────────────");
+  reportToolPoolHealth();
   void selfCheck();
 });
+
+/**
+ * 工具池启动自检：名字撞车 / 超长 / schema 写坏 / 忘了登记卡片，启动时就喊出来，
+ * 不等模型第一次调用才撞上 400。只打日志不阻断——一个写坏的静态工具不该让应用起不来；
+ * 真正把它当门禁的是 npm run check 里的 tool-contract.test.ts（error 级直接判失败）。
+ */
+function reportToolPoolHealth(): void {
+  const diagnostics = toolPoolDiagnostics();
+  const errors = diagnostics.filter((d) => d.level === "error");
+  const warnings = diagnostics.filter((d) => d.level === "warning");
+  if (errors.length === 0 && warnings.length === 0) {
+    console.log(`[tools] 工具池自检通过（${STATIC_TOOL_NAMES.size} 个静态工具）`);
+    return;
+  }
+  for (const d of errors) console.warn(`[tools] ✗ ${d.tool}：${d.message}`);
+  for (const d of warnings) console.warn(`[tools] ! ${d.tool}：${d.message}`);
+}
 
 /**
  * 按当前设置重新绑定监听地址（「手机访问」开关打开/关掉时调用）。

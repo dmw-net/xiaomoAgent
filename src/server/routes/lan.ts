@@ -39,17 +39,33 @@ const lanLoginRoute: Route = async ({ res, path, method, req, isLocalOperator })
       return true;
     }
     if (method === "POST") {
+      // 前置限流检查：连续失败 5 次后锁定 30 秒
+      const clientKey = lan.loginClientKey(req);
+      const lockCheck = lan.isLoginLocked(clientKey);
+      if (lockCheck.locked) {
+        const seconds = Math.ceil(lockCheck.remainingMs / 1000);
+        sendJson(res, 429, { ok: false, error: `尝试过多，请 ${seconds} 秒后再试` });
+        return true;
+      }
       const body = await readJson<{ code?: unknown }>(req);
       const want = typeof body.code === "string" ? lan.normalizeCode(body.code) : "";
       const expect = lan.lanCode();
       if (expect === "" || want !== expect) {
+        lan.recordLoginAttempt(clientKey);
         sendJson(res, 401, { ok: false, error: "访问码不对" });
         return true;
       }
+      lan.clearLoginAttempts(clientKey);
+      // 隧道场景下走 HTTPS，cookie 必须加 Secure；本机 HTTP 场景下 Secure cookie 会被浏览器拒绝，
+      // 所以按协议判断：有 X-Forwarded-Proto=https 或请求本身是 TLS 时加 Secure。
+      // encrypted 只在 TLS 连接上才有（TLSSocket），IncomingMessage.socket 的静态类型是 Socket。
+      const tlsSocket = req.socket as typeof req.socket & { encrypted?: boolean };
+      const isSecure = req.headers["x-forwarded-proto"] === "https" || tlsSocket.encrypted === true;
+      const secureFlag = isSecure ? "; Secure" : "";
       res.writeHead(200, {
         "content-type": "application/json; charset=utf-8",
         "cache-control": "no-store",
-        "set-cookie": `${lan.LAN_COOKIE}=${lan.currentToken()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000`,
+        "set-cookie": `${lan.LAN_COOKIE}=${lan.currentToken()}; HttpOnly; SameSite=Lax; Path=/; Max-Age=31536000${secureFlag}`,
       });
       res.end(JSON.stringify({ ok: true }));
       return true;

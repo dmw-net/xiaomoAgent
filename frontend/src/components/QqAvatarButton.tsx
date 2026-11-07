@@ -26,7 +26,8 @@ export default function QqAvatarButton({ onPick, disabled = false }: {
     if (!/^[1-9]\d{4,10}$/.test(qq)) { setErr("应当是 5~11 位数字"); return; }
     setBusy(true);
     setErr("");
-    void avatarApi.fetchQqAvatar(qq)
+    // 用户是特意来“挑一张头像用”的：QQ 那边刚换过，就不能拿会话里那份旧的。
+    void avatarApi.fetchQqAvatar(qq, { fresh: true })
       // onPick 可能是异步的（用户头像那条要再压一遍图），等它落地再收起来
       .then(async (d) => { await onPick(d.url); close(); })
       .catch((e: Error) => setErr(e.message))

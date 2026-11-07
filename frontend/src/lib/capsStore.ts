@@ -17,6 +17,11 @@ export const CAPS_OFF: Caps = {
 };
 
 let cache: Caps | null = null;
+/** 缓存写入时刻：TTL 内的挂载直接用缓存，不再后台重拉——聊天页每挂一个会话实例
+ *  都会来要一次，刷新一次付一次请求不值。设置保存会走 invalidateCaps 立即击穿，
+ *  TTL 只兜「没走设置」的变化（如另一窗口改配置靠事件、或极罕见的后端重启）。 */
+const CAPS_TTL_MS = 60_000;
+let cacheAt = 0;
 let flying: Promise<Caps> | null = null;
 
 /** null = 一次都还没拉到过（界面据此显示「读取中…」，不能拿 CAPS_OFF 冒充，那会满屏假红）。 */
@@ -25,10 +30,11 @@ export function cachedCaps(): Caps | null {
 }
 
 export function loadCaps(): Promise<Caps> {
-  // 同一时刻只允许一个在飞的请求：三个消费者同时挂载也只发一次。
+  if (cache !== null && Date.now() - cacheAt < CAPS_TTL_MS) return Promise.resolve(cache);
+  // 同一时刻只允许一个在飞的请求：多个消费者同时挂载也只发一次。
   if (flying) return flying;
   flying = getJson<{ ready: Caps }>("/api/capabilities")
-    .then((r) => { cache = r.ready; return r.ready; })
+    .then((r) => { cache = r.ready; cacheAt = Date.now(); return r.ready; })
     .finally(() => { flying = null; });
   return flying;
 }
@@ -36,4 +42,5 @@ export function loadCaps(): Promise<Caps> {
 /** 设置里改了模型或能力之后调用：下一次读到的是新值，而不是刚被自己作废的旧值。 */
 export function invalidateCaps(): void {
   cache = null;
+  cacheAt = 0;
 }

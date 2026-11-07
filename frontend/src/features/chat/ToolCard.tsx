@@ -1,31 +1,14 @@
 import { memo, useMemo, useState } from "react";
 import { Check, ChevronDown, ChevronRight, X } from "lucide-react";
 import Avatar from "../../components/Avatar";
+import { avatarToneStyle } from "../../lib/avatar-tone";
+import { chatLabelsOf } from "../../lib/toolsStore";
+import { useToolState } from "../../hooks/useToolState";
 import type { MessageRow } from "../../types";
 import { renderLinkedText } from "../../lib/md";
 
 /** 工具卡 text 的结构（agent.ts 落库时写入）。 */
 type ToolPayload = { tool?: string; ok?: boolean; summary?: string; elapsedMs?: number };
-
-const TOOL_LABEL: Record<string, string> = {
-  get_current_time: "看了下时间",
-  search_memory: "翻了翻记忆",
-  schedule_reminder: "记了条提醒",
-  generate_image: "画了张图",
-  send_emote: "发了张表情",
-  emote_search: "翻了翻表情库",
-  send_voice: "发了条语音",
-  web_search: "联网搜了一下",
-  web_fetch: "读了个网页",
-  load_skill: "翻出技能做法",
-  app_status: "读了当前配置",
-  configure_model: "配了模型",
-  activate_model: "切了模型",
-  create_contact: "建了联系人",
-  update_contact: "改了联系人",
-  bind_contact_model: "绑了模型",
-  set_contact_avatar: "设了头像",
-};
 
 /** 工具调用卡：紧凑一行，展示"联系人在查什么"而不是甩 JSON；有详情时可点开回看。 */
 function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imagesOnly = false }: {
@@ -40,8 +23,11 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   }, [m.text]);
   const [open, setOpen] = useState(false);
   const ok = p.ok !== false;
-  // 未登记的工具不露原始函数名（get_current_time 之类）——兜一句人话。
-  const label = TOOL_LABEL[p.tool ?? ""] ?? "做了点事";
+  // 动作短语由后端 TOOL_META 的 chat 字段下发（toolsStore 缓存，App 启动预热），
+  // 前端不再复刻一份工具名 → 短语映射——那份复刻漏登记时会把原始函数名兜成「做了点事」。
+  const toolState = useToolState();
+  const labels = useMemo(() => chatLabelsOf(toolState), [toolState]);
+  const label = labels[p.tool ?? ""] ?? "做了点事";
   const rawSummary = p.summary || (ok ? "完成" : "失败");
   // 早期版本把工具结果的原始 JSON 当摘要落过库（send_emote 没登记时整串
   // {"via":"native",...} 直接显示在卡片上）。这类历史卡不能把调试载荷再甩给用户；
@@ -68,7 +54,7 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   if (imagesOnly) {
     return (
       <div className="msg-row contact gap" data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
-        <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} />
+        <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} style={avatarToneStyle(contactName)} />
         <div className="tool-wrap">
           <div className="tool-imgs">
             {imgs.map((url, index) => (
@@ -84,7 +70,7 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
 
   return (
     <div className={"msg-row contact gap"} data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
-      <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} />
+      <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} style={avatarToneStyle(contactName)} />
       <div className={"tool-wrap" + (ok ? "" : " bad")}>
         {expandable ? (
           <button

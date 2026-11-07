@@ -7,6 +7,7 @@ export * as settingsApi from "./settings";
 export * as dataTransferApi from "./dataTransfer";
 export * as skillsApi from "./skills";
 export * as extensionsApi from "./extensions";
+export * as toolsApi from "./tools";
 export * as proactiveApi from "./proactive";
 export * as usageApi from "./usage";
 export * as diagnosticsApi from "./diagnostics";

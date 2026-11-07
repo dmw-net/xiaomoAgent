@@ -131,12 +131,21 @@ type IoState =
   | { step: "export"; withKeys: boolean }
   | { step: "import"; file: ModelConfigFile; plan: ImportPlan; running?: boolean };
 
-export default function ModelSection({ form, revealAdvanced }: { form: SettingsForm; revealAdvanced?: boolean }): JSX.Element {
+export default function ModelSection({ form, revealAdvanced, focusProfile = "", focusSeq = 0 }: {
+  form: SettingsForm;
+  revealAdvanced?: boolean;
+  /** 「去设置」点名要打开的那一档（空串 = 没点名，退回全局在用的那档）。 */
+  focusProfile?: string;
+  /** 同一次导航的序号：同一个人连点两次也要重新打开，切去别的子页再回来不该又弹一次。 */
+  focusSeq?: number;
+}): JSX.Element {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [showKey, setShowKey] = useState(false);
   const [modalStep, setModalStep] = useState<AddStep>("connection");
   const [advOpen, setAdvOpen] = useState(false);
   const [listQuery, setListQuery] = useState("");
+  /** 刚被「去设置」定位到的那一档：短暂描边，让人知道弹窗关掉后该看哪一行。 */
+  const [flash, setFlash] = useState("");
   const modelInputRef = useRef<HTMLInputElement>(null);
   // 弹窗：点遮罩外部或按 Esc 关闭（表单本体标了 data-keep-menu）
   useDismiss(draft !== null, () => setDraft(null));
@@ -255,16 +264,8 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
     });
   };
 
-  // 从上下文圆环点「去设置」过来：直接把正在生效的那档打开。
+  // 从上下文圆环点「去设置」过来：直接把**圆环量的那一档**打开（见下方 reveal 那段）。
   // 停在列表页等于把人领到门口又让用户自己找门——高级参数还藏在折叠区里。
-  const revealConsumed = useRef(false);
-  useEffect(() => {
-    if (revealAdvanced !== true || revealConsumed.current) return;
-    const active = form.saved?.activeProfileId ?? "";
-    if (active === "") return;
-    revealConsumed.current = true;
-    openEdit(active);
-  }, [revealAdvanced, form.saved]);
 
   /** 第一步只校验“能不能建立连接”，把模型选择留给下一步。 */
   const goToModelStep = (): void => {
@@ -352,6 +353,34 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
   const d = provRaw?.from === shown ? provRaw : { from: shown, url: shown, key: baseKey, label: group?.label ?? "" };
   const provDirty = group !== null && (d.url !== group.baseUrl || d.key !== baseKey || d.label !== group.label);
 
+  // 「去设置」要落到哪一档：点名的那档优先（联系人可能单独绑了档，圆环量的就是它），
+  // 没点名才退回全局在用的那档。用「序号 + id」记住已经执行过的那一次：
+  // 同一个人连点两次要重新打开（上一次可能已经关掉了），切去别的子页再回来不该又弹一遍。
+  const revealTarget = focusProfile || form.saved?.activeProfileId || "";
+  const revealKey = `${focusSeq}:${revealTarget}`;
+  const revealDone = useRef("");
+  useEffect(() => {
+    if (revealAdvanced !== true || revealTarget === "") return;
+    if (revealDone.current === revealKey) return;
+    const target = profiles.find((p) => p.id === revealTarget);
+    if (!target) return; // 档被删了/还没加载到：不硬开一个不存在的弹窗，等快照回来再试
+    revealDone.current = revealKey;
+    // 列表按 baseUrl 归组，先把供应商切到这一家，关掉弹窗后那一行才在眼前。
+    setSel(normBase(target.baseUrl));
+    openEdit(revealTarget);
+    setFlash(revealTarget);
+  }, [revealAdvanced, revealKey, revealTarget, profiles]);
+
+  // 描边闪一下 + 把它滚到视野中间。延时是因为切供应商后那一行要下一次提交才存在。
+  useEffect(() => {
+    if (flash === "") return;
+    const roll = setTimeout(() => {
+      document.getElementById("ml-row-" + flash)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    }, 80);
+    const clear = setTimeout(() => setFlash(""), 2600);
+    return () => { clearTimeout(roll); clearTimeout(clear); };
+  }, [flash]);
+
   const saveProvider = async (): Promise<void> => {
     if (!group) return;
     setProvBusy(true);
@@ -388,7 +417,7 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
     const testing = form.busy === "test:" + p.id;
     const result = form.profileTestResult[p.id];
     return (
-      <div key={p.id} className={"ml-row" + (activeRow ? " active" : "")}>
+      <div key={p.id} id={"ml-row-" + p.id} className={"ml-row" + (activeRow ? " active" : "") + (flash === p.id ? " flash" : "")}>
         <div className="ml-info">
           <div className="ml-name">{p.name || "未填模型名"}<CapsTags caps={p.caps} />{fmtCtx(p.maxInputTokens) !== "" && <span className="ml-tags"><span className="ml-tag">{fmtCtx(p.maxInputTokens)}</span></span>}</div>
           <div className="ml-meta">{p.label}</div>
@@ -815,7 +844,7 @@ export default function ModelSection({ form, revealAdvanced }: { form: SettingsF
                             onClick={() => set({ maxOutput: String(c.tokens) })}>{c.label}</button>
                         ))}
                       </div>
-                      <div className="hint">一次回复最长能写多长；留空按默认值。</div>
+                      <div className="hint">一次回复最长能写多长；留空就不发这个字段，由服务商按模型的上下文窗口决定（想更稳可以填 8192）。</div>
                     </div>
                   </div>
 

@@ -33,11 +33,13 @@ export function loadStatus(contactId: string): Promise<StatusData> {
 
 /**
  * 「重新计数」：把失败读数的起点挪到现在，红点清零，然后重拉一次状态。
- * 后端只动水印与记忆提取的连续失败计数器，model_calls 一条不删。
+ * 后端只动水印与记忆提取的连续失败计数器，model_calls / turns 一条不删。
+ * 水印是全局的（不按联系人分档），所以缓存要整份作废，不然切到别的联系人
+ * 又会拿旧水位把刚忽略掉的提醒算回来。
  */
 export async function resetCounters(contactId: string): Promise<StatusData> {
   await postJson<{ ok: boolean }>("/api/status/reset-counters", {});
-  cache.delete(contactId);
+  cache.clear();
   return loadStatus(contactId);
 }
 

@@ -26,6 +26,11 @@ export function loadSnapshot(): Promise<ExtensionSnapshot> {
   return flying;
 }
 
+/** 写动作的回包就是整份新快照：直接收下，别再发一次 GET。 */
+export function putSnapshot(next: ExtensionSnapshot): void {
+  cache = next;
+}
+
 export function invalidateSnapshot(): void {
   cache = null;
 }

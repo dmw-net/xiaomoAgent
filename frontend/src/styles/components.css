@@ -830,6 +830,16 @@ button.prof-chip.on {
 .ml-row + .ml-row { margin-top: 2px; }
 .ml-row:hover { background: var(--bg-hover); }
 .ml-row.active { border-color: color-mix(in srgb, var(--accent) 35%, var(--border)); background: color-mix(in srgb, var(--accent) 6%, transparent); }
+/* 从上下文圆环「去设置」落到的那一档：一次性描边脉冲。弹窗关掉之后还看得见刚才动的是哪一行。
+   与 .msg-row.flash 同一套路：动画负责闪，JS 负责摘类；reduced-motion 下退让成静态描边。 */
+.ml-row.flash { animation: mlFlash 2.6s ease-out; }
+@keyframes mlFlash {
+  0%, 60% { outline: 2px solid var(--accent); outline-offset: 2px; }
+  100% { outline: 2px solid transparent; outline-offset: 2px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ml-row.flash { animation: none; outline: 2px solid var(--accent); outline-offset: 2px; }
+}
 .ml-info { flex: 1; min-width: 0; }
 .ml-name { font-size: var(--text-lg); font-weight: 600; }
 .ml-meta {
@@ -1824,6 +1834,8 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   background: var(--danger-soft); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
 }
 .pf-comp-item:has(.pf-comp-tag) { cursor: default; }
+/* pointer 行的直达出口（「去设置 / 管理技能」）：放到第二行右对齐，不打架两列布局 */
+.pf-comp-item .tw-link { grid-column: 1 / -1; justify-self: end; }
 .pf-comp-input {
   width: 100%; font: inherit; font-size: var(--text-base); resize: vertical;
   border: 1px solid var(--border); border-radius: var(--radius-md); padding: var(--space-3) var(--space-4);
@@ -2452,12 +2464,8 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-menu-danger button:disabled { cursor: default; opacity: .45; background: transparent; }
 .qq-conv-trigger-seg { margin-bottom: 0; }
 .qq-conv-trigger-seg button { padding: 4px 10px; font-size: var(--text-note); }
-.qq-conv-edit-icon {
-  display: grid; width: 23px; height: 23px; flex: none; place-items: center; padding: 0; border-radius: 6px !important;
-  color: var(--text-muted); opacity: .7; transition: opacity .16s ease, color .16s ease, background .16s ease;
-}
-.qq-conv-edit-icon:hover { color: var(--accent); background: color-mix(in srgb, var(--accent) 9%, transparent); opacity: 1; }
-.qq-conv-edit-icon:focus-visible { opacity: 1; }
+/* 旧版把重命名铅笔直接摆在群名旁（.qq-conv-edit-icon）；现在收进行内「更多」面板，
+   那套样式已无人使用，别再留着诱人加回一个重复入口。 */
 .qq-conv-switch {
   display: flex; align-items: center; flex: none; gap: 7px; padding: 4px 2px 4px 7px;
   border: 0; border-radius: 8px; background: transparent; cursor: pointer;

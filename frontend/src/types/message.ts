@@ -50,6 +50,8 @@ export type ContextUsage = {
   limit: number;
   /** limit 来自「输入上限未填」时的保守估算，不是模型真实窗口——提示必须说破。 */
   limitIsFallback?: boolean;
+  /** 这些数字是按哪一份模型档算的：圆环的「去设置」据此直接落到这一档，而不是全局在用的那一档。 */
+  profile?: { id: string; label: string } | null;
   used: number;
   /** 本次纳入上下文的历史轮数（一问一答算一轮）。 */
   turns?: number;

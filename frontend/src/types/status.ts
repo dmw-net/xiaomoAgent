@@ -54,6 +54,9 @@ export type StatusData = {
   memoryExtractEmptyRate?: number | null;
   lastRecallAt?: number | null;
   modelFailures: number;
+  /** 「忽略提醒」的水印（毫秒）：早于它的历史失败不进提醒条，累计统计与活动记录照旧保留。
+   *  缺省 0 表示后端没下发（旧版），此时按没有忽略过处理。 */
+  failureWatermarkAt?: number;
   /** 近 24 小时的调用数与失败数——健康信号只看这个，不看累计。 */
   recent?: { calls: number; fail: number };
   channels: string[];

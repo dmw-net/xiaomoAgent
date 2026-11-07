@@ -1,14 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, ChevronRight, Database, Images, Info, Palette, Search, Sparkles, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Blocks, ChevronRight, Database, Images, Info, Palette, Search, Sparkles, UserRound, X, type LucideIcon } from "lucide-react";
 import Tabs, { panelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import Modal from "../../components/Modal";
 import AboutBody from "../../components/AboutBody";
 import ModelSection from "./ModelSection";
 import CapabilitySection from "./CapabilitySection";
-import SkillSection from "./SkillSection";
-import ToolLoopSection from "./ToolLoopSection";
-import ExtensionSection from "./ExtensionSection";
+import ToolsWorkbench from "./ToolsWorkbench";
 import MediaSection from "./MediaSection";
 import OwnerSection from "./OwnerSection";
 import AppearanceSection from "./AppearanceSection";
@@ -22,14 +20,15 @@ export type SettingsTab =
   | "model"
   | "capability"
   | "skill"
+  | "tools"
   | "media"
   | "appearance"
   | "about"
   | "experience"
   | "system";
 
-type SettingsGroup = "owner" | "model" | "media" | "experience" | "system" | "about";
-type ModelTab = "model" | "capability" | "skill";
+type SettingsGroup = "owner" | "model" | "tools" | "media" | "experience" | "system" | "about";
+type ModelTab = "model" | "capability";
 
 type GroupDef = {
   key: SettingsGroup;
@@ -41,7 +40,8 @@ type GroupDef = {
 /** 顶层按用户要解决的事情分类，而不是按实现模块分类。 */
 const GROUPS: GroupDef[] = [
   { key: "owner", label: "我的资料", hint: "头像、称呼与联系人眼中的你", icon: UserRound },
-  { key: "model", label: "模型与能力", hint: "主对话、专项能力与工具", icon: Sparkles },
+  { key: "model", label: "模型与能力", hint: "主对话模型、专项能力端点", icon: Sparkles },
+  { key: "tools", label: "工具与扩展", hint: "开关总览、技能、扩展与 MCP", icon: Blocks },
   { key: "media", label: "媒体与表情", hint: "图片、视频、语音，以及表情包", icon: Images },
   { key: "experience", label: "体验与提醒", hint: "外观、聊天显示与通知", icon: Palette },
   { key: "system", label: "系统与数据", hint: "存储、备份、访问与启动", icon: Database },
@@ -51,7 +51,6 @@ const GROUPS: GroupDef[] = [
 const MODEL_TABS: Array<{ key: ModelTab; label: string }> = [
   { key: "model", label: "主对话模型" },
   { key: "capability", label: "能力模型" },
-  { key: "skill", label: "技能与工具" },
 ];
 
 type SearchEntry = {
@@ -68,10 +67,11 @@ const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "owner", title: "我的资料", meta: "头像、称呼、指代方式、印象与备注", anchor: "settings-owner", keywords: "名字 昵称 头像 QQ 个人 人设 我" },
   { group: "model", modelTab: "model", title: "主对话模型", meta: "供应商、接口地址、API Key、模型列表", anchor: "settings-models", keywords: "模型 大模型 接口 密钥 供应商 deepseek 火山 ollama 思考 参数" },
   { group: "model", modelTab: "capability", title: "能力模型", meta: "看图、听音、说话、画图、记忆检索", anchor: "settings-capabilities", keywords: "视觉 语音 识别 合成 图像 生成 向量 能力" },
-  { group: "model", modelTab: "skill", title: "工具循环轮次", meta: "全局模型轮次、自定义与速度取舍", anchor: "settings-tool-loop", keywords: "工具 调用 轮次 循环 模型请求 上限 重试 多步 超时" },
+  { group: "tools", title: "工具与扩展总览", meta: "工具总闸、全局档位、按联系人例外", anchor: "settings-tools-overview", keywords: "工具 扩展 开关 总览 台账 档位 总闸 门控 矩阵 插拔 权限" },
+  { group: "tools", title: "工具循环轮次", meta: "全局模型轮次、自定义与速度取舍", anchor: "settings-tool-loop", keywords: "工具 调用 轮次 循环 模型请求 上限 重试 多步 超时" },
   { group: "media", title: "发表情频率", meta: "自然、少发或主动，只影响聊天表达倾向", anchor: "settings-emote-frequency", keywords: "表情 表情包 发表情 频率 主动 少发 接梗 情绪" },
-  { group: "model", modelTab: "skill", title: "技能", meta: "SKILL.md、技能目录、重新扫描", anchor: "settings-skills", keywords: "技能 skill 提示词 工具 目录" },
-  { group: "model", modelTab: "skill", title: "扩展与 MCP", meta: "MCP、Webhook、JS 工具、脚本许可", anchor: "settings-extensions", keywords: "扩展 mcp webhook 脚本 js 插件 工具" },
+  { group: "tools", title: "技能", meta: "SKILL.md、技能目录、重新扫描", anchor: "settings-skills", keywords: "技能 skill 提示词 工具 目录" },
+  { group: "tools", title: "扩展与 MCP", meta: "MCP、Webhook、JS 工具、脚本许可", anchor: "settings-extensions", keywords: "扩展 mcp webhook 脚本 js 插件 工具" },
   { group: "media", title: "媒体与表情", meta: "图片、视频、语音，以及表情包", anchor: "settings-media", keywords: "表情 表情包 emoji sticker 素材 采集 导入 相册 图片 视频 语音 文件 媒体 接梗 反应 内容库" },
   { group: "experience", title: "外观与壁纸", meta: "浅色、深色、强调色、壁纸", anchor: "settings-appearance", keywords: "主题 颜色 强调色 壁纸 玻璃 背景" },
   { group: "experience", title: "聊天显示", meta: "气泡时间、列表密度", anchor: "settings-chat-display", keywords: "时间 日期 密度 列表 气泡" },
@@ -86,7 +86,9 @@ const SEARCH_ENTRIES: SearchEntry[] = [
 
 function groupOf(tab: SettingsTab): SettingsGroup {
   if (tab === "owner" || tab === "home") return "owner";
-  if (tab === "model" || tab === "capability" || tab === "skill") return "model";
+  if (tab === "model" || tab === "capability") return "model";
+  // 旧的 "skill" 目的地仍落到新的一级分组：状态页 / 助手那些跳转不用跟着改。
+  if (tab === "tools" || tab === "skill") return "tools";
   if (tab === "media") return "media";
   if (tab === "appearance" || tab === "experience") return "experience";
   if (tab === "system") return "system";
@@ -94,7 +96,7 @@ function groupOf(tab: SettingsTab): SettingsGroup {
 }
 
 function modelTabOf(tab: SettingsTab): ModelTab {
-  return tab === "capability" || tab === "skill" ? tab : "model";
+  return tab === "capability" ? "capability" : "model";
 }
 
 function groupLabel(group: SettingsGroup): string {
@@ -107,13 +109,17 @@ function groupLabel(group: SettingsGroup): string {
  * 桌面端是一张“设置地图”：左侧搜索 + 可自解释的分类导航，右侧只呈现一个任务域。
  * 手机端先看分类总览，再进入单项，避免把五组内容排成一条无限长表单。
  */
-export default function SettingsView({ onChanged, initialTab, navSeq = 0, revealAdvanced, onOwnerAvatar, loadError, onRetryLoad }: {
+export default function SettingsView({ onChanged, initialTab, navSeq = 0, revealAdvanced, focusProfile, toolsFocus: incomingToolsFocus, onOwnerAvatar, loadError, onRetryLoad }: {
   onChanged: () => void;
   initialTab?: SettingsTab;
   /** 导航意图序号：同目的地再次跳转（点头像回「我的资料」）也要生效，光靠 initialTab 相等不行。 */
   navSeq?: number;
   /** 外部（上下文提示「去设置」）要求展开模型档的高级参数。 */
   revealAdvanced?: boolean;
+  /** 外部指定的模型档：上下文圆环知道自己量的是哪一档，要直接落到它（空串=没有指定）。 */
+  focusProfile?: string;
+  /** 外部（xiaomo:open-settings 事件）指定的「工具与扩展」内部页签；seq 递增保证重复跳转也生效。 */
+  toolsFocus?: { tab: "overview" | "skills" | "extensions"; seq: number };
   onOwnerAvatar: (dataUrl: string) => void;
   /** 设置加载失败时的错误提示（null = 无错误）。 */
   loadError?: string | null;
@@ -134,6 +140,10 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
   );
   const [visitedModelTabs, setVisitedModelTabs] = useState<Set<ModelTab>>(
     () => new Set([modelTabOf(initialTab ?? "home")]),
+  );
+  /** 搜索命中工具分区时把内部页签一起带过去：锚点可能在非默认页签里。 */
+  const [toolsFocus, setToolsFocus] = useState<{ tab: "overview" | "skills" | "extensions"; seq: number }>(
+    () => ({ tab: "overview", seq: 0 }),
   );
 
   const searchTerm = query.trim().toLocaleLowerCase();
@@ -159,6 +169,11 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
     setVisitedModelTabs((prev) => prev.has(modelTab) ? prev : new Set(prev).add(modelTab));
   }, [modelTab]);
 
+  // 外部指定的工具分区页签（联系人页「管理技能」等入口）：seq 变了即使页签相同也要生效。
+  useEffect(() => {
+    if (incomingToolsFocus !== undefined) setToolsFocus(incomingToolsFocus);
+  }, [incomingToolsFocus]);
+
   // 切分类是“换一页”，不是继续停在上一页的滚动位置。
   useEffect(() => {
     if (narrow && mobileHub) return;
@@ -183,9 +198,23 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
     setQuery("");
   };
 
+  /** 总览卡里的「去改」：只换落点，不复制任何开关，避免两处状态打架。 */
+  const goToTarget = (next: SettingsGroup, tab?: ModelTab, anchor?: string): void => {
+    setGroup(next);
+    if (next === "model" && tab !== undefined) setModelTab(tab);
+    setMobileHub(false);
+    setQuery("");
+    if (anchor !== undefined && anchor !== "") setPendingAnchor(anchor);
+  };
+
   const jumpTo = (entry: SearchEntry): void => {
     setGroup(entry.group);
     if (entry.modelTab) setModelTab(entry.modelTab);
+    if (entry.group === "tools") {
+      const tab = entry.anchor === "settings-skills" ? "skills"
+        : entry.anchor === "settings-extensions" ? "extensions" : "overview";
+      setToolsFocus((prev) => ({ tab, seq: prev.seq + 1 }));
+    }
     setMobileHub(false);
     setQuery("");
     setPendingAnchor(entry.anchor);
@@ -285,7 +314,7 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
       </div>
       {visitedModelTabs.has("model") || modelTab === "model" ? (
         <TabPanel active={modelTab === "model"} aria={panelAria("set-model", "model")}>
-          <ModelSection form={form} revealAdvanced={revealAdvanced} />
+          <ModelSection form={form} revealAdvanced={revealAdvanced} focusProfile={focusProfile} focusSeq={navSeq} />
         </TabPanel>
       ) : null}
       {visitedModelTabs.has("capability") || modelTab === "capability" ? (
@@ -293,14 +322,18 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
           <CapabilitySection form={form} />
         </TabPanel>
       ) : null}
-      {visitedModelTabs.has("skill") || modelTab === "skill" ? (
-        <TabPanel active={modelTab === "skill"} aria={panelAria("set-model", "skill")}>
-          <ToolLoopSection form={form} />
-          <SkillSection ask={form.askDangerous} />
-          <ExtensionSection ask={form.askDangerous} />
-        </TabPanel>
-      ) : null}
     </>
+  );
+
+  const toolsContent = (
+    <ToolsWorkbench
+      form={form}
+      ask={form.askDangerous}
+      focus={toolsFocus}
+      onGoModel={() => goToTarget("model", "model", "settings-models")}
+      onGoCapability={() => goToTarget("model", "capability", "settings-capabilities")}
+      onGoMedia={() => goToTarget("media", undefined, "settings-emote-frequency")}
+    />
   );
 
   return (
@@ -352,6 +385,8 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
             {groupPanel("owner", <OwnerSection form={form} onOwnerAvatar={onOwnerAvatar} />)}
 
             {(visitedGroups.has("model") || group === "model") && groupPanel("model", modelContent)}
+
+            {(visitedGroups.has("tools") || group === "tools") && groupPanel("tools", toolsContent)}
 
             {(visitedGroups.has("media") || group === "media") && groupPanel("media",
               <MediaSection active={group === "media"} form={form} />,

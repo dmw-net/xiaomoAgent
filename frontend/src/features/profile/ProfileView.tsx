@@ -21,6 +21,7 @@ import MediaLibrary from "../../components/MediaLibrary";
 import { getProfilePage, setProfilePage, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
 import { useTabSelect } from "../../hooks/useTabSelect";
 import { useDismiss } from "../../hooks/useDismiss";
+import { useToolState } from "../../hooks/useToolState";
 import Tabs, { panelAria, type PanelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import type { PersonaDraft } from "../../lib/persona-doc";
@@ -37,8 +38,12 @@ const FEATURE_DEFAULTS: CompanionFeatures = {
   lifeline: false, recap: false, consolidate: false, reminders: false, imageGen: false, voice: false, web: false, bond: false,
   splitReply: true, turnPct: 0, tokenPct: 0, showThinking: true, showTools: true,
   dailyLimit: 0, temperature: -1, bannedWords: "", schedule: "", lastConsolidatedAt: null,
+  toolPreset: "follow",
 };
 const EMPTY_BOND: BondState = { stage: "", warmth: 50, mood: "", updated_at: null };
+
+/** 档位选项的唯一真源在 tool-catalog.ts，经 /api/tools 的 choices 下发（见 useToolState）；
+ *  这里不再复刻一份 label/desc——那份复刻漂移过，两边各说各话。 */
 
 /** 联系人「对话设置」的第二层导航：先按改动目的分组，避免一张页里堆满旋钮。 */
 type ContactSettingsSection = "context" | "reply" | "tools" | "care" | "channels";
@@ -64,20 +69,21 @@ const FEATURE_ITEMS: Array<{ key: keyof CompanionFeatures; label: string; hint: 
   { key: "bond", label: "关系温度计", hint: (p) => `亲密度和心情随聊天变化，${p}的语气也跟着变` },
 ];
 
-/** 工具清单：联系人手上每一个能"做点事"的工具一行。开关都绑到现有 features 字段，不另立真源。 */
+/** 工具清单：联系人手上每一个能"做点事"的工具一行。开关都绑到现有 features 字段，不另立真源。
+ *  pointer 行是「不归这一位管」的全局项：只说明 + 给直达出口，不复制成可写控件。 */
 type ToolRow =
   | { kind: "toggle"; key: keyof CompanionFeatures; label: string; hint: (who: string) => string }
-  | { kind: "pointer"; label: string; hint: string };
+  | { kind: "pointer"; label: string; hint: string; link?: { text: string; tab: "media" | "tools"; toolsTab?: "skills" } };
 
 const TOOL_ITEMS: ToolRow[] = [
   { kind: "toggle", key: "clock", label: "看时间", hint: (who) => `系统提示词里常驻的现在时间、和「查一下现在几点」的工具一起关；关了${who}就不知道今天几号星期几，也接不住「现在几点」这种问题。` },
   { kind: "toggle", key: "memorySearch", label: "翻记忆", hint: (who) => `拿不准的事，${who}可以自己翻记忆库核对；这里只关「主动去翻」这条路，每轮自动带上的相关记忆归「记忆召回」管，记不记新的归「记忆提取」管。` },
-  { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。" },
+  { kind: "toggle", key: "web", label: "联网", hint: () => "搜公开网页、读网页正文，接得住当下的事、帮忙找图。这是唯一会主动向外发请求的能力，默认关，会慢一点。一个开关管住搜索和读网页两项。" },
   { kind: "toggle", key: "reminders", label: "到点提醒", hint: () => "说一句「明晚九点提醒我吃药」，到点原样发出去；自己立一条或改时间去「主动性」。" },
   { kind: "toggle", key: "imageGen", label: "图像生成", hint: (p) => `${p}能在聊天里画图；要先在 设置 → 能力模型 → 图像生成 配好绘图模型，每人每天最多 5 张，等一分多钟。自拍参考图在「人格设定 → 角色形象」。` },
-  { kind: "pointer", label: "表情包", hint: "发表情不归这位联系人单独管：唯一开关在 设置 → 媒体与表情 → 发表情频率（关闭 / 少发 / 自然 / 主动），对所有联系人一致生效。素材在同一页管理，能发哪几种看这位的 QQ 连接卡。" },
+  { kind: "pointer", label: "表情包", hint: "发表情不归这位联系人单独管：唯一开关在 设置 → 媒体与表情 → 发表情频率（关闭 / 少发 / 自然 / 主动），对所有联系人一致生效。素材在同一页管理，能发哪几种看这位的 QQ 连接卡。", link: { text: "去设置", tab: "media" } },
   { kind: "toggle", key: "voice", label: "发语音", hint: (p) => `${p}可以把想说的话合成一条语音发出去：QQ 里是原生语音条，应用里是可播放的语音气泡。要先在 设置 → 能力模型 → 语音合成 配好 TTS。默认关，开了才声明工具。开启后回复气泡右下角会出现播放按钮，点击即可收听。` },
-  { kind: "pointer", label: "技能", hint: "把自定义技能当成一份做法说明书；有可用技能时自动挂载，内容与开关在 设置 → 技能。" },
+  { kind: "pointer", label: "技能", hint: "把自定义技能当成一份做法说明书；有可用技能时自动挂载，内容与启停在 设置 → 工具与扩展 → 技能。", link: { text: "管理技能", tab: "tools", toolsTab: "skills" } },
 ];
 
 /** 聊天框显示开关（纯显示维）：思考过程折叠条 / 工具调用过程卡片。 */
@@ -290,6 +296,10 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   const [usage, setUsage] = useState<ContextUsage | null>(null);
   // 陪伴能力（可插拔借鉴功能包）：开关 + 作息 + 生活线 + 温度计
   const [features, setFeatures] = useState<CompanionFeatures>(FEATURE_DEFAULTS);
+  // 工具档位选项由 /api/tools 下发（tool-catalog.ts 是唯一真源）。App 启动已预热，
+  // 这里通常直接吃缓存；快照没到就先不渲染 chips，好过渲染一份会漂移的复刻。
+  const toolState = useToolState();
+  const TOOL_PRESET_OPTIONS = toolState?.choices ?? [];
   /**
    * 生效模型档的工具硬闸（caps.tools）：false 时「允许使用工具」开了也不带工具，
    * 总开关下面的清单全是摆设——必须在卡里说破，不能让人对着开关排障。
@@ -1086,7 +1096,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           {!isAssistant && (
             <div className="card card-pad pf-set-card">
               <div className="pf-set-title"><span>工具</span></div>
-              <div className="pf-set-sub">关闭总开关后，所有工具都不可用。看时间 / 翻记忆默认开，也可以按这位联系人单独关。</div>
+              <div className="pf-set-sub">先选一个档位；多数情况不必逐项调。上面的「允许使用工具」就是这一位的全关开关，全局台账的档位是上限，这一位只能更严。</div>
               <div className="pf-comp-grid">
                 <label className="pf-comp-item pf-tools-master" title="关掉后一个工具都拿不到：看时间、翻记忆、联网这些全部不可用。">
                   <input type="checkbox" checked={features.tools === true}
@@ -1099,27 +1109,77 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   当前生效模型档「{modelTools.model}」没勾「工具调用」，总开关开了也不会带任何工具——去 设置 → 模型档 把「工具调用」勾上。
                 </div>
               )}
-              <div className="pf-comp-grid">
-                {TOOL_ITEMS.map((row) =>
-                  row.kind === "toggle" ? (
-                    <label key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint(who)}>
-                      <input
-                        type="checkbox"
-                        checked={features[row.key] === true}
-                        disabled={features.tools !== true}
-                        onChange={(e) => setFeatures({ ...features, [row.key]: e.target.checked })}
-                      />
-                      <span className="pf-comp-name">{row.label}</span>
-                    </label>
-                  ) : (
-                    <div key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint}>
-                      <span className="pf-comp-tag">在「技能」页</span>
-                      <span className="pf-comp-name">{row.label}</span>
+
+              <div className="pf-preset-block">
+                <div className="pf-set-title"><span>工具档位</span></div>
+                {TOOL_PRESET_OPTIONS.length === 0 ? (
+                  <div className="pf-preset-desc">档位选项读取中…</div>
+                ) : (
+                  <>
+                    <div className="pf-preset-chips" role="radiogroup" aria-label="这位联系人的工具档位">
+                      {TOOL_PRESET_OPTIONS.map((option) => (
+                        <button key={option.key} type="button" role="radio"
+                          aria-checked={features.toolPreset === option.key}
+                          className={"pf-preset-chip" + (features.toolPreset === option.key ? " is-on" : "")}
+                          disabled={features.tools !== true}
+                          onClick={() => setFeatures({ ...features, toolPreset: option.key })}>
+                          {option.label}
+                        </button>
+                      ))}
                     </div>
-                  ),
+                    <div className="pf-preset-desc">
+                      {/* 「跟随全局」把当前全局档一起说破：不用去设置页对一遍才知道自己跟的是哪档。 */}
+                      {(() => {
+                        const option = TOOL_PRESET_OPTIONS.find((o) => o.key === features.toolPreset);
+                        if (option === undefined) return "";
+                        if (features.toolPreset !== "follow" || toolState === null) return option.desc;
+                        const global = toolState.presets.find((p) => p.key === toolState.globalPreset);
+                        return global === undefined ? option.desc : `当前全局是「${global.label}」。${option.desc}`;
+                      })()}
+                    </div>
+                  </>
                 )}
               </div>
 
+              <details className="pf-tools-advanced">
+                <summary>逐项调整（改动后自动变为「自定义」）</summary>
+                <div className="pf-tools-note">
+                  这里的开关按「类」管：6 个开关对应 7 个内置工具（联网一个开关管住搜索和读网页）；
+                  加上表情 2 项、技能 1 项，就是台账里陪伴侧的全部内置工具。
+                  单独关过的项会一直记着，切到别的档位也不会自动放开。
+                  台账多出来的项是助手的管理操作（不归这一位管）与扩展带来的工具（跟随档位）。
+                  <button type="button" className="tw-link"
+                    onClick={() => window.dispatchEvent(new CustomEvent("xiaomo:open-settings", { detail: { tab: "tools" } }))}>
+                    查看完整台账
+                  </button>
+                </div>
+                <div className="pf-comp-grid">
+                  {TOOL_ITEMS.map((row) =>
+                    row.kind === "toggle" ? (
+                      <label key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint(who)}>
+                        <input
+                          type="checkbox"
+                          checked={features[row.key] === true}
+                          disabled={features.tools !== true}
+                          onChange={(e) => setFeatures({ ...features, [row.key]: e.target.checked, toolPreset: "custom" })}
+                        />
+                        <span className="pf-comp-name">{row.label}</span>
+                      </label>
+                    ) : (
+                      <div key={row.label} className={"pf-comp-item" + (features.tools !== true ? " pf-comp-off" : "")} title={row.hint}>
+                        <span className="pf-comp-tag">全局设置</span>
+                        <span className="pf-comp-name">{row.label}</span>
+                        {row.link !== undefined && (
+                          <button type="button" className="tw-link"
+                            onClick={() => window.dispatchEvent(new CustomEvent("xiaomo:open-settings", { detail: { tab: row.link!.tab, toolsTab: row.link!.toolsTab } }))}>
+                            {row.link.text}
+                          </button>
+                        )}
+                      </div>
+                    ),
+                  )}
+                </div>
+              </details>
             </div>
           )}
 

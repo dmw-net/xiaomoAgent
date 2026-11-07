@@ -43,7 +43,7 @@ function friendlyModelError(code?: string, message?: string): string {
   if (/401|403|unauthorized|forbidden|api.?key|鉴权|密钥/.test(text)) return "模型密钥无效或没有权限";
   if (/429|rate.?limit|quota|额度|限流/.test(text)) return "模型调用被限流或额度不足";
   if (/non.?json|json|parse|格式/.test(text)) return "模型返回格式异常";
-  if (/output_truncated|finish_reason.?length|输出额度用完|思考.*额度/.test(text)) return "思考太久，没写完结果";
+  if (/output_truncated|finish_reason.?(length|sensitive|content_filter|safety)|输出额度用完|思考.*额度|安全.*截断|内容.*截断/.test(text)) return "思考太久或内容被安全策略截断";
   if (/network|fetch|econn|dns|连接/.test(text)) return "连接不上模型服务";
   return "模型调用失败";
 }
@@ -91,7 +91,7 @@ const CHANNEL_LABEL: Record<string, string> = { web: "网页", wechat: "微信" 
  * 记忆条数、微信绑定都在各联系人的资料页里，总览按联系人显示等于随机挑一位。
  * 提醒条同理只收真会坏事的：按设计如此的静默/配额不该天天报警。
  */
-export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, goQueue, onOpenContacts, onRefresh, panel }: {
+export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, goTurns, goQueue, onOpenContacts, onRefresh, panel }: {
   panel: PanelAria;
   d: StatusData;
   /** 清除通道提示后重新拉一次 /api/status，让红字当场消失。 */
@@ -104,7 +104,10 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   notice?: string;
   actions: ReactNode;
   goSettings: (tab: "model" | "capability") => void;
+  /** 模型调用/记忆整理的明细：活动记录 → 活动明细。 */
   goTab: (tab: "activity") => void;
+  /** 处理单自身的明细：活动记录 → 回复任务（别再跳到模型调用那一页）。 */
+  goTurns: () => void;
   goQueue: () => void;
   onOpenContacts: () => void;
 }): JSX.Element {
@@ -233,7 +236,11 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   ];
 
   const t = d.turns;
-  const turnFailRecent = !!t?.lastFailedAt && now - t.lastFailedAt < DAY;
+  // 「忽略提醒」是全局水印：24 小时窗口只负责让旧失败自然过期，水印负责当场划掉
+  // 用户已经看过的那一批。turnStats 的累计失败数照旧显示在卡片里，历史一条不删；
+  // 水印之后再失败，lastFailedAt 会更新成更晚的时间，提醒重新出现。
+  const ackAt = d.failureWatermarkAt ?? 0;
+  const turnFailRecent = !!t?.lastFailedAt && t.lastFailedAt > ackAt && now - t.lastFailedAt < DAY;
   const extractSamples = d.memoryExtractSamples ?? 0;
   const extractEmptyPct = d.memoryExtractEmptyRate == null ? null : Math.round(d.memoryExtractEmptyRate * 100);
   const outbound = d.outbound;
@@ -286,9 +293,9 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
       note: t.failed > 0 && turnFailRecent ? "最近有消息处理失败" : undefined,
       v: <>{t.total} 条消息 · 完成 {t.done} · 失败 {t.failed} · 处理中 {t.inFlight}</>,
       fix: t.failed > 0 && turnFailRecent
-        ? <>最近一次失败 {when(t.lastFailedAt!)}，{link("明细看「活动记录」", () => goTab("activity"))}</>
+        ? <>最近一次失败 {when(t.lastFailedAt!)}，{link("明细看「回复任务」", goTurns)}</>
         : undefined,
-      action: t.failed > 0 && turnFailRecent ? { label: "查看任务", on: () => goTab("activity") } : undefined,
+      action: t.failed > 0 && turnFailRecent ? { label: "查看任务", on: goTurns } : undefined,
     } as Row] : []),
     { led: "ok", k: "数据", silent: true, v: <>保存在本机 <code>{d.dbPath}</code></> },
   ];

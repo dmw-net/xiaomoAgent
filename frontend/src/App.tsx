@@ -22,6 +22,7 @@ import { useDetailHistory } from "./hooks/useDetailHistory";
 import type { ViewKey } from "./types";
 import { settingsApi, contactId, setContactId } from "./api";
 import { getCachedContacts, refreshContacts, subscribeContacts } from "./lib/contactsStore";
+import { ensureToolState } from "./lib/toolsStore";
 import { showMessageNotification, syncAppBadge } from "./lib/notify";
 import { startOutbox } from "./lib/outbox";
 import { startEventBus } from "./lib/eventBus";
@@ -58,6 +59,9 @@ export default function App(): JSX.Element {
    *  也要生效。initialTab 相同的时候 effect 不会重跑，得靠这个计数器顶它一下。 */
   const [settingsNavSeq, setSettingsNavSeq] = useState(0);
   const [settingsAdvanced, setSettingsAdvanced] = useState(false);
+  /** 「去设置」指定的模型档 id：设置页要把这一档直接打开，而不是全局在用的那一档。
+   *  与 settingsAdvanced 同属一次性意图，跟着 settingsNavSeq 一起下发。 */
+  const [settingsFocusProfile, setSettingsFocusProfile] = useState("");
   /** 标记本次导航已携带设置意图（tab/advanced 已设好），navigateTo 不要覆盖。 */
   const navIntendsSettingsRef = useRef(false);
   /** 设置页加载失败时的错误提示（null = 无错误）。 */
@@ -172,6 +176,9 @@ export default function App(): JSX.Element {
         console.error("[app] 设置读取失败：", error);
         setSettingsLoadError("设置读取失败，点击重试");
       });
+    // 预热工具台账缓存：聊天卡的动作短语、联系人页的档位文案都吃这份快照，
+    // 启动时拉一次，之后这些读方缓存优先、基本零请求（写方挂载仍会强制拉新）。
+    void ensureToolState().catch(() => undefined);
   }, []);
 
   const retrySettings = useCallback((): void => {
@@ -335,9 +342,10 @@ export default function App(): JSX.Element {
 
   /** 上下文提示里的「去设置」：进「主对话模型」并把高级参数展开——输入上限就藏在那里，
    *  不展开等于把人领到门口又让用户自己找门。 */
-  const openModelSettings = useCallback((): void => {
+  const openModelSettings = useCallback((profileId?: string): void => {
     setSettingsTab("model");
     setSettingsAdvanced(true);
+    setSettingsFocusProfile(profileId ?? "");
     setSettingsNavSeq((n) => n + 1);
     setProfile(null);
     navIntendsSettingsRef.current = true;
@@ -352,6 +360,28 @@ export default function App(): JSX.Element {
     navIntendsSettingsRef.current = true;
     navigate("settings");
   }, [navigate]);
+
+  // 助手控制台等深层的「去设置」出口：走窗口事件而不是层层传 prop，
+  // 与 xiaomo:open-contact 同一套通道。放在 openSettingsTab 之后定义，
+  // 避免依赖数组在渲染期碰到还没初始化的 const。
+  // detail.toolsTab（可选）进一步指定「工具与扩展」的内部页签，
+  // 比如联系人页的「管理技能」要落到技能页而不是总览。
+  const [settingsToolsFocus, setSettingsToolsFocus] = useState<{ tab: "overview" | "skills" | "extensions"; seq: number }>(
+    () => ({ tab: "overview", seq: 0 }),
+  );
+  useEffect(() => {
+    const openSettings = (event: Event): void => {
+      const d = (event as CustomEvent<{ tab?: string; toolsTab?: string }>).detail;
+      const tab = d?.tab;
+      if (typeof tab !== "string" || tab.length === 0) return;
+      if (d?.toolsTab === "overview" || d?.toolsTab === "skills" || d?.toolsTab === "extensions") {
+        setSettingsToolsFocus((prev) => ({ tab: d.toolsTab as "overview" | "skills" | "extensions", seq: prev.seq + 1 }));
+      }
+      openSettingsTab(tab as SettingsTab);
+    };
+    window.addEventListener("xiaomo:open-settings", openSettings);
+    return () => window.removeEventListener("xiaomo:open-settings", openSettings);
+  }, [openSettingsTab]);
 
   /** 「管理联系人」：直接进「对话」列表页（增删/资料/搜索都在那里），不再有独立抽屉。 */
   const manageContacts = useCallback((): void => { navigateTo("chat"); }, [navigateTo]);
@@ -475,7 +505,7 @@ export default function App(): JSX.Element {
         )}
         {(visitedViews.has("settings") || view === "settings") && (
           <div className={"view" + (view === "settings" && !profile ? " active" : "")} id="view-settings">
-            <SettingsView onChanged={refreshContactMeta} initialTab={settingsTab} navSeq={settingsNavSeq} revealAdvanced={settingsAdvanced} onOwnerAvatar={setOwnerAvatar} loadError={settingsLoadError} onRetryLoad={retrySettings} />
+            <SettingsView onChanged={refreshContactMeta} initialTab={settingsTab} navSeq={settingsNavSeq} revealAdvanced={settingsAdvanced} focusProfile={settingsFocusProfile} toolsFocus={settingsToolsFocus} onOwnerAvatar={setOwnerAvatar} loadError={settingsLoadError} onRetryLoad={retrySettings} />
           </div>
         )}
         {(visitedViews.has("chat") || view === "chat") && (

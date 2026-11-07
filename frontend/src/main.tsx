@@ -10,6 +10,7 @@ import "./styles/theme.css";
 import "./styles/foundation.css";
 import "./styles/components.css";
 import "./styles/experience.css";
+import "./styles/tools.css";
 
 migrateAppearancePrefs();
 watchKeyboard();

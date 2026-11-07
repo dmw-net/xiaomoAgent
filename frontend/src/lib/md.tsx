@@ -141,7 +141,34 @@ function inline(text: string, keyBase: string): ReactNode[] {
   return nodes;
 }
 
+/** 缓存容量：整屏 500 行 × 几个会话实例的量级，流式草稿每拍换新文本只会挤掉旧条目。 */
+const MD_CACHE_MAX = 1500;
+const mdCache = new Map<string, ReactNode>();
+
+/**
+ * renderMd 的模块级 LRU。重挂载（切联系人/切会话/助手弹窗重开）会把整屏 500 行
+ * 气泡的 DOM 全量重建——`MessageRow` 的 memo 与 reuseRows 的对象复用只救得了
+ * 「同实例内的更新」，救不了新实例；这里省下的是那 500 次 Markdown 重拆行的 CPU。
+ * 同一段文本的解析结果恒等，React 元素是不可变描述对象，多处渲染同一份也安全。
+ */
 export function renderMd(text: string): ReactNode {
+  const hit = mdCache.get(text);
+  if (hit !== undefined) {
+    // 先删再插 = LRU 摸底，常用文本留在缓存里
+    mdCache.delete(text);
+    mdCache.set(text, hit);
+    return hit;
+  }
+  const node = parseMd(text);
+  mdCache.set(text, node);
+  if (mdCache.size > MD_CACHE_MAX) {
+    const oldest = mdCache.keys().next().value;
+    if (oldest !== undefined) mdCache.delete(oldest);
+  }
+  return node;
+}
+
+function parseMd(text: string): ReactNode {
   const lines = text.split("\n");
   const out: ReactNode[] = [];
   // 围栏代码块整段原样放进 <pre>：以前只跳过 ``` 标记行、内容仍走 inline()，

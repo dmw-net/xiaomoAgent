@@ -124,6 +124,34 @@ function mergeRows(oldRows: MessageRow[], next: MessageRow[]): MessageRow[] {
 }
 
 /**
+ * 全量页（`?all=1` 的最新一页快照）专用合并：按 id 去重沿用旧对象之外，还要**丢幽灵行**。
+ *
+ * 本地列表里 id ≥ 本页最小 id、却不在本页里的行，服务端一定已经不存在——全量页是
+ * `ORDER BY id DESC LIMIT N` 的原样快照，窗口内一行不漏，缺席只能意味着被删了
+ * （重答/打断对旧气泡的硬删除、另一台设备的删除）。这些行若不丢，就会在「操作后
+ * POST 还在飞就切走了联系人」的窗口里被种子缓存记住——切回来时 mergeRows 的只增不删
+ * 把它们原地复活，和新回复并存，之后任何轮询都清不掉，只能刷新页面。
+ * 丢的判据必须只用于全量页：增量拉取（pullOnce）传进来的只是新增小批，最小 id 之上
+ * 不在批里的行大都是正常历史，照这个规则丢就把会话砍没了。
+ * 「载入更早」翻过的页 id 都比本页最小 id 小，天然落在保留区，不受影响。
+ */
+function mergeRowsFullPage(oldRows: MessageRow[], next: MessageRow[]): MessageRow[] {
+  if (oldRows.length === 0) return next;
+  if (next.length === 0) return next; // 服务端真的一条不剩：本地这些全是幽灵，一并丢掉
+  const byId = new Map(next.map((r) => [r.id, r] as const));
+  const minNextId = Math.min(...next.map((r) => r.id));
+  for (const r of oldRows) {
+    if (r.id < minNextId && !byId.has(r.id)) byId.set(r.id, r);
+  }
+  // 内容相同沿用旧对象（reuseRows 同一套省渲染）；内容变了以新对象为准。
+  const oldById = new Map(oldRows.map((r) => [r.id, r] as const));
+  return [...byId.values()].sort((a, b) => a.id - b.id).map((r) => {
+    const o = oldById.get(r.id);
+    return o && sameRow(o, r) ? o : r;
+  });
+}
+
+/**
  * 正在打的字按会话留着（微信口径）：换联系人以前会连草稿一起吞掉，
  * 因为会话页按联系人 key 挂载，重挂载就把输入框打回空。
  *
@@ -174,8 +202,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   onEditProfile?: () => void;
   /** 打开联系人资料页的记忆 / 主动性分区（「⋯」菜单与空态链接）。 */
   onOpenSection?: (page: "memory" | "proactive") => void;
-  /** 上下文提示里的「去设置」：跳到设置页的「主对话模型」并展开高级参数。 */
-  onOpenModelSettings?: () => void;
+  /** 上下文提示里的「去设置」：跳到设置页的「主对话模型」并展开高级参数。
+   *  带 profileId 时直接落到那一档——同名的档不止一个（hy3 / 本地中转 · agent2api/hy3），
+   *  只送到列表等于让人自己认门。 */
+  onOpenModelSettings?: (profileId?: string) => void;
   /** 空态清单上的「继续设置」：打开首次设置弹窗。 */
   onOpenOnboarding?: () => void;
   /** 从「⋯」归档成功后的收尾（切回默认联系人/列表），不给就只刷新列表。 */
@@ -519,8 +549,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     setCtxOpen((v) => !v);
     if (!ctxOpen) loadCtx();
   };
-  // 圆环常驻：进会话就拉一次，之后随消息增删刷新（与消息轮询同频，不额外加定时器）
-  useEffect(() => { loadCtx(); }, [loadCtx, msgs.length]);
+  // 圆环常驻：进会话就拉一次，之后随消息增删刷新（与消息轮询同频，不额外加定时器）。
+  // 判据用「最新消息 id」而不是行数：载入更早的分页只增行数、不改时间轴，按行数会把它
+  // 误当上下文变了，多打一次服务端最贵的 token 估算；新消息/删掉最新一条才真的改占用。
+  const maxMsgId = msgs.length > 0 ? (msgs[msgs.length - 1]?.id ?? 0) : 0;
+  useEffect(() => { loadCtx(); }, [loadCtx, maxMsgId]);
 
   // ── 多媒体（图片附件 / 录音 / 播报 / 看大图） ──
   const [imgs, setImgs] = useState<string[]>([]);
@@ -689,11 +722,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    *  少清一次就会在屏幕上挂着一段已经不代表的回答。 */
   const retireDraft = (): void => { draftTurnRef.current = null; setStreamText(""); setStreamReasoning(""); };
   const watchStopRef = useRef<(() => void) | null>(null);
+  /** 实例存活哨兵：重答/发送的 POST 落在卸载之后（在飞时切走了联系人）时，watch 链不许
+   *  再启动——卸载清理那时已经跑过，再没有人会调它的 stop，泄漏的轮询链会以旧作用域
+   *  空转满 300 拍，还会顺手把旧联系人的已读进度上报出去。各拉取入口同守这道哨兵。 */
+  const mountedRef = useRef(true);
   /** 被 barge-in 打断的旧轮：它已插的气泡是服务端删掉的，两种拉取（增量按 id、全量按 id 合并）
    *  都看不见删除。本地先撤下，等新轮收尾后再按轮窄取校准一次（打断收尾在旧执行体的
    *  下一个检查点才落库，立刻窄取可能太早）。 */
   const interruptedTurnsRef = useRef<Set<string>>(new Set());
   const watch = useCallback((turnId: string, opts: { fullRedraw?: boolean } = {}) => {
+    if (!mountedRef.current) return;
     watchStopRef.current?.();
     // 新一轮（含重答同一轮）从默认展开重新开始，不继承上一轮用户收起后的状态。
     setThinkingOpenTurns((prev) => {
@@ -806,7 +844,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     };
     tick();
   }, [addNotice, cid, dropNotices, asleep, streamReveal]);
-  useEffect(() => () => watchStopRef.current?.(), []);
+  useEffect(() => () => { mountedRef.current = false; watchStopRef.current?.(); }, []);
 
   // 数据被整库清空：模块级那份种子缓存必须当场作废。
   // 库是 DELETE 清的、AUTOINCREMENT 不复位，所以没有任何 id 变化能提醒缓存"这些行已经没了"——
@@ -877,6 +915,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 连「停止」都够不到（实测：切回时顶栏=在线、无停止钮、气泡数比离开时少两条）。
    * 顺带覆盖另一条此前没人接的路：联系人从微信/别的窗口回话，这边同样该显示在忙。
    *
+   * 在飞的那一轮不能只在「最新一条」里找：重答**较早**轮次时，那一轮的 created_at
+   * 还是它当初的时间，排不进 LIMIT 1 —— 切走再切回（或刷新页面）就找不到在飞轮，
+   * watch 无人接手；而重答较早轮次是**原地写回原气泡行**的，行号不变，增量拉取
+   * （id > since）永远看不见它完成，界面就永远停在旧回答上。所以服务端在
+   * /api/turns/recent 的响应里随最新轮一起带回在飞轮（active 字段），一发两用。
+   *
    * 只置 typing 不置 busy —— 与 `send()` 同一套：busy 会把发送键锁成"发送中"，
    * 而"联系人还在回话时发新的一句 = 打断重来"是设计好的 barge-in，不能被恢复状态杀掉。
    */
@@ -886,16 +930,19 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     // watch 开头的 watchStopRef 把新轮的监控杀掉，新回复从此无人认领。
     const wasIdle = pendingTurnRef.current === null;
     try {
+      // 一发两用：失败横幅看最新一轮（turns[0]），在飞监控看服务端随响应带回的
+      // active（重答较早轮次时它排不进「最新一条」，只能在响应里单独带回）。
       const recent = await chatApi.fetchRecentTurns(1, cid ?? msgScope, conversationId);
       const t = recent.turns?.[0];
       setFailure(t && t.status === "failed" ? { id: t.id, error: t.error } : null);
-      if (t && (t.status === "queued" || t.status === "running") && wasIdle && pendingTurnRef.current === null) {
-        pendingTurnRef.current = t.id;
+      const active = recent.active;
+      if (active && (active.status === "queued" || active.status === "running") && wasIdle && pendingTurnRef.current === null) {
+        pendingTurnRef.current = active.id;
         setTyping(true);
-        watch(t.id, { fullRedraw: true });
+        watch(active.id, { fullRedraw: true });
       }
     } catch { /* 状态检查失败不阻塞消息 */ }
-  }, [cid, msgScope, watch]);
+  }, [cid, msgScope, conversationId, watch]);
 
   // 已读上报：只在页面可见时把「看到哪条」记进后端，红点才会消失。
   // 切走/隐藏时不上报，别人才会在侧栏看到该联系人的未读。
@@ -914,6 +961,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   }, [cid, msgScope, conversationId]);
 
   const pullOnce = async (): Promise<void> => {
+    if (!mountedRef.current) return; // 卸载后迟到的调用：不再发请求、不再上报已读
     const data = await chatApi.fetchMessages(lastIdRef.current, cid, conversationId);
     setModelReady(data.modelReady);
     setOnboardingDone(data.onboardingDone);
@@ -972,6 +1020,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   };
 
   const pullAllOnce = async (): Promise<void> => {
+    if (!mountedRef.current) return; // 卸载后迟到的调用：不再发请求、不再上报已读
     const data = await chatApi.fetchAllMessages(cid, conversationId);
     setModelReady(data.modelReady);
     setOnboardingDone(data.onboardingDone);
@@ -989,10 +1038,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     const keepFailed = pendingsRef.current.filter((p) => p.failed);
     pendingsRef.current = keepFailed;
     setPendings(keepFailed);
-    // 按 id 合并，不是整体替换：`all=1` 只回最新 CHAT_FIRST_PAGE 条，
-    // 而"载入更早的消息"是按 `before=` 一页页往前翻的——直接换掉就把那些页全丢了，
-    // 用户从第 1 条被瞬移到第 800 条，olderLeft 也跟着重新变大。
-    setMsgs((prev) => mergeRows(prev, data.messages));
+    // 全量页合并（会丢幽灵行），不是只增不删的 mergeRows：`all=1` 是服务端最新一页的
+    // 原样快照，用它认得出哪些本地行已经被服务端删掉（见 mergeRowsFullPage 的说明）。
+    setMsgs((prev) => mergeRowsFullPage(prev, data.messages));
     reportRead();
   };
 
@@ -1003,6 +1051,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 返回服务端这一轮的行：watch 收尾要用它判断"done 了却没气泡"的空回复。
    */
   pullTurnRef.current = async (turnId: string): Promise<MessageRow[]> => {
+    if (!mountedRef.current) return []; // 卸载后迟到的调用：不再发请求
     const data = await chatApi.fetchTurnMessages(turnId, cid, conversationId);
     if (editingRef.current !== null) return data.messages;
     setMsgs((prev) => reuseRows(prev,
@@ -1564,7 +1613,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       // 首屏这一拍也要认处理单：重答跑到一半切走再回来，界面得接着显示"正在回复"。
       // 增量拉取不会把"上一轮还在飞"通知给前端，不主动查就永远看不到了。
       void checkTurnState();
-      return pullRef.current?.();
+      // 不再补一拍增量拉取：全量刚落、lastIdRef 必是最新，这一发实测必空。
+      // 竞态窗口里进来的消息由空闲链（2.5s 一拍）与事件总线兜住，不值得多打一发。
     }).catch((e: Error) => {
       setLoaded(true);
       // 选中的联系人已经不在了：本机删过，或在别处删了而 localStorage 还留着旧 id。
@@ -2382,7 +2432,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
          退场，剩下的"还有话要来"回到三个点。位置见 nodes：跟着它那一轮走。 */
       case "draft": return (
         <div key="draft" className="msg-row contact gap" id="typingRow">
-          <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} />
+          <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} style={avatarToneStyle(characterName)} />
           <div className="bubble">
             {streamReasoning !== "" && (
               <ThinkingBlock reasoning={streamReasoning} live={draftShown === ""} persistKey={draftTurnRef.current ?? undefined}
@@ -2472,7 +2522,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                比周围气泡横移半个头像宽，看起来像跳了一格。
                data-id 也不能少——进入编辑态要靠它把这一条滚进视口。 */
             <div key={m.id} className={"msg-row editing gap " + (mine ? "me" : "contact")} data-id={m.id}>
-              {!mine && <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} />}
+              {!mine && <Avatar className="msg-ava" src={contactAvatar || undefined} name={characterName} style={avatarToneStyle(characterName)} />}
               <div className="editbox">
                 <div className="editbox-head">
                   <div className="editbox-heading">
@@ -2577,7 +2627,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               {/* 演示模式是首启用户第一眼看到的状态——不给出口，用户就只能去翻文档。
                   who-wrap 整块是 pointer-events:none（居中标题不吃点击），所以这里单独放开这一行。 */}
               {modelReady === false && onOpenModelSettings ? (
-                <button type="button" className="ctx-link stat-link" id="stat" onClick={onOpenModelSettings}>
+                <button type="button" className="ctx-link stat-link" id="stat" onClick={() => onOpenModelSettings()}>
                   还没接入模型 · 去设置
                 </button>
               ) : (
@@ -3126,13 +3176,19 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                         <span className="ctx-warn">
                           更早的没带上，还差 {c.droppedByBudget} 轮 · 想多带，去 编辑资料 → 回放轮数 调大
                           {c.limitIsFallback
-                            ? <>，或先<button type="button" className="ctx-link" onClick={() => { setCtxOpen(false); onOpenModelSettings?.(); }}>去设置</button>填模型的输入上限</>
+                            ? <>，或先<button type="button" className="ctx-link" onClick={() => { setCtxOpen(false); onOpenModelSettings?.(c.profile?.id); }}>去设置</button>给{c.profile ? `「${c.profile.label}」` : "这一档"}填上输入上限</>
                             : "，或换个能记更多的模型"}
                           。
                         </span>
                       </div>
                     )}
-                    <div className="ctx-foot">数字是估算 · 模型 {c.model || "未配置"}</div>
+                    {/* 分母是按哪一档算的必须点名：档很多，其中同名的也不少（hy3 / 本地中转 · agent2api/hy3），
+                        只说「去设置」用户会改到另一档，回来圆环分毫不动。 */}
+                    <div className="ctx-foot">
+                      数字是估算 · 模型 {c.model || "未配置"}
+                      {c.profile ? ` · 档「${c.profile.label}」` : ""}
+                      {c.limitIsFallback ? `（输入上限没填，分母按 ${fmtTokens(c.limit)} 估）` : ""}
+                    </div>
                   </div>
                 </>,
                 document.body

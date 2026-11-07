@@ -152,6 +152,9 @@ export function deleteMessage(id: number, cid?: string): Promise<unknown> {
   return deleteJson(cq("/api/message/" + id, cid));
 }
 
-export function fetchRecentTurns(limit: number, cid?: string, conversationId?: string): Promise<{ turns: TurnRow[] }> {
+/** 最近处理单。`active` 是还在飞（queued/running）的那一轮（按联系人查询时服务端带回）：
+ *  重答**较早**轮次时那一轮排不进「最新一条」，聊天页靠它把 watch 接回来——
+ *  与最新轮同一次往返带回，不必按状态再打一发。 */
+export function fetchRecentTurns(limit: number, cid?: string, conversationId?: string): Promise<{ turns: TurnRow[]; active?: TurnRow | null }> {
   return getJson(cqc("/api/turns/recent?limit=" + limit, cid, conversationId));
 }

@@ -1,5 +1,6 @@
 import { contactId as activeContactId, deleteJson, getJson, postJson, putJson } from "./client";
 import type { ContactItem } from "../types";
+import type { ToolPresetChoice } from "./tools";
 
 /** 联系人级可插拔陪伴能力（与后端 CompanionFeatures 对齐；缺键按后端 FEATURE_DEFAULTS 解析，
  *  除 memoryExtract/tools/splitReply/showThinking/showTools 默认开外，其余默认关）。 */
@@ -47,6 +48,11 @@ export type CompanionFeatures = {
   dailyLimit: number;
   /** 采样温度：-1 = 跟随全局（0.8），0~2 = 这一位单独设。0 是合法值，所以用 -1 当"跟随"。 */
   temperature: number;
+  /**
+   * 工具档位：follow = 跟随全局档；四档之一 = 这一位单独指定；
+   * custom = 沿用逐项开关（改过任一逐项开关后自动落到这一档）。
+   */
+  toolPreset: ToolPresetChoice;
   /** 禁用词：联系人的回复里不该出现的词，逗号/顿号/换行分隔（最多 10 个）。 */
   bannedWords: string;
   schedule: string;

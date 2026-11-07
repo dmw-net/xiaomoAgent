@@ -9,6 +9,7 @@ import ChatView from "../chat/ChatView";
 import ThreadChip from "./ThreadChip";
 import PendingCard from "./PendingCard";
 import AssistantPermissionChip from "./AssistantPermissionChip";
+import AssistantConsole from "./AssistantConsole";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useNarrow } from "../../hooks/useNarrow";
 import { contactsApi, threadContactId, assistantApi, type AssistantThread } from "../../api";
@@ -48,8 +49,10 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
   const [avatar, setAvatar] = useState(cachedAvatar);
   const [asstName, setAsstName] = useState(cachedName || DEFAULT_ASSISTANT_NAME);
   const [listErr, setListErr] = useState("");
-  /** 弹窗里的第二屏：助手设置（头像 / 名字 / 模型与上下文）。false = 聊天那一屏。 */
+  /** 弹窗里的第二屏：助手设置。false = 聊天那一屏。 */
   const [showSettings, setShowSettings] = useState(false);
+  /** 设置屏里的第二层：编辑资料仍复用资料页那份唯一实现，控制台是默认落点。 */
+  const [showProfile, setShowProfile] = useState(false);
   /** 会话状态由 ChatView 回吐，名字与它一起进弹窗头部（弹窗里不再显示聊天自带的居中标题栏）。 */
   const [status, setStatus] = useState({ text: "", tone: "" });
   const reportStatus = useCallback((text: string, tone: string): void => { setStatus({ text, tone }); }, []);
@@ -267,7 +270,7 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
             <button type="button" className={"ws-add" + (showSettings ? " on" : "")}
               title={showSettings ? "回到对话" : "助手设置"}
               aria-label={showSettings ? "回到对话" : "助手设置"} aria-pressed={showSettings}
-              onClick={() => setShowSettings((v) => !v)}>
+              onClick={() => { setShowProfile(false); setShowSettings((v) => !v); }}>
               <Settings2 size={16} />
             </button>
             <button type="button" className="ws-add" title="关闭" aria-label="关闭" onClick={onClose}>
@@ -291,8 +294,23 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
           {showSettings && (
             <Suspense fallback={null}>
               <div className="asst-settings">
-                <ProfileView mode="edit" contactId="assistant" initialPage="settings"
-                  onBack={() => setShowSettings(false)} onSaved={loadIdentity} />
+                {showProfile ? (
+                  <ProfileView mode="edit" contactId="assistant" initialPage="settings"
+                    onBack={() => setShowProfile(false)} onSaved={loadIdentity} />
+                ) : (
+                  <AssistantConsole
+                    onBack={() => setShowSettings(false)}
+                    onEditProfile={() => setShowProfile(true)}
+                    onGoTools={() => {
+                      // 跳出弹窗去设置页：先收起助手层，再让 App 处理导航
+                      // （xiaomo:open-settings 与 xiaomo:open-contact 同一套窗口事件通道）。
+                      onClose();
+                      window.dispatchEvent(new CustomEvent("xiaomo:open-settings", { detail: { tab: "tools" } }));
+                    }}
+                    contactId={threadContactId(sel)}
+                    threadCount={threads.length}
+                  />
+                )}
               </div>
             </Suspense>
           )}

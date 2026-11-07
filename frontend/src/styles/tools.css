@@ -1,0 +1,482 @@
+/* 「工具与扩展」工作台的样式。
+   颜色一律取自 theme.css 的设计令牌，明暗主题自动跟随；不复用 .skill-item
+   那套为技能条目设计的两行截断布局，扩展卡片有自己的结构。 */
+
+/* ── 开关：一律复用项目既有的 .choice-row / .choice ──────────
+   （「开机自动启动」那一套），连尺寸也同源。台账行内不再另设
+   收紧档：同一个界面里出现两种大小的开关，比稍大的行高更伤一致性。 */
+
+.tw-choice-row { margin: 0; }
+.tw-choice-row.is-danger .choice[aria-pressed="true"] { color: var(--danger); }
+
+/* 台账顶部的总闸：与档位卡分开，二元决策不该混进程度选择里。
+   同一套卡语言（icon + 标题一句话 + 右侧控件），别再像半张卡。 */
+.lg-master {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 16px; padding: 16px 20px;
+  display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+}
+.lg-master-icon {
+  flex: 0 0 auto; width: 32px; height: 32px; border-radius: 10px;
+  background: var(--accent-soft); color: var(--accent-ink);
+  display: flex; align-items: center; justify-content: center;
+}
+.lg-master-copy { flex: 1 1 260px; display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lg-master-copy b { font-size: 14px; font-weight: 500; color: var(--text); }
+.lg-master-copy span { font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+.lg-fixed {
+  justify-self: end; font-size: 11px; color: var(--success);
+  padding: 4px 9px; border-radius: 999px; background: var(--success-soft);
+  border: 1px solid color-mix(in srgb, var(--success) 22%, transparent);
+}
+
+/* ── 工作台骨架 ─────────────────────────────────────────── */
+.tw-board { display: flex; flex-direction: column; gap: 20px; }
+.tw-board-head { display: flex; align-items: flex-start; gap: 16px; flex-wrap: wrap; }
+.tw-board-head-copy { flex: 1 1 320px; min-width: 0; }
+.tw-board-head h2 { margin: 0 0 6px; font-size: 17px; font-weight: 500; color: var(--text); }
+.tw-board-head p { margin: 0; font-size: 13px; line-height: 1.65; color: var(--text-muted); }
+.tw-board-head-aside { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+/* ── 指标条 ─────────────────────────────────────────────── */
+.tw-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.tw-metric {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+.tw-metric-label { font-size: 12px; color: var(--text-muted); }
+.tw-metric-value { font-size: 21px; font-weight: 500; color: var(--text); line-height: 1.2; }
+.tw-metric-hint { font-size: 12px; color: var(--text-subtle); line-height: 1.4; }
+.tw-metric.is-bad .tw-metric-value { color: var(--danger); }
+.tw-metric.is-good .tw-metric-value { color: var(--success); }
+
+/* ── 分区卡 ─────────────────────────────────────────────── */
+.tw-panel {
+  background: var(--bg-elevated);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 18px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  min-width: 0;
+}
+.tw-panel-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.tw-panel-head h3 { margin: 0; font-size: 14px; font-weight: 500; color: var(--text); }
+.tw-panel-head .tw-panel-note { font-size: 12px; color: var(--text-muted); line-height: 1.5; }
+.tw-panel-head .spacer { flex: 1 1 auto; }
+
+/* 三层门控：模型档 → 全局 → 联系人 */
+.tw-layers { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 10px; }
+.tw-layer {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 13px 14px;
+  background: var(--bg-sunken);
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  min-width: 0;
+}
+.tw-layer-index {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 21px; height: 21px; border-radius: 7px;
+  background: var(--accent-soft); color: var(--accent-ink);
+  font-size: 12px; font-weight: 500;
+}
+.tw-layer-title { font-size: 13px; font-weight: 500; color: var(--text); }
+.tw-layer-desc { font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+.tw-layer-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 2px; }
+
+.tw-badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 999px;
+  font-size: 12px; line-height: 1.4;
+  border: 1px solid var(--border);
+  background: var(--bg-sunken); color: var(--text-muted);
+  white-space: nowrap;
+}
+.tw-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .7; }
+.tw-badge.is-on { background: var(--success-soft); color: var(--success); border-color: color-mix(in srgb, var(--success) 25%, transparent); }
+.tw-badge.is-off { background: var(--bg-sunken); color: var(--text-subtle); }
+.tw-badge.is-bad { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 25%, transparent); }
+.tw-badge.is-warn { background: var(--warning-soft); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 25%, transparent); }
+
+.tw-link {
+  display: inline-flex; align-items: center; gap: 3px;
+  border: 0; background: none; padding: 0;
+  color: var(--accent-ink); font-size: 12px; font-weight: 500;
+  cursor: pointer; text-decoration: underline; text-underline-offset: 3px;
+}
+.tw-link:hover { color: var(--accent-hover); }
+
+/* 能力就绪格 */
+.tw-caps { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
+.tw-cap {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  padding: 9px 11px; border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-sunken); min-width: 0;
+}
+.tw-cap-name { font-size: 12px; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 按联系人矩阵 */
+.tw-matrix { display: flex; flex-direction: column; gap: 0; border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+.tw-matrix-row {
+  display: grid; grid-template-columns: minmax(120px, 1.4fr) repeat(7, minmax(48px, 1fr));
+  align-items: center; gap: 4px; padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-elevated);
+}
+.tw-matrix-row:last-child { border-bottom: 0; }
+.tw-matrix-row.is-head { background: var(--bg-sunken); }
+.tw-matrix-row.is-head span { font-size: 11px; color: var(--text-muted); font-weight: 500; text-align: center; }
+.tw-matrix-row.is-head span:first-child { text-align: left; }
+.tw-matrix-name {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  font-size: 12px; color: var(--text);
+}
+.tw-matrix-name b { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tw-matrix-name button {
+  border: 0; background: none; padding: 0; cursor: pointer;
+  color: var(--text); font: inherit; text-align: left;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tw-matrix-name button:hover { color: var(--accent-ink); text-decoration: underline; }
+.tw-cell { display: flex; justify-content: center; }
+.tw-cell i {
+  display: block; width: 9px; height: 9px; border-radius: 3px;
+  background: var(--border-strong); opacity: .5;
+}
+.tw-cell.is-on i { background: var(--success); opacity: 1; }
+.tw-cell.is-off i { background: var(--border-strong); opacity: .4; }
+.tw-matrix-empty { padding: 18px; font-size: 13px; color: var(--text-muted); text-align: center; }
+.tw-matrix-tip { font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+.tw-matrix-scroll { overflow-x: auto; }
+
+/* 总览里内嵌的 ToolLoopSection 不再叠一层卡片边框。
+   experience.css 用的是 #settings .set-body .section（ID 选择器），必须同权重才能盖住。 */
+#settings .set-body .tw-plain .section {
+  margin-bottom: 0; padding: 0; border: 0; background: none; box-shadow: none;
+}
+#settings .set-body .tw-plain .section > h2 { font-size: 15px; }
+#settings .set-body .tw-plain .card { box-shadow: none; }
+
+/* ── 扩展工作台 ─────────────────────────────────────────── */
+.ext-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ext-import {
+  border: 1px solid var(--border); border-radius: 12px;
+  background: var(--bg-sunken); padding: 14px;
+  display: flex; flex-direction: column; gap: 12px;
+}
+.ext-import-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+.ext-import-head b { font-size: 13px; font-weight: 500; color: var(--text); }
+.ext-import-head span { font-size: 12px; color: var(--text-muted); }
+.ext-import textarea {
+  width: 100%; min-height: 132px; resize: vertical;
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--bg-elevated); color: var(--text);
+  padding: 11px 12px; font-family: var(--font-mono, ui-monospace, monospace); font-size: 12px; line-height: 1.6;
+  box-sizing: border-box;
+}
+.ext-import textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.ext-import-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.ext-drop-hint { font-size: 12px; color: var(--text-subtle); }
+
+.ext-banner {
+  display: flex; align-items: flex-start; gap: 9px;
+  padding: 10px 13px; border-radius: 10px; font-size: 12px; line-height: 1.6;
+  border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text);
+}
+.ext-banner.is-bad { background: var(--danger-soft); border-color: color-mix(in srgb, var(--danger) 25%, transparent); color: var(--danger); }
+.ext-banner.is-ok { background: var(--success-soft); border-color: color-mix(in srgb, var(--success) 25%, transparent); color: var(--success); }
+
+.ext-cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(326px, 1fr)); gap: 14px; }
+.ext-card {
+  display: flex; flex-direction: column; gap: 12px;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 14px; padding: 16px; min-width: 0;
+  transition: border-color var(--dur-fast, 140ms) ease;
+}
+.ext-card:hover { border-color: var(--border-strong); }
+.ext-card.is-bad { border-color: color-mix(in srgb, var(--danger) 35%, transparent); }
+.ext-card-head { display: flex; align-items: flex-start; gap: 10px; min-width: 0; }
+.ext-card-title { flex: 1 1 auto; min-width: 0; }
+.ext-card-title h4 { margin: 0 0 3px; font-size: 14px; font-weight: 500; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-card-title .ext-id { font-size: 11px; color: var(--text-subtle); font-family: var(--font-mono, ui-monospace, monospace); }
+.ext-card-desc { font-size: 12px; line-height: 1.6; color: var(--text-muted); margin: 0; }
+.ext-version { font-size: 11px; color: var(--text-subtle); padding: 2px 7px; border: 1px solid var(--border); border-radius: 6px; white-space: nowrap; }
+
+.ext-section-label {
+  display: flex; align-items: center; justify-content: space-between; gap: 8px;
+  font-size: 11px; color: var(--text-subtle); letter-spacing: .04em;
+}
+.ext-tools { display: flex; flex-direction: column; gap: 6px; }
+.ext-tools-empty { font-size: 12px; line-height: 1.6; color: var(--text-muted); padding: 2px 0; }
+.ext-tool {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px;
+  background: var(--bg-sunken); min-width: 0;
+}
+.ext-tool-kind {
+  flex: 0 0 auto; font-size: 10px; padding: 2px 6px; border-radius: 5px;
+  background: var(--accent-soft); color: var(--accent-ink); white-space: nowrap;
+}
+.ext-tool-kind.is-script { background: var(--warning-soft); color: var(--warning); }
+.ext-tool-kind.is-webhook { background: var(--success-soft); color: var(--success); }
+.ext-tool-body { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.ext-tool-name { font-size: 12px; color: var(--text); font-family: var(--font-mono, ui-monospace, monospace); word-break: break-all; }
+.ext-tool-desc { font-size: 11px; color: var(--text-muted); line-height: 1.5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ext-tool-del {
+  flex: 0 0 auto; border: 0; background: none; padding: 2px; cursor: pointer;
+  color: var(--text-subtle); line-height: 0; border-radius: 5px;
+}
+.ext-tool-del:hover { color: var(--danger); background: var(--danger-soft); }
+.ext-diags { display: flex; flex-direction: column; gap: 6px; }
+.ext-diag {
+  display: flex; gap: 8px; align-items: flex-start;
+  padding: 8px 10px; border-radius: 9px; font-size: 12px; line-height: 1.55;
+  background: var(--bg-sunken); color: var(--text-muted);
+  border-left: 3px solid var(--border-strong);
+}
+.ext-diag.is-error { background: var(--danger-soft); color: var(--danger); border-left-color: var(--danger); }
+.ext-diag.is-warning { background: var(--warning-soft); color: var(--warning); border-left-color: var(--warning); }
+.ext-diag.is-info { border-left-color: var(--accent); }
+.ext-card-foot {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px;
+  flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--border); margin-top: auto;
+}
+.ext-card-acts { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+
+.ext-empty {
+  display: flex; flex-direction: column; align-items: center; gap: 10px;
+  padding: 36px 20px; border: 1px dashed var(--border-strong); border-radius: 14px;
+  background: var(--bg-sunken); text-align: center;
+}
+.ext-empty b { font-size: 14px; font-weight: 500; color: var(--text); }
+.ext-empty span { font-size: 12px; line-height: 1.6; color: var(--text-muted); max-width: 380px; }
+
+.ext-form { display: flex; flex-direction: column; gap: 10px; padding: 12px; border: 1px solid var(--border); border-radius: 10px; background: var(--bg-sunken); }
+.ext-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.ext-field label { font-size: 11px; color: var(--text-muted); }
+.ext-field input, .ext-field textarea, .ext-field select {
+  width: 100%; box-sizing: border-box;
+  border: 1px solid var(--border); border-radius: 8px;
+  background: var(--bg-elevated); color: var(--text);
+  padding: 8px 10px; font-size: 12px; line-height: 1.5;
+  font-family: inherit;
+}
+.ext-field textarea { min-height: 76px; resize: vertical; font-family: var(--font-mono, ui-monospace, monospace); }
+.ext-form-actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+
+.ext-template { border: 1px solid var(--border); border-radius: 12px; background: var(--bg-elevated); overflow: hidden; }
+.ext-template > summary { padding: 12px 14px; cursor: pointer; font-size: 13px; font-weight: 500; color: var(--text); list-style: none; }
+.ext-template > summary::-webkit-details-marker { display: none; }
+.ext-template > summary::before { content: "▸"; display: inline-block; margin-right: 8px; color: var(--text-subtle); }
+.ext-template[open] > summary::before { content: "▾"; }
+.ext-template-body { padding: 0 14px 14px; display: flex; flex-direction: column; gap: 10px; }
+.ext-template pre {
+  margin: 0; padding: 12px; border-radius: 9px; overflow: auto;
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  font-family: var(--font-mono, ui-monospace, monospace); font-size: 11px; line-height: 1.6; color: var(--text);
+}
+.ext-template-note { font-size: 12px; line-height: 1.65; color: var(--text-muted); }
+
+/* ── 工具台账 ───────────────────────────────────────────────
+   一屏回答「有哪些手、哪些被收回、为什么没生效」。
+   节奏：档位卡（决策）→ 两张清单（明细）→ 例外（收尾），
+   行内固定四列，状态与开关右对齐，眼睛不用左右找。 */
+
+.lg-loading { padding: 36px; text-align: center; font-size: 13px; color: var(--text-muted); }
+
+.lg-preset-card {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 16px; padding: 20px;
+  display: flex; flex-direction: column; gap: 15px;
+}
+.lg-preset-head { display: flex; align-items: flex-start; gap: 12px; }
+.lg-preset-icon {
+  flex: 0 0 auto; width: 32px; height: 32px; border-radius: 10px;
+  background: var(--accent-soft); color: var(--accent-ink);
+  display: flex; align-items: center; justify-content: center;
+}
+.lg-preset-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lg-preset-title b { font-size: 14px; font-weight: 500; color: var(--text); }
+.lg-preset-title small { font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+
+.lg-segmented {
+  display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); gap: 4px;
+  padding: 4px; border: 1px solid var(--border); border-radius: 12px; background: var(--bg-sunken);
+}
+.lg-seg {
+  border: 0; background: transparent; border-radius: 9px; padding: 10px 6px;
+  font-size: 13px; font-weight: 500; color: var(--text-muted); cursor: pointer;
+  transition: background var(--dur-fast, 140ms) ease, color var(--dur-fast, 140ms) ease;
+}
+.lg-seg:hover:not(.is-on):not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.lg-seg.is-on { background: var(--accent); color: var(--accent-text); }
+.lg-seg:disabled { opacity: .6; cursor: not-allowed; }
+.lg-seg:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.lg-preset-desc {
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; line-height: 1.6; color: var(--accent-ink);
+  padding: 9px 12px; border-radius: 10px; background: var(--accent-soft);
+}
+.lg-preset-desc svg { flex: 0 0 auto; }
+.lg-preset-foot { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--text-subtle); }
+.lg-preset-foot b { font-weight: 500; color: var(--text); }
+.lg-divider { width: 1px; height: 12px; background: var(--border-strong); }
+
+.lg-panel {
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column; gap: 4px;
+}
+.lg-panel-head {
+  display: flex; align-items: flex-start; justify-content: space-between; gap: 12px;
+  padding-bottom: 13px; border-bottom: 1px solid var(--border); margin-bottom: 4px;
+}
+.lg-panel-title { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.lg-panel-title b { font-size: 14px; font-weight: 500; color: var(--text); }
+.lg-panel-title small { font-size: 12px; line-height: 1.55; color: var(--text-muted); }
+.lg-count {
+  flex: 0 0 auto; font-size: 11px; color: var(--text-subtle);
+  padding: 3px 10px; border: 1px solid var(--border); border-radius: 999px;
+  background: var(--bg-sunken); white-space: nowrap;
+}
+
+.lg-group { margin-top: 6px; }
+.lg-group-label {
+  display: flex; align-items: center; gap: 10px;
+  font-size: 11px; letter-spacing: .08em; color: var(--text-subtle); margin: 10px 0 2px;
+}
+.lg-group-label::after { content: ""; flex: 1 1 auto; height: 1px; background: var(--border); }
+
+.lg-row {
+  display: grid; grid-template-columns: 10px minmax(0, 1fr) 112px auto;
+  align-items: center; gap: 12px; padding: 9px 2px; border-bottom: 1px solid var(--border);
+}
+.lg-row:last-child { border-bottom: 0; }
+.lg-row.is-off .lg-copy { opacity: .6; }
+.lg-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--border-strong); }
+.lg-dot-sense { background: var(--ctx-memory); }
+.lg-dot-express { background: var(--ctx-images); }
+.lg-dot-act { background: var(--ctx-tools); }
+.lg-dot-network { background: var(--warning); }
+.lg-dot-external { background: var(--ctx-system); }
+.lg-dot-admin { background: var(--accent); }
+.lg-copy { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.lg-name { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; font-weight: 500; color: var(--text); }
+.lg-summary { font-size: 11.5px; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lg-tag {
+  font-size: 10px; line-height: 1.4; font-weight: 400; padding: 1px 6px;
+  border-radius: 5px; background: var(--bg-sunken); color: var(--text-subtle); border: 1px solid var(--border);
+}
+.lg-tag.is-risk { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 22%, transparent); }
+.lg-tag.is-fixed { background: var(--success-soft); color: var(--success); border-color: color-mix(in srgb, var(--success) 22%, transparent); }
+.lg-state { font-size: 11px; line-height: 1.45; text-align: right; color: var(--success); }
+.lg-state.is-muted { color: var(--text-subtle); }
+/* 状态列的修复出口：与状态同字号，但可点、有下划线——「为什么没生效」的下一步是修好它。 */
+.lg-state-link { justify-self: end; text-align: right; font-size: 11px; line-height: 1.45; }
+
+.lg-contacts { display: flex; flex-direction: column; }
+.lg-contact-row { display: flex; align-items: center; gap: 10px; padding: 9px 2px; border-bottom: 1px solid var(--border); }
+.lg-contact-row:last-child { border-bottom: 0; }
+.lg-contact-name {
+  border: 0; background: none; padding: 0; font: inherit; font-size: 13px;
+  color: var(--text); cursor: pointer; text-align: left;
+}
+.lg-contact-name:hover { color: var(--accent-ink); text-decoration: underline; }
+.lg-choice {
+  font-size: 11px; padding: 3px 9px; border-radius: 999px;
+  background: var(--bg-sunken); color: var(--text-muted); border: 1px solid var(--border); white-space: nowrap;
+}
+.lg-choice.is-custom { background: var(--warning-soft); color: var(--warning); border-color: color-mix(in srgb, var(--warning) 22%, transparent); }
+.lg-choice.is-off { background: var(--danger-soft); color: var(--danger); border-color: color-mix(in srgb, var(--danger) 22%, transparent); }
+.lg-empty { padding: 18px 2px; font-size: 12px; color: var(--text-muted); }
+
+/* 逐项明细折叠区：首屏只回答「开没开、什么档」，21 行明细留给真要逐项拧的人。
+   样式沿用 pf-tools-advanced 的朴素 details 语言，不另起一套卡片壳。 */
+.lg-advanced > summary {
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+  cursor: pointer; list-style: none; padding: 6px 2px;
+  font-size: 13px; font-weight: 500; color: var(--text);
+}
+.lg-advanced > summary::-webkit-details-marker { display: none; }
+.lg-advanced > summary::before { content: "▸"; display: inline-block; color: var(--text-subtle); }
+.lg-advanced[open] > summary::before { content: "▾"; }
+.lg-advanced > summary small { font-size: 12px; font-weight: 400; color: var(--text-muted); }
+.lg-advanced-body { display: flex; flex-direction: column; gap: 14px; padding-top: 12px; }
+/* 扩展工具行的指路链接：与状态列同色阶，但可点、有下划线，明确「出口在别处」。 */
+.lg-row .tw-link { justify-self: end; text-align: right; line-height: 1.45; }
+
+.lg-footnote {
+  display: flex; gap: 10px; align-items: flex-start;
+  padding: 14px 16px; border-radius: 12px;
+  background: var(--bg-sunken); border: 1px solid var(--border);
+  font-size: 12px; line-height: 1.75; color: var(--text-muted);
+}
+.lg-footnote > svg { flex: 0 0 auto; margin-top: 3px; color: var(--warning); }
+.lg-links { display: inline-flex; gap: 12px; margin-left: 10px; }
+
+/* 助手控制台 */
+.ac-panel { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
+.ac-tier-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ac-tier-label { font-size: 12px; color: var(--text-muted); }
+.ac-badge { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); }
+.ac-note { font-size: 12px; line-height: 1.7; color: var(--text-muted); }
+.ac-readonly-note { padding: 10px 12px; border-radius: 10px; background: var(--warning-soft); color: var(--warning); font-size: 12px; line-height: 1.6; }
+.ac-console {
+  height: 100%; overflow-y: auto; box-sizing: border-box;
+  padding: 18px 22px 28px; background: var(--bg-elevated);
+  display: flex; flex-direction: column; gap: 16px;
+}
+.ac-console-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.ac-console-title { flex: 1 1 180px; display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: center; }
+.ac-console-title b { font-size: 15px; font-weight: 500; color: var(--text); }
+.ac-console-title small { font-size: 12px; color: var(--text-muted); }
+/* 档位数量由后端下发，segmented 用 auto-flow 自动等分，不再写死列数。 */
+
+/* 联系人资料页：档位优先、逐项开关收进折叠区 */
+.pf-preset-block { margin-top: 16px; padding-top: 14px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 10px; }
+.pf-preset-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.pf-preset-chip {
+  border: 1px solid var(--border); background: var(--bg-sunken); color: var(--text-muted);
+  border-radius: 999px; padding: 7px 14px; font-size: 12px; font-weight: 500; cursor: pointer;
+  transition: background var(--dur-fast, 140ms) ease, color var(--dur-fast, 140ms) ease;
+}
+.pf-preset-chip:hover:not(.is-on):not(:disabled) { background: var(--bg-hover); color: var(--text); }
+.pf-preset-chip.is-on { background: var(--accent); border-color: var(--accent); color: var(--accent-text); }
+.pf-preset-chip:disabled { opacity: .5; cursor: not-allowed; }
+.pf-preset-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pf-preset-desc { font-size: 12px; line-height: 1.65; color: var(--text-muted); }
+.pf-tools-advanced { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 12px; }
+/* 折叠区顶部的一句话语义说明：把「上限」规则与数量的对应关系讲在明面上，
+   联系人页的 6 个类开关和台账的 21 项才能在心里对上账。 */
+.pf-tools-note { font-size: 12px; line-height: 1.7; color: var(--text-muted); margin: 10px 0 0; }
+.pf-tools-note .tw-link { margin-left: 8px; white-space: nowrap; }
+.pf-tools-advanced > summary {
+  cursor: pointer; font-size: 12px; color: var(--accent-ink); list-style: none;
+  padding: 4px 0; font-weight: 500;
+}
+.pf-tools-advanced > summary::-webkit-details-marker { display: none; }
+.pf-tools-advanced > summary::before { content: "▸"; display: inline-block; margin-right: 7px; color: var(--text-subtle); }
+.pf-tools-advanced[open] > summary::before { content: "▾"; }
+.pf-tools-advanced .pf-comp-grid { margin-top: 12px; }
+
+@media (max-width: 720px) {
+  .ext-cards { grid-template-columns: 1fr; }
+  .tw-matrix-row { grid-template-columns: minmax(110px, 1.2fr) repeat(7, minmax(42px, 1fr)); }
+  .tw-panel { padding: 14px; }
+  .lg-segmented { grid-auto-flow: row; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .lg-panel, .lg-preset-card, .ac-panel, .lg-master { padding: 14px; }
+  .lg-row { grid-template-columns: 10px minmax(0, 1fr) auto; row-gap: 4px; }
+  .lg-row .lg-state { grid-column: 2; grid-row: 2; text-align: left; }
+  .lg-row .choice-row, .lg-row .lg-fixed, .lg-row .tw-link { grid-column: 3; grid-row: 1 / 3; align-self: center; }
+  .lg-links { display: flex; margin-left: 0; margin-top: 6px; }
+}

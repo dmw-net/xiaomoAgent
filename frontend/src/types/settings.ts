@@ -100,6 +100,12 @@ export type SettingsSnapshot = {
   toolLoopTurnLimits: { min: number; max: number };
   /** 全局表情使用倾向；仅在联系人开启表情工具时进入系统提示。 */
   emoteFrequency: EmoteFrequency;
+  /** 全局逐项禁用的工具名（台账写入点，也由 /api/tools 单独下发）。 */
+  disabledTools: string[];
+  /** 工具总闸：false = 陪伴侧全关。 */
+  toolsEnabled: boolean;
+  /** 全局工具档位：off / quiet / balanced / full。 */
+  globalToolPreset: "off" | "quiet" | "balanced" | "full";
   overridden: { model: string[]; persona: string[] };
   profiles: ProfileItem[];
   activeProfileId: string | null;

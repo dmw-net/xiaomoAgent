@@ -48,7 +48,7 @@ function friendlyFailure(code?: string | null, message?: string | null): string 
   if (/timeout|timed out|超时/.test(text)) return "服务商响应超时";
   if (/401|403|unauthorized|forbidden|api.?key|鉴权|密钥/.test(text)) return "密钥无效或权限不足";
   if (/429|rate.?limit|quota|额度|限流/.test(text)) return "调用被限流或额度不足";
-  if (/output_truncated|finish_reason.?length|输出额度用完|思考.*额度/.test(text)) return "思考太久，没写完结果";
+  if (/output_truncated|finish_reason.?(length|sensitive|content_filter|safety)|输出额度用完|思考.*额度|安全.*截断|内容.*截断/.test(text)) return "思考太久或内容被安全策略截断";
   if (/network|fetch|econn|dns|连接/.test(text)) return "连接不上服务商";
   if (/non.?json|json|parse|格式/.test(text)) return "服务商返回格式异常";
   return "这次没有完成，可以稍后重试";
@@ -393,6 +393,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
               onRefresh={refreshStatus}
               notice={statusErr !== "" ? `刷新失败：${statusErr}（下面显示的是上次的结果）` : undefined}
               goSettings={goSettings} goTab={() => { setActivityView("calls"); setTab("activity"); }}
+              goTurns={() => { setActivityView("turns"); setTab("activity"); }}
               goQueue={() => { setActivityView("queue"); setTab("activity"); }}
               actions={<>
                 <button type="button" className="primary" id="pingBtn" disabled={busy !== ""} onClick={ping}>

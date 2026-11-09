@@ -61,6 +61,10 @@ assert(/in_variants/.test(mediaSrc), "releaseMediaFiles 引用探测必须覆盖
 assert(/历史版本回复/.test(mediaSrc) && mediaSrc.includes("FROM turns WHERE variants LIKE"),
   "collectMediaSources 引用来源必须扫描 turns.variants");
 assert(routeSrc.includes('"/variant"') && routeSrc.includes("setTurnVariant"), "切换路由要注册且走 setTurnVariant");
+assert(/messages = messagesForTurn\(id/.test(routeSrc), "切换响应要随带新行，前端不必再打一趟 /api/messages?turn=");
+assert(/idx_messages_turn ON messages \(turn_id\)/.test(dbSrc), "turn_id 要有索引：按轮取行是高频路径，全表扫会越用越慢");
+assert(/return withTx\(\(\) => \{/.test(agentSrc.slice(agentSrc.indexOf("export function setTurnVariant"), agentSrc.indexOf("recentMessages("))),
+  "切换必须包进单事务：散着提交是四五次 fsync，弱盘上就是肉眼可见的卡");
 assert(/setTurnVariant/.test(apiSrc), "前端 API 层要有 setTurnVariant");
 assert(/variantCount/.test(rowSrc) && rowSrc.includes("variant-bar"), "气泡组件要有版本切换条");
 assert(/variantCount >= 1/.test(rowSrc), "版本条要常驻（1/1 也显示），不能只在重答后才出现");

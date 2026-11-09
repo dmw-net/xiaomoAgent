@@ -8,8 +8,8 @@
  *    React 报 error #300（Rendered fewer hooks than expected），整页白屏。
  * 2. 移动端通用 Modal 一律贴底，聊天确认框也变成底部面板；聊天里需要的是
  *    微信式居中确认卡，不能被表单类弹窗的底部面板规则带走。
- * 3. 设置助手权限只能有输入区 chip 一个入口；高风险二次确认、常显红态与
- *    本轮权限快照都不能被子系统改动悄悄绕过。
+ * 3. 设置助手权限的决策 UI 全站只有一份（三档 option-card + auto 风险弹窗），chip 与
+ *    助手设置屏都复用它；高风险二次确认、常显红态与本轮权限快照都不能被子系统改动悄悄绕过。
  * 4. 报错 toast 不能永久挂在屏幕上，但也要给足阅读和点重试的时间。
  * 5. 设置助手里的上下文浮层必须压在弹窗之上，否则点击后看似没有反应。
  */
@@ -27,6 +27,11 @@ const componentsCss = readFileSync("frontend/src/styles/components.css", "utf8")
 const themeCss = readFileSync("frontend/src/styles/theme.css", "utf8");
 const assistantDialogSource = readFileSync("frontend/src/features/assistant/AssistantDialog.tsx", "utf8");
 const assistantPermissionSource = readFileSync("frontend/src/features/assistant/AssistantPermissionChip.tsx", "utf8");
+// 权限档共用件（2026-11-08 收敛）：三档 option-card 与 auto 风险弹窗的全站唯一实现，
+// chip 与助手设置屏（AssistantConsole）都从这里取——同一个决策只允许一份实现、一份文案。
+const assistantPermissionShared = readFileSync("frontend/src/features/assistant/AssistantPermission.tsx", "utf8");
+const assistantConsoleSource = readFileSync("frontend/src/features/assistant/AssistantConsole.tsx", "utf8");
+const assistantPendingSource = readFileSync("frontend/src/features/assistant/PendingCard.tsx", "utf8");
 const settingsSource = readFileSync("frontend/src/features/settings/SettingsView.tsx", "utf8");
 const agentSource = readFileSync("src/chat/agent.ts", "utf8");
 const toolsSource = readFileSync("src/mind/tools.ts", "utf8");
@@ -148,11 +153,32 @@ assert(
 );
 assert(!settingsSource.includes("AssistantPermissionSection"), "设置页不应再渲染第二套助手权限单选卡");
 assert(assistantDialogSource.includes("composerAccessory={<AssistantPermissionChip"), "权限 chip 必须挂在设置助手输入区");
-assert(/const TIERS[\s\S]*?"readonly"[\s\S]*?"confirm"[\s\S]*?"auto"/.test(assistantPermissionSource), "权限 chip 应保留只读/变更前确认/完全自主三档");
+// 三档定义收敛到 AssistantPermission.tsx 之后，断言跟着搬：这份文件是三档语义的唯一出处。
+assert(/const PERMISSION_TIERS[\s\S]*?"readonly"[\s\S]*?"confirm"[\s\S]*?"auto"/.test(assistantPermissionShared), "权限共用件应保留只读/变更前确认/完全自主三档");
 assert(/对所有设置助手会话生效/.test(assistantPermissionSource), "权限说明必须写明全局生效");
 assert(/next === "auto"[\s\S]*?setConfirmAuto\(true\)/.test(assistantPermissionSource), "进入完全自主前必须二次确认");
 assert(/权限变更从下一条消息开始生效/.test(assistantPermissionSource), "UI 必须说明权限从下一条消息生效");
 assert(/\.asst-perm-chip\.is-auto[\s\S]*?var\(--danger\)/.test(componentsCss), "完全自主 chip 必须常显危险色");
+// 收敛后的硬约束：同一个权限决策，chip 与助手设置屏必须用同一份 option-card 与同一份风险弹窗。
+assert(assistantPermissionSource.includes("<AssistantTierOptions") && assistantConsoleSource.includes("<AssistantTierOptions"),
+  "chip 与助手设置屏必须复用同一份三档 option-card（AssistantPermission.tsx）");
+assert(assistantPermissionSource.includes("<AssistantAutoConfirmModal") && assistantConsoleSource.includes("<AssistantAutoConfirmModal"),
+  "「完全自主」风险弹窗全站只能有一份（AssistantPermission.tsx），不允许两处各写一份文案");
+assert(!assistantConsoleSource.includes("lg-segmented"), "助手设置屏不得再保留第二套权限分段按钮");
+// 设置搜索必须能找到助手：搜「权限/助手」的落点是跨页召唤，不是工具台账。
+assert(/action: "assistant"[\s\S]*?title: "设置助手权限"/.test(settingsSource), "设置搜索必须收录「设置助手权限」并标记跨页 action");
+assert(assistantDialogSource.includes("settingsSeq") && /open && settingsSeq > 0/.test(assistantDialogSource),
+  "搜索召唤必须能把助手弹窗直接落到设置屏（settingsSeq 落位）");
+// 确认卡是理解信任模型的时刻：档位语境 + 就近调档入口必须常驻卡片。
+assert(/当前档位/.test(assistantPendingSource) && assistantPendingSource.includes("xiaomo:assistant-perm-open"),
+  "确认卡必须带档位语境行与「调整权限」就近入口（事件展开 chip 弹层）");
+assert(assistantPermissionSource.includes("xiaomo:assistant-perm-open"),
+  "权限 chip 必须响应确认卡发来的就近展开事件");
+// auto 档的事后可见性：助手设置屏必须有变更记录面板，数据来自后端活动记录接口。
+assert(assistantConsoleSource.includes("最近的配置变更") && assistantConsoleSource.includes("fetchActivity"),
+  "助手设置屏必须有「最近的配置变更」审计面板（/api/assistant/activity）");
+assert(/>\s*去处理\s*</.test(assistantConsoleSource),
+  "待确认动作数字>0 时必须给「去处理」出口，不能是死端数字");
 // 声明与执行共用一份「本轮工具池快照」之后，toolDefsForApi 多了第三个参数；
 // 断言仍要钉住「用启动时的权限快照」，只是不再把参数个数写死。
 assert(

@@ -67,9 +67,14 @@ export function fetchTurnMessages(turnId: string, cid?: string, conversationId?:
 
 /** 后端返回扁平结构（无 turn 包装字段）——Phase 2 曾凭空假设 { turn } 导致轮询永远失败。
  *  reply 有两个身份：running 时是「联系人正在写的这一句」（流式草稿，后端按 200ms 节流写），
- *  done 后是整轮定稿。所以界面只在 running 时拿它当草稿显示，别在其它状态读它。 */
-export function fetchTurn(id: string, cid?: string): Promise<{ id: string; status: string; reply: string | null; reasoning: string | null; error: string | null }> {
-  return getJson(cq("/api/turn/" + encodeURIComponent(id), cid));
+ *  done 后是整轮定稿。所以界面只在 running 时拿它当草稿显示，别在其它状态读它。
+ *  lean=1：在飞轮瘦身响应——不带 reply/reasoning 正文（它们正以 draft/thought 流式帧
+ *  推过来），只带状态与 draftSeq/reasoningSeq（增量帧的续接点，断档检测用）。 */
+export function fetchTurn(id: string, cid?: string, opts?: { lean?: boolean }): Promise<{
+  id: string; status: string; reply: string | null; reasoning: string | null; error: string | null;
+  draftSeq?: number; reasoningSeq?: number;
+}> {
+  return getJson(cq("/api/turn/" + encodeURIComponent(id), cid) + (opts?.lean ? "&lean=1" : ""));
 }
 
 export function retryTurn(id: string, cid?: string): Promise<unknown> {
@@ -86,8 +91,8 @@ export function regenerateTurn(id: string, cid?: string): Promise<unknown> {
   return postJson(cq("/api/turn/" + encodeURIComponent(id) + "/regenerate", cid));
 }
 
-/** 切换这一轮回复的版本（swipe）：后端把选中版本写回气泡行，前端按轮窄取重绘。 */
-export function setTurnVariant(id: string, index: number, cid?: string): Promise<{ ok: boolean; applied: boolean; index: number }> {
+/** 切换这一轮回复的版本（swipe）：后端把选中版本写回气泡行，并把该轮的新行随响应带回。 */
+export function setTurnVariant(id: string, index: number, cid?: string): Promise<{ ok: boolean; applied: boolean; index: number; messages?: MessageRow[] }> {
   return postJson(cq("/api/turn/" + encodeURIComponent(id) + "/variant", cid), { index });
 }
 

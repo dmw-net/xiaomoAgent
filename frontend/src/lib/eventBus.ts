@@ -16,7 +16,14 @@ export type BusEvent =
   | { type: "sync"; at: number }
   | { type: "message"; contactId: string; conversationId: string; messageId: number; at: number }
   | { type: "turn"; contactId: string; conversationId: string; turnId: string; status: string; at: number }
-  | { type: "activity"; contactId: string; at: number };
+  | { type: "activity"; contactId: string; at: number }
+  /**
+   * 流式草稿帧：delta = 追加到已收文本之后；text = 全量快照（首帧/工具轮改口时发，
+   * 收到就整段替换）。seq 每轮每字段独立递增，跳号 = 有帧丢失，回源 /api/turn 对齐。
+   * 与后端 core/events.ts 的同名联合成员保持同构——那边是协议源头。
+   */
+  | { type: "draft"; contactId: string; conversationId: string; turnId: string; seq: number; delta?: string; text?: string }
+  | { type: "thought"; contactId: string; conversationId: string; turnId: string; seq: number; delta?: string; text?: string };
 
 type Handler = (event: BusEvent) => void;
 

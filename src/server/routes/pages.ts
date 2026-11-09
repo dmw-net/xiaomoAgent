@@ -19,6 +19,8 @@ import { describeWebFailure, downloadImageToMedia } from "../../mind/search.ts";
 import { linkPreviewFor } from "../../mind/link-preview.ts";
 import {
   IMMUTABLE,
+  NO_CACHE,
+  SHORT_CACHE,
   sendFile,
   sendHtml,
   sendJson,
@@ -31,7 +33,7 @@ import type { Route } from "../types.ts";
 /** React 前端构建产物目录（frontend/dist），页面与静态资源都从这里发。 */
 const reactDist = resolve(import.meta.dirname ?? ".", "../../../frontend/dist");
 const reactEntry = existsSync(joinPath(reactDist, "index.html"));
-/** dist 根下逐条白名单发出的固定静态图（文件名不带 hash，故沿用 no-store）：应用图标 + 两张内置头像。 */
+/** dist 根下逐条白名单发出的固定静态图：应用图标 + 两张内置头像。文件名不带 hash，只给短缓存。 */
 const ROOT_IMAGE_ASSETS = new Set(["/icon.png", "/xiaomo.png", "/assistant.png"]);
 
 /**
@@ -183,7 +185,9 @@ const staticRoute: Route = async ({ req, res, url, path, method }) => {
   // dist 缺失只可能是没跑 `npm run fe:build`，给一句人话提示，而不是白屏。
   if (method === "GET" && (path === "/" || path === "/index.html")) {
     if (reactEntry) {
-      sendFile(req, res, joinPath(reactDist, "index.html"), "text/html; charset=utf-8");
+      // no-cache 而不是 no-store：浏览器可以存，但每次刷新都要拿 ETag 回来验——
+      // 同一次构建内直接 304 零字节（穿透下省掉整个 HTML 正文的往返），发新版又不会 stale。
+      sendFile(req, res, joinPath(reactDist, "index.html"), "text/html; charset=utf-8", NO_CACHE);
     } else {
       sendHtml(res, missingDistHtml());
     }
@@ -197,8 +201,10 @@ const staticRoute: Route = async ({ req, res, url, path, method }) => {
     return true;
   }
   if (method === "GET" && ROOT_IMAGE_ASSETS.has(path)) {
-    // 应用图标（标签页 + 关于界面）与两张内置默认头像：都在 frontend/public 下，Vite 原样拷进 dist 根
-    serveDistFile(reactDist, path.slice(1), req, res);
+    // 应用图标（标签页 + 关于界面）与两张内置默认头像：都在 frontend/public 下，Vite 原样拷进 dist 根。
+    // 文件名不带 hash 不能永久缓存，但 no-store 意味着每次开页面都要穿一次隧道；
+    // 一小时短缓存折中：内容变了最多 stale 一小时，日常刷新少一次回源。
+    serveDistFile(reactDist, path.slice(1), req, res, SHORT_CACHE);
     return true;
   }
 

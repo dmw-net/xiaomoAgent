@@ -50,7 +50,7 @@ export function createHttpServer(options: { rebind?: () => Promise<{ ok: boolean
   ensureDefaultConversations();
   // 内置设置助手：保留联系人，一句话配模型/建联系人（工具白名单见 assistant.ts）。
   ensureAssistantContact();
-  return createServer((request, response) => {
+  const server = createServer((request, response) => {
     handle(request, response, rebind).catch((error) => {
       const payload = error instanceof SettingsBodyError
         ? { status: 400 as const, body: { ok: false, error: error.message } }
@@ -64,6 +64,12 @@ export function createHttpServer(options: { rebind?: () => Promise<{ ok: boolean
       } catch { /* 连接已断，写不进去就算了 */ }
     });
   });
+  // keep-alive 默认 5s：穿透链路上空闲连接被掐掉后，下一个请求要重新付整轮 TCP+TLS
+  // 握手（拥塞时段是好几秒）。放宽到 72s——低于 CF 边缘到源站的空闲回收窗口，
+  // 避免「边缘以为连接还活着、源头已经关了」的竞态；headersTimeout 略大留余量。
+  server.keepAliveTimeout = 72_000;
+  server.headersTimeout = 76_000;
+  return server;
 }
 
 async function handle(

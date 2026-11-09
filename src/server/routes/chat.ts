@@ -12,6 +12,7 @@ import {
   editAndRegenerate,
   getMessage,
   getTurn,
+  draftSeqOf,
   messagesForTurn,
   messagesSince,
   messagesBefore,
@@ -119,7 +120,15 @@ const sayRoute: Route = async ({ req, res, url, path, method }) => {
   return true;
 };
 
-/** GET /api/turn/<id>：查处理单状态。 */
+/**
+ * GET /api/turn/<id>：查处理单状态。
+ *
+ * ?lean=1：在飞轮瘦身——草稿正文此刻正以 draft/thought 流式帧推给客户端，
+ * 轮询拍的职责只剩状态监视与断档对齐，没必要每 900ms 重拉一遍不断变长的全量
+ * 正文（回复越长越肥，穿透链路上是持续上行占用）。lean 响应剥掉 reply/reasoning
+ * 两个正文字段、带回 draftSeq/reasoningSeq（客户端对齐增量帧的续接点）；
+ * 断档回源、收尾那一拍照旧走不带 lean 的请求拿全量。
+ */
 const turnGetRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path.startsWith("/api/turn/"))) return false;
   const id = decodeURIComponent(path.slice("/api/turn/".length));
@@ -135,15 +144,18 @@ const turnGetRoute: Route = ({ res, url, path, method }) => {
     sendJson(res, 404, { ok: false, error: "处理单不存在" });
     return true;
   }
+  const running = turn.status === "running";
+  const lean = url.searchParams.get("lean") === "1" && running;
+  const seqs = running ? draftSeqOf(id) : null;
   sendJson(res, 200, {
     ok: true,
     id: turn.id,
     status: turn.status,
-    reply: turn.reply,
-    reasoning: turn.reasoning_draft ?? null,
+    ...(lean ? {} : { reply: turn.reply, reasoning: turn.reasoning_draft ?? null }),
     error: turn.error,
     createdAt: turn.created_at,
     finishedAt: turn.finished_at,
+    ...(seqs ? { draftSeq: seqs.reply, reasoningSeq: seqs.reasoning } : {}),
   });
   return true;
 };
@@ -211,7 +223,10 @@ const turnVariantRoute: Route = async ({ req, res, url, path, method }) => {
   }
   try {
     const result = setTurnVariant(id, index);
-    sendJson(res, 200, { ok: true, applied: result.applied, index });
+    // 把切换后的行随响应带回：前端不必再打一发 /api/messages?turn=，
+    // 切换从「两趟往返」变「一趟」——这正是 Kelivo 式即插即用的关键一截。
+    const messages = messagesForTurn(id, turn.contact_id ?? undefined);
+    sendJson(res, 200, { ok: true, applied: result.applied, index, messages });
   } catch (error) {
     sendJson(res, 400, { ok: false, error: error instanceof Error ? error.message : String(error) });
   }

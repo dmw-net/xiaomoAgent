@@ -8,7 +8,7 @@
 
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { createReadStream, readFileSync, statSync } from "node:fs";
-import { gzipSync } from "node:zlib";
+import { brotliCompressSync, constants, gzipSync } from "node:zlib";
 import { extname, resolve, sep } from "node:path";
 
 export class SettingsBodyError extends Error {}
@@ -28,56 +28,106 @@ export const MAX_AUDIO_BODY_BYTES = 8 * 1024 * 1024;
  */
 export const MAX_CARD_BODY_BYTES = 512 * 1024;
 
-// ── gzip ──────────────────────────────────────────────
+// ── 内容编码（gzip / brotli）─────────────────────────
 // 穿透访问下首屏最大的一块成本是 320KB 的产物原文（gzip 后 92KB）；轮询接口同理
 // （/api/contacts 每 10 秒 15KB 原文）。node:zlib 是内置的，不引依赖。
-// 客户端接不接受 gzip 在请求入口记一次在 response 上，sendJson / sendFile 共用这
+// 客户端接受哪些编码在请求入口记一次在 response 上，sendJson / sendFile 共用这
 // 一个事实来源——否则要给六十多个 sendJson 调用点都加一个 request 参数。
-const GZIP_OK = Symbol("accepts-gzip");
-type GzipAware = ServerResponse & { [GZIP_OK]?: boolean };
+// 为什么还要 brotli：穿透的住宅上行是硬瓶颈，同一份产物 brotli 比 gzip 再省 15~20%，
+// 在拥塞链路上就是按秒计的差别。静态产物用 q11（按文件压一次记下来），动态 JSON 用
+// q4（毫秒级，不值得缓存）；更大的图片/音频压不赢原始编码，自然落到 gzip 的 null 分支。
+const ENC_OK = Symbol("accepts-encoding");
+type EncAware = ServerResponse & { [ENC_OK]?: { gzip: boolean; br: boolean } };
 
 export function markGzip(request: IncomingMessage, response: ServerResponse): void {
   const ae = request.headers["accept-encoding"];
-  (response as GzipAware)[GZIP_OK] = typeof ae === "string" && ae.includes("gzip");
+  const list = typeof ae === "string" ? ae.toLowerCase() : "";
+  (response as EncAware)[ENC_OK] = { gzip: list.includes("gzip"), br: list.includes("br") };
+}
+
+function acceptsEncoding(response: ServerResponse): { gzip: boolean; br: boolean } {
+  return (response as EncAware)[ENC_OK] ?? { gzip: false, br: false };
 }
 
 /** 小于这个体积压了也省不下一个 MTU，白付 CPU。 */
 const GZIP_MIN_BYTES = 1024;
+/**
+ * 动态 JSON 换 brotli 的门槛：小响应上 q4 brotli 可能比 gzip 还大（实测 1.2KB 的
+ * /api/status 反增 19B），大响应才稳赢（中文正文 -60% 级、15KB 的 contacts -3%）。
+ */
+const BROTLI_JSON_MIN_BYTES = 4096;
+/** brotli q11 在大文件上要几百毫秒：懒压缩只做小文件，更大的退回 gzip（图片类压不赢，null 兜住）。 */
+const BROTLI_MAX_BYTES = 1024 * 1024;
 
-function gzipHeaders(encoding: string | null): Record<string, string> {
-  // Vary 必须带：穿透那层的 CDN 若按 URL 缓存，不带 Vary 会把 gzip 版发给不接受 gzip 的客户端。
+function encodingHeaders(encoding: string | null): Record<string, string> {
+  // Vary 必须带：穿透那层的 CDN 若按 URL 缓存，不带 Vary 会把压缩版发给不接受的客户端。
   return encoding === null ? {} : { "content-encoding": encoding, vary: "accept-encoding" };
 }
 
-/** 静态文件不常变，gzip 结果按 size+mtime 记一份，别每次请求都压一遍。 */
-const gzipCache = new Map<string, { key: string; buf: Buffer | null }>();
+/**
+ * 静态文件的压缩结果按 size+mtime 记一份（brotli、gzip 各一份），别每次请求都压一遍。
+ * 原文不进内存：本地磁盘读有页缓存兜着，实测 2ms 级，不值得为大图占常驻内存。
+ */
+type CompEntry = { key: string; br?: Buffer | null; gz?: Buffer | null };
+const compCache = new Map<string, CompEntry>();
 
-function gzipOfFile(file: string, body: Buffer): Buffer | null {
-  let st;
-  try { st = statSync(file); } catch { return null; }
-  const key = `${st.size}:${st.mtimeMs}`;
-  const hit = gzipCache.get(file);
-  if (hit !== undefined && hit.key === key) return hit.buf;
-  const gz = gzipSync(body);
-  const buf = gz.length < body.length ? gz : null;
-  gzipCache.set(file, { key, buf });
-  if (gzipCache.size > 128) gzipCache.delete(gzipCache.keys().next().value as string);
-  return buf;
+function compEntryOf(file: string, statSize: number, statMtimeMs: number): CompEntry {
+  const key = `${statSize}:${statMtimeMs}`;
+  const hit = compCache.get(file);
+  if (hit !== undefined && hit.key === key) {
+    // LRU：命中就挪到表尾，淘汰最老的。
+    compCache.delete(file);
+    compCache.set(file, hit);
+    return hit;
+  }
+  const entry: CompEntry = { key };
+  compCache.set(file, entry);
+  if (compCache.size > 128) {
+    const oldest = compCache.keys().next().value as string;
+    if (oldest !== file) compCache.delete(oldest);
+  }
+  return entry;
+}
+
+function brotliOf(entry: CompEntry, raw: Buffer): Buffer | null {
+  if (entry.br === undefined) {
+    const b = brotliCompressSync(raw, { params: { [constants.BROTLI_PARAM_QUALITY]: 11 } });
+    entry.br = b.length < raw.length ? b : null;
+  }
+  return entry.br;
+}
+
+function gzipOf(entry: CompEntry, raw: Buffer): Buffer | null {
+  if (entry.gz === undefined) {
+    const g = gzipSync(raw);
+    entry.gz = g.length < raw.length ? g : null;
+  }
+  return entry.gz;
 }
 
 export function sendJson(response: ServerResponse, status: number, body: unknown): void {
   const raw = Buffer.from(JSON.stringify(body));
   let buf = raw;
   let encoding: string | null = null;
-  if ((response as GzipAware)[GZIP_OK] === true && raw.length >= GZIP_MIN_BYTES) {
-    const gz = gzipSync(raw);
-    if (gz.length < raw.length) { buf = gz; encoding = "gzip"; }
+  if (raw.length >= GZIP_MIN_BYTES) {
+    const enc = acceptsEncoding(response);
+    // 动态正文每个响应都不同，不做缓存。q4 对 JSON 压缩比略胜 gzip 且 CPU 毫秒级，
+    // 但只在大响应上换 brotli：小响应可能不升反降（见 BROTLI_JSON_MIN_BYTES 注释）。
+    if (enc.br && raw.length >= BROTLI_JSON_MIN_BYTES) {
+      const b = brotliCompressSync(raw, {
+        params: { [constants.BROTLI_PARAM_QUALITY]: 4, [constants.BROTLI_PARAM_SIZE_HINT]: raw.length },
+      });
+      if (b.length < raw.length) { buf = b; encoding = "br"; }
+    } else if (enc.gzip) {
+      const g = gzipSync(raw);
+      if (g.length < raw.length) { buf = g; encoding = "gzip"; }
+    }
   }
   response.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
     "x-content-type-options": "nosniff",
-    ...gzipHeaders(encoding),
+    ...encodingHeaders(encoding),
   });
   response.end(buf);
 }
@@ -95,7 +145,11 @@ const DIST_MIME: Record<string, string> = {
 
 /** 内容寻址的资源（文件名带 hash 的构建产物、随机 id 的聊天图片）可以永久缓存。 */
 export const IMMUTABLE = "public, max-age=31536000, immutable";
-/** 其余一律不缓存：index.html 缓存住就等于新版本发不出去。 */
+/** index.html：允许浏览器存，但每次都要带 ETag 回来验（变了立刻 200，没变 304 省掉正文）。 */
+export const NO_CACHE = "no-cache";
+/** 文件名不带 hash 的固定小图（应用图标、内置头像）：短缓存折中——不每次回源，也不会 stale 太久。 */
+export const SHORT_CACHE = "public, max-age=3600";
+/** 其余一律不缓存：缓存住就等于新版本发不出去。 */
 export const NO_STORE = "no-store";
 
 /**
@@ -158,25 +212,38 @@ export function serveDistFile(distRoot: string, name: string, request: IncomingM
   sendFile(request, response, file, DIST_MIME[extname(file)] ?? "application/octet-stream", cacheControl);
 }
 
-/** 按文件的 size+mtime 生成弱 ETag：内容没变（重建前）就命中 304。 */
-function staticETag(file: string, size: number): string {
-  let mtimeMs = 0;
-  try { mtimeMs = statSync(file).mtimeMs; } catch { return ""; }
-  return `W/"${size}-${Math.floor(mtimeMs)}"`;
+/** 从 HTML 里抠出 /assets/ 引用生成 Link: preload 头：浏览器收到响应头就能并行去拉资产，
+ *  不用等 12KB 的 HTML 下载完再解析；CF 开了 Early Hints 后还会升级成 103 边缘预加载。 */
+function linkPreloadHeader(html: Buffer): Record<string, string> {
+  const seen = new Set<string>();
+  const links: string[] = [];
+  for (const m of html.toString("utf8").matchAll(/(?:href|src)="(\/assets\/[A-Za-z0-9._/-]+?\.(?:js|css|woff2))"/g)) {
+    const url = m[1];
+    if (url === undefined || seen.has(url)) continue;
+    seen.add(url);
+    const as = url.endsWith(".js") ? "script" : url.endsWith(".css") ? "style" : "font";
+    // module 脚本按 CORS 模式加载，preload 必须带 crossorigin 才能命中二次请求
+    links.push(`<${url}>; rel=preload; as=${as}${as !== "style" ? "; crossorigin" : ""}`);
+    if (links.length >= 8) break;
+  }
+  return links.length > 0 ? { link: links.join(", ") } : {};
 }
 
 export function sendFile(request: IncomingMessage, response: ServerResponse, file: string, mime: string, cacheControl = NO_STORE): void {
-  let body: Buffer;
+  let statSize = 0;
+  let statMtimeMs = 0;
   try {
-    body = readFileSync(file);
+    const st = statSync(file);
+    statSize = st.size;
+    statMtimeMs = st.mtimeMs;
   } catch {
     sendJson(response, 404, { ok: false, error: "not found" });
     return;
   }
-  const etag = staticETag(file, body.length);
-  // 条件请求放在最前：没变直接 304 零字节，连 gzip 都省掉（桌面重开/移动刷新都命中）。
+  const etag = `W/"${statSize}-${Math.floor(statMtimeMs)}"`;
+  // 条件请求放在最前：没变直接 304 零字节，连压缩都省掉（桌面重开/移动刷新都命中）。
   const inm = request.headers["if-none-match"];
-  if (etag !== "" && typeof inm === "string" && inm !== "" && (inm === etag || inm.includes(etag))) {
+  if (inm !== undefined && inm !== "" && (inm === etag || inm.includes(etag))) {
     // 304 不带 body、也不带 content-encoding（没有正文可解压）；只回校验与缓存语义。
     response.writeHead(304, {
       "cache-control": cacheControl,
@@ -185,20 +252,35 @@ export function sendFile(request: IncomingMessage, response: ServerResponse, fil
     response.end();
     return;
   }
+  let body: Buffer;
+  try {
+    body = readFileSync(file);
+  } catch {
+    sendJson(response, 404, { ok: false, error: "not found" });
+    return;
+  }
   let buf = body;
   let encoding: string | null = null;
-  // 图片等已压缩的内容 gzip 压不动，gzipOfFile 里「压不赢就返回 null」兜住。
-  if ((response as GzipAware)[GZIP_OK] === true && body.length >= GZIP_MIN_BYTES) {
-    const gz = gzipOfFile(file, body);
-    if (gz !== null) { buf = gz; encoding = "gzip"; }
+  // 编码优先级：brotli > gzip > 原文。图片等已压缩的内容压不赢就发原文（xxxOf 里「null 兜底」）。
+  if (body.length >= GZIP_MIN_BYTES) {
+    const enc = acceptsEncoding(response);
+    const entry = compEntryOf(file, statSize, statMtimeMs);
+    if (enc.br && body.length <= BROTLI_MAX_BYTES) {
+      const br = brotliOf(entry, body);
+      if (br !== null) { buf = br; encoding = "br"; }
+    }
+    if (encoding === null && enc.gzip) {
+      const gz = gzipOf(entry, body);
+      if (gz !== null) { buf = gz; encoding = "gzip"; }
+    }
   }
   response.writeHead(200, {
     "content-type": mime,
     "cache-control": cacheControl,
     "x-content-type-options": "nosniff",
     etag,
-    ...(mime.startsWith("text/html") ? HTML_SECURITY_HEADERS : {}),
-    ...gzipHeaders(encoding),
+    ...(mime.startsWith("text/html") ? { ...HTML_SECURITY_HEADERS, ...linkPreloadHeader(body) } : {}),
+    ...encodingHeaders(encoding),
   });
   response.end(buf);
 }

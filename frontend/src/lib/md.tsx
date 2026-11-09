@@ -88,6 +88,45 @@ export function findFirstExternalUrl(text: string): string {
   return "";
 }
 
+// ── 搜索命中词高亮 ─────────────────────────────────────────────────────────
+// renderMd 的可选第二参：非空时把正文里匹配该词的片段包进 <mark class="md-hl">。
+// 只给当前搜索命中的行启用（调用方决定传不传），匹配口径与后端 LIKE 一致：
+// 整串短语、忽略大小写。解析是同步的，模块级存一份当前匹配器给各文本叶子读取即可。
+let hlRe: RegExp | null = null;
+let hlQuery = "";
+function hlMatcher(query: string): RegExp | null {
+  if (query === "") return null;
+  // 匹配器可能在普通渲染路径里被摘成 null（见 renderMd），此时哪怕词没变也要重编。
+  if (query !== hlQuery || hlRe === null) {
+    hlQuery = query;
+    // 词面是普通文本不是正则：元字符全部转义，按字面找。
+    hlRe = new RegExp(query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
+  }
+  hlRe.lastIndex = 0;
+  return hlRe;
+}
+
+/** 把这段文本按搜索词切开，命中片段包 <mark>；没有高亮上下文或没命中就原样返回。 */
+function hl(text: string, keyBase: string): ReactNode {
+  const re = hlRe;
+  if (re === null || text === "") return text;
+  re.lastIndex = 0;
+  if (!re.test(text)) { re.lastIndex = 0; return text; }
+  re.lastIndex = 0;
+  const nodes: ReactNode[] = [];
+  let last = 0;
+  let m: RegExpExecArray | null;
+  let i = 0;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) nodes.push(text.slice(last, m.index));
+    nodes.push(<mark key={`${keyBase}h${i}`} className="md-hl">{m[0]}</mark>);
+    last = m.index + m[0].length;
+    i += 1;
+  }
+  if (last < text.length) nodes.push(text.slice(last));
+  return nodes;
+}
+
 /**
  * 历史消息里遗留的「[表情]」占位：早期入站只留了个无信息的调试串，界面直接把这三个字
  * 甩给了用户。新入站已经解析成具体表情（见 qq-onebot.ts 的 obInboundText），这里只兜旧数据，
@@ -95,19 +134,19 @@ export function findFirstExternalUrl(text: string): string {
  */
 const EMOTE_PLACEHOLDER_RE = /\[表情\]/g;
 function withEmoteTokens(text: string, key: string): ReactNode {
-  if (!text.includes("[表情]")) return text;
+  if (!text.includes("[表情]") && hlRe === null) return text;
   const nodes: ReactNode[] = [];
   EMOTE_PLACEHOLDER_RE.lastIndex = 0;
   let last = 0;
   let m: RegExpExecArray | null;
   let i = 0;
   while ((m = EMOTE_PLACEHOLDER_RE.exec(text)) !== null) {
-    if (m.index > last) nodes.push(text.slice(last, m.index));
+    if (m.index > last) nodes.push(hl(text.slice(last, m.index), `${key}s${i}`));
     nodes.push(<span key={`${key}-em${i}`} className="md-emote" title="QQ 表情" aria-label="QQ 表情">🙂</span>);
     last = m.index + m[0].length;
     i += 1;
   }
-  if (last < text.length) nodes.push(text.slice(last));
+  if (last < text.length) nodes.push(hl(text.slice(last), `${key}s${i}`));
   return nodes;
 }
 
@@ -122,17 +161,17 @@ function inline(text: string, keyBase: string): ReactNode[] {
     if (m.index > last) nodes.push(withEmoteTokens(text.slice(last, m.index), keyBase + i));
     const token = m[0];
     if (token.startsWith("**")) {
-      nodes.push(<strong key={keyBase + i}>{token.slice(2, -2)}</strong>);
+      nodes.push(<strong key={keyBase + i}>{hl(token.slice(2, -2), keyBase + i)}</strong>);
     } else if (token.startsWith("`")) {
-      nodes.push(<code key={keyBase + i} className="md-code">{token.slice(1, -1)}</code>);
+      nodes.push(<code key={keyBase + i} className="md-code">{hl(token.slice(1, -1), keyBase + i)}</code>);
     } else if (token.startsWith("[")) {
       const parts = MD_LINK_RE.exec(token);
       if (parts) nodes.push(<MdLink key={keyBase + i} href={parts[2]!} label={parts[1]!} />);
-      else nodes.push(token); // 形状不合（比如地址不是 http）就原样显示，别吞字
+      else nodes.push(hl(token, keyBase + i)); // 形状不合（比如地址不是 http）就原样显示，别吞字
     } else {
       const { url, tail } = bareUrlParts(token);
       nodes.push(<MdLink key={keyBase + i} href={url} label={linkDomain(url)} />);
-      if (tail !== "") nodes.push(tail);
+      if (tail !== "") nodes.push(hl(tail, keyBase + "t" + i));
     }
     last = m.index + token.length;
     i += 1;
@@ -150,8 +189,18 @@ const mdCache = new Map<string, ReactNode>();
  * 气泡的 DOM 全量重建——`MessageRow` 的 memo 与 reuseRows 的对象复用只救得了
  * 「同实例内的更新」，救不了新实例；这里省下的是那 500 次 Markdown 重拆行的 CPU。
  * 同一段文本的解析结果恒等，React 元素是不可变描述对象，多处渲染同一份也安全。
+ *
+ * `highlight` 是当前搜索词：非空时该次渲染现场解析并把命中片段包进 <mark>，
+ * 结果不进缓存（高亮是跟着搜索词走的临时产物，见函数体内注释）。
  */
-export function renderMd(text: string): ReactNode {
+export function renderMd(text: string, highlight = ""): ReactNode {
+  if (highlight !== "" && hlMatcher(highlight) !== null) {
+    // 高亮结果不进 LRU：它跟着搜索词走，词一变就作废；写进缓存会把正常文本的热条目
+    // 挤掉，搜索关掉后还会留陈旧 mark。命中行就一屏里那几条，现场解析足够便宜。
+    return parseMd(text);
+  }
+  // 上一轮高亮留下的匹配器必须摘掉，否则普通路径的解析也会被误包 mark。
+  hlRe = null;
   const hit = mdCache.get(text);
   if (hit !== undefined) {
     // 先删再插 = LRU 摸底，常用文本留在缓存里
@@ -177,7 +226,7 @@ function parseMd(text: string): ReactNode {
   let fenceLines: string[] = [];
   const flushFence = (): void => {
     if (fenceLines.length > 0) {
-      out.push(<pre key={fenceKey} className="md-pre">{fenceLines.join("\n")}</pre>);
+      out.push(<pre key={fenceKey} className="md-pre">{hl(fenceLines.join("\n"), fenceKey)}</pre>);
     }
     fenceKey = "";
     fenceLines = [];

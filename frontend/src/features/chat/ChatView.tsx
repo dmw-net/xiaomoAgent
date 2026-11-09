@@ -11,9 +11,9 @@ import { dayLabel, dayTimeLabel, dayOf, clockOf } from "../../lib/datetime";
 import { fmtTokens } from "../../lib/format";
 import { profilePicks, providerLabel } from "../../lib/providers";
 import { blobToDataUrl, fileToImageBlob } from "../../lib/image";
-import { CLOCK_EVENT, getClockPref, type ClockPref } from "../../lib/ui-prefs";
+import { CLOCK_EVENT, getClockPref, getShowTokensPerSec, CHAT_SPEED_EVENT, getShowTtsButton, CHAT_TTS_EVENT, type ClockPref } from "../../lib/ui-prefs";
 import { offerUndo } from "../../lib/undo";
-import { onBusEvent } from "../../lib/eventBus";
+import { isBusConnected, onBusEvent } from "../../lib/eventBus";
 import { enqueueOutbox, flushOutbox, outboxForContact, subscribeOutbox } from "../../lib/outbox";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useAnchoredPop } from "../../hooks/useAnchoredPop";
@@ -396,6 +396,20 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     window.addEventListener(CLOCK_EVENT, sync);
     return () => window.removeEventListener(CLOCK_EVENT, sync);
   }, []);
+  // 生成速度（t/s）显示开关（设备级，同在「聊天显示」里改）
+  const [speedOn, setSpeedOn] = useState<boolean>(getShowTokensPerSec);
+  useEffect(() => {
+    const sync = (): void => setSpeedOn(getShowTokensPerSec());
+    window.addEventListener(CHAT_SPEED_EVENT, sync);
+    return () => window.removeEventListener(CHAT_SPEED_EVENT, sync);
+  }, []);
+  // 气泡 🔊 播放按钮显示开关（设备级，同在「聊天显示」里改；只管显示，不动语音能力）
+  const [ttsBtnOn, setTtsBtnOn] = useState<boolean>(getShowTtsButton);
+  useEffect(() => {
+    const sync = (): void => setTtsBtnOn(getShowTtsButton());
+    window.addEventListener(CHAT_TTS_EVENT, sync);
+    return () => window.removeEventListener(CHAT_TTS_EVENT, sync);
+  }, []);
   const { notices, addNotice, dropNotices } = useNotices();
   const [typing, setTyping] = useState(false);
   /**
@@ -455,6 +469,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const searchSeqRef = useRef(0);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const searchJumpRef = useRef<(m: MessageRow) => void>(() => {});
+  // 词高亮只描命中的行：与计数、↑↓ 跳转共用同一份 searchHits，看到的 mark 数和「n/m」对得上。
+  const searchHitIds = useMemo(() => new Set(searchHits.map((h) => h.id)), [searchHits]);
   /** 搜索/地图跳转命中的那一条：一次只挂一个脉冲（行 + 定时器），连跳下一条时
       先摘旧的再挂新的，定时器只留最新一个——不然快速 ↓ 连跳会漏下一堆计时器。 */
   const hitPulseRef = useRef<{ row: HTMLElement; timer: number } | null>(null);
@@ -896,7 +912,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   // ── 拉取（放 ref 里：轮询与各动作都调最新版，不必进依赖数组） ──
   const pullRef = useRef<() => Promise<void>>();
   const pullAllRef = useRef<() => Promise<void>>();
-  const pullTurnRef = useRef<(turnId: string) => Promise<MessageRow[]>>();
+  const pullTurnRef = useRef<(turnId: string, prefetched?: MessageRow[]) => Promise<MessageRow[]>>();
   /** 比当前最早那条更早、还没进界面的行数（服务端报的，0 = 已经到顶）。
    *  从前是 `返回行数 >= 200` 反推，那个 200 前后端各写一遍，改一边就悄悄失效。 */
   const [olderLeft, setOlderLeft] = useState(0);
@@ -911,6 +927,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    *  少清一次就会在屏幕上挂着一段已经不代表的回答。 */
   const retireDraft = (): void => { draftTurnRef.current = null; setStreamText(""); setStreamReasoning(""); };
   const watchStopRef = useRef<(() => void) | null>(null);
+  /** 流式帧的接收状态（draft/thought 各一份）：text=已收正文（null=检测到断档、
+   *  等回源对齐），seq=最后续上的帧号。正文的主显示通道是事件总线上的帧；
+   *  watch 轮询拍只做播种（首拍）、断档回源与断连兜底——三个来源都整段对齐
+   *  到同一份 ref，谁都不会把谁的状态改坏。 */
+  const draftStreamRef = useRef<{ text: string | null; seq: number }>({ text: "", seq: 0 });
+  const thoughtStreamRef = useRef<{ text: string | null; seq: number }>({ text: "", seq: 0 });
+  /** 断档标记：帧跳号或 lean 拍发现序号超前时置位，watch 下一拍先回源全量再继续。 */
+  const streamResyncRef = useRef(false);
+  /** 立即触发一次 watch 拍（帧断档回源、turn 收尾事件用），由 watch 挂载。 */
+  const wakeWatchRef = useRef<(() => void) | null>(null);
   /** 实例存活哨兵：重答/发送的 POST 落在卸载之后（在飞时切走了联系人）时，watch 链不许
    *  再启动——卸载清理那时已经跑过，再没有人会调它的 stop，泄漏的轮询链会以旧作用域
    *  空转满 300 拍，还会顺手把旧联系人的已读进度上报出去。各拉取入口同守这道哨兵。 */
@@ -935,16 +961,28 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     watchStopRef.current = (): void => { stopped = true; };
     // 新一轮开始：先把上一轮残留的草稿摘掉，否则这 900ms 里联系人"正在写"的是旧话。
     retireDraft();
+    // 流式接收状态归零：正文从这一轮的帧/首拍全量重新开始。
+    draftStreamRef.current = { text: "", seq: 0 };
+    thoughtStreamRef.current = { text: "", seq: 0 };
+    streamResyncRef.current = false;
     const redraw = (): Promise<void> =>
       Promise.resolve(opts.fullRedraw ? pullAllRef.current?.() : pullRef.current?.());
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const schedule = (ms: number): void => { timer = setTimeout(tick, ms); };
     const tick = (): void => {
       if (stopped) return;
       // 沉睡时也要继续排下一拍（否则永远不会自己醒），但**不发请求**：
       // 关着的助手弹窗、切走的标签页，没有理由继续每 900ms 打一次 /api/turn
       // 外加每两拍一次的 /api/messages 和 /api/turns/recent。
-      if (asleep()) { setTimeout(tick, 900); return; }
+      if (asleep()) { schedule(900); return; }
       tries += 1;
-      chatApi.fetchTurn(turnId, cid)
+      // 草稿正文的到达路径分两条：事件总线的 draft/thought 流式帧（主路，
+      // 服务端 200ms 一帧增量）与这一拍的 /api/turn（兜底）。连接着总线时，
+      // 第一拍全量播种、之后走 lean 瘦身（只带回状态与帧序号，断档检测用）；
+      // 断连或回源对齐那一拍才重新拉全量正文——旧行为（每拍全量快照）就是断连档。
+      const wantFull = tries === 1 || streamResyncRef.current || !isBusConnected();
+      streamResyncRef.current = false;
+      chatApi.fetchTurn(turnId, cid, wantFull ? undefined : { lean: true })
         .then((turn) => {
           if (stopped) return;
           failDelay = 1200;
@@ -960,8 +998,26 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             // done 这一拍也把定稿正文交给逐字揭示：单条模式必须让最后一段字打完，
             // 再由下方真气泡接手，不能在中途整段闪换。
             if (turn.reply || turn.reasoning) draftTurnRef.current = turnId;
-            setStreamReasoning(String(turn.reasoning ?? ""));
-            setStreamText(String(turn.reply ?? ""));
+            const fullBody = turn.reply !== undefined; // lean 拍不带正文字段
+            if (fullBody) {
+              // 全量拍：整段采纳，帧号一并续上——之后到达的增量帧以此为基准。
+              setStreamReasoning(String(turn.reasoning ?? ""));
+              setStreamText(String(turn.reply ?? ""));
+              draftStreamRef.current = {
+                text: String(turn.reply ?? ""),
+                seq: typeof turn.draftSeq === "number" ? turn.draftSeq : draftStreamRef.current.seq,
+              };
+              thoughtStreamRef.current = {
+                text: String(turn.reasoning ?? ""),
+                seq: typeof turn.reasoningSeq === "number" ? turn.reasoningSeq : thoughtStreamRef.current.seq,
+              };
+            } else if (
+              (typeof turn.draftSeq === "number" && turn.draftSeq > draftStreamRef.current.seq + 1) ||
+              (typeof turn.reasoningSeq === "number" && turn.reasoningSeq > thoughtStreamRef.current.seq + 1)
+            ) {
+              // lean 拍发现帧序号超前（有帧没送到）：下一拍回源全量补齐。
+              streamResyncRef.current = true;
+            }
           }
           // 消息列表不必每拍都拉：草稿走的是 /api/turn 这一拍，气泡最快也只有分条那 450ms 一条。
           // 每 WATCH_PULL_EVERY 拍拉一次，「首句先到」仍然靠这里。
@@ -1012,7 +1068,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             }).catch(() => { /* 重绘/空回复检查失败：下一拍轮询照旧，别留未处理的拒绝 */ });
             return;
           }
-          setTimeout(tick, 900);
+          // 连着总线时草稿正文由帧实时推，拍只监视状态，可以放宽；断连回到 900ms
+          // 快档（那时的拍还兼着正文快照的职责）。
+          schedule(isBusConnected() ? 2000 : 900);
         })
         .catch(() => {
           if (stopped) return;
@@ -1027,13 +1085,20 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             addNotice("这一条没回成功，刷新看看", { info: true });
             return;
           }
-          setTimeout(tick, failDelay);
+          schedule(failDelay);
           failDelay = Math.min(failDelay * 2, 8000); // 网络故障指数退避，封顶 8s
         });
     };
+    // 立即拍：turn 收尾事件、帧断档回源都从这条路插队，不等下一拍。
+    const wake = (): void => {
+      if (stopped) return;
+      if (timer !== undefined) clearTimeout(timer);
+      tick();
+    };
+    wakeWatchRef.current = wake;
     tick();
   }, [addNotice, cid, dropNotices, asleep, streamReveal]);
-  useEffect(() => () => { mountedRef.current = false; watchStopRef.current?.(); }, []);
+  useEffect(() => () => { mountedRef.current = false; watchStopRef.current?.(); wakeWatchRef.current = null; }, []);
 
   // 数据被整库清空：模块级那份种子缓存必须当场作废。
   // 库是 DELETE 清的、AUTOINCREMENT 不复位，所以没有任何 id 变化能提醒缓存"这些行已经没了"——
@@ -1240,13 +1305,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 合并按 id 重排——messagesForTurn 给的是升序，落回原位置即可。
    * 返回服务端这一轮的行：watch 收尾要用它判断"done 了却没气泡"的空回复。
    */
-  pullTurnRef.current = async (turnId: string): Promise<MessageRow[]> => {
+  pullTurnRef.current = async (turnId: string, prefetched?: MessageRow[]): Promise<MessageRow[]> => {
     if (!mountedRef.current) return []; // 卸载后迟到的调用：不再发请求
-    const data = await chatApi.fetchTurnMessages(turnId, cid, conversationId);
-    if (editingRef.current !== null) return data.messages;
+    // prefetched：动作响应里直接带回的行（如版本切换），省一趟 /api/messages?turn=。
+    const data = prefetched ?? (await chatApi.fetchTurnMessages(turnId, cid, conversationId)).messages;
+    if (editingRef.current !== null) return data;
     setMsgs((prev) => reuseRows(prev,
-      [...prev.filter((m) => m.turn_id !== turnId), ...data.messages].sort((a, b) => a.id - b.id)));
-    return data.messages;
+      [...prev.filter((m) => m.turn_id !== turnId), ...data].sort((a, b) => a.id - b.id)));
+    return data;
   };
 
   /** 只动某一轮的操作之后该重取什么：能按轮窄取就窄取；
@@ -1526,16 +1592,16 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       });
   }, [addNotice, busyGuard, cid, watch]);
 
-  /** 切换这一轮回复的版本（swipe）：后端把选中版本写回气泡行，按轮窄取重绘。
-   *  行号不变的原地 UPDATE 增量拉取看不见，所以必须显式 pullAffected（与编辑同一条路）。 */
+  /** 切换这一轮回复的版本（swipe）：后端把选中版本写回气泡行、新行随响应带回，
+   *  这里只做合并落位——一趟往返，界面即刻换字。 */
   const changeVariant = useCallback((m: MessageRow, index: number): void => {
     if (!m.turn_id || busyGuard()) return;
     setBusy(true);
     chatApi.setTurnVariant(m.turn_id, index, cid)
-      .then(() => pullAffected(m.turn_id))
+      .then((res) => pullTurnRef.current?.(m.turn_id!, res.messages))
       .catch(() => addNotice("没切换成，稍后再试", { info: true }))
       .finally(() => setBusy(false));
-  }, [addNotice, busyGuard, cid, pullAffected]);
+  }, [addNotice, busyGuard, cid]);
 
   /** 版本条右位的「再来一版」：与菜单「重新生成」同一条确认弹窗，
    *  确认后 doRegenerate 重答，旧版本留档、新回答追加为下一个版本。 */
@@ -2042,7 +2108,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   }, [paused]);
 
   /**
-   * 事件总线：服务端推下来的「联系人那边有新动静」——空闲（没有在飞处理单、页面可见）时
+   * 事件总线：服务端推下来的「联系人那边发生了什么」——空闲（没有在飞处理单、页面可见）时
    * 立刻做**增量**拉取，把「联系人回的话 / 主动说的话」从 2.5~10s 的轮询退避提前到事件到达。
    * 一轮在飞时由 watch 那拍负责消息列表，这里整拍跳过，避免两个轮询者打架。
    * 只拉自己这一屏的联系人（作用域与 send/读光口同一套 cid ?? msgScope）；
@@ -2051,9 +2117,53 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   useEffect(() => {
     const onEvent = (event: import("../../lib/eventBus").BusEvent): void => {
       const scope = cidRef.current ?? msgScopeRef.current;
+      // ── 流式草稿帧：正文的主到达通道 ──
+      // 服务端按 200ms 节流推 delta（前缀续写）/快照（改口）。只认当前在飞那一轮；
+      // 其它标签页/联系人的帧由它们各自的 watch 消费（服务端广播，客户端各取所需）。
+      if (event.type === "draft" || event.type === "thought") {
+        const tid = pendingTurnRef.current;
+        if (tid === null || event.turnId !== tid || event.contactId !== scope) return;
+        // 有帧就锚定本轮：与 watch 全量拍里 `if (turn.reply || turn.reasoning)` 的写入
+        // 同一语义。不锚的话（总线主路下首拍通常还没内容、后续全是 lean 拍，两处都
+        // 写不进），草稿思考面板整轮拿到受控 open=false——点开展不开，自动展开的
+        // effect 也因为没有 turnId 而空转（「思考时打不开」的根因）。
+        if (draftTurnRef.current !== tid) draftTurnRef.current = tid;
+        const ref = event.type === "draft" ? draftStreamRef : thoughtStreamRef;
+        const cur = ref.current;
+        if (event.seq <= cur.seq) return; // 迟到/重复帧
+        let next: string;
+        if (event.text !== undefined) {
+          next = event.text; // 快照：首帧或工具轮改口，整段替换
+        } else if (event.seq === cur.seq + 1 && cur.text !== null) {
+          next = cur.text + (event.delta ?? ""); // 连续增量
+        } else {
+          // 断档（重连丢帧）：本地不猜，标记回源并立刻拍一拍对齐。
+          cur.seq = event.seq;
+          cur.text = null;
+          streamResyncRef.current = true;
+          wakeWatchRef.current?.();
+          return;
+        }
+        cur.text = next;
+        cur.seq = event.seq;
+        if (event.type === "draft") setStreamText(next);
+        else setStreamReasoning(next);
+        return;
+      }
+      // ── 收尾事件插队：done/failed/cancelled 立即收尾拍，不等轮询间隔 ──
+      if (event.type === "turn" && event.turnId === pendingTurnRef.current) {
+        if (event.status !== "running" && event.status !== "queued") wakeWatchRef.current?.();
+        return;
+      }
       if (event.type === "sync") {
-        // 重连对齐帧：整段拉一次补齐推送前漏掉的（仅在空闲时，避免与在飞轮打架）。
-        if (pendingTurnRef.current === null && !asleep()) void pullRef.current?.();
+        // 重连对齐帧：在飞轮的流式帧可能断了几帧，标记回源并立即拍；
+        // 空闲时整段拉一次补齐推送前漏掉的。
+        if (pendingTurnRef.current !== null) {
+          streamResyncRef.current = true;
+          wakeWatchRef.current?.();
+          return;
+        }
+        if (!asleep()) void pullRef.current?.();
         return;
       }
       if ("contactId" in event && event.contactId !== scope) return;
@@ -2811,7 +2921,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               ? [introChip ?? "怎么开始用？", "我还需要设置什么？", "给新联系人配好模型"]
               : ["我今天加班到很晚", "周末想去看电影", "你还记得我上次说过什么吗"]
             ).map((chip) => (
-              <button key={chip} type="button" className="chip" onClick={() => send(chip)}>{chip}</button>
+              <button key={chip} type="button" className="chip" title="填入输入框，可先改再发"
+                onClick={() => { setDraft(chip); iptRef.current?.focus(); }}>{chip}</button>
             ))}
           </div>
           {!cid && onOpenSection && (
@@ -2898,7 +3009,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           );
         }
         return (
-          <MessageRowItem key={m.id} m={m} gap={n.gap} time={n.clock}
+          <MessageRowItem key={m.id} m={m} gap={n.gap} time={n.clock} showSpeed={speedOn}
             enter={enterIdsRef.current.has(m.id)} enterDelay={enterIdsRef.current.get(m.id) ?? 0}
             characterName={characterName} ownerName={ownerName}
             ownerAvatar={ownerAvatar} contactAvatar={contactAvatar}
@@ -2906,7 +3017,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             onImageClick={openZoom}
             failed={failure && m.role === "user" && m.turn_id === failure.id ? failure : null}
             onRetry={retry}
-            ttsOn={caps.textToSpeech} onPlayTts={playTts}
+            ttsOn={caps.textToSpeech && ttsBtnOn} onPlayTts={playTts}
             ttsPlaying={playingId === m.id} ttsBusy={ttsBusyId === m.id}
             showThinking={showThinking}
             thinkingOpen={m.turn_id ? thinkingOpenTurns[m.turn_id] : undefined}
@@ -2915,7 +3026,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             variantCount={m.variant_count ?? 0}
             variantIndex={m.variant_index ?? 0}
             onVariantChange={changeVariant}
-            onVariantGenerate={requestVariantGenerate} />
+            onVariantGenerate={requestVariantGenerate}
+            demo={globalModelEcho}
+            highlight={searchOpen && searchHitIds.has(m.id) ? searchQ.trim() : ""} />
         );
       }
     }
@@ -3204,6 +3317,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             ))}
           </div>
         )}
+        {drawArmed && (
+          <div className="draw-armed">
+            <span>下一条会让{characterName}画一张（要等一会儿）</span>
+            <button type="button" onClick={() => setDrawArmed(false)}>取消</button>
+          </div>
+        )}
         <textarea
           id="ipt"
           aria-label={"给" + characterName + "发消息"}
@@ -3330,6 +3449,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                             <ChevronLeft size={13} strokeWidth={2.2} /> 返回模型
                           </button>
                         </div>
+                        <p className="reason-hint">默认「跟随模型」就好；只有觉得它答得太浅或太慢时才需要调。</p>
                         <div className="reason-options" role="radiogroup" aria-label="选择推理等级">
                           <button type="button" role="radio"
                             aria-checked={thinking.thinking.mode === "auto" || (thinking.thinking.param === "effort" && thinking.thinking.mode === "off") || (thinking.thinking.param !== "effort" && thinking.thinking.mode === "")}

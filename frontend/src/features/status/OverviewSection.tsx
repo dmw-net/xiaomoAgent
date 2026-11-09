@@ -5,6 +5,7 @@ import { qqApi } from "../../api";
 import type { StatusData, CapabilityName } from "../../types";
 import type { Caps } from "../../lib/capsStore";
 import type { PanelAria } from "../../components/Tabs";
+import { CAP_OFF } from "../settings/presets";
 
 type Led = "ok" | "warn" | "bad";
 const RANK: Led[] = ["ok", "warn", "bad"];
@@ -80,15 +81,6 @@ function Card({ title, rows, goto }: {
 const CAP_LABEL: Record<CapabilityName, string> = {
   imageVision: "图片理解", speechToText: "语音识别", textToSpeech: "语音合成", memoryExtract: "记忆整理",
   imageGeneration: "图像生成", embedding: "向量化记忆",
-};
-/** 未就绪时分别意味着什么：只说「未配置」等于让人去猜少了什么功能。 */
-const CAP_OFF: Record<CapabilityName, string> = {
-  imageVision: "未配置：收到的图片看不懂内容",
-  speechToText: "未配置：输入框里没有麦克风",
-  textToSpeech: "未配置：回复没有朗读按钮",
-  memoryExtract: "用的那个模型没配好：对话可能记不成长期记忆",
-  imageGeneration: "未配置：画不出图（开关开着也没用）",
-  embedding: "未配置：记忆召回退回纯关键词（不影响其它功能）",
 };
 const CHANNEL_LABEL: Record<string, string> = { web: "网页", wechat: "微信" };
 

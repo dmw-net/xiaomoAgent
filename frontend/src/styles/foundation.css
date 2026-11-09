@@ -1919,8 +1919,11 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
 .art-act, .s-add-btn, .bar-back, .undo-bar .undo-x, .undo-bar .undo-act { min-width: var(--tap-min); }
 
 /* 贴在别的东西角上的小圆标有固定视觉尺寸，min-height 会盖掉 height 把它们
-   撑大。这几处保持原样，可点区改用伪元素向外扩一圈。 */
-.msg-fail, .attach-item button, .img-zoom > button { min-height: 0; }
+   撑大。这几处保持原样，可点区改用伪元素向外扩一圈。
+   .variant-bar .v-btn 也属这类（设计 20×20，命中区伪元素在 components.css
+   的触控命中区补漏那节）：漏豁免时 20 宽被 min-height 拉成 20×32 竖胶囊，
+   外层底板随之鼓成 36×36 圆块——两个形状叠在气泡下角，即「版本切换条变丑」。 */
+.msg-fail, .attach-item button, .img-zoom > button, .variant-bar .v-btn { min-height: 0; }
 .msg-fail, .attach-item, .img-zoom > button { position: relative; }
 .msg-fail::before, .attach-item button::before,
 .img-zoom > button::before {

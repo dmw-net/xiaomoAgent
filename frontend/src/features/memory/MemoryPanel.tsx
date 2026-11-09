@@ -198,7 +198,10 @@ export default function MemoryPanel({ active = true, contactId, who = "联系人
         </div>
         {/* 空间筛选与分类筛选是两条正交的轴，可以同时在 */}
         {onSpaceChange && (
-          <MemorySpaceSelect inventory={spaceInventory} value={space} onChange={onSpaceChange} />
+          <>
+            <MemorySpaceSelect inventory={spaceInventory} value={space} onChange={onSpaceChange} />
+            <div className="hint">私聊和群聊的记忆分开存，避免串味；切换只是查看，不会删。</div>
+          </>
         )}
         {/* 报的是服务端总数，不是已加载行数——分页之后两者不等，写行数会越翻越"少" */}
         <div className="count" id="count">{list.page === null ? "" : "共 " + memTotal + " 条"}</div>

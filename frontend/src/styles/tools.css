@@ -368,6 +368,10 @@
 .lg-tag.is-fixed { background: var(--success-soft); color: var(--success); border-color: color-mix(in srgb, var(--success) 22%, transparent); }
 .lg-state { font-size: 11px; line-height: 1.45; text-align: right; color: var(--success); }
 .lg-state.is-muted { color: var(--text-subtle); }
+/* 变更记录的成败两态：成功用中性点（不是满屏绿灯），失败才亮 danger。 */
+.lg-dot-ok { background: var(--border-strong); }
+.lg-dot-bad { background: var(--danger); }
+.lg-state.is-bad { color: var(--danger); }
 /* 状态列的修复出口：与状态同字号，但可点、有下划线——「为什么没生效」的下一步是修好它。 */
 .lg-state-link { justify-self: end; text-align: right; font-size: 11px; line-height: 1.45; }
 
@@ -411,13 +415,15 @@
 .lg-footnote > svg { flex: 0 0 auto; margin-top: 3px; color: var(--warning); }
 .lg-links { display: inline-flex; gap: 12px; margin-left: 10px; }
 
-/* 助手控制台 */
+/* 助手设置屏（助手控制台） */
 .ac-panel { background: var(--bg-elevated); border: 1px solid var(--border); border-radius: 14px; padding: 18px 20px; display: flex; flex-direction: column; gap: 14px; }
 .ac-tier-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ac-tier-label { font-size: 12px; color: var(--text-muted); }
-.ac-badge { font-size: 11px; padding: 4px 10px; border-radius: 999px; background: var(--accent-soft); color: var(--accent-ink); border: 1px solid color-mix(in srgb, var(--accent) 22%, transparent); }
 .ac-note { font-size: 12px; line-height: 1.7; color: var(--text-muted); }
 .ac-readonly-note { padding: 10px 12px; border-radius: 10px; background: var(--warning-soft); color: var(--warning); font-size: 12px; line-height: 1.6; }
+/* 「最近的配置变更」审计行：复用 .lg-row 网格，第三列放时间、第四列放成败。 */
+.ac-act-time { font-size: 11px; color: var(--text-subtle); text-align: right; font-variant-numeric: tabular-nums; }
+.ac-act-more { padding: 8px 2px 0; font-size: 11.5px; color: var(--text-subtle); }
 .ac-console {
   height: 100%; overflow-y: auto; box-sizing: border-box;
   padding: 18px 22px 28px; background: var(--bg-elevated);

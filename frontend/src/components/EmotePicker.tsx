@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { ImageOff, Loader2, RefreshCw, Smile } from "lucide-react";
 import EmptyState from "./EmptyState";
-import { assetsApi } from "../api";
+import { assetsApi, type EmotePackCount } from "../api";
 import type { AnchoredPopPos } from "../hooks/useAnchoredPop";
 
 /** 一张可发送的表情：发送路径只需要 /media 地址与展示名（label 随消息入库）。 */
@@ -10,6 +10,9 @@ export type EmotePick = { url: string; label: string };
 
 /** 拉取清单的页大小：选择器是「挑一张就发」的场景，不提供翻页；120 张覆盖绝大多数库。 */
 const PICK_LIMIT = 120;
+
+/** 记住上次逛的文件夹（设备级偏好）。文件夹被删/改名时拉到清单后校验回退，不持久化脏值。 */
+const LS_PACK = "xiaomo.emotePack";
 
 /**
  * composer 的表情选择弹层（portal 到 body，锚在触发钮上方）。
@@ -21,6 +24,10 @@ const PICK_LIMIT = 120;
  *
  * 数据即表情库本身：view=emote 拉 /api/assets，失效项（missing）在发送层本来就会被拒，
  * 这里直接不列。拉取失败给 EmptyState 风格的空态 + 重试，不静默白板。
+ *
+ * 文件夹分类：库里多于一个文件夹时，头行下出一排 chip（全部 + 各文件夹 + 计数），点选带 pack=
+ * 重拉——后端本来就认这个参数（设置页媒体库同款），列表永远全量返回 packs，chip 行不随筛选变。
+ * 上次逛的文件夹记进 localStorage（LS_PACK），下次打开直接落在那；文件夹没了就回「全部」。
  *
  * 键盘：打开即聚焦第一格，↑↓←→ 在格间移动（列数按第一行的真实排布数从 DOM 数出来，
  * 网格是 auto-fill 自适应列，自己算宽度迟早和视觉错位）；Enter/空格原生触发点击即发送；
@@ -37,13 +44,29 @@ export default function EmotePicker({ pos, onPick, closing = false, onAnimationE
   /** null = 首拉进行中；[] 且 error 非空 = 失败；[] 且 error 为空 = 库真的是空的。 */
   const [items, setItems] = useState<EmotePick[] | null>(null);
   const [error, setError] = useState("");
+  /** 文件夹清单（全库口径，不随当前筛选变）：chip 行从这渲染，被删的文件夹也在这认出来。 */
+  const [packs, setPacks] = useState<EmotePackCount[]>([]);
+  /** 当前文件夹（"" = 全部）。上次的选择从 localStorage 起步，拉到清单后校验。 */
+  const [pack, setPack] = useState(() => localStorage.getItem(LS_PACK) ?? "");
   const gridRef = useRef<HTMLDivElement>(null);
+  /** 请求序号：连着点两个文件夹时，先发的慢响应不许盖掉后发的。 */
+  const seqRef = useRef(0);
 
   const load = useCallback((): void => {
+    const seq = ++seqRef.current;
     setItems(null);
     setError("");
-    assetsApi.listAssets({ view: "emote", kind: "image", limit: PICK_LIMIT, offset: 0 })
+    assetsApi.listAssets({ view: "emote", kind: "image", pack, limit: PICK_LIMIT, offset: 0 })
       .then((d) => {
+        if (seq !== seqRef.current) return;
+        setPacks(d.packs);
+        // 起步时恢复的文件夹可能已经不在库里（被删/改名）：退回「全部」并清掉脏值，
+        // items 留在 null（转圈），effect 会带着新 pack 重拉一次。
+        if (pack !== "" && !d.packs.some((p) => p.pack === pack)) {
+          localStorage.removeItem(LS_PACK);
+          setPack("");
+          return;
+        }
         setItems(d.items
           .filter((a) => !a.missing)
           .map((a) => ({
@@ -53,11 +76,20 @@ export default function EmotePicker({ pos, onPick, closing = false, onAnimationE
           })));
       })
       .catch((e: Error) => {
+        if (seq !== seqRef.current) return;
         setError(e.message || "网络请求失败");
         setItems([]);
       });
-  }, []);
+  }, [pack]);
   useEffect(() => { load(); }, [load]);
+
+  /** 换文件夹：选中即请求 + 记住选择；连点同一个不动（也免了一次多余请求）。 */
+  const pickPack = (next: string): void => {
+    if (next === pack) return;
+    if (next === "") localStorage.removeItem(LS_PACK);
+    else localStorage.setItem(LS_PACK, next);
+    setPack(next);
+  };
 
   const ready = items !== null;
   useEffect(() => {
@@ -98,6 +130,30 @@ export default function EmotePicker({ pos, onPick, closing = false, onAnimationE
         <span>表情</span>
         <small>点选即发送</small>
       </div>
+      {/* 文件夹分类：只有一个桶（全是「默认」）时整行不渲染——单包用户不需要在「全部/默认」里二选一。
+          交互与用量页维度 chips 同语言（radiogroup + aria-checked），计数是全库口径，不随筛选变。 */}
+      {packs.length > 1 && (
+        <div className="emote-pop-packs" role="radiogroup" aria-label="表情文件夹">
+          <button type="button" role="radio" aria-checked={pack === ""}
+            className={"emote-pack-chip" + (pack === "" ? " on" : "")}
+            tabIndex={closing ? -1 : undefined}
+            title={`全部：${packs.reduce((n, p) => n + p.total, 0)} 张`}
+            onClick={() => pickPack("")}>
+            全部
+            <span className="emote-chip-count">{packs.reduce((n, p) => n + p.total, 0)}</span>
+          </button>
+          {packs.map((p) => (
+            <button key={p.pack} type="button" role="radio" aria-checked={pack === p.pack}
+              className={"emote-pack-chip" + (pack === p.pack ? " on" : "")}
+              tabIndex={closing ? -1 : undefined}
+              title={`${p.pack}：${p.total} 张`}
+              onClick={() => pickPack(p.pack)}>
+              {p.pack}
+              <span className="emote-chip-count">{p.total}</span>
+            </button>
+          ))}
+        </div>
+      )}
       {items === null ? (
         <div className="emote-pop-state" role="status">
           <Loader2 size={15} className="spin" aria-hidden="true" />
@@ -111,9 +167,21 @@ export default function EmotePicker({ pos, onPick, closing = false, onAnimationE
           </button>
         </EmptyState>
       ) : items.length === 0 ? (
-        <EmptyState compact icon={<Smile size={20} strokeWidth={1.8} />}
-          title="表情库还是空的"
-          hint="在 设置 → 媒体与表情 里导入几张并标记为表情，就能在这里直接发。" />
+        pack === "" ? (
+          <EmptyState compact icon={<Smile size={20} strokeWidth={1.8} />}
+            title="表情库还是空的"
+            hint="在 设置 → 媒体与表情 里导入几张并标记为表情，就能在这里直接发。" />
+        ) : (
+          // 走到这说明文件夹还在、只是没有可发的（图都失效了或确实还没导进来）；
+          // 「文件夹被删」的情况在响应校验那已经自动退回「全部」了。
+          <EmptyState compact icon={<Smile size={20} strokeWidth={1.8} />}
+            title="这个文件夹没有可发的"
+            hint="图片可能已失效，或者还没往这一夹导东西。">
+            <button type="button" className="btn sm" onClick={() => pickPack("")}>
+              看全部
+            </button>
+          </EmptyState>
+        )
       ) : (
         <div ref={gridRef} className="emote-grid" onKeyDown={onGridKeyDown}>
           {items.map((it) => (

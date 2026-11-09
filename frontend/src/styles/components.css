@@ -678,7 +678,7 @@ button.btn.ghost:hover:not(:disabled) { border-color: var(--border); color: var(
 
 /* ── 语音消息 ─────────────────────────────────────────────── */
 .bubble.voice-only { padding: 10px 12px; min-width: 0; }
-.bubble.voice-only .msg-time { margin-top: 3px; }
+.bubble.voice-only .msg-meta { margin-top: 3px; }
 .voice-message { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
 .voice-row {
   display: flex; align-items: center; gap: 9px;
@@ -735,6 +735,15 @@ button.btn.ghost:hover:not(:disabled) { border-color: var(--border); color: var(
 .msg-img-fold-btn:hover { color: var(--text-muted); }
 
 .attach-strip { display: flex; gap: var(--space-3); padding: 0 2px var(--space-3); flex-wrap: wrap; }
+/* 「画一张」是勾选态：挂一条意图条，清空输入框后状态仍可见。 */
+.draw-armed {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  margin: 0 2px var(--space-3); padding: var(--space-2) var(--space-3);
+  border: 1px dashed var(--border-strong); border-radius: var(--radius-sm);
+  background: var(--accent-soft); color: var(--accent-ink); font-size: var(--text-note);
+}
+.draw-armed button { border: none; background: transparent; color: inherit; cursor: pointer; font: inherit; padding: 0; }
+.draw-armed button:hover { text-decoration: underline; }
 .attach-item { position: relative; }
 .attach-item img {
   width: 64px; height: 64px; object-fit: cover; display: block;
@@ -787,8 +796,9 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 .tts-btn:disabled { opacity: var(--alpha-disabled); cursor: wait; }
 /* msg-time 与右下角绝对定位的 tts-btn 水平重叠：
    tts-btn right(8) + tts-btn width(28) = 按钮左边缘距 bubble 右 36px，
-   而 msg-time 右边缘默认距 14px（bubble padding-right），差额必须让出去。 */
-.bubble:has(> .tts-btn) > .msg-time { margin-right: calc(8px + 28px - 14px); }
+   而 msg-time 右边缘默认距 14px（bubble padding-right），差额必须让出去。
+   msg-time 现在裹在 .msg-meta 里（不再直挂 bubble），选择器降为后代匹配。 */
+.bubble:has(> .tts-btn) .msg-time { margin-right: calc(8px + 28px - 14px); }
 
 /* 版本切换条（swipe）：重答留档后在气泡内文字下方出现，◀ 1/2 ↻。
    胶囊形底板 + 圆形按钮位（按钮平时透明，圆不圆全看底板——底板必须是个胶囊）。
@@ -818,6 +828,20 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 /* 右位的「再来一版」（重新生成入口）：跟灰箭头区分开，让人看出它是动作不是导航 */
 .variant-bar .v-btn.generate { color: var(--accent-ink); }
 .variant-bar .v-btn.generate:hover { background: color-mix(in srgb, var(--accent-ink) 12%, transparent); color: var(--accent-ink); }
+/* 单版本（只有「再来一版」一颗 ↻）不加底板：胶囊底板是「把 ◀ 1/n ▶ 分成一组」的
+   语义，孤颗按钮撑一坨米色圆块只剩噪声——摘掉底板后它就是跟 .tts-btn 同一语言
+   的裸图标钮（悬停才有底），多版本时底板照旧。 */
+.variant-bar.solo { padding: 2px 0; background: transparent; }
+/* 底部元信息行：版本条（左）与时间/速度（右）合成一行，替代原先各自一行的排法
+   （两行时气泡尾部显高）。时间贴右用 margin-left:auto 而不是 space-between——
+   只有时间没有版本条时也要贴右。内层的时间/版本条不再带自己的上边距，行距归 .msg-meta 管
+   （experience.css 对 .msg-time 的 2px 行距由这里继承呈现）。 */
+.msg-meta {
+  display: flex; align-items: center; gap: var(--space-2);
+  margin-top: 2px;
+}
+.msg-meta .variant-bar { margin-top: 0; }
+.msg-meta .msg-time { margin-left: auto; margin-top: 0; }
 /* 氛围循环：加载旋转统一 1s（原来是 0.9s 的孤值；≥1s 豁免，见映射口径） */
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { 100% { transform: rotate(360deg); } }
@@ -1713,6 +1737,25 @@ html.native-frame .asst-dialog {
 .asst-pending-head svg { color: var(--warning); flex: none; }
 .asst-pending-detail { margin: 6px 0 10px 22px; font-size: 12px; opacity: 0.75; line-height: 1.5; }
 .asst-pending-actions { display: flex; gap: 8px; justify-content: flex-end; }
+/* 档位语境行：卡片是用户理解信任模型的一刻，这里说的一直是此刻真成立的规则。
+   首条 item 之上、其余 item 之下共用一行——只渲染一次，不跟每张卡片重复。 */
+.asst-pending-context {
+  pointer-events: auto;
+  display: flex; align-items: center; gap: 7px;
+  font-size: 12px; color: var(--text-muted); line-height: 1.5;
+  background: var(--bg-elevated); border: 1px solid var(--border);
+  border-radius: 10px; padding: 7px 12px;
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.22);
+}
+.asst-pending-context svg { color: var(--text-subtle); flex: none; }
+.asst-pending-context b { color: var(--text); font-weight: 600; }
+.asst-pending-adjust {
+  margin-left: auto; flex: none;
+  font-size: 12px; color: var(--accent-ink);
+  background: none; border: none; padding: 2px 4px; cursor: pointer;
+  border-radius: 6px;
+}
+.asst-pending-adjust:hover { background: var(--bg-hover); }
 
 /* ── 设置助手权限 chip：输入区底部唯一入口 ─────────────────── */
 .asst-perm-wrap { position: relative; flex: none; }
@@ -2062,6 +2105,10 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 .onb-caps li span { font-size: var(--text-note); padding: 1px 6px; border-radius: var(--radius-sm); }
 .onb-caps .on { background: var(--accent-soft); color: var(--accent-ink); }
 .onb-caps .off { background: var(--bg-hover); color: var(--text-subtle); }
+/* 状态标签右侧的说明：标题 + 未配时的代价，让「要不要配」有判断依据。 */
+.onb-cap-copy { display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+.onb-cap-copy b { font-weight: 600; }
+.onb-cap-copy small { color: var(--text-muted); font-size: var(--text-note); line-height: 1.4; }
 /* 模型名那一格：输入框 + 「从接口拉取」并排。上面 `.onb-body label > input` 管不到
    包在 span 里的输入框，所以这里自己把宽度给回去。 */
 .onb-inline { display: flex; align-items: center; gap: var(--space-2); margin-top: var(--space-2); }
@@ -2248,6 +2295,8 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 .model-option-copy small, .reason-option-copy small { font-size: var(--text-cap); color: var(--text-subtle); line-height: 1.45; }
 .model-option > svg, .reason-option > svg { flex: none; color: var(--accent-ink); }
 .reason-options { display: flex; flex-direction: column; gap: var(--space-2); }
+/* 推理等级的场景提示：旋钮给了，也要说清什么时候该动。 */
+.reason-hint { margin: 0 0 var(--space-3); color: var(--text-muted); font-size: var(--text-note); line-height: 1.5; }
 .think-pop-note { margin-top: var(--space-4); padding: 0 var(--space-1); font-size: var(--text-sm); line-height: 1.65; color: var(--text-subtle); }
 .model-pop-empty { padding: var(--space-4); border-radius: var(--radius-md); background: var(--bg-sunken); color: var(--text-subtle); font-size: var(--text-sm); line-height: 1.6; }
 .model-manage { width: 100%; margin-top: var(--space-4); padding: var(--space-3) var(--space-4); border: 1px solid var(--border); border-radius: var(--radius-md); background: transparent; color: var(--text-muted); font-size: var(--text-note); cursor: pointer; }
@@ -2720,6 +2769,30 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
   padding: var(--space-5) var(--space-4);
   color: var(--text-subtle); font-size: var(--text-note);
 }
+/* 文件夹分类行（EmotePicker）：单行横滚——弹层就 320 宽，放不下就滑，换行会把网格挤矮。 */
+.emote-pop-packs {
+  flex: none; display: flex; gap: var(--space-2);
+  padding: 0 var(--space-4) var(--space-2);
+  overflow-x: auto; scrollbar-width: thin;
+}
+/* 紧凑版 prof-chip：弹层里寸土寸金，字号/内边距都比页头 chip 收一档；选中配方与全站一致（--sel-*）。 */
+.emote-pack-chip {
+  flex: none; display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: var(--space-1) var(--space-4); border-radius: var(--radius-full); font-size: var(--text-note);
+  border: 1px solid var(--border); background: var(--bg-elevated); color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color var(--dur-fast), color var(--dur-fast), background-color var(--dur-fast);
+}
+.emote-pack-chip:hover { border-color: var(--border-strong); color: var(--text); }
+.emote-pack-chip.on { border-color: var(--sel-border); color: var(--accent-ink); background: var(--sel-bg); }
+/* 计数徽标：仿 .content-count 配方，选中时跟着 accent 走。 */
+.emote-chip-count {
+  min-width: 16px; height: 16px; padding: 0 4px; border-radius: var(--radius-full);
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--bg-sunken); color: var(--text-subtle);
+  font-size: var(--text-cap); font-variant-numeric: tabular-nums;
+}
+.emote-pack-chip.on .emote-chip-count { background: var(--bg-elevated); color: var(--accent-ink); }
 /* 网格自适应列数：minmax 由容器宽度自己算出列数，桌面窄弹层与移动半屏都成立。 */
 .emote-grid {
   min-height: 0; overflow-y: auto; overscroll-behavior: contain;

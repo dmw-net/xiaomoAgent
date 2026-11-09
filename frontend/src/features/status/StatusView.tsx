@@ -398,7 +398,12 @@ export default function StatusView({ active = true, contactId, contactName, cont
               onOpenContacts={onOpenContacts}
               onRefresh={refreshStatus}
               notice={statusErr !== "" ? `刷新失败：${statusErr}（下面显示的是上次的结果）` : undefined}
-              goSettings={goSettings} goTab={() => { setActivityView("calls"); setTab("activity"); }}
+              goSettings={goSettings} goTab={() => {
+  setActivityView("calls");
+  setTab("activity");
+  // 总览页的「查看活动」九成是因为出了失败；自动开启「只看失败」，省掉一次筛选点击。
+  if ((status?.recent?.fail ?? 0) > 0) setCallFailed(true);
+}}
               goTurns={() => { setActivityView("turns"); setTab("activity"); }}
               goQueue={() => { setActivityView("queue"); setTab("activity"); }}
               actions={<>
@@ -526,11 +531,20 @@ export default function StatusView({ active = true, contactId, contactName, cont
                                 <span className="msg">
                                   {failed ? friendlyFailure(c.code, c.message) : successSummary(c)}
                                 </span>
-                                <button type="button" className="raw-hint"
-                                  aria-label={`查看 ${dayLabel(c.created_at)} ${clockOf(c.created_at)} 的活动详情`}
-                                  onClick={(ev) => { ev.stopPropagation(); openRaw(c.id); }}>
-                                  详情<ChevronRight size={13} />
-                                </button>
+                                <div className="activity-actions">
+                                  {failed && (
+                                    <button type="button" className="raw-hint"
+                                      title="跳到「模型与能力」检查对应模型档"
+                                      onClick={(ev) => { ev.stopPropagation(); goSettings("model"); }}>
+                                      去检查模型<ChevronRight size={13} />
+                                    </button>
+                                  )}
+                                  <button type="button" className="raw-hint"
+                                    aria-label={`查看 ${dayLabel(c.created_at)} ${clockOf(c.created_at)} 的活动详情`}
+                                    onClick={(ev) => { ev.stopPropagation(); openRaw(c.id); }}>
+                                    详情<ChevronRight size={13} />
+                                  </button>
+                                </div>
                               </div>
                             </td>
                           </tr>

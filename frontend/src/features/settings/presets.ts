@@ -112,3 +112,17 @@ export const CAPABILITY_GROUPS: CapabilityPresetGroup[] = [
     ],
   },
 ];
+
+
+/**
+ * 能力「未配置」时分别意味着什么。
+ * 放在这里而不是各视图内联：首次设置与状态页总览都要用同一句，写两遍必然漂移。
+ */
+export const CAP_OFF: Record<CapabilityName, string> = {
+  imageVision: "未配置：收到的图片看不懂内容",
+  speechToText: "未配置：输入框里没有麦克风",
+  textToSpeech: "未配置：回复没有朗读按钮",
+  memoryExtract: "用的那个模型没配好：对话可能记不成长期记忆",
+  imageGeneration: "未配置：画不出图（开关开着也没用）",
+  embedding: "未配置：记忆召回退回纯关键词（不影响其它功能）",
+};

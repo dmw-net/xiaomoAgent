@@ -595,6 +595,8 @@ select {
   margin-top: 2px;
   font-size: var(--text-xs);
 }
+/* 演示模式的回复气泡：一条说明，避免首启用户以为已经接上模型。 */
+.msg-demo-tag { margin-top: var(--space-2); font-size: var(--text-note); color: var(--text-subtle); }
 
 #composer {
   margin: 0 var(--chat-gutter) 16px;
@@ -2992,6 +2994,7 @@ a.btn:hover {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+/* 进阶分组标记：让「可以忽略」的预期在导航里就成立。 */
 
 .settings-nav-copy small {
   overflow: hidden;
@@ -4289,6 +4292,9 @@ a.btn:hover {
 .activity-copy { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-3); min-width: 0; }
 .activity-copy .msg { min-width: 0; }
 .activity-copy .raw-hint { display: inline-flex; align-items: center; gap: 1px; flex: none; margin-left: auto; }
+/* 失败行的两个出口：去检查模型（修复）+ 详情（诊断）。 */
+.activity-actions { display: inline-flex; align-items: center; gap: var(--space-2); margin-left: auto; flex: none; }
+.activity-actions .raw-hint { margin-left: 0; }
 .activity-day-row td {
   padding: 8px var(--space-4) !important;
   border-bottom: 1px solid var(--border) !important;
@@ -4997,8 +5003,11 @@ a.btn:hover {
    浏览时不铺复选框，选中后才出现批量条。 */
 @media (min-width: 901px) {
   #settings .settings-layout-media {
-    grid-template-columns: 188px minmax(0, 1fr);
-    gap: 24px;
+    /* 导航列保持与其它分组同一档（244px/32px）：媒体页要宽内容区靠 minmax(0,1fr)
+       不设上限来给，不再压导航宽度——否则切到这组时整个侧栏 tab 突然变窄一截，
+       视觉上像布局坏了（分组间导航列宽度跳变）。 */
+    grid-template-columns: 244px minmax(0, 1fr);
+    gap: 32px;
     justify-content: stretch;
   }
 }
@@ -5465,6 +5474,20 @@ a.btn:hover {
 }
 @media (prefers-reduced-motion: reduce) {
   .msg-row.hit-pulse .bubble { animation: none; box-shadow: 0 0 0 3px var(--accent-glow), var(--bubble-shadow); }
+}
+
+/* ── 搜索命中词的高亮 ──
+   搜索条开着时，命中行的正文把搜索词本身描出来（<mark class="md-hl">，md.tsx 在文本
+   叶子处切的，只有 searchHits 里的行会传词，与「n/m」计数同口径）。底色与 .hit-pulse
+   同用一族 accent；color: inherit 是因为自己的气泡文字是浅色，mark 的浏览器默认黑字
+   会把它顶掉。中文短语会跨行折行，box-decoration-break: clone 让断口两侧各自带内边距。 */
+.msg-text mark.md-hl {
+  background: color-mix(in srgb, var(--accent) 30%, transparent);
+  color: inherit;
+  border-radius: 3px;
+  padding: 0 1px;
+  box-decoration-break: clone;
+  -webkit-box-decoration-break: clone;
 }
 
 /* ── 在途气泡的呼吸圆点 ──

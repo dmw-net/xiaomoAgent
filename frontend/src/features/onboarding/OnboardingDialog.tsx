@@ -2,8 +2,8 @@ import { useCallback, useEffect, useState } from "react";
 import Modal from "../../components/Modal";
 import { activateProfile, fetchSettings, pingModel, provider as providerRename, saveProfile, saveSettings } from "../../api/settings";
 import { contactsApi } from "../../api";
-import { buildMd, parseMd } from "../../lib/persona-doc";
-import { CHAT_PRESETS, CAPABILITY_GROUPS } from "../settings/presets";
+import { buildMd, parseMd, TEMPLATE } from "../../lib/persona-doc";
+import { CAP_OFF, CHAT_PRESETS, CAPABILITY_GROUPS } from "../settings/presets";
 import { OPTIONAL_CAPABILITIES, STEPS, resolveStep, stepIndex, type OnboardingStep } from "./steps";
 import type { SettingsSnapshot } from "../../types";
 
@@ -225,14 +225,18 @@ function CapabilityStep({ snapshot, onSkip, onGoto }: {
       <h3>要不要配上眼睛和耳朵</h3>
       <p>看图、听语音、说话、画图为各用各的模型。用不上就不配——不配只是那些入口不出现，不影响聊天。</p>
       <ul className="onb-caps">
-        {optional.map((g) => (
-          <li key={g.name}>
-            <span className={snapshot.capabilitiesReady?.[g.name] ? "on" : "off"}>
-              {snapshot.capabilitiesReady?.[g.name] ? "已配" : "未配"}
-            </span>
-            {g.title}
-          </li>
-        ))}
+        {optional.map((g) => {
+          const ready = snapshot.capabilitiesReady?.[g.name] === true;
+          return (
+            <li key={g.name}>
+              <span className={ready ? "on" : "off"}>{ready ? "已配" : "未配"}</span>
+              <span className="onb-cap-copy">
+                <b>{g.title}</b>
+                {!ready && <small>{CAP_OFF[g.name]}</small>}
+              </span>
+            </li>
+          );
+        })}
       </ul>
       <div className="onb-actions">
         <button type="button" className="btn ghost" onClick={onSkip}>这步跳过</button>
@@ -257,6 +261,7 @@ function PersonaStep({ onSaved, onSkip }: { onSaved: () => void; onSkip: () => v
   const [loadErr, setLoadErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<Msg | null>(null);
+  const [confirmTemplate, setConfirmTemplate] = useState(false);
 
   useEffect(() => {
     void contactsApi.fetchContact("default").then((d) => {
@@ -306,19 +311,42 @@ function PersonaStep({ onSaved, onSkip }: { onSaved: () => void; onSkip: () => v
     );
   }
 
+  // 与初始内容逐字相同 = 还没动过，直接填模板；改过就先确认，避免覆盖手写内容。
+  const untouched = md === buildMd({ name: whoName, ...original });
+  const applyTemplate = (): void => {
+    setMd(buildMd({ name: whoName, ...TEMPLATE }));
+    setConfirmTemplate(false);
+    setMsg(null);
+  };
+
   return (
     <div className="onb-body">
       <h3>要不要改一下{whoName || "联系人"}的人设</h3>
-      <p>这段决定说话的内容与口气：是谁、怎么相处、你们是什么关系。下面已经是能直接用的一份，改哪句都行。</p>
+      <p>这段决定说话的内容与口气：是谁、怎么相处、你们是什么关系。不知道写什么可以先用示例，再照着改。</p>
       <textarea className="onb-persona" rows={14} spellCheck={false} value={md}
         aria-label="人格文档" onChange={(e) => setMd(e.target.value)} />
       {msg && <p className={"onb-msg " + msg.kind} role="alert">{msg.text}</p>}
       <div className="onb-actions">
+        <button type="button" className="btn ghost sm" onClick={() => { if (untouched) applyTemplate(); else setConfirmTemplate(true); }}>
+          按模板填写
+        </button>
         <button type="button" className="btn ghost" onClick={onSkip}>用默认的</button>
         <button type="button" className="btn primary" disabled={busy || contactId === ""} onClick={() => void save()}>
           {busy ? "保存中…" : "保存并继续"}
         </button>
       </div>
+      {confirmTemplate && (
+        <Modal onClose={() => setConfirmTemplate(false)} label="用示例人设覆盖？" className="onb-card" placement="center">
+          <div className="onb-body">
+            <h3>用示例人设覆盖当前内容？</h3>
+            <p>三段人设会整组换成示例模板，你写的版本会被替换；可以在示例基础上继续改。</p>
+            <div className="onb-actions">
+              <button type="button" className="btn ghost" onClick={() => setConfirmTemplate(false)}>取消</button>
+              <button type="button" className="btn primary" onClick={applyTemplate}>用模板覆盖</button>
+            </div>
+          </div>
+        </Modal>
+      )}
     </div>
   );
 }

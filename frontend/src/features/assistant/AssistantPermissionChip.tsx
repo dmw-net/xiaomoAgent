@@ -1,37 +1,14 @@
-// 设置助手权限的唯一入口：输入区底部的常驻 chip。
-// 后端 KV 是唯一状态源；这里只读写它，不再在设置页维护第二套单选状态。
+// 设置助手权限的常驻入口：输入区底部的 chip。
+// 三档 option-card 与「完全自主」风险弹窗在 AssistantPermission.tsx（全站唯一实现），
+// 这里只负责触发器、弹层定位与多窗口轮询校准；确认卡上的「调整权限」也经由
+// xiaomo:assistant-perm-open 事件展开这个弹层——档位决策发生在使用现场。
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Check, ChevronDown, Eye, Loader2, ShieldAlert, ShieldCheck, X } from "lucide-react";
+import { ChevronDown, Loader2, X } from "lucide-react";
 import { assistantApi, type AssistantPermission } from "../../api";
 import { useAnchoredPop } from "../../hooks/useAnchoredPop";
 import { useDismiss } from "../../hooks/useDismiss";
-import Modal from "../../components/Modal";
-
-type Tier = {
-  key: AssistantPermission;
-  label: string;
-  desc: string;
-  danger?: boolean;
-};
-
-const TIERS: Tier[] = [
-  { key: "readonly", label: "只读", desc: "只回答问题，不调用任何改配置工具。" },
-  { key: "confirm", label: "变更前确认", desc: "可逆操作直接执行；高风险操作先弹确认卡片。" },
-  { key: "auto", label: "完全自主", desc: "连续完成模型、联系人、扩展等全部配置操作。", danger: true },
-];
-
-const TIER_LABEL: Record<AssistantPermission, string> = {
-  readonly: "只读",
-  confirm: "变更前确认",
-  auto: "完全自主",
-};
-
-function TierIcon({ tier, size = 15 }: { tier: AssistantPermission; size?: number }): JSX.Element {
-  if (tier === "auto") return <ShieldAlert size={size} />;
-  if (tier === "readonly") return <Eye size={size} />;
-  return <ShieldCheck size={size} />;
-}
+import { AssistantAutoConfirmModal, AssistantTierOptions, TIER_LABEL, TierIcon } from "./AssistantPermission";
 
 export default function AssistantPermissionChip({ active }: {
   /** 助手弹窗关着时不后台轮询；打开后通过后端持续校准多窗口状态。 */
@@ -67,6 +44,14 @@ export default function AssistantPermissionChip({ active }: {
     }, 10_000);
     return () => window.clearInterval(id);
   }, [active, busy, confirmAuto, refresh]);
+
+  // PendingCard 的「调整权限」就近入口：确认卡是用户理解这套信任模型的一刻，
+  // 想升档的念头也在那一刻出现——就地展开弹层，不要求用户先找到 chip。
+  useEffect(() => {
+    const openPop = (): void => setOpen(true);
+    window.addEventListener("xiaomo:assistant-perm-open", openPop);
+    return () => window.removeEventListener("xiaomo:assistant-perm-open", openPop);
+  }, []);
 
   const apply = (next: AssistantPermission): void => {
     if (busy !== "") return;
@@ -135,20 +120,7 @@ export default function AssistantPermissionChip({ active }: {
             </div>
             <button type="button" aria-label="关闭权限选择" onClick={close}><X size={14} /></button>
           </div>
-          <div className="asst-perm-options">
-            {TIERS.map((tier) => {
-              const selected = permission === tier.key;
-              return (
-                <button key={tier.key} type="button" role="menuitemradio" aria-checked={selected}
-                  className={"asst-perm-option" + (selected ? " on" : "") + (tier.danger ? " danger" : "")}
-                  disabled={busy !== ""} onClick={() => choose(tier.key)}>
-                  <span className="asst-perm-option-icon"><TierIcon tier={tier.key} size={16} /></span>
-                  <span className="asst-perm-option-copy"><b>{tier.label}</b><small>{tier.desc}</small></span>
-                  {selected && <Check size={15} className="asst-perm-check" />}
-                </button>
-              );
-            })}
-          </div>
+          <AssistantTierOptions permission={current} busy={busy} variant="menu" onChoose={choose} />
           {err !== "" && <div className="asst-perm-error" role="alert">{err}</div>}
           <div className="asst-perm-note">
             权限变更从下一条消息开始生效；正在执行的一轮继续使用启动时的工具清单。
@@ -157,30 +129,11 @@ export default function AssistantPermissionChip({ active }: {
         document.body,
       )}
 
-      {confirmAuto && (
-        <Modal label="进入完全自主模式" className="asst-perm-confirm" placement="center"
-          onClose={() => { if (busy === "") setConfirmAuto(false); }}
-          head={<div className="asst-perm-confirm-head"><span>进入完全自主模式？</span>
-            <button type="button" aria-label="关闭" disabled={busy !== ""}
-              onClick={() => setConfirmAuto(false)}><X size={15} /></button></div>}>
-          <div className="asst-perm-confirm-body">
-            <p>完全自主会允许设置助手连续修改应用配置，不再逐步询问：</p>
-            <ul>
-              <li>模型档、接口地址与 API Key</li>
-              <li>联系人的人设、头像与模型绑定</li>
-              <li>扩展、MCP 与 JS 工具执行许可</li>
-            </ul>
-            <p>该设置对所有设置助手会话生效，并从下一条消息开始生效。</p>
-          </div>
-          <div className="add-row">
-            <button type="button" disabled={busy !== ""} onClick={() => setConfirmAuto(false)}>取消</button>
-            <button type="button" className="primary danger" disabled={busy !== ""}
-              onClick={() => apply("auto")}>
-              {busy === "auto" ? "切换中…" : "我了解风险，进入完全自主"}
-            </button>
-          </div>
-        </Modal>
-      )}
+      <AssistantAutoConfirmModal
+        open={confirmAuto} busy={busy}
+        onCancel={() => setConfirmAuto(false)}
+        onConfirm={() => apply("auto")}
+      />
     </>
   );
 }

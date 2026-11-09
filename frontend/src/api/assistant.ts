@@ -37,7 +37,7 @@ export function clearThread(id: string): Promise<{ messages: number; turns: numb
 /** readonly 断手 / confirm 危险动作要用户点击 / auto 全放。 */
 export type AssistantPermission = "readonly" | "confirm" | "auto";
 
-/** 一张待处理的确认卡片（后端 kv 待确认动作原样下发）。 */
+/** 一条待处理的确认卡片（后端 kv 待确认动作原样下发）。 */
 export type AssistantPendingAction = {
   id: string;
   tool: string;
@@ -45,6 +45,18 @@ export type AssistantPendingAction = {
   detail: string;
   contactId: string;
   createdAt: number;
+};
+
+/** 一条助手活动记录（助手设置屏「最近的配置变更」，后端最新在前）。 */
+export type AssistantActivity = {
+  ts: number;
+  tool: string;
+  title: string;
+  ok: boolean;
+  detail?: string;
+  contactId?: string;
+  tier: AssistantPermission;
+  confirmed?: boolean;
 };
 
 export function getPermission(): Promise<{ permission: AssistantPermission }> {
@@ -57,6 +69,11 @@ export function setPermission(permission: AssistantPermission): Promise<{ permis
 
 export function fetchPending(contactId: string): Promise<{ pending: AssistantPendingAction[] }> {
   return getJson(`/api/assistant/pending?contactId=${encodeURIComponent(contactId)}`);
+}
+
+/** 助手最近的配置变更（写工具执行、确认卡决定、权限切换）。 */
+export function fetchActivity(): Promise<{ items: AssistantActivity[] }> {
+  return getJson("/api/assistant/activity");
 }
 
 /** 同意后后端执行动作并自动发一条续跑消息，后续轮次由现有消息轮询接管。 */

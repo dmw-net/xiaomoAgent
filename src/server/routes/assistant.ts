@@ -10,6 +10,7 @@ import {
   renameAssistantThread,
   assistantPermission,
   setAssistantPermission,
+  assistantActivity,
   pendingActionsFor,
   resolvePendingAction,
   isAssistantThreadContactId,
@@ -104,6 +105,13 @@ export const assistantPermissionRoute: Route = async ({ req, res, path, method }
   return false;
 };
 
+/** GET /api/assistant/activity：助手最近的配置变更（写工具执行、确认卡决定、权限切换）。 */
+export const assistantActivityRoute: Route = ({ res, path, method }) => {
+  if (!(method === "GET" && path === "/api/assistant/activity")) return false;
+  sendJson(res, 200, { ok: true, items: assistantActivity() });
+  return true;
+};
+
 /** GET /api/assistant/pending：查询当前联系人的待确认危险动作。 */
 export const assistantPendingGetRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/assistant/pending")) return false;
@@ -142,6 +150,7 @@ export const routes: Route[] = [
   assistantThreadsClearRoute,
   assistantThreadsDeleteRoute,
   assistantPermissionRoute,
+  assistantActivityRoute,
   assistantPendingGetRoute,
   assistantPendingDecisionRoute,
 ];

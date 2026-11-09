@@ -1,9 +1,13 @@
 // 事件总线：服务端把「联系人那边发生了什么」推给前端，替代一部分空转轮询。
 //
 // 设计纪律：
-// - 这是**提示通道**，不是数据通道。事件只说「哪类东西动了」，不搬数据本体
-//   （消息全文、草稿增量都在库里有正式接口）。前端收到事件才去拉对应的一小段——
-//   断线重连、事件丢失都不丢数据，最坏就是多一次轮询。
+// - 大体是**提示通道**：message/turn/activity 只说「哪类东西动了」，不搬数据本体，
+//   前端收到事件才去拉对应的一小段——断线重连、事件丢失都不丢数据。
+// - **唯一例外是 draft/thought 流式帧**：回复草稿过去靠前端 900ms 盲轮询 /api/turn
+//   拉全量快照，回复越长载荷越肥（O(n²)），穿透链路上还有整秒级的 RTT 摊在每次
+//   更新里。这两类帧搬的是**增量**（delta）或对齐用快照（text），正文仍以库里的
+//   turns.reply / reasoning_draft 为真源：帧丢了客户端靠 seq 断档检测回源对齐，
+//   轮询兜底照旧。通道只加速，不承载正确性。
 // - 推送必须**永不抛错**：订阅者满、连接半死、序列化失败都静默降级，
 //   主流程（写库、回消息）绝不被这条辅助路拖住。
 // - 每 25s 一拍心跳（SSE 注释行）：中间人/CSP 空闲断连时客户端靠它探活，
@@ -13,7 +17,15 @@ export type BusEvent =
   | { type: "sync"; at: number }
   | { type: "message"; contactId: string; conversationId: string; messageId: number; at: number }
   | { type: "turn"; contactId: string; conversationId: string; turnId: string; status: string; at: number }
-  | { type: "activity"; contactId: string; at: number };
+  | { type: "activity"; contactId: string; at: number }
+  /**
+   * 流式草稿帧（正文）：delta = 追加到已收文本之后；text = 全量快照（首帧、
+   * 工具轮改口、任何非前缀续写时发，客户端收到就整段替换）。seq 每轮每字段独立
+   * 从 1 递增，客户端发现 seq 跳号就回源 /api/turn 对齐。
+   */
+  | { type: "draft"; contactId: string; conversationId: string; turnId: string; seq: number; delta?: string; text?: string }
+  /** 流式草稿帧（思考）：协议与 draft 完全一致，字段独立计数。 */
+  | { type: "thought"; contactId: string; conversationId: string; turnId: string; seq: number; delta?: string; text?: string };
 
 type Subscriber = { contactId: string | null; push: (event: BusEvent) => void };
 

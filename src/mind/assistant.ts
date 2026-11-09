@@ -52,7 +52,11 @@ export function assistantPermission(): AssistantPermission {
 
 export function setAssistantPermission(value: unknown): AssistantPermission {
   if (value !== "readonly" && value !== "confirm" && value !== "auto") throw new Error("未知权限档位（readonly / confirm / auto）");
+  const prev = assistantPermission();
   kvSet(KV_PERMISSION, value);
+  if (prev !== value) {
+    recordActivity({ ts: Date.now(), tool: "permission", title: `权限档切到「${TIER_LABEL[value]}」`, ok: true, tier: value });
+  }
   return value;
 }
 
@@ -62,6 +66,63 @@ export const ASSISTANT_WRITE_TOOLS: ReadonlySet<string> = new Set([
   "set_contact_avatar", "bind_contact_model",
   "manage_extensions", "import_extension", "edit_extension_tool", "set_script_gate",
 ]);
+
+const TIER_LABEL: Record<AssistantPermission, string> = {
+  readonly: "只读",
+  confirm: "变更前确认",
+  auto: "完全自主",
+};
+
+// ── 活动记录：助手改过什么，一处可查 ─────────────────────────────────
+// 「完全自主」档没有任何确认卡片可看，控制台的「最近的配置变更」是唯一的事后可见性。
+// 信任但不看见，等于把「确认疲劳 → 升到 auto」这条滑坡的终点变得更危险。
+// 只记真正改变配置的事（写工具执行、确认卡决定、权限切换）；读状态不构成变更，记了只是噪音。
+
+const KV_ACTIVITY = "assistant.activity";
+const ACTIVITY_MAX = 100;
+
+export type AssistantActivity = {
+  /** 发生时间（epoch ms）。 */
+  ts: number;
+  /** 哪个写工具；"permission" 表示权限档切换。 */
+  tool: string;
+  /** 一句话人话：做了什么。 */
+  title: string;
+  /** 写工具以 ok:true 为成功；被拒绝的确认卡也按 ok 记（决定本身被正常处理）。 */
+  ok: boolean;
+  /** 补充说明：成功时是工具的 note，失败时是 error（截断）。 */
+  detail?: string;
+  /** 发起它的助手线程（assistant 或 assistant:<id>）。 */
+  contactId?: string;
+  /** 执行时的权限档。 */
+  tier: AssistantPermission;
+  /** 这笔写是经用户点确认卡放行的。 */
+  confirmed?: boolean;
+};
+
+function readActivity(): AssistantActivity[] {
+  try {
+    const raw = kvGet(KV_ACTIVITY);
+    const arr = raw ? (JSON.parse(raw) as AssistantActivity[]) : [];
+    return Array.isArray(arr) ? arr as AssistantActivity[] : [];
+  } catch { return []; }
+}
+
+function writeActivity(list: AssistantActivity[]): void {
+  kvSet(KV_ACTIVITY, JSON.stringify(list.slice(0, ACTIVITY_MAX)));
+}
+
+function recordActivity(entry: AssistantActivity): void {
+  // 记录失败绝不影响主流程：活动是给人看的审计面，不是执行链路的依赖。
+  try {
+    writeActivity([entry, ...readActivity()]);
+  } catch { /* 忽略 */ }
+}
+
+/** 控制台「最近的配置变更」的数据源：最新在前，上限 ACTIVITY_MAX 条。 */
+export function assistantActivity(): AssistantActivity[] {
+  return readActivity();
+}
 
 // ── 待确认动作：危险操作的用户点击凭证 ────────────────────────────
 // confirm 档下，不可逆动作不直接执行，而是登记一张「确认卡片」等用户点。
@@ -165,6 +226,15 @@ export async function resolvePendingAction(id: string, approved: boolean): Promi
   if (!action) throw new Error("没有这个待确认操作（可能已过期或已处理）");
   if (!approved) {
     removePending(id);
+    recordActivity({
+      ts: Date.now(),
+      tool: action.tool,
+      title: `用户拒绝了「${action.title}」`,
+      ok: true,
+      detail: "该操作没有执行",
+      contactId: action.contactId,
+      tier: assistantPermission(),
+    });
     return { executed: false, contactId: action.contactId, title: action.title };
   }
   const toolDef = ASSISTANT_TOOLS.find((t) => t.name === action.tool);
@@ -444,7 +514,7 @@ const AVATAR_FRAMING =
   "人物头像：方形构图，头肩到胸口入画，脸部为画面主体并居中，视线看向镜头。" +
   "背景简洁不抢主体；画面里不要文字、水印、签名、边框或任何 UI。单人居中，不要出现第二个人。";
 
-export const ASSISTANT_TOOLS: ToolDef[] = [
+const ASSISTANT_TOOL_DEFS: ToolDef[] = [
   {
     name: "app_status",
     description:
@@ -820,6 +890,95 @@ export const ASSISTANT_TOOLS: ToolDef[] = [
     },
   },
 ];
+
+/** 写工具的一句话摘要：从参数与回执里挑最有辨识度的字段，拼成给人看的审计行。 */
+function summarizeWrite(tool: string, args: Record<string, unknown>, result: unknown): string {
+  const r = (result ?? {}) as {
+    ok?: boolean; label?: string; name?: string; contact?: string;
+    activated?: string; bound?: string | null; deleted?: string; id?: string;
+  };
+  const id = clean(args.id);
+  switch (tool) {
+    case "configure_model": return `保存模型档「${r.label ?? clean(args.label)}」`;
+    case "activate_model": return `启用模型档「${r.activated ?? clean(args.model)}」`;
+    case "create_contact": return `创建联系人「${r.name ?? clean(args.name)}」`;
+    case "update_contact": return `修改联系人「${r.name ?? clean(args.contact)}」的设定`;
+    case "set_contact_avatar": return `给「${r.name ?? clean(args.contact)}」设置头像`;
+    case "bind_contact_model":
+      return r.bound ? `把「${r.contact}」绑定到模型「${r.bound}」` : `解除「${r.contact ?? clean(args.contact)}」的模型绑定`;
+    case "manage_extensions": {
+      const action = clean(args.action);
+      if (action === "enable") return `启用扩展「${r.id ?? id}」`;
+      if (action === "disable") return `停用扩展「${r.id ?? id}」`;
+      if (action === "delete") return `删除扩展「${r.deleted ?? r.id ?? id}」`;
+      return `管理扩展「${id}」`;
+    }
+    case "import_extension": {
+      // 失败时回执里没有 id，从参数里的清单 id 兜底——审计行不能是一串空引号。
+      const manifestId = (args.manifest ?? {}) as { id?: unknown };
+      const fallback = typeof manifestId.id === "string" ? manifestId.id : "";
+      return `导入扩展「${r.id ?? fallback}」`;
+    }
+    case "edit_extension_tool":
+      return clean(args.action) === "save" ? `保存扩展「${id}」的自定义工具` : `删除扩展「${id}」的自定义工具`;
+    case "set_script_gate": return args.allow === true ? "开启 JS 工具执行许可" : "关闭 JS 工具执行许可";
+    default: return tool;
+  }
+}
+
+/**
+ * 写工具统一包一层活动记录（控制台「最近的配置变更」的数据源）。
+ * 包在 ASSISTANT_TOOL_DEFS 外而不是在每个 execute 里手写：新增写工具自动入账，
+ * 不会出现「工具在白名单里、审计却看不见它」的缺口。读动作（list/probe）不改配置，不记。
+ */
+function withActivityLogging(tool: ToolDef): ToolDef {
+  if (!ASSISTANT_WRITE_TOOLS.has(tool.name)) return tool;
+  const original = tool.execute;
+  return {
+    ...tool,
+    execute: (args, context) => {
+      const tier = context.assistantPermission ?? assistantPermission();
+      const confirmed = typeof args.__confirmActionId === "string" && args.__confirmActionId !== "";
+      const readOnlyCall = tool.name === "manage_extensions"
+        && (clean(args.action) === "list" || clean(args.action) === "probe");
+      const finish = (result: unknown): unknown => {
+        if (!readOnlyCall) {
+          const r = (result ?? {}) as { ok?: boolean; error?: string; note?: string; needsConfirmation?: unknown };
+          // needsConfirmation 不入账：操作此刻既没成功也没失败，只是挂起了确认卡。
+          // 它的结局由后续路径记账——同意 → 本工具带 confirmed 执行，拒绝 → 「用户拒绝了…」。
+          if (r.needsConfirmation === undefined) {
+            recordActivity({
+              ts: Date.now(),
+              tool: tool.name,
+              title: summarizeWrite(tool.name, args, result),
+              ok: r.ok === true,
+              ...(r.ok === true
+                ? (typeof r.note === "string" && r.note !== "" ? { detail: r.note } : {})
+                : (typeof r.error === "string" && r.error !== "" ? { detail: r.error.slice(0, 200) } : {})),
+              ...(context.contactId !== "" ? { contactId: context.contactId } : {}),
+              tier,
+              ...(confirmed ? { confirmed: true } : {}),
+            });
+          }
+        }
+        return result;
+      };
+      try {
+        const out = original(args, context);
+        if (!(out instanceof Promise)) return finish(out);
+        return out.then(finish, (error: unknown) => {
+          finish({ ok: false, error: error instanceof Error ? error.message : String(error) });
+          throw error;
+        });
+      } catch (error) {
+        finish({ ok: false, error: error instanceof Error ? error.message : String(error) });
+        throw error;
+      }
+    },
+  };
+}
+
+export const ASSISTANT_TOOLS: ToolDef[] = ASSISTANT_TOOL_DEFS.map(withActivityLogging);
 
 /** 助手的系统提示词：身份 + 纪律 + 每轮注入的实时状态。 */
 export function buildAssistantSystemPrompt(permission: AssistantPermission = assistantPermission()): string {

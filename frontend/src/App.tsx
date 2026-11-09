@@ -78,6 +78,9 @@ export default function App(): JSX.Element {
   const [chatOpen, setChatOpen] = useState(true);
   /** 内置设置助手：召唤式弹窗，不占顶层导航。关闭只隐藏，会话状态留在里面。 */
   const [assistantOpen, setAssistantOpen] = useState(false);
+  /** 助手弹窗要落到「助手设置」屏的请求序号：设置搜索每次跨页跳转递增一次，
+      光靠 open 布尔不行（弹窗本来就有自己的落屏记忆，重复跳转也要生效）。 */
+  const [assistantSettingsSeq, setAssistantSettingsSeq] = useState(0);
   /** 当前联系人的名字与头像 + 全站未读数：全部由 contactsStore 的唯一轮询链供数。 */
   const applyContactMeta = useCallback((list: ContactItem[]): void => {
     // 当前作用域指向的人不在列表里了（典型：设置页「全部清空」把老联系人整库清掉，
@@ -288,13 +291,21 @@ export default function App(): JSX.Element {
       setConversation((prev) => prev?.id === d.conversationId ? null : prev);
       if (d.contactId === contactId()) refreshContacts();
     };
+    // 设置搜索「设置助手权限」的跨页落点：助手是召唤层，detail.settings 让弹窗直接落到它的设置屏。
+    const openAssistant = (event: Event): void => {
+      const d = (event as CustomEvent<{ settings?: boolean }>).detail;
+      setAssistantOpen(true);
+      if (d?.settings) setAssistantSettingsSeq((s) => s + 1);
+    };
     window.addEventListener("xiaomo:open-contact", open);
     window.addEventListener("xiaomo:open-conversation", openConversation);
     window.addEventListener("xiaomo:conversation-removed", conversationRemoved);
+    window.addEventListener("xiaomo:open-assistant", openAssistant);
     return () => {
       window.removeEventListener("xiaomo:open-contact", open);
       window.removeEventListener("xiaomo:open-conversation", openConversation);
       window.removeEventListener("xiaomo:conversation-removed", conversationRemoved);
+      window.removeEventListener("xiaomo:open-assistant", openAssistant);
     };
   }, [navigate, pick, applyContactMeta]);
 
@@ -579,6 +590,7 @@ export default function App(): JSX.Element {
       </Suspense>
     </div>
     <AssistantDialog open={asstShown} onClose={() => setAssistantOpen(false)}
+      settingsSeq={assistantSettingsSeq}
       ownerName={ownerName} ownerAvatar={ownerAvatar} />
     {about && <AboutDialog onClose={() => setAbout(false)} />}
     {onboarding && (

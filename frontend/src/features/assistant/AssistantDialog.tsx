@@ -35,10 +35,13 @@ let cachedThreads: AssistantThread[] | null = null;
 let cachedAvatar = "";
 let cachedName = "";
 
-export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar }: {
+export default function AssistantDialog({ open, onClose, settingsSeq = 0, ownerName, ownerAvatar }: {
   /** 关闭只是隐藏：ChatView 不卸载，流式回复与输入框草稿原样留着。 */
   open: boolean;
   onClose: () => void;
+  /** 设置搜索「设置助手权限」的跨页落点序号：>0 且弹窗在时，直接落到助手设置屏。
+      只跟 seq 走、不跟 open 走——否则此后每次 Ctrl+K 召唤都会落到设置屏。 */
+  settingsSeq?: number;
   ownerName: string;
   ownerAvatar: string;
 }): JSX.Element {
@@ -79,6 +82,27 @@ export default function AssistantDialog({ open, onClose, ownerName, ownerAvatar 
   useEffect(() => { if (!open) setModal(null); }, [open]);
   // 助手是一个临时召唤层：关闭时回到居中，不把上一次的拖动位置带进下一次使用。
   useEffect(() => { if (!open) setDrag(null); }, [open]);
+
+  // 设置搜索「设置助手权限」要求落到设置屏：seq 变了即使已在设置屏也要重新落位（清掉资料层）。
+  useEffect(() => {
+    if (open && settingsSeq > 0) {
+      setShowProfile(false);
+      setShowSettings(true);
+    }
+    // 依赖只留 seq：open 的每次变化都不该触发，否则召唤一次就永久落在设置屏。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settingsSeq]);
+
+  // 确认卡上的「调整权限」：档位决策的使用现场是输入区那枚 chip——若此刻正看着设置屏，
+  // 先回到对话屏再让 chip 展开弹层。设置屏盖住输入区时 chip 的 rect 归零，弹层锚点会算到屏幕外。
+  useEffect(() => {
+    const backToChat = (): void => {
+      setShowSettings(false);
+      setShowProfile(false);
+    };
+    window.addEventListener("xiaomo:assistant-perm-open", backToChat);
+    return () => window.removeEventListener("xiaomo:assistant-perm-open", backToChat);
+  }, []);
 
   // 助手的头像与名字来自保留联系人（它已不在会话列表里，单独拉一次）。
   // 在弹窗里改完名字/换完头像也要重新拉一次——否则保存成功了，头部还挂着旧的那份。

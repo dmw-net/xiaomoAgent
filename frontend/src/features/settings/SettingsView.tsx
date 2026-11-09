@@ -61,11 +61,18 @@ type SearchEntry = {
   meta: string;
   anchor: string;
   keywords: string;
+  /** 目的地在设置页之外时的特殊动作；目前只有召唤设置助手并落到它的设置屏。 */
+  action?: "assistant";
+  /** 作用域角标的覆盖文案（助手不住在七个分组里，不硬塞分组名）。 */
+  scope?: string;
 };
 
 /** 设置搜索只索引“用户能认出的对象”，不把控件名和解释堆成一张完整目录。 */
 const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "owner", title: "我的资料", meta: "头像、称呼、指代方式、印象与备注", anchor: "settings-owner", keywords: "名字 昵称 头像 QQ 个人 人设 我" },
+  // 设置助手不住在设置页的七个分组里（它是召唤层，权限档是它唯一的自有决策），
+  // 但搜索必须能找到它——「权限」「自主」这类词的落点在这里，而不是工具台账。
+  { group: "tools", action: "assistant", scope: "助手", title: "设置助手权限", meta: "只读 / 变更前确认 / 完全自主，对所有助手会话生效", anchor: "", keywords: "助手 设置 权限 完全自主 自主 只读 确认 信任 代理 assistant" },
   { group: "model", modelTab: "model", title: "主对话模型", meta: "供应商、接口地址、API Key、模型列表", anchor: "settings-models", keywords: "模型 大模型 接口 密钥 供应商 deepseek 火山 ollama 思考 参数" },
   { group: "model", modelTab: "capability", title: "能力模型", meta: "看图、听音、说话、画图、记忆检索", anchor: "settings-capabilities", keywords: "视觉 语音 识别 合成 图像 生成 向量 能力" },
   { group: "tools", title: "工具与扩展总览", meta: "全局档位（含全关）、逐项开关、按联系人例外", anchor: "settings-tools-overview", keywords: "工具 扩展 开关 总览 台账 档位 总闸 全关 门控 矩阵 插拔 权限" },
@@ -75,7 +82,7 @@ const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "tools", title: "扩展与 MCP", meta: "MCP、Webhook、JS 工具、脚本许可", anchor: "settings-extensions", keywords: "扩展 mcp webhook 脚本 js 插件 工具" },
   { group: "media", title: "媒体与表情", meta: "图片、视频、语音，以及表情包", anchor: "settings-media", keywords: "表情 表情包 emoji sticker 素材 采集 导入 相册 图片 视频 语音 文件 媒体 接梗 反应 内容库" },
   { group: "experience", title: "外观与壁纸", meta: "浅色、深色、强调色、壁纸", anchor: "settings-appearance", keywords: "主题 颜色 强调色 壁纸 玻璃 背景" },
-  { group: "experience", title: "聊天显示", meta: "气泡时间、列表密度", anchor: "settings-chat-display", keywords: "时间 日期 密度 列表 气泡" },
+  { group: "experience", title: "聊天显示", meta: "气泡时间、生成速度、语音播放按钮、列表密度", anchor: "settings-chat-display", keywords: "时间 日期 密度 列表 气泡 速度 t/s 语音 播放 tts 读出来" },
   { group: "experience", title: "系统通知", meta: "新消息通知与权限", anchor: "settings-notifications", keywords: "通知 提醒 消息 权限" },
   { group: "system", title: "数据存储", meta: "数据目录与迁移", anchor: "settings-storage", keywords: "数据 文件夹 目录 存储 迁移" },
   { group: "system", title: "隐私与数据边界", meta: "本机数据、模型发送范围与运行检查", anchor: "settings-privacy", keywords: "隐私 安全 密钥 本机 发送 检查 诊断" },
@@ -229,6 +236,13 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
   };
 
   const jumpTo = (entry: SearchEntry): void => {
+    if (entry.action === "assistant") {
+      // 跨出设置页的目的地：召唤助手弹窗并让它直接落到「助手设置」屏。
+      // App 收到事件后置 open + 递增 settingsSeq；本页不清滚动位（弹窗是覆盖层）。
+      setQuery("");
+      window.dispatchEvent(new CustomEvent("xiaomo:open-assistant", { detail: { settings: true } }));
+      return;
+    }
     const go = (): void => {
       setGroup(entry.group);
       if (entry.modelTab) setModelTab(entry.modelTab);
@@ -295,7 +309,7 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
               <b>{entry.title}</b>
               <small>{entry.meta}</small>
             </span>
-            <span className="settings-search-scope">{groupLabel(entry.group)}</span>
+            <span className="settings-search-scope">{entry.scope ?? groupLabel(entry.group)}</span>
           </button>
         ))
       )}

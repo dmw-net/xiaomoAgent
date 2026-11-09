@@ -29,6 +29,43 @@ export function setClockPref(v: ClockPref): void {
   window.dispatchEvent(new CustomEvent(CLOCK_EVENT));
 }
 
+/** 气泡上的生成速度（t/s）：设备级显示开关，默认开（关掉只是不显示，数据照常落库）。 */
+const CHAT_SPEED_KEY = "xiaomo.chatSpeed";
+
+/** 偏好被改（ChatView 监听它重传 showSpeed，全屏气泡立刻跟着换，不用刷新）。 */
+export const CHAT_SPEED_EVENT = "xiaomo:chat-speed";
+
+export function getShowTokensPerSec(): boolean {
+  try { return localStorage.getItem(CHAT_SPEED_KEY) !== "0"; } catch { return true; }
+}
+
+export function setShowTokensPerSec(on: boolean): void {
+  try {
+    if (on) localStorage.removeItem(CHAT_SPEED_KEY);
+    else localStorage.setItem(CHAT_SPEED_KEY, "0");
+  } catch { /* 同上 */ }
+  window.dispatchEvent(new CustomEvent(CHAT_SPEED_EVENT));
+}
+
+/** 气泡上的 TTS 播放按钮（🔊）：设备级显示开关，默认开。关掉只是不渲染按钮，
+ *  语音合成能力本身照常（send_voice、语音消息都不受影响）。 */
+const CHAT_TTS_KEY = "xiaomo.chatTts";
+
+/** 偏好被改（ChatView 监听它重传 ttsOn，正在聊的气泡立刻跟着换，不用刷新）。 */
+export const CHAT_TTS_EVENT = "xiaomo:chat-tts";
+
+export function getShowTtsButton(): boolean {
+  try { return localStorage.getItem(CHAT_TTS_KEY) !== "0"; } catch { return true; }
+}
+
+export function setShowTtsButton(on: boolean): void {
+  try {
+    if (on) localStorage.removeItem(CHAT_TTS_KEY);
+    else localStorage.setItem(CHAT_TTS_KEY, "0");
+  } catch { /* 同上 */ }
+  window.dispatchEvent(new CustomEvent(CHAT_TTS_EVENT));
+}
+
 const LAST_BACKUP_KEY = "xiaomo.lastBackupAt";
 
 /** 最近一次由本机触发备份导出的时间。只是设备级提醒，不参与数据迁移或恢复判断。 */

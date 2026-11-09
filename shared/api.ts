@@ -64,6 +64,12 @@ export type MessageRow = {
   variant_count?: number | null;
   /** 当前选中的版本序号（0 = 最初版本）。模型后续对话看到的正是这个版本的文本。 */
   variant_index?: number | null;
+  /**
+   * 这一版回复的生成速度（token/秒）。只在该轮第一条 assistant 气泡上有值（其余行为 null），
+   * 来源是 model_calls 里产出这版回复的那次调用的 usage 与实测耗时；服务商没回 usage 时
+   * 是估算值。纯展示字段：不进上下文回放，也不参与任何统计口径。
+   */
+  tokens_per_sec?: number | null;
 };
 
 /** 处理单在 HTTP 面上的最小形状；/api/turns/recent 实际返回超集（含 text/reply）。 */

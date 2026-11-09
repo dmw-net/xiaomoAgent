@@ -21,7 +21,7 @@ import { assistantPermission, buildAssistantSystemPrompt, isAssistant, pinAssist
 import { maybeRefreshConversationSummary, maybeRefreshRecap } from "./recap.ts";
 import { segmentReply } from "../core/reply-segmentation.ts";
 import { mediaDataUrl, mediaTypeOfUrl, releaseMediaFiles } from "../media/media.ts";
-import { emitMessage, emitTurn, emitActivity } from "../core/events.ts";
+import { emit, emitMessage, emitTurn, emitActivity } from "../core/events.ts";
 import type { MessageAttachmentMeta } from "../../shared/api.ts";
 import { getConversation, localConversationId, touchConversation, type Conversation } from "./conversations.ts";
 import { MAX_CHAT_IMAGES } from "../../shared/limits.ts";
@@ -94,6 +94,8 @@ export function insertMessage(input: {
   toolName?: string | null;
   toolArgs?: string | null;
   toolResult?: string | null;
+  /** 这一版回复的生成速度（token/秒）：只挂轮内第一条气泡，界面显示用。 */
+  tokensPerSec?: number | null;
 }): number {
   const conversationId = input.conversationId || localConversationId(input.contactId);
   const now = Date.now();
@@ -101,8 +103,8 @@ export function insertMessage(input: {
       `INSERT INTO messages
          (channel, role, text, kind, turn_id, contact_id, conversation_id, sender_id, sender_name,
           source_message_id, reply_to_message_id, at_bot, source_meta, attachments, attachment_meta, reasoning,
-          tool_detail, tool_call_id, tool_name, tool_args, tool_result, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          tool_detail, tool_call_id, tool_name, tool_args, tool_result, tokens_per_sec, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       input.channel,
@@ -126,6 +128,7 @@ export function insertMessage(input: {
       input.toolName ?? null,
       input.toolArgs ?? null,
       input.toolResult ?? null,
+      input.tokensPerSec ?? null,
       now,
     );
   touchConversation(conversationId, now);
@@ -204,6 +207,8 @@ export type TurnVariant = {
   attachment_meta: string | null;
   /** 这一版生成时的思考原文。 */
   reasoning: string | null;
+  /** 这一版的生成速度（token/秒）；老存档没有这一项，按 null 处理。 */
+  tokens_per_sec?: number | null;
   created_at: number;
 };
 
@@ -232,16 +237,17 @@ export function ensureTurnVariants(turnId: string): void {
   const turn = getTurn(turnId);
   if (!turn || (turn.variants !== null && turn.variants !== undefined && turn.variants !== "")) return;
   const rows = q(
-    `SELECT text, attachments, attachment_meta, reasoning, created_at FROM messages
+    `SELECT text, attachments, attachment_meta, reasoning, tokens_per_sec, created_at FROM messages
      WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC`,
-  ).all(turnId) as Array<{ text: string; attachments: string | null; attachment_meta: string | null; reasoning: string | null; created_at: number }>;
+  ).all(turnId) as Array<{ text: string; attachments: string | null; attachment_meta: string | null; reasoning: string | null; tokens_per_sec: number | null; created_at: number }>;
   if (rows.length === 0) return;
-  // 附件/元信息/思考只挂在第一颗气泡上（与落库时同一纪律），存档按同样的形状收。
+  // 附件/元信息/思考/生成速度只挂在第一颗气泡上（与落库时同一纪律），存档按同样的形状收。
   const record: TurnVariant = {
     texts: rows.map((row) => row.text),
     attachments: rows[0]?.attachments ?? null,
     attachment_meta: rows[0]?.attachment_meta ?? null,
     reasoning: rows[0]?.reasoning ?? null,
+    tokens_per_sec: rows[0]?.tokens_per_sec ?? null,
     created_at: rows[0]?.created_at ?? Date.now(),
   };
   q(`UPDATE turns SET variants = ?, variant_index = 0 WHERE id = ?`)
@@ -250,7 +256,7 @@ export function ensureTurnVariants(turnId: string): void {
 
 /**
  * 新回复落库后把它追加为下一个版本，并把活跃指针指过去；超过封顶数裁最旧的。
- * texts 传分条后的气泡序列（重答旧轮时是整段一条）；附件/元信息/思考只挂第一颗。
+ * texts 传分条后的气泡序列（重答旧轮时是整段一条）；附件/元信息/思考/生成速度只挂第一颗。
  * 导出面：同 ensureTurnVariants —— 仅为回归测试。
  */
 export function appendTurnVariant(
@@ -259,6 +265,7 @@ export function appendTurnVariant(
   attachments: string | null,
   attachmentMeta: string | null,
   reasoning: string | null,
+  tokensPerSec: number | null = null,
 ): void {
   const turn = getTurn(turnId);
   if (!turn) return;
@@ -269,6 +276,7 @@ export function appendTurnVariant(
     attachments: attachments && attachments !== "" ? attachments : null,
     attachment_meta: attachmentMeta && attachmentMeta !== "" ? attachmentMeta : null,
     reasoning: reasoning || null,
+    tokens_per_sec: tokensPerSec,
     created_at: Date.now(),
   });
   while (list.length > TURN_VARIANT_CAP) list.shift();
@@ -301,27 +309,31 @@ export function syncVariantMeta(turnId: string): void {
  * 工具卡与其它 assistant 行一并清掉：它们属于被换下的那次生成，与旧版本成对。
  */
 export function setTurnVariant(turnId: string, index: number): { applied: boolean } {
-  const turn = getTurn(turnId);
-  if (!turn) throw new Error("处理单不存在");
-  if (turn.status === "running") throw new Error("这一轮还在生成中，先等它结束");
-  if (turn.superseded_at !== null && turn.superseded_at !== undefined) {
-    throw new Error("这一轮已被编辑取代，切换不了版本");
-  }
-  const list = parseTurnVariants(turn.variants);
-  if (list.length === 0) throw new Error("这一轮没有可切换的历史版本");
-  if (!Number.isInteger(index) || index < 0 || index >= list.length) {
-    throw new Error("版本序号超出范围");
-  }
-  if (index === (turn.variant_index ?? 0)) return { applied: false };
+  // 整个切换包进单事务：里面是 DELETE + 两条 UPDATE + 补插若干气泡，散着提交
+  // 就是四五次 WAL fsync——弱盘/杀毒机器上一次几十毫秒，乘起来就是用户说的
+  // 「切换要加载好一会」。一并入闸：中途抛错整体回滚，不会切一半留半截。
+  return withTx(() => {
+    const turn = getTurn(turnId);
+    if (!turn) throw new Error("处理单不存在");
+    if (turn.status === "running") throw new Error("这一轮还在生成中，先等它结束");
+    if (turn.superseded_at !== null && turn.superseded_at !== undefined) {
+      throw new Error("这一轮已被编辑取代，切换不了版本");
+    }
+    const list = parseTurnVariants(turn.variants);
+    if (list.length === 0) throw new Error("这一轮没有可切换的历史版本");
+    if (!Number.isInteger(index) || index < 0 || index >= list.length) {
+      throw new Error("版本序号超出范围");
+    }
+    if (index === (turn.variant_index ?? 0)) return { applied: false };
 
-  const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
-  const conversationId = turn.conversation_id || localConversationId(contactId);
-  const variant = list[index];
-  if (variant === undefined) throw new Error("版本序号超出范围");
-  const first = q(
-    `SELECT id FROM messages WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC LIMIT 1`,
-  ).get(turnId) as { id: number } | undefined;
-  if (!first) throw new Error("这一轮的回复已经不在了，切换不了版本");
+    const contactId = turn.contact_id ?? DEFAULT_CONTACT_ID;
+    const conversationId = turn.conversation_id || localConversationId(contactId);
+    const variant = list[index];
+    if (variant === undefined) throw new Error("版本序号超出范围");
+    const first = q(
+      `SELECT id FROM messages WHERE turn_id = ? AND role = 'assistant' AND kind = 'chat' ORDER BY id ASC LIMIT 1`,
+    ).get(turnId) as { id: number } | undefined;
+    if (!first) throw new Error("这一轮的回复已经不在了，切换不了版本");
   // 分条气泡合回整段：历史标记/上下文回放看到的就是这一版完整的话。
   const joined = variant.texts.length === 1 ? variant.texts[0] ?? "" : variant.texts.join("\n\n");
   // 仍是最新一轮时补插分条气泡（跟随原版本的打字节奏形状），首行只写第一段；
@@ -329,10 +341,10 @@ export function setTurnVariant(turnId: string, index: number): { applied: boolea
   const resplit = variant.texts.length > 1 && isLatestTurnOfContact(contactId, turnId);
   q(`DELETE FROM messages WHERE turn_id = ? AND role = 'assistant' AND id <> ?`).run(turnId, first.id);
   q(
-    `UPDATE messages SET text = ?, attachments = ?, attachment_meta = ?, reasoning = ?, variant_index = ?, variant_count = ? WHERE id = ?`,
+    `UPDATE messages SET text = ?, attachments = ?, attachment_meta = ?, reasoning = ?, tokens_per_sec = ?, variant_index = ?, variant_count = ? WHERE id = ?`,
   ).run(
     resplit ? variant.texts[0] ?? "" : joined,
-    variant.attachments, variant.attachment_meta, variant.reasoning, index, list.length, first.id,
+    variant.attachments, variant.attachment_meta, variant.reasoning, variant.tokens_per_sec ?? null, index, list.length, first.id,
   );
   if (resplit) {
     for (let i = 1; i < variant.texts.length; i += 1) {
@@ -344,6 +356,7 @@ export function setTurnVariant(turnId: string, index: number): { applied: boolea
   q(`UPDATE turns SET reply = ?, variant_index = ? WHERE id = ?`).run(joined, index, turnId);
   emitMessage(contactId, conversationId, first.id);
   return { applied: true };
+  });
 }
 
 /**
@@ -420,7 +433,7 @@ import type { MessageRow } from "../../shared/api.ts";
 
 export type { MessageRow };
 
-const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, conversation_id, sender_id, sender_name, source_message_id, reply_to_message_id, at_bot, attachments, attachment_meta, turn_id, reasoning, tool_detail, variant_index, variant_count";
+const MESSAGE_COLUMNS = "id, role, text, kind, created_at, superseded_at, superseded_kind, contact_id, conversation_id, sender_id, sender_name, source_message_id, reply_to_message_id, at_bot, attachments, attachment_meta, turn_id, reasoning, tool_detail, variant_index, variant_count, tokens_per_sec";
 
 /** attachments / attachment_meta 存的是 JSON 字符串；下发前解析，脏数据按无附件处理。 */
 function withParsedAttachments(row: MessageRow & { attachments: unknown; attachment_meta?: unknown }): MessageRow {
@@ -1768,8 +1781,11 @@ const activeTurns = new Map<string, { turnId: string; controller: AbortControlle
  * 交出去的是**本次调用的累计正文**，不是整轮累计：工具轮也常带正文，
  * 把它和最终回复拼成一句会变成联系人在改口。
  */
-function draftWriter(turnId: string): (text: string) => void {
+function draftWriter(turnId: string, contactId: string, conversationId: string): (text: string) => void {
   let lastWrite = 0;
+  // 已随 SSE 发出的累计正文：增量帧的基准。与库里那份独立——库是断线重连后的
+  // 对齐真源，帧是给活着的观众省 RTT 的。
+  let sent = "";
   return (text) => {
     const now = Date.now();
     // 流式一帧几十毫秒一片，逐片写库等于给 WAL 一道持续小洪峰；200ms 一次足够看出联系人在写。
@@ -1781,21 +1797,90 @@ function draftWriter(turnId: string): (text: string) => void {
     // 条件写：状态一旦离开 running（取消、收尾、被别的进程判死），迟到的帧就写不进去，
     // 不会把草稿复活成"看起来像定稿"。
     q(`UPDATE turns SET reply = ? WHERE id = ? AND status = 'running'`).run(draft, turnId);
+    // 同一节流点顺路发流式帧：库与帧同源同步，断档回源对齐不会有缝。
+    // 前缀续写发 delta（总量 O(n)）；改口/截断发全量快照，客户端整段替换。
+    // emit 内部永不抛错也永不阻塞，主流程不受这条辅路影响。
+    if (draft !== sent) {
+      const seq = bumpDraftSeq(turnId, "reply");
+      if (sent !== "" && draft.startsWith(sent)) {
+        emit({ type: "draft", contactId, conversationId, turnId, seq, delta: draft.slice(sent.length) });
+      } else {
+        emit({ type: "draft", contactId, conversationId, turnId, seq, text: draft });
+      }
+      sent = draft;
+    }
   };
+}
+
+/**
+ * 流式帧的轮内序号登记表：/api/turn 的响应要带回「当前发到第几帧」，
+ * 客户端轮询对齐后才能无缝续接增量。键是 turnId；每轮每字段独立从 1 递增。
+ * 结束后的残留条目无害（路由只在 status=running 时才读它），封顶 128 条 LRU 淘汰，
+ * 重答复用同一 turnId 时序号从当前值继续——客户端按「seq 必须恰好 +1」续帧，
+ * 对不上就回源全量，所以不依赖归零。
+ */
+const draftSeqs = new Map<string, { reply: number; reasoning: number }>();
+
+function bumpDraftSeq(turnId: string, field: "reply" | "reasoning"): number {
+  const cur = draftSeqs.get(turnId) ?? { reply: 0, reasoning: 0 };
+  cur[field] += 1;
+  draftSeqs.set(turnId, cur);
+  if (draftSeqs.size > 128) draftSeqs.delete(draftSeqs.keys().next().value as string);
+  return cur[field];
+}
+
+/** 查一轮当前的流式帧序号（/api/turn 响应带回；不在跑或没登记过返回 null）。 */
+export function draftSeqOf(turnId: string): { reply: number; reasoning: number } | null {
+  return draftSeqs.get(turnId) ?? null;
 }
 
 /**
  * 思考草稿的落点：和 draftWriter 同一套节流、同一套条件写，但走单独的 reasoning_draft 列。
  * 思考常常在正文之前就先流出来；共用 reply 会把正文写成半截推理，等正文到了还会互相覆盖。
  */
-function reasoningDraftWriter(turnId: string): (text: string) => void {
+function reasoningDraftWriter(turnId: string, contactId: string, conversationId: string): (text: string) => void {
   let lastWrite = 0;
+  let sent = "";
   return (text) => {
     const now = Date.now();
     if (now - lastWrite < 180) return;
     lastWrite = now;
     q(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(text, turnId);
+    // 与正文帧同一套协议（thought 类型，seq 独立计数）：多轮工具的推理是
+    // 「已完成段 + 当前段」拼接，天然前缀续写走 delta；新一轮开头重算时发快照。
+    if (text !== sent) {
+      const seq = bumpDraftSeq(turnId, "reasoning");
+      if (sent !== "" && text.startsWith(sent)) {
+        emit({ type: "thought", contactId, conversationId, turnId, seq, delta: text.slice(sent.length) });
+      } else {
+        emit({ type: "thought", contactId, conversationId, turnId, seq, text });
+      }
+      sent = text;
+    }
   };
+}
+
+/**
+ * 这一轮回复的生成速度（token/秒），挂在第一颗气泡上给界面显示。
+ *
+ * 数据源是 model_calls：agent 循环里**最后一次成功的 chat 调用**就是产出最终回复的那一次
+ * （前面的轮次都是工具调用轮），它的 completion_tokens / elapsed_ms 即速度——
+ * elapsed 含首字等待与思考生成时间，所以这是"整体出字速度"，与主流聊天 UI 的口径一致。
+ * 服务商没回 usage（部分网关流式不带）时退回 estimateTokens 估算：数字是估的，量级是真的。
+ * echo（演示模式）不落 model_calls，返回 null，界面自然不显示。
+ */
+export function tokensPerSecForTurn(turnId: string, reply: string): number | null {
+  const row = q(
+    `SELECT elapsed_ms, completion_tokens FROM model_calls
+     WHERE turn_id = ? AND purpose = 'chat' AND ok = 1 ORDER BY id DESC LIMIT 1`,
+  ).get(turnId) as { elapsed_ms: number; completion_tokens: number | null } | undefined;
+  if (!row || !(row.elapsed_ms > 0)) return null;
+  const tokens = Number(row.completion_tokens) > 0 ? Number(row.completion_tokens) : estimateTokens(reply);
+  if (!(tokens > 0)) return null;
+  const value = tokens / (row.elapsed_ms / 1000);
+  if (!Number.isFinite(value) || value <= 0) return null;
+  // 一位小数够用：误差主要来自计时粒度与分词器口径，不是多留几位能救的。
+  return Math.round(value * 10) / 10;
 }
 
 export async function respondToTurn(
@@ -2083,7 +2168,7 @@ export async function respondToTurn(
     const appEmoteMeta: MessageAttachmentMeta[] = [];
     const reply = await runAgentLoop(turn, system, history, controller.signal,
       (text) => { if (text.trim() !== "") reasoningParts.push(text.trim()); },
-      reasoningDraftWriter(turn.id),
+      reasoningDraftWriter(turn.id, contactId, conversationId),
       (urls, metas) => {
         producedFiles.push(...urls);
         if (metas !== undefined) producedMeta.push(...metas);
@@ -2098,9 +2183,11 @@ export async function respondToTurn(
         appEmoteFiles.push(...urls);
         if (metas !== undefined) appEmoteMeta.push(...metas);
       },
-      draftWriter(turn.id), cancelIfAborted, assistantPermissionSnapshot);
+      draftWriter(turn.id, contactId, conversationId), cancelIfAborted, assistantPermissionSnapshot);
     if (cancelIfAborted()) return "";
     const reasoning = reasoningParts.join("\n\n");
+    // 生成速度（token/秒）：只取产出最终回复的那次调用，算一次挂到第一颗气泡上。
+    const tokensPerSec = tokensPerSecForTurn(turn.id, reply);
     // 收尾补最后一拍：节流器可能吃掉最后一段，定稿前必须让草稿与最终 reasoning 完全一致。
     q(`UPDATE turns SET reasoning_draft = ? WHERE id = ? AND status = 'running'`).run(reasoning || null, turn.id);
     // 出图/语音仍按「一轮一张」投递：工具描述就是这么约定的，放宽会让一轮甩 3 张图到 QQ。
@@ -2127,12 +2214,13 @@ export async function respondToTurn(
       // 整条写回原来那个气泡的位置（见上面 collapseIntoId 的说明），不分条、不延迟。
       // 附件跟着一起重写：重答画了新图就换上新图，没画就该清掉旧图，不能留着上一版的。
       // 元数据（表情 label / 语音时长转写）同理，跟着附件一起换。
-      q(`UPDATE messages SET text = ?, attachments = ?, attachment_meta = ?, reasoning = ? WHERE id = ?`)
+      q(`UPDATE messages SET text = ?, attachments = ?, attachment_meta = ?, reasoning = ?, tokens_per_sec = ? WHERE id = ?`)
         .run(
           reply,
           bubbleImages.length > 0 ? JSON.stringify(bubbleImages) : null,
           bubbleImages.length > 0 && bubbleMeta.length > 0 ? JSON.stringify(bubbleMeta) : null,
           reasoning || null,
+          tokensPerSec,
           collapseIntoId,
         );
     } else {
@@ -2144,11 +2232,12 @@ export async function respondToTurn(
         }
         insertMessage({
           channel: turn.channel, role: "assistant", text: parts[i] ?? "", turnId: turn.id, contactId, conversationId,
-          // 一轮只挂一处：第一条气泡带这段思考与这张图，后面的气泡不重复显示
+          // 一轮只挂一处：第一条气泡带这段思考、这张图与生成速度，后面的气泡不重复显示
           ...(i === 0 && reasoning !== "" ? { reasoning } : {}),
           ...(i === 0 && bubbleImages.length > 0 ? { attachments: bubbleImages } : {}),
           // 表情图带 label、语音带时长与转写：气泡标注 + 历史标记（联系人下一轮靠它记得发过哪张/说过哪句）都靠它。
           ...(i === 0 && bubbleImages.length > 0 && bubbleMeta.length > 0 ? { attachmentMeta: bubbleMeta } : {}),
+          ...(i === 0 && tokensPerSec !== null ? { tokensPerSec } : {}),
         });
       }
     }
@@ -2168,6 +2257,7 @@ export async function respondToTurn(
         bubbleImages.length > 0 ? JSON.stringify(bubbleImages) : null,
         bubbleImages.length > 0 && bubbleMeta.length > 0 ? JSON.stringify(bubbleMeta) : null,
         reasoning || null,
+        tokensPerSec,
       );
     } else {
       syncVariantMeta(turn.id);

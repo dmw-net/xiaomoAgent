@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { X } from "lucide-react";
 import { LanSection } from "./LanSection";
 import type { ThemeMode } from "../../types/ui";
-import { ACCENT_PRESETS, getAccent, setAccent, getClockPref, setClockPref, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getWallpaper, setWallpaper, getWallpaperLibrary, addWallpaperLibraryItem, removeWallpaperLibraryItem, WALLPAPER_LIB_EVENT, DEFAULT_WALLPAPER, getLastBackupAt, markBackupCompleted, type ClockPref, type WallpaperPref, type WallpaperItem } from "../../lib/ui-prefs";
+import { ACCENT_PRESETS, getAccent, setAccent, getClockPref, setClockPref, getShowTokensPerSec, setShowTokensPerSec, getShowTtsButton, setShowTtsButton, getListPageSize, setListPageSize, LIST_PAGE_SIZES, LIST_PAGE_LABEL, getWallpaper, setWallpaper, getWallpaperLibrary, addWallpaperLibraryItem, removeWallpaperLibraryItem, WALLPAPER_LIB_EVENT, DEFAULT_WALLPAPER, getLastBackupAt, markBackupCompleted, type ClockPref, type WallpaperPref, type WallpaperItem } from "../../lib/ui-prefs";
 import { WALLPAPER_PRESETS, wallpaperPreset } from "../../lib/wallpaper";
 import Modal from "../../components/Modal";
 import DiagnosticsButton from "../../components/DiagnosticsButton";
@@ -49,6 +49,8 @@ export default function AppearanceSection({
   const [mode, setMode] = useState<ThemeMode>(currentMode);
   const [accent, setAccentState] = useState(getAccent);
   const [clock, setClockState] = useState<ClockPref>(getClockPref);
+  const [speedOn, setSpeedOnState] = useState<boolean>(getShowTokensPerSec);
+  const [ttsBtnOn, setTtsBtnOnState] = useState<boolean>(getShowTtsButton);
   const [listPage, setListPage] = useState(getListPageSize);
   const [wallpaper, setWallpaperState] = useState<WallpaperPref>(getWallpaper);
   const [wallpaperLib, setWallpaperLib] = useState<WallpaperItem[]>(getWallpaperLibrary);
@@ -174,6 +176,16 @@ export default function AppearanceSection({
   const pickClock = (v: ClockPref): void => {
     setClockPref(v);
     setClockState(v);
+  };
+
+  const pickSpeed = (on: boolean): void => {
+    setShowTokensPerSec(on);
+    setSpeedOnState(on);
+  };
+
+  const pickTtsButton = (on: boolean): void => {
+    setShowTtsButton(on);
+    setTtsBtnOnState(on);
   };
 
   const pickWallpaperPreset = (id: string): void => {
@@ -522,6 +534,28 @@ export default function AppearanceSection({
               <button key={c.key} type="button" className="choice" aria-pressed={clock === c.key}
                 title={c.hint} onClick={() => pickClock(c.key)}>{c.label}</button>
             ))}
+          </div>
+        </div>
+
+        <div className="settings-row compact">
+          <div className="settings-row-label">
+            <b>生成速度</b>
+            <span>回复气泡右下角显示这次的出字速度（t/s）。</span>
+          </div>
+          <div className="choice-row" role="group" aria-label="生成速度">
+            <button type="button" className="choice" aria-pressed={!speedOn} onClick={() => pickSpeed(false)}>关闭</button>
+            <button type="button" className="choice" aria-pressed={speedOn} onClick={() => pickSpeed(true)}>开启</button>
+          </div>
+        </div>
+
+        <div className="settings-row compact">
+          <div className="settings-row-label">
+            <b>语音播放按钮</b>
+            <span>回复气泡右下角的 🔊 按钮，点了会把这条回复读出来；关掉不影响语音能力。</span>
+          </div>
+          <div className="choice-row" role="group" aria-label="语音播放按钮">
+            <button type="button" className="choice" aria-pressed={!ttsBtnOn} onClick={() => pickTtsButton(false)}>关闭</button>
+            <button type="button" className="choice" aria-pressed={ttsBtnOn} onClick={() => pickTtsButton(true)}>开启</button>
           </div>
         </div>
 

@@ -14,6 +14,11 @@ mkdirSync(dirname(dbFile), { recursive: true });
 function applyPragmas(handle: DatabaseSync): void {
   // WAL：读写并发时不容易互相阻塞（一个进程在写、另一个在查也不卡）。
   handle.exec("PRAGMA journal_mode = WAL");
+  // WAL 配 NORMAL 是官方推荐组合：commit 不再逐次 fsync（Windows + 机械盘单次
+  // 10~30ms，流式草稿 5Hz 写库时会排队）。语义换得明白：应用崩溃不丢任何已确认
+  // 的事务，只有断电/系统崩溃可能丢最后一个 commit——对聊天草稿这种可再生的
+  // 中间态完全可接受，真正的持久数据靠 checkpoint 与备份兜底。
+  handle.exec("PRAGMA synchronous = NORMAL");
   // 桌面多窗口 = 多进程共享同一个库文件：写冲突时先等而不是立刻抛 SQLITE_BUSY。
   handle.exec("PRAGMA busy_timeout = 5000");
 }
@@ -345,6 +350,10 @@ ensureColumn("messages", "reasoning", "reasoning TEXT");
 // 不进上下文回放，且每联系人只保留最近若干轮（滚出即 NULL，见 agent.ts trimToolDetailWindow）。
 ensureColumn("messages", "tool_detail", "tool_detail TEXT");
 
+// 这一轮回复的生成速度（token/秒）：只挂在该轮第一条 assistant 气泡上，界面显示用。
+// 数据源是 model_calls（服务商回的 usage + 实测耗时），纯展示列，不进任何回放与抽取。
+ensureColumn("messages", "tokens_per_sec", "tokens_per_sec REAL");
+
 // ── 工具往返的结构化存档（2026-11-03）────────────────────────
 // 从前一张工具卡只有给人看的 {tool, ok, summary}，历史回放时整个往返被压成一句正文
 // 占位符（「喏，发了。」+「[图片：这是你自己发出的图…]」）。模型在上下文里从来没见过
@@ -520,6 +529,9 @@ ensureColumn("conversations", "trigger_keywords", "trigger_keywords TEXT NOT NUL
 db.exec(
   `CREATE INDEX IF NOT EXISTS idx_messages_conversation ON messages (conversation_id, id);
    CREATE INDEX IF NOT EXISTS idx_messages_conversation_recent ON messages (conversation_id, created_at DESC, id DESC);
+   -- 按轮取行是聊天页的高频路径（重答收尾、版本切换、/api/messages?turn=），
+   -- 没有这条索引它们全是全表扫：库越大切换越慢，一年下来肉眼可见。
+   CREATE INDEX IF NOT EXISTS idx_messages_turn ON messages (turn_id) WHERE turn_id IS NOT NULL;
    CREATE INDEX IF NOT EXISTS idx_turns_conversation ON turns (conversation_id, created_at);
    CREATE INDEX IF NOT EXISTS idx_memory_scope ON memory_events (contact_id, scope_kind, scope_conversation_id, created_at);
    CREATE UNIQUE INDEX IF NOT EXISTS idx_messages_source ON messages (conversation_id, source_message_id)

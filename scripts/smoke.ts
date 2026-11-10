@@ -11,7 +11,7 @@ process.env.MEDIA_DIR = "./data/media-smoke";
 // 技能目录同理隔开：它的真源是磁盘，不清就会跨运行累积——[40] 里「扫出几份」
 // 这类计数断言会被上一轮留下的文件夹直接带偏。
 process.env.SKILLS_DIR = "./data/skills-smoke";
-process.env.PORT = "8799";
+process.env.PORT = "18799";
 process.env.MODEL_MODE = "echo";
 process.env.MODEL_API_KEY = "";
 process.env.PROACTIVE_ENABLED = "true";
@@ -29,7 +29,7 @@ for (const f of ["./data/smoke.db", "./data/smoke.db-wal", "./data/smoke.db-shm"
 rmSync("./data/media-smoke", { recursive: true, force: true });
 rmSync("./data/skills-smoke", { recursive: true, force: true });
 
-const BASE = "http://127.0.0.1:8799";
+const BASE = "http://127.0.0.1:18799";
 /** 与上面的 MEDIA_DIR 环境变量同一份事实：断言要按文件路径查图。 */
 const MEDIA = "./data/media-smoke";
 let failures = 0;
@@ -45,7 +45,7 @@ function check(label: string, ok: boolean, detail = ""): void {
 
 // ── 微信 iLink 假端点（[33] 用）───────────────────────────────
 // 必须在 import server.ts 之前打补丁：wechat 单例在模块加载时捕获 globalThis.fetch。
-// 只拦 https://ilinkai.weixin.qq.com，其余流量（本地 8799）走真 fetch。
+// 只拦 https://ilinkai.weixin.qq.com，其余流量（本地 18799）走真 fetch。
 const realFetch = globalThis.fetch;
 const ILINK_HOST = "https://ilinkai.weixin.qq.com";
 const ilink = {
@@ -231,7 +231,7 @@ const { ModelError, friendlyModelError } = await import("../src/settings/model.t
 
 registerChannel(webChannel);
 const server = createHttpServer();
-await new Promise<void>((resolve) => server.listen(8799, resolve));
+await new Promise<void>((resolve) => server.listen(18799, resolve));
 
 try {
   console.log("\n[1] 健康检查");
@@ -672,7 +672,7 @@ try {
     const rawGet = (host: string, origin?: string) => new Promise<number>((resolve, reject) => {
       const headers: Record<string, string> = { host };
       if (origin) headers.origin = origin;
-      const req = httpRequest({ host: "127.0.0.1", port: 8799, path: "/healthz", method: "GET", headers }, (res) => {
+      const req = httpRequest({ host: "127.0.0.1", port: 18799, path: "/healthz", method: "GET", headers }, (res) => {
         res.resume();
         res.on("end", () => resolve(res.statusCode ?? 0));
       });
@@ -1285,9 +1285,6 @@ try {
   const edit = await editRes.json();
   check("编辑被接受", editRes.status === 200 && edit.ok === true, `status=${editRes.status}`);
   check("拿到了重新生成的处理单", typeof edit.turnId === "string" && edit.turnId.length > 0);
-  check("后续消息被标记失效", edit.superseded.messages >= 2, `messages=${edit.superseded.messages}`);
-  check("后续的处理单也被标记失效", edit.superseded.turns >= 1, `turns=${edit.superseded.turns}`);
-
   for (let i = 0; i < 40; i += 1) {
     const t = await (await fetch(`${BASE}/api/turn/${edit.turnId}`)).json();
     if (t.status === "done" || t.status === "failed") break;
@@ -1298,25 +1295,39 @@ try {
   const afterEdit = board.messages.find((m) => m.id === firstUser.id);
   check("这条的文本已经改写", afterEdit !== undefined && afterEdit.text.includes("周末不去了"));
   check("这条自己仍然有效", afterEdit !== undefined && afterEdit.superseded_at === null);
+
+  // 版本式重答（7b08e38）：编辑不再作废后续，旧回复进 turns.variants 可切回。
+  // 老语义这里会整批 superseded，所以「后续还在不在」是这次改动的核心分水岭。
+  const laterRows = board.messages.filter((m) => m.id > firstUser.id);
+  check(
+    "后续消息全部保留、不作废",
+    laterRows.length > 0 && laterRows.every((m) => m.superseded_at === null),
+    `later=${laterRows.length}`,
+  );
   const foldBoard = await (await fetch(`${BASE}/api/messages?contactId=${foldBid}&all=1`)).json();
   check(
-    "编辑只折叠本联系人：别的联系人的后续消息不受影响",
+    "编辑不影响别的联系人",
     foldBoard.messages.length > 0 && foldBoard.messages.every((m: { superseded_at: unknown }) => m.superseded_at === null),
     JSON.stringify(foldBoard.messages.map((m: { id: number; superseded_at: unknown }) => [m.id, m.superseded_at])),
   );
 
-  const staleRows = board.messages.filter((m) => m.superseded_at !== null);
-  check("被取代的消息仍在库里（没有真删）", staleRows.length >= 2, `stale=${staleRows.length}`);
+  // 旧回复进版本存档：variants 至少 2 条，活跃指针指向新版本。
+  const { q } = await import("../src/core/db.ts");
+  const turnRow = q(`SELECT variants, variant_index FROM turns WHERE id = ?`).get(edit.turnId) as
+    { variants: string | null; variant_index: number | null } | undefined;
+  let variantCount = 0;
+  try { variantCount = turnRow?.variants ? (JSON.parse(turnRow.variants) as unknown[]).length : 0; } catch { /* 坏数据按 0 */ }
+  check("旧回复进版本存档（可切回）", variantCount >= 2, `variants=${variantCount}`);
+  check("活跃版本指向新版本", turnRow?.variant_index === 1, `index=${turnRow?.variant_index}`);
 
-  // 核心断言：上下文截断必须真的发生在地基层。
-  // 只改文本、不在 recentMessages 里过滤的话，界面看着改了，模型照样看得见旧内容。
+  // 上下文：改后的文本在、旧文本不在；后续那句保留（版本式重答不清后续）。
   const { recentMessages } = await import("../src/chat/agent.ts");
   const contextText = recentMessages("default", 50)
     .map((row) => row.text)
     .join("\n");
   check("改后的文本进入上下文", contextText.includes("周末不去了"));
-  check("被取代的「编辑测试乙」不在上下文里", !contextText.includes("编辑测试乙"));
-  check("被取代的旧文本也不在上下文里", !contextText.includes("想去爬山"));
+  check("旧文本不在上下文里", !contextText.includes("想去爬山"));
+  check("后续那句仍在上下文里", contextText.includes("编辑测试乙"));
   check(
     "重新生成了回复（有新的有效回复）",
     board.messages.some((m) => m.role === "assistant" && m.superseded_at === null && m.id > firstUser.id),
@@ -1406,8 +1417,13 @@ try {
   });
   check("非法的消息 id 被挡", badIdRes.status === 400);
 
-  if (staleRows.length > 0) {
-    const staleRes = await fetch(`${BASE}/api/message/${staleRows[0].id}/edit`, {
+  // 已失效的消息不能再改。现在唯一还会打 superseded 标记的入口是撤回
+  // （7b08e38 后编辑不再作废后续），所以先撤回一条再试着改它。
+  const staleTarget = board.messages.find((m) => m.role === "user" && m.text.includes("编辑测试乙"));
+  if (staleTarget) {
+    const retractRes = await fetch(`${BASE}/api/message/${staleTarget.id}/retract`, { method: "POST" });
+    check("为边界测试撤回一条", retractRes.status === 200);
+    const staleRes = await fetch(`${BASE}/api/message/${staleTarget.id}/edit`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text: "改一条已经被取代的" }),
@@ -2449,6 +2465,9 @@ try {
     const beforeReset = modelFailureCount();
     const rowsBefore = countModelCalls();
     check("故意记一条失败后，失败读数涨上去", beforeReset >= 1, String(beforeReset));
+    // 日志与重置落在同一毫秒时，那条失败会因 `created_at >= 水印` 被算回来（实测翻车）。
+    // 睡 2ms 把两者错开，断言才是确定性的——生产里用户点按钮不会和日志同毫秒。
+    await new Promise((resolve) => setTimeout(resolve, 2));
     const reset = await (await fetch(`${BASE}/api/status/reset-counters`, { method: "POST" })).json();
     const afterReset = modelFailureCount();
     check("重新计数把失败读数归零", reset.ok === true && afterReset === 0, JSON.stringify({ reset, afterReset }));
@@ -3279,7 +3298,7 @@ try {
       });
     const declared = () => toolDefsForApi(cid).map((t) => t.function.name);
 
-    // 假出图端点：只拦 img.example 与 cos.example，其余流量交回上一手 fetch（本地 8799 照常）。
+    // 假出图端点：只拦 img.example 与 cos.example，其余流量交回上一手 fetch（本地 18799 照常）。
     // mode 模拟服务商真实存在的三种响应形状——尤其"b64_json 给空串、只给外链"这一种，
     // 本机对 agnes-image-2.5-flash 实测过（同端点两次调用，一次有 b64、一次没有）。
     const priorFetch = globalThis.fetch;
@@ -3294,7 +3313,7 @@ try {
         const data = img.mode === "b64" ? { b64_json: PNG1 }
           : img.mode === "url" ? { url: "https://cos.example/a.png", b64_json: "" }
             : img.mode === "b64-empty" ? { b64_json: "" }
-              : { url: "http://127.0.0.1:8799/healthz", b64_json: "" };
+              : { url: "http://127.0.0.1:18799/healthz", b64_json: "" };
         return new Response(JSON.stringify({ created: 1, data: [data] }),
           { status: 200, headers: { "content-type": "application/json" } });
       }
@@ -3361,7 +3380,7 @@ try {
       check("拉的就是响应里给的那条地址", img.cosHits === 1, String(img.cosHits));
 
       // 外链地址由服务商的响应决定，所以本机与内网一律不拉。
-      // 这条断言要真能失败下来：若去 GET 本地 8799 的 /healthz，那串 JSON 会被当 png 存进媒体目录。
+      // 这条断言要真能失败下来：若去 GET 本地 18799 的 /healthz，那串 JSON 会被当 png 存进媒体目录。
       const cidEvil = await contact("给内网地址的");
       img.mode = "evil";
       const evil = await executeTool("generate_image", JSON.stringify({ prompt: "不该出门的一张" }), { lastUserAt: null, contactId: cidEvil, turnId: null });
@@ -4355,7 +4374,7 @@ try {
       console.log("  · 跳过：这台机器没有可用的局域网地址");
     } else {
       // 用本机网卡地址访问 = 模拟手机（对服务端来说来源不是回环，走的就是手机那条路）。
-      const viaLan = `http://${lanIp}:8799`;
+      const viaLan = `http://${lanIp}:18799`;
       const call = async (base: string, path: string, init?: RequestInit) => {
         const r = await fetch(base + path, init);
         const text = await r.text();
@@ -4414,7 +4433,7 @@ try {
     };
     /** 模拟隧道：连接来自本机，Host 是隧道域名。 */
     const viaTunnel = (path: string, host: string, cookie = "") => new Promise<{ status: number; body: string }>((resolve) => {
-      const req = httpRequest({ host: "127.0.0.1", port: 8799, path, method: "GET", headers: { host, ...(cookie ? { cookie } : {}) } }, (res) => {
+      const req = httpRequest({ host: "127.0.0.1", port: 18799, path, method: "GET", headers: { host, ...(cookie ? { cookie } : {}) } }, (res) => {
         let body = "";
         res.on("data", (c) => { body += c; });
         res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
@@ -4425,15 +4444,15 @@ try {
 
     const before = await stateOf();
     check("端口默认是自动分配（portSetting=0）", before.portSetting === 0, String(before.portSetting));
-    check("smoke 用环境变量给了 PORT，所以 portNext 跟随环境变量", before.portNext === 8799, `${before.portNext}`);
+    check("smoke 用环境变量给了 PORT，所以 portNext 跟随环境变量", before.portNext === 18799, `${before.portNext}`);
 
     const badPort = await call("/api/lan/port", json({ port: 80 }));
     check("1024 以下的端口被拒（要管理员权限）", badPort.status === 400, badPort.body.slice(0, 70));
     const goodPort = await call("/api/lan/port", json({ port: 18787 }));
     check("合法端口被接受", goodPort.status === 200, goodPort.body.slice(0, 70));
     const afterPort = await stateOf();
-    check("端口写进了设置，但环境变量 PORT 优先（portNext 仍是 8799）",
-      afterPort.portSetting === 18787 && afterPort.portNext === 8799,
+    check("端口写进了设置，但环境变量 PORT 优先（portNext 仍是 18799）",
+      afterPort.portSetting === 18787 && afterPort.portNext === 18799,
       `setting=${afterPort.portSetting} next=${afterPort.portNext}`);
 
     const badHost = await call("/api/lan/tunnel", json({ hosts: ["不是域名"] }));
@@ -4989,7 +5008,7 @@ try {
     }
     // 真打一次本机端口：这条门如果只在函数层面成立而没接进抓取路径，这里就会红。
     let intranetCode = "ACCEPTED";
-    try { await fetchRaw("http://127.0.0.1:8799/healthz", 1000); }
+    try { await fetchRaw("http://127.0.0.1:18799/healthz", 1000); }
     catch (error) { intranetCode = (error as { code?: string }).code ?? "?"; }
     check("抓取路径真的拦住内网地址（不是只有工具函数拦）", intranetCode === "blocked_host", intranetCode);
 
@@ -5099,7 +5118,7 @@ try {
       gtLink.title === "1 > 0" && gtLink.description === "a > b",
       `${gtLink.title} / ${gtLink.description}`);
     const emptyPreview = await fetch(`${BASE}/api/link-preview`);
-    const localPreview = await fetch(`${BASE}/api/link-preview?url=${encodeURIComponent("http://127.0.0.1:8799/private")}`);
+    const localPreview = await fetch(`${BASE}/api/link-preview?url=${encodeURIComponent("http://127.0.0.1:18799/private")}`);
     const localPreviewBody = await localPreview.json() as { error?: string };
     check("链接预览路由：空地址 400、内网地址走 SSRF 门被拒",
       emptyPreview.status === 400 && localPreview.status === 502 && String(localPreviewBody.error).includes("内网"),
@@ -5257,7 +5276,7 @@ try {
       const A = { contactId: "assistant", lastUserAt: null };
       // 这里不能拿本机端口当"下载靶子"：SSRF 门拒绝一切回环与私网地址正是被测试的行为本身。
       // 所以真下载归 SMOKE_NET 组，离线组钉的是"坏地址一定进不来"。
-      const intranet = await avatarTool.execute({ contact: target, image_url: "http://127.0.0.1:8799/healthz" }, A) as { ok?: boolean; error?: string };
+      const intranet = await avatarTool.execute({ contact: target, image_url: "http://127.0.0.1:18799/healthz" }, A) as { ok?: boolean; error?: string };
       check("内网图片地址被拒（头像也不能打内网）",
         intranet.ok === false && String(intranet.error).includes("内网"), String(intranet.error).slice(0, 46));
       const fileish = await avatarTool.execute({ contact: target, image_url: "file:///C:/Windows/win.ini" }, A) as { ok?: boolean; error?: string };

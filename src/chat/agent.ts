@@ -1129,13 +1129,27 @@ export function toolSummary(name: string, result: unknown): string {
       return n > 0 ? `挑了 ${n} 张候选，没替你定` : "没找到合适的表情，没发";
     }
     if (r?.via === "native" || r?.via === "media") return "把表情发到 QQ 了";
-    if (r?.via === "app-emoji-fallback") return "用 emoji 回了个表情";
+    // 官方渠道 face/mface 降级成文字/emoji（via=text）与应用端 face 降级（app-emoji-fallback）
+    // 都不是「发了张表情」，别让卡片说成发了。
+    if (r?.via === "app-emoji-fallback" || r?.via === "text") return "用 emoji 回了个表情";
     // 卡片标签本来就写着「发了张表情」，摘要再说一遍就成了「发了张表情 · 发了张表情」。
     // 有名字时把名字摆出来，用户/模型都能记住这轮到底甩了哪张。
     if (typeof r?.label === "string" && r.label.trim() !== "") return `「${r.label.trim().slice(0, 20)}」`;
     return "发了张表情";
   }
   if (name === "app_status") return "读取了应用当前配置状态";
+  if (name === "configure_capability" || name === "set_preference") {
+    const r = (result ?? {}) as {
+      ok?: boolean; error?: string; label?: string; profile?: string;
+      emoteFrequency?: string; toolLoopTurns?: number;
+    };
+    if (r.ok === false) return `没做成：${r.error ?? "原因不明"}`;
+    if (name === "configure_capability") return `配好了「${r.label ?? ""}」的端点档「${r.profile ?? ""}」`;
+    const bits: string[] = [];
+    if (typeof r.emoteFrequency === "string") bits.push(`表情频率 ${r.emoteFrequency}`);
+    if (typeof r.toolLoopTurns === "number") bits.push(`工具轮次 ${r.toolLoopTurns}`);
+    return `改了全局偏好：${bits.join("、")}`;
+  }
   if (name === "configure_model" || name === "activate_model") {
     // configure_model 回 {label, activated:boolean}；activate_model 回 {activated:"档名"}——
     // 两个工具的形状不同，以前按同一套字段读，切模型那张卡会显示「已启用模型「」」。

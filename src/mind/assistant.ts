@@ -6,13 +6,11 @@
 // - 所有写操作走登记白名单工具：只有工具明确返回成功才允许宣称完成；
 // - 目标有歧义（同名联系人/档）时工具返回候选清单，让助手先跟用户确认。
 
-import { activateProfile,
-  capabilitiesStatus,
-  activeProfileId,
-  capabilityReady,
-  listProfiles,
-  modelConfig,
-  saveProfile,
+import {
+  activateProfile, activateCapabilityProfile, activeProfileId, capabilityActiveId, capabilityReady,
+  CAPABILITY_LABELS, CAPABILITY_NAMES, EMOTE_FREQUENCIES, globalEmoteFrequency, globalToolLoopTurns,
+  listProfiles, mainLinked, modelConfig, onboardingDone, saveCapabilityProfile, saveProfile, setGlobalEmoteFrequency,
+  setGlobalToolLoopTurns, settingsSnapshot, TOOL_LOOP_TURN_LIMITS, validateCapabilityProfile,
 } from "../settings/settings.ts";
 import { ASSISTANT_CONTACT_ID, createContact, getContact, listContacts, updateContact, type Contact } from "../chat/contacts.ts";
 import { skillCatalogSection, skillsStatus } from "./skills.ts";
@@ -29,6 +27,8 @@ import {
 import { downloadImageToMedia, describeWebFailure } from "./search.ts";
 import { generateImage } from "../settings/model.ts";
 import { mediaUrlExists, releaseMediaFiles } from "../media/media.ts";
+import { assetStats, listEmotePacks } from "../media/assets.ts";
+import { assistantStatusExtensions } from "../core/assistant-context.ts";
 import { db, kvGet, kvSet, withTx } from "../core/db.ts";
 import { randomUUID } from "node:crypto";
 import type { ToolDef } from "./tools.ts";
@@ -62,8 +62,8 @@ export function setAssistantPermission(value: unknown): AssistantPermission {
 
 /** 写配置的工具名单：readonly 档按它整组摘除。读工具（app_status 等）永远在。 */
 export const ASSISTANT_WRITE_TOOLS: ReadonlySet<string> = new Set([
-  "configure_model", "activate_model", "create_contact", "update_contact",
-  "set_contact_avatar", "bind_contact_model",
+  "configure_model", "configure_capability", "set_preference", "activate_model",
+  "create_contact", "update_contact", "set_contact_avatar", "bind_contact_model",
   "manage_extensions", "import_extension", "edit_extension_tool", "set_script_gate",
 ]);
 
@@ -446,7 +446,28 @@ function clean(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+/**
+ * 给模型的配置快照：以 settingsSnapshot() 为唯一真相源，做**显式白名单投影**。
+ * settingsSnapshot 里 model / profiles / capabilities.*.effective 都带真实密钥，
+ * 绝不能 spread 进提示词；这里只挑能回答配置问题的标量、短数组与计数。
+ * 每轮都会拼进系统提示词，所以不放整份目录，也不放备注正文（只给「填没填」）。
+ */
+function mediaSnapshot(): Record<string, unknown> {
+  try {
+    const stats = assetStats();
+    return {
+      total: stats.total,
+      emotes: stats.emotes,
+      broken: stats.broken,
+      packs: listEmotePacks().map((p) => ({ pack: p.pack, total: p.total, unnamed: p.unnamed })),
+    };
+  } catch (error) {
+    return { error: error instanceof Error ? error.message : String(error) };
+  }
+}
+
 function statusSnapshot(): Record<string, unknown> {
+  const s = settingsSnapshot();
   const model = modelConfig();
   const aid = activeProfileId();
   const contacts = listContacts().filter((c) => c.id !== ASSISTANT_CONTACT_ID);
@@ -460,14 +481,51 @@ function statusSnapshot(): Record<string, unknown> {
       visionDeclared: model.caps.vision,
     },
     activeProfileId: aid,
-    profiles: listProfiles().map((p) => ({
-      id: p.id, label: p.label, name: p.name, baseUrl: p.baseUrl, active: p.id === aid,
+    profiles: s.profiles.map((p) => ({
+      id: p.id, label: p.label, name: p.name, baseUrl: p.baseUrl, active: p.active,
     })),
     contacts: contacts.map((c) => ({
       id: c.id, name: c.name, modelProfile: c.model_profile || "",
       cardFilled: { background: c.card.background !== "", identity: c.card.identity !== "", relationship: c.card.relationship !== "" },
     })),
-    capabilitiesReady: capabilitiesStatus(),
+    /** 六张能力卡的真实生效值（不含密钥）：排查「看图/语音为什么没配上」要靠它。 */
+    capabilities: Object.fromEntries(CAPABILITY_NAMES.map((name) => {
+      const card = s.capabilities[name];
+      return [name, {
+        label: CAPABILITY_LABELS[name],
+        ready: s.capabilitiesReady[name],
+        linkedToMain: card.linkedToMain,
+        explicit: card.activeId !== "",
+        baseUrl: card.effective.baseUrl,
+        model: card.effective.model,
+        voice: card.effective.voice,
+        profileCount: card.profiles.length,
+      }];
+    })),
+    capabilitiesReady: s.capabilitiesReady,
+    /** 全局设置：引导完成度、工具台账、表达倾向、系统与数据。这里是只读投影，写要另走工具。 */
+    settings: {
+      onboardingDone: onboardingDone(),
+      characterName: s.persona.character.name,
+      ownerFilled: {
+        name: s.persona.owner.name !== "",
+        impression: s.persona.owner.impression !== "",
+        notes: s.persona.owner.notes !== "",
+      },
+      recentTurns: s.persona.recentTurns,
+      recentTurnsPct: s.persona.recentTurnsPct,
+      toolLoopTurns: s.toolLoopTurns,
+      toolLoopTurnLimits: s.toolLoopTurnLimits,
+      emoteFrequency: s.emoteFrequency,
+      toolsEnabled: s.toolsEnabled,
+      globalToolPreset: s.globalToolPreset,
+      disabledTools: s.disabledTools,
+      dataDir: s.dataDir,
+      desktop: s.desktop,
+    },
+    media: mediaSnapshot(),
+    /** 渠道连接状态由 server 层注册到 core/assistant-context；未装配时为空对象。 */
+    channels: assistantStatusExtensions(),
     // 技能是磁盘上的外部文件，坏掉的形态五花八门（缺文件、名字不合法、正文超长）。
     // 快照里带上 blocked 的原因，用户问「我那个技能怎么没生效」时联系人能答上来，
     // 而不是只会说"我没看到技能"把人送去重启。
@@ -518,9 +576,88 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
   {
     name: "app_status",
     description:
-      "读取小茉应用当前的真实配置状态：生效模型（不含密钥）、模型档列表、联系人列表与各自的模型绑定、图片/语音能力是否就绪。回答任何与配置相关的问题或动手改配置之前，先调用它拿事实，不要凭记忆猜。",
+      "读取小茉应用当前的真实配置状态（脱敏快照，密钥永不出快照）：生效模型与模型档、联系人、六张能力卡的生效端点、全局工具台账与表达偏好、引导完成度、技能/扩展/媒体库/渠道连接。回答任何与配置相关的问题、或动手改配置之前，先调用它拿事实，不要凭记忆猜。",
     parameters: { type: "object", properties: {}, additionalProperties: false },
     execute: () => statusSnapshot(),
+  },
+  {
+    name: "configure_capability",
+    description:
+      "给「能力模型」的一张卡新增或更新一份端点档（看图、生成图片、语音识别、语音合成、向量等）。capability 必填，label / baseUrl / name 是这份档的显示名、接口地址、模型名；apiKey 只在用户提供时传，不要在回复里复述。默认存下第一份就立即启用（activate:false 只存不启用）。「memoryExtract」这张卡跟随主对话模型、不单独存档，请用 configure_model。",
+    parameters: {
+      type: "object",
+      properties: {
+        capability: { type: "string", enum: [...CAPABILITY_NAMES], description: "能力卡名" },
+        label: { type: "string", description: "档位显示名，如 qwen-vl-plus" },
+        baseUrl: { type: "string", description: "接口地址" },
+        name: { type: "string", description: "模型名" },
+        apiKey: { type: "string", description: "API 密钥；不传则沿用已有档" },
+        voice: { type: "string", description: "TTS 音色名（仅语音合成用）" },
+        activate: { type: "boolean", description: "是否立即启用，缺省 true" },
+      },
+      required: ["capability", "label", "baseUrl", "name"],
+      additionalProperties: false,
+    },
+    execute: (args) => {
+      const cap = clean(args.capability) as (typeof CAPABILITY_NAMES)[number];
+      if (!CAPABILITY_NAMES.includes(cap)) return { ok: false, error: `capability 只能是 ${CAPABILITY_NAMES.join(" / ")}` };
+      const label = CAPABILITY_LABELS[cap];
+      if (mainLinked(cap)) {
+        return { ok: false, error: `「${label}」跟随主对话模型，不单独存端点档；请在「设置 → 模型与能力 → 主对话模型」里配，或让我用 configure_model 加一份模型档。` };
+      }
+      const patch = {
+        label: clean(args.label),
+        baseUrl: clean(args.baseUrl),
+        name: clean(args.name),
+        ...(clean(args.apiKey) !== "" ? { apiKey: clean(args.apiKey) } : {}),
+        ...(clean(args.voice) !== "" ? { voice: clean(args.voice) } : {}),
+      };
+      const check = validateCapabilityProfile(patch);
+      if (!check.ok) return { ok: false, error: `${label}：${check.errors.join("；")}` };
+      try {
+        const saved = saveCapabilityProfile(cap, patch);
+        // 与设置页同口径：这张卡上第一份档存下去就启用，用户的意图是「配好就能用」。
+        if (args.activate !== false && capabilityActiveId(cap) === "") activateCapabilityProfile(cap, saved.id);
+        return {
+          ok: true, capability: cap, label, profile: saved.label,
+          activated: capabilityActiveId(cap) === saved.id, ready: capabilityReady(cap),
+        };
+      } catch (error) {
+        return { ok: false, error: error instanceof Error ? error.message : String(error) };
+      }
+    },
+  },
+  {
+    name: "set_preference",
+    description:
+      "改两项全局偏好：emoteFrequency（off / rare / normal / often，发表情倾向）与 toolLoopTurns（1~16，一轮最多几次工具循环）。只接受这两项；外观、通知、渠道、备份、权限档、工具开关没有写工具，请给用户准确的界面路径。",
+    parameters: {
+      type: "object",
+      properties: {
+        emoteFrequency: { type: "string", enum: [...EMOTE_FREQUENCIES], description: "发表情频率" },
+        toolLoopTurns: {
+          type: "number", minimum: TOOL_LOOP_TURN_LIMITS.min, maximum: TOOL_LOOP_TURN_LIMITS.max,
+          description: "一轮最多几次工具循环",
+        },
+      },
+      additionalProperties: false,
+    },
+    execute: (args) => {
+      const hasFreq = typeof args.emoteFrequency === "string" && args.emoteFrequency !== "";
+      const hasTurns = typeof args.toolLoopTurns === "number";
+      if (!hasFreq && !hasTurns) return { ok: false, error: "至少要给 emoteFrequency 或 toolLoopTurns 中的一项" };
+      if (hasFreq && !(EMOTE_FREQUENCIES as readonly string[]).includes(args.emoteFrequency as string)) {
+        return { ok: false, error: `emoteFrequency 只能是 ${EMOTE_FREQUENCIES.join(" / ")}` };
+      }
+      if (hasTurns && (!Number.isInteger(args.toolLoopTurns)
+        || (args.toolLoopTurns as number) < TOOL_LOOP_TURN_LIMITS.min
+        || (args.toolLoopTurns as number) > TOOL_LOOP_TURN_LIMITS.max)) {
+        return { ok: false, error: `toolLoopTurns 只能是 ${TOOL_LOOP_TURN_LIMITS.min}~${TOOL_LOOP_TURN_LIMITS.max} 的整数` };
+      }
+      if (hasFreq) setGlobalEmoteFrequency(args.emoteFrequency);
+      if (hasTurns) setGlobalToolLoopTurns(args.toolLoopTurns);
+      return { ok: true, emoteFrequency: globalEmoteFrequency(), toolLoopTurns: globalToolLoopTurns() };
+    },
   },
   {
     name: "configure_model",
@@ -900,6 +1037,13 @@ function summarizeWrite(tool: string, args: Record<string, unknown>, result: unk
   const id = clean(args.id);
   switch (tool) {
     case "configure_model": return `保存模型档「${r.label ?? clean(args.label)}」`;
+    case "configure_capability": return `配置能力模型「${clean(args.capability)}」的端点档「${clean(args.label)}」`;
+    case "set_preference": {
+      const bits: string[] = [];
+      if (typeof args.emoteFrequency === "string") bits.push(`表情频率=${args.emoteFrequency}`);
+      if (typeof args.toolLoopTurns === "number") bits.push(`工具轮次=${args.toolLoopTurns}`);
+      return `调整全局偏好：${bits.join("、")}`;
+    }
     case "activate_model": return `启用模型档「${r.activated ?? clean(args.model)}」`;
     case "create_contact": return `创建联系人「${r.name ?? clean(args.name)}」`;
     case "update_contact": return `修改联系人「${r.name ?? clean(args.contact)}」的设定`;
@@ -986,10 +1130,17 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
   const skills = skillCatalogSection();
   return [
     "你是「小茉」应用内置的设置助手，不是陪伴角色。说话简洁、专业、友好，用中文。",
-    "你能做的事：接入/切换模型、创建与配置联系人、给联系人绑定模型与头像、排查图片/语音能力的配置问题、排查技能目录、" +
-    "替用户编写与管理扩展（接入 MCP 服务、写 webhook/JS 自定义工具、插拔开关）。",
+    "你能做的事：接入/切换模型、配置能力模型（看图/语音/出图等专项端点）、创建与配置联系人、给联系人绑定模型与头像、" +
+    "调整全局发表情频率与工具循环轮次、排查配置问题、替用户编写与管理扩展（接入 MCP 服务、写 webhook/JS 自定义工具、插拔开关）。",
+    "app_status 是脱敏的全量配置快照：模型档、六张能力卡的生效端点、工具台账、引导完成度、技能/扩展、媒体库与渠道连接；密钥永远不在里面。",
     "纪律：",
     "- 动手改配置前先调 app_status 拿真实状态；改完后如果合适再拿一次确认结果。",
+    "- 用户问「我还需要设置什么？」时按快照逐项看：settings.onboardingDone、model.ready、capabilities 里 ready=false 的卡、" +
+      "channels 里没连上的渠道、media.emotes 是否为 0、settings.ownerFilled 的缺项、skills/extensions 的 blocked；" +
+      "按「先影响能不能用、再影响好不好用」排 2~4 条说清楚，别只回「配个模型」。",
+    "- 排查看图/语音/出图能力时看 capabilities 的 baseUrl / model / explicit / linkedToMain：" +
+      "说清缺的是端点档、模型名还是密钥，别只说「没配好」；linkedToMain 的能力要在主对话模型里配。",
+    "- 只有登记的写工具能代改；外观、通知、渠道凭据、备份恢复、权限档、工具逐项开关没有写工具，别承诺替用户改，直接给准确路径。",
     "- 只有工具返回 ok:true 才能说操作成功；失败就原样说明原因和下一步建议。",
     // 一句话建好一个带头像的角色是**多步流水**：这类活最容易在中间某步失败后仍然往下说，
     // 所以把顺序与"每步看回执"写死在这里，而不是指望模型自己安排。
@@ -1005,7 +1156,10 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
       "你按序号说清这批图都是什么、请用户挑即可。**不要**说「我没法把图片渲染在这里」，也不要贴一串网址。",
     "- 用户贴出 API 密钥时直接用于 configure_model，不要在回复里复述密钥（最多提前 6 个字符）。",
     "- 目标有歧义（同名、找不到）时，把工具给的候选列出来请用户确认，不要乱选。",
-    "- 建议用户去界面操作时给出准确路径：设置 → 模型与能力 → 主对话模型 / 能力模型 / 技能与工具；侧栏联系人 → 编辑资料。",
+    "- 建议用户去界面操作时给出准确路径（设置页现在分七组）：" +
+      "设置 → 我的资料；设置 → 模型与能力 → 主对话模型 / 能力模型；设置 → 工具与扩展 → 总览 / 技能 / 扩展；" +
+      "设置 → 媒体与表情；设置 → 体验与提醒；设置 → 系统与数据（数据存储 / 备份与恢复 / 手机与远程访问 / 启动与关窗）；" +
+      "设置 → 关于；侧栏联系人 → 编辑资料；QQ / 微信连接看「状态 → 概览 → 消息通道」，具体凭据在联系人资料页。",
     "- 技能放在应用数据目录的 skills/ 里，一个目录一份 SKILL.md。用户问「我那个技能怎么没生效」时，" +
       "看 app_status 返回的 skills：blocked 里带了不合规的原因，照着说明白要改哪一项；" +
       "目录路径也在 skills.dir 里，直接报给用户。技能改了不用重启，重新扫描即生效。",

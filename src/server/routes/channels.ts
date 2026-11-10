@@ -11,8 +11,36 @@ import { napcatStatus, installNapcat, startNapcat, reloginNapcat } from "../../c
 import { config } from "../../core/config.ts";
 import { wechat } from "../../channels/wechat.ts";
 import { getContact } from "../../chat/contacts.ts";
+import { registerAssistantStatusProvider } from "../../core/assistant-context.ts";
 import { readJson, sendJson } from "../http.ts";
 import type { Route } from "../types.ts";
+
+/**
+ * 助手 app_status 的渠道摘要。只给能回答「连没连上 / 还差什么」的字段：
+ * 不带凭据、不带错误全文（那条可能很长，且状态页有自己的展示与清除入口）。
+ * 注册在路由装配阶段，mind 层通过 core 的注册表读，不反向依赖 channels。
+ */
+registerAssistantStatusProvider("qq", () => {
+  const s = qq.summary();
+  return {
+    configured: s.configured,
+    status: s.status,
+    bindings: s.bindings,
+    active: s.active,
+    hasError: s.lastError !== "",
+    troubleCount: s.trouble.length,
+  };
+});
+registerAssistantStatusProvider("wechat", () => {
+  const s = wechat.summary();
+  return {
+    links: s.links,
+    connected: s.connected,
+    attention: s.attention,
+    paused: s.paused,
+    troubleCount: s.trouble.length,
+  };
+});
 
 /** GET/POST /api/qq/backend：QQ 后端选型（official/onebot）。
  *  带 contactId 时只修改/读取这位联系人的活动渠道；不带时修改全局默认值。

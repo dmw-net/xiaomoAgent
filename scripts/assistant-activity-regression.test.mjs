@@ -75,6 +75,12 @@ try {
   const ctx = { lastUserAt: null, contactId: "assistant", turnId: null, assistantPermission: "confirm" };
   const status = await ASSISTANT_TOOLS.find((t) => t.name === "app_status").execute({}, ctx);
   assert.equal(status.ok, true);
+  // 补齐后的快照：全量字段要在，密钥一律不能出现。
+  assert.ok(status.capabilities && typeof status.capabilities.imageVision === "object", "快照要带六张能力卡的生效值");
+  assert.ok(status.settings && typeof status.settings.onboardingDone === "boolean", "快照要带引导完成度与全局设置");
+  assert.ok(status.media && typeof status.media.emotes === "number", "快照要带媒体库计数");
+  assert.ok(status.channels && typeof status.channels === "object", "快照要带渠道状态（未装配时为空对象）");
+  assert.ok(!/"apiKey"/.test(JSON.stringify(status)), "app_status 快照不得出现 apiKey 字段");
   await ASSISTANT_TOOLS.find((t) => t.name === "manage_extensions").execute({ action: "list" }, ctx);
   assert.equal((await readActivity()).length, before, "读状态/列扩展不构成变更，不应入账");
 
@@ -136,6 +142,25 @@ try {
   // 最新的一条是刚才经确认卡放行的导入；权限切换在它之前。
   assert.equal(items[0].tool, "import_extension");
   assert.equal(items[0].confirmed, true);
+
+  // ── 能力补齐：新写工具自动入账，且保存过密钥后快照仍然脱敏 ──
+  const afterSave = await ASSISTANT_TOOLS.find((t) => t.name === "app_status").execute({}, ctx);
+  const afterText = JSON.stringify(afterSave);
+  assert.ok(!afterText.includes("sk-test") && !/"apiKey"/.test(afterText), "保存过模型密钥后 app_status 仍必须脱敏");
+
+  const pref = await ASSISTANT_TOOLS.find((t) => t.name === "set_preference")
+    .execute({ emoteFrequency: "rare", toolLoopTurns: 6 }, ctx);
+  assert.equal(pref.ok, true);
+  assert.equal(pref.emoteFrequency, "rare");
+  assert.equal(pref.toolLoopTurns, 6);
+  assert.ok(findEntry(await readActivity(), /调整全局偏好/), "新写工具必须自动入账（白名单包装器）");
+
+  const cap = await ASSISTANT_TOOLS.find((t) => t.name === "configure_capability")
+    .execute({ capability: "imageVision", label: "测试视觉档", baseUrl: "https://api.example.com/v1", name: "test-vl", apiKey: "sk-cap-test" }, ctx);
+  assert.equal(cap.ok, true, `配置能力端点失败：${cap.error ?? ""}`);
+  assert.ok(findEntry(await readActivity(), /配置能力模型/), "能力端点写入必须自动入账");
+  const capStatus = JSON.stringify(await ASSISTANT_TOOLS.find((t) => t.name === "app_status").execute({}, ctx));
+  assert.ok(!capStatus.includes("sk-cap-test") && !/"apiKey"/.test(capStatus), "能力端点密钥同样不得出现在快照里");
 
   console.log("✅ assistant-activity 回归通过");
 } finally {

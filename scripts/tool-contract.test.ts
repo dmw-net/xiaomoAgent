@@ -208,11 +208,11 @@ console.log("\n[8] 工具档位与台账目录");
   check("三档都放行扩展（全关由总闸负责）", PRESET_BLOCKS_EXTENSIONS.quiet === false
     && PRESET_BLOCKS_EXTENSIONS.balanced === false && PRESET_BLOCKS_EXTENSIONS.full === false);
   check("全局默认档是安静（不翻转默认）", GLOBAL_TOOL_PRESET_DEFAULT === "quiet");
-  check("目录覆盖 21 个静态工具", KNOWN_TOOL_NAMES.size === 21 && toolCatalog().length === 21);
+  check("目录覆盖 23 个静态工具", KNOWN_TOOL_NAMES.size === 23 && toolCatalog().length === 23);
   check("动态扩展能进目录且标为 external",
     toolCatalog([{ name: "mcp__demo__search", description: "搜一下" }]).some((t) => t.dynamic === true && t.group === "external"));
   const assistant = Object.entries(TOOL_META).filter(([, m]) => m.scope === "assistant");
-  check("助手 11 项里只有 app_status 常开", assistant.length === 11
+  check("助手 13 项里只有 app_status 常开", assistant.length === 13
     && assistant.filter(([, m]) => m.alwaysOn === true).map(([n]) => n).join(",") === "app_status");
 }
 

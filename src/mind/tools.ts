@@ -472,6 +472,11 @@ const TOOLS: ToolDef[] = [
           if (!intent.url.startsWith("/media/")) {
             return { ok: false, error: `应用端发不了外链表情「${intent.url}」，换成表情包素材里的 /media 图片（用 emote_search 查）` };
           }
+          // 文件不在盘上：挂成气泡也渲染不出来，如实报失败（emote_id 分支早就有 asset.missing 检查）。
+          const { mediaUrlExists } = await import("../media/media.ts");
+          if (!mediaUrlExists(intent.url)) {
+            return { ok: false, error: `应用端发不了表情「${intent.url}」：本地媒体文件读不到（可能已被清理）` };
+          }
           if (emoteAssetId !== "") bumpEmoteUse(emoteAssetId);
           // 带上名字：工具卡摘要才不会和标签一起念成「发了张表情 · 发了张表情」，
           // 历史标记也靠 meta.label 让联系人记得这轮甩的是哪张（QQ 原生分支早就有）。

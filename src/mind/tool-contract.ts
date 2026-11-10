@@ -168,7 +168,8 @@ export function validateAndCoerceArgs(
 /** chat/agent.ts 的 toolSummary 里显式登记过摘要的工具。 */
 export const CARD_SUMMARY_TOOLS: ReadonlySet<string> = new Set([
   "get_current_time", "search_memory", "schedule_reminder", "generate_image", "send_voice",
-  "emote_search", "send_emote", "app_status", "configure_model", "activate_model",
+  "emote_search", "send_emote", "app_status", "configure_model", "configure_capability",
+  "set_preference", "activate_model",
   "create_contact", "update_contact", "bind_contact_model", "set_contact_avatar",
   "web_search", "web_fetch", "load_skill",
   "manage_extensions", "import_extension", "edit_extension_tool", "set_script_gate",

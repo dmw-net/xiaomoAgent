@@ -39,8 +39,8 @@ export const TOOL_GROUPS: Array<{ key: ToolGroup; label: string }> = [
 
 type Meta = Omit<ToolCatalogEntry, "name">;
 
-/** 21 个静态工具的展示元数据。与 staticToolPool() 的名字集合由 toolPoolDiagnostics 校验一致。
- *  chat 缺省时聊天卡兜「做了点事」；这里给全 21 个，扩展工具除外（动态的没有自然短语）。 */
+/** 23 个静态工具的展示元数据。与 staticToolPool() 的名字集合由 toolPoolDiagnostics 校验一致。
+ *  chat 缺省时聊天卡兜「做了点事」；这里给全 23 个，扩展工具除外（动态的没有自然短语）。 */
 export const TOOL_META: Record<string, Meta> = {
   get_current_time: { label: "看时间", chat: "看了下时间", summary: "现在几点、是不是深夜", group: "sense", scope: "companion" },
   search_memory: { label: "翻记忆", chat: "翻了翻记忆", summary: "检索你们之间记过的事", group: "sense", scope: "companion" },
@@ -54,6 +54,8 @@ export const TOOL_META: Record<string, Meta> = {
   load_skill: { label: "加载技能", chat: "翻出技能做法", summary: "读取一份自定义做法说明", group: "act", scope: "companion" },
   app_status: { label: "读应用状态", chat: "读了当前配置", summary: "读真实配置状态，助手回答的前提", group: "admin", scope: "assistant", alwaysOn: true },
   configure_model: { label: "配置模型档", chat: "配了模型", summary: "新增 / 修改模型档与密钥", group: "admin", scope: "assistant", risk: "high" },
+  configure_capability: { label: "配置能力模型", chat: "配了能力端点", summary: "新增 / 启用看图、语音、出图等专项端点", group: "admin", scope: "assistant", risk: "high" },
+  set_preference: { label: "改全局偏好", chat: "改了全局偏好", summary: "发表情频率与工具循环轮次两项", group: "admin", scope: "assistant" },
   activate_model: { label: "切换模型档", chat: "切了模型", summary: "把某个档设为全局默认", group: "admin", scope: "assistant" },
   bind_contact_model: { label: "绑定联系人模型", chat: "绑了模型", summary: "给某位联系人单独绑档", group: "admin", scope: "assistant" },
   create_contact: { label: "新建联系人", chat: "建了联系人", summary: "创建一位新的联系人", group: "admin", scope: "assistant" },

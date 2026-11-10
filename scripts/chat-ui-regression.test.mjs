@@ -1,9 +1,14 @@
 /**
- * 聊天消息撤回的 UI 回归测试。
+ * 聊天与助手权限的 UI 结构契约测试。
  *
  * 运行：node scripts/chat-ui-regression.test.mjs
  *
- * 覆盖两个曾经真实出现的问题：
+ * 范围说明：本文件守的是**前端结构与无障碍契约**（源码级断言）——在没有 DOM 测试环境时，
+ * 这是唯一能钉住「Hook 顺序」「z-index 档位」「浮层 placement」这类结构问题的地方。
+ * 后端逻辑（工具契约、表情语义、资产行为等）请写到对应的行为回归里，真库/真接口驱动，
+ * 不要在这里再复刻一份：源码断言会随合理重构失效，是之前最大的维护负担。
+ *
+ * 覆盖曾经真实出现的问题：
  * 1. MessageRow 在“普通消息 → 已撤回”时提前 return，跳过后面的 useMemo，
  *    React 报 error #300（Rendered fewer hooks than expected），整页白屏。
  * 2. 移动端通用 Modal 一律贴底，聊天确认框也变成底部面板；聊天里需要的是
@@ -12,6 +17,9 @@
  *    助手设置屏都复用它；高风险二次确认、常显红态与本轮权限快照都不能被子系统改动悄悄绕过。
  * 4. 报错 toast 不能永久挂在屏幕上，但也要给足阅读和点重试的时间。
  * 5. 设置助手里的上下文浮层必须压在弹窗之上，否则点击后看似没有反应。
+ * 6. ChatView 里 portal 到 body 的浮层（模型/表情/会话切换）统一用 --z-chat-pop：
+ *    从设置助手弹窗里点开时，--z-subpop(65) 会被弹窗(--z-dialog 79)压住，
+ *    表现是弹层只在弹窗边缘露一截（2026-11-09 新加的表情面板再次复现）。
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -128,6 +136,16 @@ assert(/title="媒体"/.test(profileViewSource), "联系人页那个视角的标
 assert(!/她的东西|内容库/.test(mediaSectionSource + (settingsViewSource.match(/const GROUPS[^;]+;/)?.[0] ?? "")), "旧的临时命名不该还留在界面上");
 assert(/markEmote/.test(mediaLibrarySource), "媒体库里要能直接把一张图设为表情包素材");
 
+// 媒体页曾经单独用 `244px minmax(0,1fr)` 撑宽内容区。设置容器在宽屏（≥1240px）会顶到
+// 1160px 上限，此时基础网格是 `244px 760px` 居中、媒体网格是拉伸——导航列左移 30px、
+// 内容区左移 30px 且变宽 60px，切过去就是用户报的「全屏切换到媒体表情页闪一下」。
+// 1180px 默认窗口下两者恰好同宽，所以只在全屏/最大化时出现。媒体网格
+// minmax(150px,1fr) 在 760px 与 820px 下都是 4 列，收回到统一档不损失列数。
+assert(
+  !/settings-layout-media/.test(experienceCss) && !/settings-layout-media/.test(settingsViewSource),
+  "媒体页不得单独撑宽设置网格：切分组时导航列/内容区必须保持同一位置，否则宽屏下会跳变",
+);
+
 assert(
   /<Modal\s+label="操作确认"[\s\S]*?placement="center"/.test(chatSource),
   "消息操作确认框应显式使用居中 placement",
@@ -147,6 +165,22 @@ assert(
 );
 const cssZ = (name) => Number(themeCss.match(new RegExp("--" + name + ":\\s*(\\d+)"))?.[1]);
 assert(cssZ("z-chat-pop") > cssZ("z-dialog"), "上下文浮层层级必须高于设置助手弹窗");
+// ChatView 里 portal 到 body 的浮层：宿主可能是设置助手弹窗，档位必须按弹窗取值。
+// 这张清单是防复发闸门——上下文浮层、权限 chip 各修过一次，新加的表情面板又踩了同一个坑，
+// 所以不再逐个打补丁：composer 一族统一登记，新增同类浮层必须一起登记并走 --z-chat-pop。
+const assistantHostedPops = [
+  [componentsCss, ".model-pop"],
+  [componentsCss, ".emote-pop"],
+  [experienceCss, ".conv-switch-pop"],
+];
+for (const [css, sel] of assistantHostedPops) {
+  const block = new RegExp(sel.replace(".", "\\.") + "\\s*\\{[^}]*?z-index:\\s*var\\(--z-chat-pop\\)");
+  assert(block.test(css), `${sel} 必须用 --z-chat-pop 档，才能压在设置助手弹窗之上`);
+}
+assert(cssZ("z-subpop") < cssZ("z-dialog") && cssZ("z-chat-pop") > cssZ("z-dialog"),
+  "composer 浮层不能用 --z-subpop：设置助手弹窗比它高，必须用 --z-chat-pop 档");
+assert(/createPortal\([\s\S]*document\.body/.test(readFileSync("frontend/src/components/EmotePicker.tsx", "utf8")),
+  "表情弹层必须 portal 到 body（助手弹窗带 transform，留在原地会被它裁切）");
 assert(
   /\.ctx-backdrop\s*\{[\s\S]*?z-index:\s*calc\(var\(--z-chat-pop\) - 1\)/.test(componentsCss),
   "上下文浮层遮罩应盖住设置助手并紧贴浮层下方",
@@ -435,29 +469,53 @@ assert(/e\.dir === EMOTE_ROOT/.test(readFileSync("src/media/media.ts", "utf8")),
   "散放在 表情包/ 根下的图自动挪进 默认 文件夹并认领");
 
 // 10) 文件夹层：单一归属是写出来的不变量，不是界面上的约定。
-assert(/DEFAULT_EMOTE_FOLDER/.test(assetsTableSource) && /export function oneFolder/.test(assetsTableSource),
-  "默认文件夹与归一函数只在 assets.ts 定义一次");
-assert(/backfillEmoteFolder\(\);/.test(assetsTableSource), "启动时收敛存量的空归属/多归属");
+// 行为部分（默认文件夹名、oneFolder 归一、backfillEmoteFolder、setEmoteMark）由
+// scripts/emote-regression.test.mjs 真库驱动覆盖；这里只守「结构契约」，避免重复维护。
 assert(!/share\.get\(tag\)/.test(assetsTableSource),
   "词频猜文件夹的规则必须退役——真库上它把 47 个语义词啃进了不参与检索的 pack");
 assert(/esem-folder-select/.test(emoteModalSource) && /pack: \[folder\]/.test(emoteModalSource),
   "弹窗里文件夹是下拉单选，保存时恒为单元素");
 assert(/folders=\{packs\.map/.test(mediaLibrarySource), "弹窗的文件夹选项来自全库清单");
 assert(/\.esem-folder/.test(experienceCss), "文件夹单选 chip 要有选中态样式");
-assert(/export function setEmoteMark[\s\S]{0,700}?DEFAULT_EMOTE_FOLDER/.test(assetsTableSource),
-  "聊天里随手标的图要有默认归属，不能散在「全部」里");
 
 // 11) 文件管理器入口：单张表情定位原图、文件夹下拉打开媒体目录——只在桌面端出现。
+// dropMissingAsset / markMissingIfGone 的行为由 emote-regression 覆盖，这里只守前端入口。
 assert(/mediaDir: mediaDir\(\)/.test(readFileSync("src/server/routes/assets.ts", "utf8")),
   "列表接口要带媒体目录绝对路径，桌面端才拼得出原图位置");
 assert(/const DESKTOP = "__TAURI_INTERNALS__" in window/.test(mediaLibrarySource)
   && /revealInFolder/.test(mediaLibrarySource)
   && /DESKTOP && !a\.missing/.test(mediaLibrarySource),
   "「在文件管理器中显示」对所有类型的媒体卡片开放（失效行除外），浏览器端整条入口不出现");
-assert(/清理此项/.test(mediaLibrarySource) && /"dropMissing"/.test(mediaLibrarySource)
-  && /dropMissingAsset/.test(assetsTableSource),
-  "失效行给「清理此项」：删死账的口子只对 missing=1 开，文件还在的删不动");
-assert(/"probeMissing"/.test(mediaLibrarySource) && /markMissingIfGone/.test(assetsTableSource),
+assert(/清理此项/.test(mediaLibrarySource) && /"dropMissing"/.test(mediaLibrarySource),
+  "失效行给「清理此项」入口");
+assert(/"probeMissing"/.test(mediaLibrarySource),
   "打开文件夹失败就地验真标失效——会话中删的文件不用等下一轮对账，清理按钮当场出现");
+
+// ── 设置助手能力补齐（2026-11-09）────────────────────────────────
+// ① 控制台「允许的操作」不能低报助手实际可用的工具：visibleTools 的助手分支还借了
+//    WEB_TOOLS 与 load_skill，它们 scope=companion，不进助手清单，但确实可用。
+// assistantConsoleSource 已在文件头部读过（助手设置屏那组断言），这里直接复用。
+const assistantBackendSource = readFileSync("src/mind/assistant.ts", "utf8");
+const toolsBackendSource = readFileSync("src/mind/tools.ts", "utf8");
+assert(assistantConsoleSource.includes("助手也能用的只读工具"), "助手控制台要单列一组只读工具");
+for (const name of ["web_search", "web_fetch", "load_skill"]) {
+  assert(assistantConsoleSource.includes(`"${name}"`), `助手控制台要列出只读工具 ${name}`);
+}
+assert(/return \[\.\.\.base\.filter\(keep\), \.\.\.WEB_TOOLS\.filter\(keep\), \.\.\.skillTools\.filter\(keep\)\]/.test(toolsBackendSource),
+  "visibleTools 的助手分支必须继续注入 WEB_TOOLS 与 skillTools（控制台清单据此对齐）");
+// ② 提示词的界面路径要跟当前七个分组一致，不许再出现已下线的「技能与工具」。
+assert(!assistantBackendSource.includes("技能与工具"), "提示词里过时的「技能与工具」路径要改掉");
+for (const group of ["我的资料", "模型与能力", "工具与扩展", "媒体与表情", "体验与提醒", "系统与数据", "关于"]) {
+  assert(assistantBackendSource.includes(group), `提示词要给出「${group}」的准确路径`);
+}
+// ③ 新写工具进白名单与目录的覆盖已拆到行为回归：
+//    scripts/assistant-activity-regression.test.mjs（真导入 ASSISTANT_TOOLS）与
+//    scripts/tool-contract.test.ts（toolCatalog 目录 + KNOWN_TOOL_NAMES）。这里不再重复。
+// ④ app_status 以 settingsSnapshot 为真相源，但只能显式白名单投影：
+//    model / profiles / capabilities / persona 里带真实密钥，spread 进提示词就是泄漏。
+assert(/function statusSnapshot\(\)[\s\S]*?const s = settingsSnapshot\(\)/.test(assistantBackendSource),
+  "app_status 要以 settingsSnapshot 为真相源");
+assert(!/\.\.\.s\.(model|profiles|capabilities|persona)\b/.test(assistantBackendSource),
+  "快照禁止 spread 含 apiKey 的配置对象");
 
 console.log("聊天与助手权限 UI 回归测试：全部通过");

@@ -801,9 +801,15 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
     if (render.segments.length === 0) {
       // 只有降级文字（理论上 OneBot 不会走到这，但留个兜底）。
       if (render.fallbackText !== "") {
-        if (conv.kind === "group") await deliverToConversation(conversationId, render.fallbackText);
-        else await deliverToContact(conv.contact_id, render.fallbackText);
-        return { ok: true, native: render.native, via: "text", detail: render.fallbackText };
+        const textOutcome = conv.kind === "group"
+          ? await deliverToConversation(conversationId, render.fallbackText)
+          : await deliverToContact(conv.contact_id, render.fallbackText);
+        return {
+          ok: textOutcome.ok,
+          native: false,
+          via: "text",
+          detail: textOutcome.ok ? render.fallbackText : `降级文字没发出去：${textOutcome.error}`,
+        };
       }
       return { ok: false, native: false, via: "skipped", detail: "没有可发的表情内容" };
     }

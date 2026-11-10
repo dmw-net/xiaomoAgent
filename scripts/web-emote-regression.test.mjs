@@ -25,15 +25,25 @@ if (PHASE === "1") {
     const conv = ensureLocalConversation("web-emote-test");
     assert.strictEqual(getConversation(conv.id)?.channel, "web", "测试会话是 web 频道");
 
-    // ① image + /media → 挂附件。
+    // ① image + /media → 挂附件。文件得真的在盘上：挂一张读不到的图，气泡只会渲染成碎图，
+    //    工具却报成功（「发了张表情」）——那正是要防的。
+    const { saveImage } = await import("../src/media/media.ts");
+    const realImage = saveImage(
+      Buffer.from(
+        "89504E470D0A1A0A0000000D49484452000000010000000108060000001F15C489" +
+        "0000000D49444154789C63000100000500010D0A2DB40000000049454E44AE426082",
+        "hex",
+      ),
+      "image/png",
+    ).url;
     const r1 = await executeTool(
       "send_emote",
-      JSON.stringify({ url: "/media/abc123.gif", label: "摸鱼" }),
+      JSON.stringify({ url: realImage, label: "摸鱼" }),
       { contactId: "web-emote-test", conversationId: conv.id, turnId: null },
     );
     assert.strictEqual(r1.ok, true, "image 意图不拒");
     assert.ok(
-      Array.isArray(r1.attachments) && r1.attachments.includes("/media/abc123.gif"),
+      Array.isArray(r1.attachments) && r1.attachments.includes(realImage),
       "应用端 image 挂成气泡附件：" + JSON.stringify(r1),
     );
     // 应用端表情也要带 label：工具卡摘要据此显示名字（不再和标签重复成两遍「发了张表情」），
@@ -65,6 +75,15 @@ if (PHASE === "1") {
     assert.match(String(r3.result.error), /(应用端|\/media)/, "拒因点明换成 /media");
     assert.match(String(r3.error), /(应用端|\/media)/, "卡片拿到同一句人话错误");
 
+    // ④ image + /media 但文件不在盘上 → 拒掉（挂上去也渲染不出来）。
+    const r4 = await executeTool(
+      "send_emote",
+      JSON.stringify({ url: "/media/abc123.gif", label: "空气" }),
+      { contactId: "web-emote-test", conversationId: conv.id, turnId: null },
+    );
+    assert.strictEqual(r4.ok, false, "文件不在盘上应判失败：" + JSON.stringify(r4));
+    assert.match(String(r4.error), /(读不到|已被清理)/, "拒因点明文件读不到");
+
     console.log("表情渠道分流（应用端 web）：全部通过");
   };
   run().catch((error) => {
@@ -76,7 +95,8 @@ if (PHASE === "1") {
   const child = spawn(process.execPath, ["--experimental-sqlite", "scripts/web-emote-regression.test.mjs"], { env: base, stdio: "inherit" });
   child.on("close", async (code) => {
     for (const f of ["web-emote-regression.db", "web-emote-media"]) {
-      for (const s of ["", "-wal", "-shm"]) if (existsSync(`./data/${f}${s}`)) rmSync(`./data/${f}${s}`, { force: true });
+      // 媒体目录是目录，得递归删（saveImage 会真的落文件进去，只 force 不 recursive 会吃 EISDIR）。
+      for (const s of ["", "-wal", "-shm"]) if (existsSync(`./data/${f}${s}`)) rmSync(`./data/${f}${s}`, { recursive: true, force: true });
     }
     if (code === 0) console.log("表情渠道分流回归（official + onebot 各跑一遍）：全部通过");
     else { console.error(`表情渠道分流回归：子进程退出码 ${code}`); process.exit(1); }

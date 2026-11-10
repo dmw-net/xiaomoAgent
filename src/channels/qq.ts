@@ -837,21 +837,35 @@ export function createQQService(deps: {
         ? await deliverMediaToGroup(conv.contact_id, conversationId, "", render.mediaRefs)
         : await deliverMediaToContact(conv.contact_id, "", render.mediaRefs);
       if (outcome.sent > 0) return { ok: true, native: render.native, via: "media", detail: render.mediaRefs[0]?.url };
-      // 富媒体一条没发出去：有降级文案就降级成文字发出去，回执里带上失败原因——
-      // 之前这里无条件报 ok，模型被"发出去了"的回执骗着在 QQ 里说"喏，发了"，图其实没到。
+      // 富媒体一条没发出去：有降级文案就补发文字，但**不能报成功**——图片才是表情本体，
+      // 文字只是补救（与 send_voice 的 MediaOutcome 同口径：sent=0 就是失败）。
+      // 降级文字本身也要看回执：文字也没发出去时，收不到任何东西就是彻底的失败。
       const fallback = render.fallbackText;
       if (fallback !== "") {
-        if (conv.kind === "group") await deliverToConversation(conversationId, fallback);
-        else await deliverToContact(conv.contact_id, fallback);
-        return { ok: true, native: false, via: "text", detail: `图片没发出去（${outcome.lastError || "原因不明"}），已改发文字「${fallback}」` };
+        const textOutcome = conv.kind === "group"
+          ? await deliverToConversation(conversationId, fallback)
+          : await deliverToContact(conv.contact_id, fallback);
+        return {
+          ok: false,
+          native: false,
+          via: "text",
+          detail: `图片没发出去（${outcome.lastError || "原因不明"}）` + (textOutcome.ok ? `，已改发文字「${fallback}」` : "，降级文字也没发出去"),
+        };
       }
       return { ok: false, native: false, via: "skipped", detail: outcome.lastError || "图片表情投递失败" };
     }
     // face/mface 官方渠道降级：能降级成文字就发文字，纯原生表情（无降级文案）则跳过。
+    // 这是官方渠道的正常能力（没有原生表情概念），不算失败；但文字没发出去要如实报。
     if (render.fallbackText !== "") {
-      if (conv.kind === "group") await deliverToConversation(conversationId, render.fallbackText);
-      else await deliverToContact(conv.contact_id, render.fallbackText);
-      return { ok: true, native: render.native, via: "text", detail: render.fallbackText };
+      const textOutcome = conv.kind === "group"
+        ? await deliverToConversation(conversationId, render.fallbackText)
+        : await deliverToContact(conv.contact_id, render.fallbackText);
+      return {
+        ok: textOutcome.ok,
+        native: render.native,
+        via: "text",
+        detail: textOutcome.ok ? render.fallbackText : `降级文字没发出去：${textOutcome.error}`,
+      };
     }
     return { ok: false, native: false, via: "skipped", detail: "官方渠道发不了这种表情，已跳过" };
   };

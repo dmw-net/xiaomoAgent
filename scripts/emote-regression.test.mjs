@@ -200,6 +200,65 @@ if (PHASE === "1") {
       assert.ok(preparedNames.at(-1).endsWith(".png"), "这一次上传的是派生静帧：" + preparedNames.at(-1));
       assert.ok(!preparedNames.some((n) => n.endsWith(".gif")), "整场测试里动图本体从没被直接上传给官方富媒体");
       svc.dispose();
+
+      // 5d) 图片表情富媒体投递失败：不能报成功。图片才是表情本体，降级文字只是补救
+      //     （与 send_voice 的 MediaOutcome 同口径：sent=0 就是失败）；降级文字本身
+      //     也要看回执——文字也没发出去时，收不到任何东西就是彻底的失败。
+      const { kvSet } = await import("../src/core/db.ts");
+      const { ensureConversation } = await import("../src/chat/conversations.ts");
+      let failUpload = false;
+      let failText = false;
+      const fakeFetchFail = async (rawUrl, init = {}) => {
+        const path = String(rawUrl).replace(/^https?:\/\/[^/]+/, "").split("?")[0];
+        const json = (o) => ({ ok: true, status: 200, text: async () => JSON.stringify(o), json: async () => o });
+        if (path.endsWith("/getAppAccessToken")) return json({ access_token: "tk", expires_in: 7200 });
+        if (path.endsWith("/upload_prepare")) {
+          if (failUpload) return json({ code: 40093002, message: "mock upload rejected" });
+          return json({ upload_id: "up1", block_size: 5_242_880, parts: [{ index: 0, block_size: TINY_PNG.length, presigned_url: "http://127.0.0.1:1/put" }] });
+        }
+        if (path.endsWith("/files")) return json({ file_name: "f.png", file_info: "fi-fail", ttl: 3600 });
+        if (path.endsWith("/messages")) {
+          if (failText) return json({ code: 50, message: "mock text rejected" });
+          return json({ id: "m" });
+        }
+        return json({});
+      };
+      const failContact = createContact({ name: "表情失败回归" });
+      const failConv = ensureConversation({
+        contactId: failContact.id, channel: "qq", kind: "private", externalId: "openid-fail",
+      });
+      // 先撒好带 openid 的账号，文字降级才走得到消息端点（sendPrivate 没有 openid 会直接抛）。
+      kvSet("qq.accounts.v2", JSON.stringify({
+        version: 2,
+        accounts: [{
+          id: "acc-emote-fail", contactId: failContact.id, appId: "10001", clientSecret: "sekret",
+          enabled: true, userOpenId: "openid-fail", recentMessageIds: [], replyMessageId: "",
+          replyMessageAt: 0, lastError: "", lastErrorAt: 0, lastReceivedAt: "", lastSentAt: "",
+          createdAt: new Date().toISOString(),
+        }],
+      }));
+      const failSvc = createQQService({
+        fetchImpl: fakeFetchFail,
+        now: () => Date.now(),
+        socketFactory: () => new Proxy({}, { get: () => () => undefined }),
+      });
+      failSvc.setCredentials(failContact.id, { appId: "10001", clientSecret: "sekret", enabled: true });
+      const failImage = media.saveImage(TINY_PNG, "image/png");
+      failUpload = true; failText = false;
+      const degraded = await failSvc.deliverEmote(failConv.id, { kind: "image", url: failImage.url, label: "摸鱼" });
+      assert.strictEqual(degraded.ok, false, "图片没发出去不能报成功：" + JSON.stringify(degraded));
+      assert.strictEqual(degraded.via, "text", "降级成文字");
+      assert.ok(String(degraded.detail).includes("已改发文字"), "回执要说明降级文字已补发：" + degraded.detail);
+      failText = true;
+      const bothFailed = await failSvc.deliverEmote(failConv.id, { kind: "image", url: failImage.url, label: "摸鱼" });
+      assert.strictEqual(bothFailed.ok, false, "图片和降级文字都没发出去");
+      assert.ok(String(bothFailed.detail).includes("降级文字也没发出去"), "回执要说明文字也没发出去：" + bothFailed.detail);
+      // face 在官方渠道没有原生通道，降级成文字/emoji 是正常能力，不算失败。
+      failText = false;
+      const faceDowngrade = await failSvc.deliverEmote(failConv.id, { kind: "face", id: 4, label: "大笑" });
+      assert.strictEqual(faceDowngrade.ok, true, "官方 face 降级成文字是正常能力：" + JSON.stringify(faceDowngrade));
+      assert.strictEqual(faceDowngrade.via, "text", "face 走文字降级");
+      failSvc.dispose();
     } else {
       assert.strictEqual(caps.face, true, "OneBot 能发原生 face");
       assert.strictEqual(face.native, true, "OneBot face 原生");

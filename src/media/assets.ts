@@ -773,10 +773,13 @@ export function listAssets(query: AssetQuery): {
   for (const key of Object.keys(VIEW_CLAUSE) as AssetView[]) {
     counts[key] = countWith(VIEW_CLAUSE[key] === "" ? [] : [VIEW_CLAUSE[key]], []);
   }
+  // 类型计数跟着当前 view 走（和命名计数跟着文件夹走同一条理由）：
+  // 全库数字不随页签变，用户在「作品」9 条里看到「图片 545」会以为筛选坏了。
+  const kindScope: string[] = VIEW_CLAUSE[view] === "" ? [] : [VIEW_CLAUSE[view]];
   const kindCounts = {} as Record<AssetKindFilter, number>;
-  kindCounts.all = counts.all;
+  kindCounts.all = countWith(kindScope, []);
   for (const key of ["image", "video", "audio", "file"] as AssetKind[]) {
-    kindCounts[key] = countWith(["kind = ?"], [key]);
+    kindCounts[key] = countWith([...kindScope, "kind = ?"], [key]);
   }
   return { items: enrichAssets(rows.map(rowToAsset)), total, counts, kindCounts };
 }

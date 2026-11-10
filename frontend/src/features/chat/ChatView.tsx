@@ -29,7 +29,7 @@ import MessageMenu, { type MenuState } from "./MessageMenu";
 import Modal from "../../components/Modal";
 import MessageRowItem from "./MessageRow";
 import VoiceMessageBubble from "../../components/VoiceMessageBubble";
-import ToolCard from "./ToolCard";
+import ToolCard, { ToolGroup } from "./ToolCard";
 import ThinkingBlock, { ThinkingLive } from "./ThinkingBlock";
 import ChatMap, { type ChatMapNode } from "./ChatMap";
 import ConversationSwitcher from "./ConversationSwitcher";
@@ -54,6 +54,7 @@ type ListNode =
   | { t: "daysep"; label: string; day: string }
   | { t: "msg"; m: MessageRow; gap: boolean; clock?: string }
   | { t: "tool"; m: MessageRow }
+  | { t: "toolgroup"; items: MessageRow[] }
   | { t: "pending"; id: string; text: string; imgs: string[]; voice?: MessageAttachmentMeta; gap: boolean; failed?: boolean; queued?: boolean }
   | { t: "stale"; items: MessageRow[] }
   | { t: "draft" }
@@ -1801,7 +1802,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       if (stale.length) { out.push({ t: "stale", items: stale }); stale = []; }
     };
 
-    for (const m of msgs) {
+    for (let mi = 0; mi < msgs.length; mi++) {
+      const m = msgs[mi];
+      if (m === undefined) continue;
       if (m.superseded_at !== null && m.superseded_kind !== "retract") { stale.push(m); continue; }
       if (stale.length > 0 && m.turn_id !== lastLiveTurn) flushStale();
       if (m.kind === "tool") {
@@ -1809,13 +1812,47 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         // （搜图本来就是为了挑一张）。跟着一起吞掉，就会出现「联系人说图已经显示在界面上、
         // 界面上却什么都没有」——图明明在库里，只是被这条显示开关拦掉了。
         if (!showTools && (m.attachments ?? []).length === 0) continue;
+
+        // 同一轮的连续工具卡：**无图**的收成一组（默认收起成一行），**有图**的单独露出来。
+        // 工具过程是正文的附注，散成多行会把对话流切碎；但候选图是用户要的产出，
+        // 不能被「收起」一起藏掉。
+        const run: MessageRow[] = [];
+        let mj = mi;
+        while (mj < msgs.length) {
+          const t = msgs[mj];
+          if (t === undefined) break;
+          if (t.kind !== "tool") break;
+          if (t.superseded_at !== null && t.superseded_kind !== "retract") break;
+          if (t.turn_id !== m.turn_id) break;
+          run.push(t);
+          mj++;
+        }
+        mi = mj - 1;
+
         // 工具卡也算"一天里的话"：跨天落在工具卡上时同样要出日分隔，
         // 否则前一天的回复和今天的第一句之间什么标记都没有。
         const dayChanged = lastDay === null || dayOf(m.created_at) !== lastDay;
         if (clockPref !== "off" && dayChanged) out.push({ t: "daysep", label: clockPref === "auto" ? dayTimeLabel(m.created_at) : dayLabel(m.created_at), day: dayOf(m.created_at) });
-        out.push({ t: "tool", m });
-        lastDay = dayOf(m.created_at);
-        lastAt = m.created_at;
+
+        let buf: MessageRow[] = [];
+        const flushTools = (): void => {
+          if (buf.length >= 2) out.push({ t: "toolgroup", items: buf });
+          else if (buf.length === 1) { const only = buf[0]; if (only !== undefined) out.push({ t: "tool", m: only }); }
+          buf = [];
+        };
+        for (const t of run) {
+          const hasImgs = (t.attachments ?? []).length > 0;
+          if (!showTools && !hasImgs) continue;
+          if (hasImgs) { flushTools(); out.push({ t: "tool", m: t }); }
+          else buf.push(t);
+        }
+        flushTools();
+
+        const lastTool = run[run.length - 1];
+        if (lastTool !== undefined) {
+          lastDay = dayOf(lastTool.created_at);
+          lastAt = lastTool.created_at;
+        }
         lastLiveTurn = m.turn_id ?? lastLiveTurn;
         continue;
       }
@@ -2935,6 +2972,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       case "tool":
         return <ToolCard key={n.m.id} m={n.m} imagesOnly={!showTools}
           contactAvatar={contactAvatar} contactName={characterName} onImageClick={openZoom} />;
+      case "toolgroup": {
+        const first = n.items[0];
+        return <ToolGroup key={"tg" + (first ? first.id : 0)} items={n.items}
+          contactAvatar={contactAvatar} contactName={characterName} onImageClick={openZoom} />;
+      }
       case "msg": {
         const m = n.m;
         // 单条逐字期间，同轮定稿气泡已经在库里/列表里了，但必须等草稿打完再露出来。

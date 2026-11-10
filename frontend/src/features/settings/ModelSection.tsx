@@ -156,7 +156,8 @@ function globalReplayModeOf(persona: { recentTurns?: number; recentTurnsPct?: nu
 
 /** 全局回放范围：没单独指定「回放范围」的联系人都跟着它走。
  *  这份值原本只有固定轮数、且任何设置页都没有入口——联系人页那句「跟随全局 · N 轮」
- *  的 N 改不了，是归类核查揪出的隐形设置；现在补齐为与联系人页同构的三种给法。 */
+ *  的 N 改不了，是归类核查揪出的隐形设置；现在补齐为与联系人页同构的三种给法。
+ *  收起是默认态：它低频、且不属于「选哪个模型」这条主线，展开时才占位。 */
 function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
   const [busy, setBusy] = useState(false);
   const [custom, setCustom] = useState("");
@@ -166,6 +167,16 @@ function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
   const customValue = Number(custom);
   const customValid = custom.trim() !== "" && Number.isInteger(customValue)
     && customValue >= 1 && customValue <= (mode === "pct" ? 100 : GLOBAL_TURN_MAX);
+
+  /**
+   * 自定义值回显：保存值不落在任何预设档上时，输入框显示它而不是空——
+   * 否则用户改完一次自定义就看不见当前值（save 后 custom 被清空），想微调得重输。
+   */
+  useEffect(() => {
+    const preset = mode === "pct" ? GLOBAL_PCT_CHIPS : GLOBAL_TURN_CHIPS;
+    const v = mode === "pct" ? savedPct : savedTurns;
+    if (v > 0 && !preset.includes(v)) setCustom(String(v));
+  }, [mode, savedTurns, savedPct]);
 
   /**
    * 一次请求把两个字段写齐：模式互斥在服务端 updatePersona 里兜底，这里显式带上更直观。
@@ -199,6 +210,15 @@ function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
     }
   };
 
+  /** 收起态摘要里用的短值：只说当前是哪一档，不展开后果。 */
+  const currentShort = mode === "all"
+    ? "全部历史"
+    : mode === "pct"
+      ? `按会话 ${savedPct}%`
+      : savedTurns > 0
+        ? `最近 ${savedTurns} 轮`
+        : `跟随默认 · ${fallback} 轮`;
+
   const currentDesc = mode === "all"
     ? "全部历史都会带上：接得住很久之前的话题，代价是每次调用的输入随历史一起涨。"
     : mode === "pct"
@@ -208,110 +228,112 @@ function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
         : `跟随内置默认：最近 ${fallback} 轮。`;
 
   return (
-    <div className="card card-pad">
-      <div className="ml-head">
-        <div className="subhead">全局回放范围</div>
-        <span className="spacer" />
-        <span className="hint">{busy ? "保存中…" : ""}</span>
-      </div>
-      <div className="adv-chips" role="radiogroup" aria-label="全局回放的给法">
-        <button type="button" role="radio" aria-checked={mode === "turns"}
-          className={"adv-chip" + (mode === "turns" ? " on" : "")}
-          disabled={busy || form.busy !== ""} onClick={() => pickMode("turns")}>按轮数</button>
-        <button type="button" role="radio" aria-checked={mode === "pct"}
-          className={"adv-chip" + (mode === "pct" ? " on" : "")}
-          disabled={busy || form.busy !== ""} onClick={() => pickMode("pct")}>按会话比例</button>
-        <button type="button" role="radio" aria-checked={mode === "all"}
-          className={"adv-chip" + (mode === "all" ? " on" : "")}
-          disabled={busy || form.busy !== ""} onClick={() => pickMode("all")}>全部历史</button>
-      </div>
-      <div className="hint">{currentDesc}</div>
+    <details className="replay-disclosure">
+      <summary>
+        <span className="replay-disclosure-title">全局回放范围</span>
+        <span className="replay-disclosure-value">{busy ? "保存中…" : currentShort}</span>
+        <span className="replay-disclosure-caret" aria-hidden="true" />
+      </summary>
+      <div className="replay-disclosure-body">
+        <div className="adv-chips" role="radiogroup" aria-label="全局回放的给法">
+          <button type="button" role="radio" aria-checked={mode === "turns"}
+            className={"adv-chip" + (mode === "turns" ? " on" : "")}
+            disabled={busy || form.busy !== ""} onClick={() => pickMode("turns")}>按轮数</button>
+          <button type="button" role="radio" aria-checked={mode === "pct"}
+            className={"adv-chip" + (mode === "pct" ? " on" : "")}
+            disabled={busy || form.busy !== ""} onClick={() => pickMode("pct")}>按会话比例</button>
+          <button type="button" role="radio" aria-checked={mode === "all"}
+            className={"adv-chip" + (mode === "all" ? " on" : "")}
+            disabled={busy || form.busy !== ""} onClick={() => pickMode("all")}>全部历史</button>
+        </div>
+        <div className="hint">{currentDesc}</div>
 
-      {mode === "turns" && (
-        <>
-          <div className="adv-chips" role="radiogroup" aria-label="全局回放轮数">
-            <button type="button" role="radio" aria-checked={savedTurns === 0}
-              title={`不覆盖，用内置默认 ${fallback} 轮`}
-              className={"adv-chip" + (savedTurns === 0 ? " on" : "")}
-              disabled={busy || form.busy !== ""}
-              onClick={() => save({ recentTurns: 0, recentTurnsPct: 0 }, `已回到跟随默认（${fallback} 轮）。`)}>
-              跟随默认 · {fallback} 轮
-            </button>
-            {GLOBAL_TURN_CHIPS.map((n) => (
-              <button key={n} type="button" role="radio" aria-checked={savedTurns === n}
-                title={`${GLOBAL_TURN_CHIP_LABELS[n]}：每轮带上最近 ${n} 轮对话`}
-                className={"adv-chip" + (savedTurns === n ? " on" : "")}
+        {mode === "turns" && (
+          <>
+            <div className="adv-chips" role="radiogroup" aria-label="全局回放轮数">
+              <button type="button" role="radio" aria-checked={savedTurns === 0}
+                title={`不覆盖，用内置默认 ${fallback} 轮`}
+                className={"adv-chip" + (savedTurns === 0 ? " on" : "")}
                 disabled={busy || form.busy !== ""}
-                onClick={() => save({ recentTurns: n, recentTurnsPct: 0 }, `已设为最近 ${n} 轮，下一轮对话生效。`)}>
-                {n} 轮 · {GLOBAL_TURN_CHIP_LABELS[n]}
+                onClick={() => save({ recentTurns: 0, recentTurnsPct: 0 }, `已回到跟随默认（${fallback} 轮）。`)}>
+                跟随默认 · {fallback} 轮
               </button>
-            ))}
-          </div>
-          <div className="field">
-            <label htmlFor="global-turns-custom">自定义轮数</label>
-            <input
-              id="global-turns-custom"
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={GLOBAL_TURN_MAX}
-              step={1}
-              value={custom}
-              placeholder={`1~${GLOBAL_TURN_MAX}`}
-              aria-invalid={custom.trim() !== "" && !customValid}
-              onChange={(e) => setCustom(e.target.value)}
-            />
-          </div>
-          <div className="actions">
-            <button type="button" className="btn sm" disabled={!customValid || busy || form.busy !== ""}
-              onClick={() => save({ recentTurns: customValue, recentTurnsPct: 0 }, `已设为最近 ${customValue} 轮，下一轮对话生效。`)}>
-              应用自定义
-            </button>
-          </div>
-        </>
-      )}
-
-      {mode === "pct" && (
-        <>
-          <div className="adv-chips" role="radiogroup" aria-label="全局回放比例">
-            {GLOBAL_PCT_CHIPS.map((p) => (
-              <button key={p} type="button" role="radio" aria-checked={savedPct === p}
-                className={"adv-chip" + (savedPct === p ? " on" : "")}
-                disabled={busy || form.busy !== ""}
-                onClick={() => save({ recentTurns: 0, recentTurnsPct: p }, `已设为按会话 ${p}% 回放。`)}>
-                {p}%
+              {GLOBAL_TURN_CHIPS.map((n) => (
+                <button key={n} type="button" role="radio" aria-checked={savedTurns === n}
+                  title={`${GLOBAL_TURN_CHIP_LABELS[n]}：每轮带上最近 ${n} 轮对话`}
+                  className={"adv-chip" + (savedTurns === n ? " on" : "")}
+                  disabled={busy || form.busy !== ""}
+                  onClick={() => save({ recentTurns: n, recentTurnsPct: 0 }, `已设为最近 ${n} 轮，下一轮对话生效。`)}>
+                  {n} 轮 · {GLOBAL_TURN_CHIP_LABELS[n]}
+                </button>
+              ))}
+            </div>
+            <div className="field">
+              <label htmlFor="global-turns-custom">自定义轮数</label>
+              <input
+                id="global-turns-custom"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={GLOBAL_TURN_MAX}
+                step={1}
+                value={custom}
+                placeholder={`1~${GLOBAL_TURN_MAX}`}
+                aria-invalid={custom.trim() !== "" && !customValid}
+                onChange={(e) => setCustom(e.target.value)}
+              />
+            </div>
+            <div className="actions">
+              <button type="button" className="btn sm" disabled={!customValid || busy || form.busy !== ""}
+                onClick={() => save({ recentTurns: customValue, recentTurnsPct: 0 }, `已设为最近 ${customValue} 轮，下一轮对话生效。`)}>
+                应用自定义
               </button>
-            ))}
-          </div>
-          <div className="field">
-            <label htmlFor="global-pct-custom">自定义比例</label>
-            <input
-              id="global-pct-custom"
-              type="number"
-              inputMode="numeric"
-              min={1}
-              max={100}
-              step={1}
-              value={custom}
-              placeholder="1~100"
-              aria-invalid={custom.trim() !== "" && !customValid}
-              onChange={(e) => setCustom(e.target.value)}
-            />
-          </div>
-          <div className="actions">
-            <button type="button" className="btn sm" disabled={!customValid || busy || form.busy !== ""}
-              onClick={() => save({ recentTurns: 0, recentTurnsPct: customValue }, `已设为按会话 ${customValue}% 回放。`)}>
-              应用自定义
-            </button>
-          </div>
-        </>
-      )}
+            </div>
+          </>
+        )}
 
-      <div className="hint">
-        没单独指定「回放范围」的联系人都用这一档；联系人页的「跟随全局」指的就是它。
-        单独改过的人在联系人 → 对话 → 回放范围里调。
+        {mode === "pct" && (
+          <>
+            <div className="adv-chips" role="radiogroup" aria-label="全局回放比例">
+              {GLOBAL_PCT_CHIPS.map((p) => (
+                <button key={p} type="button" role="radio" aria-checked={savedPct === p}
+                  className={"adv-chip" + (savedPct === p ? " on" : "")}
+                  disabled={busy || form.busy !== ""}
+                  onClick={() => save({ recentTurns: 0, recentTurnsPct: p }, `已设为按会话 ${p}% 回放。`)}>
+                  {p}%
+                </button>
+              ))}
+            </div>
+            <div className="field">
+              <label htmlFor="global-pct-custom">自定义比例</label>
+              <input
+                id="global-pct-custom"
+                type="number"
+                inputMode="numeric"
+                min={1}
+                max={100}
+                step={1}
+                value={custom}
+                placeholder="1~100"
+                aria-invalid={custom.trim() !== "" && !customValid}
+                onChange={(e) => setCustom(e.target.value)}
+              />
+            </div>
+            <div className="actions">
+              <button type="button" className="btn sm" disabled={!customValid || busy || form.busy !== ""}
+                onClick={() => save({ recentTurns: 0, recentTurnsPct: customValue }, `已设为按会话 ${customValue}% 回放。`)}>
+                应用自定义
+              </button>
+            </div>
+          </>
+        )}
+
+        <div className="hint">
+          没单独指定「回放范围」的联系人都用这一档；联系人页的「跟随全局」指的就是它。
+          单独改过的人在联系人 → 对话 → 回放范围里调。
+        </div>
       </div>
-    </div>
+    </details>
   );
 }
 
@@ -667,8 +689,6 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
               : "还没接入能用的模型，先添加并启用一个"}
         </span>
       </div>
-
-      <GlobalTurnsCard form={form} />
 
       <div className="card card-pad model-list-card">
         <div className="ml-head">
@@ -1198,6 +1218,7 @@ export default function ModelSection({ form, revealAdvanced, focusProfile = "", 
       <div className="hint" style={{ marginTop: 10 }}>
         每个联系人也能单独指定模型：联系人 → 编辑资料 → 模型。
       </div>
+      <GlobalTurnsCard form={form} />
     </div>
   );
 }

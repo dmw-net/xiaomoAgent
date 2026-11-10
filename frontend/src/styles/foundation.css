@@ -519,6 +519,12 @@ input, textarea {
 /* 气泡本身不可点（操作走右键/长按），但给一点 hover 反馈——
    否则用户根本不知道这里能右键。光标保持默认，免得暗示"可以点"。 */
 .msg-row:hover .bubble { outline: 1px solid var(--border-strong); outline-offset: 1px; }
+/* 快速滚动时不给 hover 反馈：指针不动、内容从下面经过，:hover 反复挂摘——
+   聊天气泡的描边、设置页卡片与 chip 的边框都会一闪一闪（用户报的「描边闪 / 边框闪」）。
+   scroll 不冒泡，由 useScrollHoverLock 在捕获阶段把 is-scrolling 挂到滚动容器上；
+   只关直接子代的 pointer-events（子代都没显式设，继承即可），滚动容器本身仍是 auto，
+   滚轮滚动不受影响。停滚 150ms 后摘类，"停下来看某一条"的暗示仍然有效。 */
+.is-scrolling > * { pointer-events: none; }
 
 /* 弹出菜单：fixed 定位到点击处，靠近视口边缘会自动翻转（见 positionMenu） */
 .msgmenu {
@@ -1916,7 +1922,7 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
 .ws-modal-head button, .cap-prof-del, .wx-close,
 /* 补漏的四个：漏掉的那几个都是窄屏上某件事的唯一入口，44 高 × 30 宽就是注释里
    自己警告过的「一条窄带，短边照样不达标」。 */
-.art-act, .s-add-btn, .bar-back, .undo-bar .undo-x, .undo-bar .undo-act { min-width: var(--tap-min); }
+.art-act, .s-add-btn, .bar-back, .undo-bar .undo-x, .undo-bar .undo-act, .s-search-clear { min-width: var(--tap-min); }
 
 /* 贴在别的东西角上的小圆标有固定视觉尺寸，min-height 会盖掉 height 把它们
    撑大。这几处保持原样，可点区改用伪元素向外扩一圈。

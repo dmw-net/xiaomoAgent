@@ -506,12 +506,17 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   max-width: 100%; padding: var(--space-2) var(--space-5);
   border-radius: var(--radius-lg); border: 1px dashed var(--border);
   background: var(--bg-sunken); font-size: var(--text-aux); color: var(--text-subtle);
+  white-space: nowrap;
 }
 .tool-card.bad { border-color: color-mix(in srgb, var(--danger) 30%, var(--border)); color: var(--danger); }
 .tool-ico { display: inline-flex; }
-.tool-label { font-weight: 500; color: var(--text-muted); }
+.tool-label { flex: none; font-weight: 500; color: var(--text-muted); }
 .tool-sep { color: var(--border-strong); }
-.tool-summary { word-break: break-all; }
+/* 一行式卡片：摘要超长就省略，不换行把标签挤下去（「画了张图」曾被挤成两行） */
+.tool-summary {
+  min-width: 0; max-width: 340px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .tool-ms { font-variant-numeric: tabular-nums; font-size: var(--text-note); color: var(--text-subtle); }
 /* 可展开详情：卡片外面套一层，详情块跟着卡片左缘对齐 */
 .tool-wrap { display: flex; flex-direction: column; align-items: flex-start; gap: var(--space-1); max-width: 100%; }
@@ -533,6 +538,38 @@ button.tool-card.open { border-style: solid; border-bottom-left-radius: 0; borde
    theme.css 的总闸压成 .01ms，等于直出，不必另写退让规则。 */
 @keyframes toolDetailIn { from { opacity: 0; translate: 0 4px; } }
 .tool-detail { animation: toolDetailIn var(--dur-fast) var(--ease-out); }
+
+/* 工具折叠组：同一轮连续工具调用默认收起成一行「工具调用 · N 个 · 总耗时」。
+   组本身只收文字卡；有候选图的仍单独露出来（图是产出，不能被收起藏掉）。 */
+.tool-group-card {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  max-width: 100%; padding: var(--space-2) var(--space-5);
+  border-radius: var(--radius-lg); border: 1px dashed var(--border);
+  background: var(--bg-sunken); font-size: var(--text-aux); color: var(--text-subtle);
+  font: inherit; text-align: left; cursor: pointer;
+}
+.tool-group-card:hover { border-style: solid; color: var(--text-muted); }
+.tool-group-card.open { border-style: solid; border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+.tool-group-card.bad { border-color: color-mix(in srgb, var(--danger) 30%, var(--border)); color: var(--danger); }
+.tool-group-label { font-weight: 500; color: var(--text-muted); }
+.tool-group-card.bad .tool-group-label { color: var(--danger); }
+.tool-group-count { font-variant-numeric: tabular-nums; }
+.tool-group-body {
+  border: 1px solid var(--border); border-top: none;
+  border-bottom-left-radius: var(--radius-lg); border-bottom-right-radius: var(--radius-lg);
+  background: var(--bg-sunken);
+  padding: var(--space-1);
+  display: flex; flex-direction: column; gap: 2px;
+  max-width: 100%;
+}
+.tool-group-body .msg-row.gap { margin-top: 0; }
+.tool-group-body .tool-card {
+  border: 0; background: transparent; padding: 2px var(--space-2);
+  border-radius: var(--radius-md);
+}
+.tool-group-body .tool-card.clickable:hover { background: var(--bg-elevated); }
+.tool-group-body .tool-card.open { border-radius: var(--radius-md) var(--radius-md) 0 0; }
+.tool-group-body .tool-detail { border-left: 0; border-right: 0; border-bottom: 0; }
 /* 工具卡上的候选图（图片搜索）：用户就是靠这一排「看看这几张行不行」。
    尺寸与气泡里那套（.msg-imgs）对齐，但贴在卡片左缘、不进气泡——它不是她说的话。 */
 .tool-wrap .tool-imgs {
@@ -1020,6 +1057,40 @@ button.prov-row.on { border-color: var(--border-strong); background: var(--bg-su
   margin-top: var(--space-6); padding-top: var(--space-6); border-top: 1px dashed var(--border);
   font-size: var(--text-base); color: var(--text-muted);
 }
+
+/* 全局回放范围：收起是默认态（低频、不属「选模型」主线），展开才占位。
+   收起时 summary 就是一行「标题 + 当前档位 + 箭头」。 */
+.replay-disclosure {
+  margin-top: var(--space-5);
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--bg-elevated);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+}
+.replay-disclosure > summary {
+  display: flex; align-items: center; gap: var(--space-3);
+  padding: 16px 20px;
+  cursor: pointer; list-style: none;
+  font-size: var(--text-base); font-weight: 600; color: var(--text);
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+.replay-disclosure > summary::-webkit-details-marker { display: none; }
+.replay-disclosure > summary:hover { background: var(--bg-hover); }
+.replay-disclosure-title { flex: none; }
+.replay-disclosure-value {
+  min-width: 0; overflow: hidden;
+  color: var(--text-subtle); font-size: var(--text-sm); font-weight: 400;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.replay-disclosure-caret {
+  flex: none; margin-left: auto; color: var(--text-subtle);
+  transition: transform var(--dur-fast) var(--ease-out);
+}
+.replay-disclosure-caret::before { content: "▸"; }
+.replay-disclosure[open] > summary .replay-disclosure-caret { transform: rotate(90deg); }
+.replay-disclosure-body { padding: 0 20px 20px; }
+.replay-disclosure-body > .adv-chips:first-child { margin-top: 0; }
 
 /* 「记忆与主动」二级导航：与全局设置同一套轻量下划线，不抢顶部分区的主层级。 */
 .pf-care-nav { margin: 0 0 var(--space-5); }
@@ -2198,9 +2269,12 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 .model-trigger > svg:last-child { flex: none; transition: transform var(--dur-fast) var(--ease-out); }
 
 .model-pop {
-  /* 不能用 --z-pop(41)：浮层会伸进左栏，而中栏搜索框是 sticky + z 50，
-     会压在它上面（真实现过：模型列表被联系人列表盖住半边）。 */
-  position: fixed; right: auto; bottom: 0; z-index: var(--z-subpop);
+  /* 用 --z-chat-pop(90)：浮层会伸进左栏，中栏搜索框是 sticky + z 50 会压在它上面
+     （真实现过：模型列表被联系人列表盖住半边）；更要紧的是它也会从设置助手弹窗里
+     召唤，而弹窗在 --z-dialog(79)——原来的 --z-subpop(65) 会被整片压住、只在弹窗
+     边缘露一截。portal 到 body 的浮层不与宿主共享层叠上下文，档位得按全局最高宿主
+     取值（与 .ctx-pop / .asst-perm-pop 同档）。 */
+  position: fixed; right: auto; bottom: 0; z-index: var(--z-chat-pop);
   display: flex; flex-direction: column;
   width: min(390px, calc(100vw - 24px)); max-width: calc(100vw - 24px); max-height: min(540px, 68vh); overflow: hidden;
   padding: 0;
@@ -2743,11 +2817,12 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .rec-wave { flex: 1 1 24px; min-width: 40px; height: 22px; align-self: center; }
 
 /* ── composer 表情选择弹层（EmotePicker）：model-pop / switch-pop 一族的同语言 ──
-   同样 portal 到 body、按 useAnchoredPop 的坐标 fixed 定位；z 走 --z-subpop——
-   composer 自己在 --z-dock，弹层必须稳压过它。圆角、阴影、menuIn 入场均照抄一族配方，
-   不另造第四种弹层观感。 */
+   同样 portal 到 body、按 useAnchoredPop 的坐标 fixed 定位；z 走 --z-chat-pop(90)——
+   composer 自己在 --z-dock(6)，稳压过它只是最低要求：表情按钮在设置助手弹窗里也有一份，
+   弹窗本体 --z-dialog(79)，用 --z-subpop(65) 时整张面板会被弹窗盖住、只在左侧露一截
+   （2026-11-09 实测）。圆角、阴影、menuIn 入场均照抄一族配方，不另造第四种弹层观感。 */
 .emote-pop {
-  position: fixed; z-index: var(--z-subpop);
+  position: fixed; z-index: var(--z-chat-pop);
   display: flex; flex-direction: column;
   max-height: min(360px, 52vh); overflow: hidden;
   padding: 0;

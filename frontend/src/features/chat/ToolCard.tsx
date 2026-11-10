@@ -11,12 +11,14 @@ import { renderLinkedText } from "../../lib/md";
 type ToolPayload = { tool?: string; ok?: boolean; summary?: string; elapsedMs?: number };
 
 /** 工具调用卡：紧凑一行，展示"联系人在查什么"而不是甩 JSON；有详情时可点开回看。 */
-function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imagesOnly = false }: {
+function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imagesOnly = false, grouped = false }: {
   m: MessageRow; contactAvatar?: string; contactName?: string;
   /** 点图放大：搜到的候选图跟气泡里的图走同一条灯箱通道（ChatView 的 openZoom）。 */
   onImageClick?: (url: string) => void;
   /** 「工具调用过程」关掉时只留候选图：图是用户要的产出，不该被这条显示开关一起吞掉。 */
   imagesOnly?: boolean;
+  /** 在工具折叠组里：隐藏头像（组本身已有一个），避免每张卡都挂一个。 */
+  grouped?: boolean;
 }): JSX.Element {
   const p = useMemo((): ToolPayload => {
     try { return JSON.parse(m.text) as ToolPayload; } catch { return {}; /* 旧数据或解析失败走回退 */ }
@@ -67,7 +69,7 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   if (imagesOnly) {
     return (
       <div className="msg-row contact gap" data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
-        <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} style={avatarToneStyle(contactName)} />
+        <Avatar className={"msg-ava" + (grouped ? " ava-hidden" : "")} src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} style={avatarToneStyle(contactName)} />
         <div className="tool-wrap">
           <div className="tool-imgs">
             {imgs.map((url, index) => (
@@ -83,7 +85,7 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
 
   return (
     <div className={"msg-row contact gap"} data-id={m.id} data-tool={p.tool ?? ""} tabIndex={-1}>
-      <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} style={avatarToneStyle(contactName)} />
+      <Avatar className={"msg-ava" + (grouped ? " ava-hidden" : "")} src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} style={avatarToneStyle(contactName)} />
       <div className={"tool-wrap" + (ok ? "" : " bad")}>
         {expandable ? (
           <button
@@ -118,4 +120,49 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   );
 }
 
+/** 同一轮连续工具调用的折叠组：默认收起成一行「工具调用 · N 个 · 总耗时」，展开才看每张卡。
+ *  工具过程是正文的附注，散成多行会把对话流切碎；组本身只收起文字卡，
+ *  有候选图的仍单独露出来（图是用户要的产出，不能被收起一起藏掉）。 */
+function ToolGroup({ items, contactAvatar, contactName = "小茉", onImageClick }: {
+  items: MessageRow[]; contactAvatar?: string; contactName?: string;
+  onImageClick?: (url: string) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(false);
+  let totalMs = 0;
+  let allOk = true;
+  for (const m of items) {
+    try {
+      const p = JSON.parse(m.text) as ToolPayload;
+      if (typeof p.elapsedMs === "number" && p.elapsedMs > 0) totalMs += p.elapsedMs;
+      if (p.ok === false) allOk = false;
+    } catch { /* 旧数据 */ }
+  }
+  const time = totalMs >= 1000 ? `${(totalMs / 1000).toFixed(1)}s` : `${Math.round(totalMs)}ms`;
+  return (
+    <div className="msg-row contact gap" data-id={items[0]?.id ?? 0} data-tool-group tabIndex={-1}>
+      <Avatar className="msg-ava" src={contactAvatar || undefined} name={contactName} alt={contactName + "的头像"} style={avatarToneStyle(contactName)} />
+      <div className="tool-wrap">
+        <button type="button" className={"tool-group-card" + (allOk ? "" : " bad") + (open ? " open" : "")}
+          aria-expanded={open} title={`展开 ${items.length} 个工具调用`}
+          onClick={() => setOpen((v) => !v)}>
+          <span className="tool-ico">{allOk ? <Check size={11} strokeWidth={2.4} /> : <X size={11} strokeWidth={2.4} />}</span>
+          <span className="tool-group-label">工具调用</span>
+          <span className="tool-sep">·</span>
+          <span className="tool-group-count">{items.length} 个</span>
+          {totalMs > 0 && (<><span className="tool-sep">·</span><span className="tool-ms">{time}</span></>)}
+          <span className="tool-caret" aria-hidden="true">{open ? <ChevronDown size={12} strokeWidth={2} /> : <ChevronRight size={12} strokeWidth={2} />}</span>
+        </button>
+        {open && (
+          <div className="tool-group-body">
+            {items.map((m) => (
+              <ToolCard key={m.id} m={m} grouped contactAvatar={contactAvatar} contactName={contactName} onImageClick={onImageClick} />
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default memo(ToolCard);
+export { ToolGroup };

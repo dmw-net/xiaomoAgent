@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { Search, Plus, Pencil, FileDown, Archive, ArchiveRestore, FileUp, ChevronDown, ChevronRight, Trash2, SearchX, UserPlus } from "lucide-react";
+import { Search, Plus, Pencil, FileDown, Archive, ArchiveRestore, FileUp, ChevronDown, ChevronRight, Trash2, SearchX, UserPlus, X } from "lucide-react";
 import { contactsApi, searchApi } from "../api";
 import EmptyState from "./EmptyState";
 import type { MessageHit, MemoryHit } from "../types/search";
@@ -45,6 +45,7 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
   const [menuOpen, setMenuOpen] = useState(false);
   const [error, setError] = useState("");
   const mdRef = useRef<HTMLInputElement>(null);
+  const searchRef = useRef<HTMLInputElement>(null);
   const addBtnRef = useRef<HTMLDivElement>(null);
   /** 全局搜索的代次：只有最后一次请求的结果允许落地。 */
   const searchSeq = useRef(0);
@@ -301,12 +302,15 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
       <div className="s-search">
         <Search size={15} strokeWidth={1.8} />
         <input
+          ref={searchRef}
           id="sideSearch"
           aria-label="搜索联系人；回车搜全部聊天记录与记忆"
           placeholder="搜索联系人，回车搜全历史"
           value={query}
           onChange={(e) => { setQuery(e.target.value); if (!e.target.value.trim()) setHits(null); }}
           onKeyDown={(e) => {
+            // Esc 清空：长关键词想反悔时不必一个个退格（与设置搜索框同一口径）。
+            if (e.key === "Escape") { setQuery(""); setHits(null); return; }
             if (e.key !== "Enter") return;
             const q = query.trim();
             if (q === "") { setHits(null); return; }
@@ -319,6 +323,12 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
               .catch((err: Error) => { if (seq === searchSeq.current) setError("搜索失败：" + err.message); });
           }}
         />
+        {query !== "" && (
+          <button type="button" className="s-search-clear" aria-label="清空搜索" title="清空搜索"
+            onClick={() => { setQuery(""); setHits(null); searchRef.current?.focus(); }}>
+            <X size={14} />
+          </button>
+        )}
       </div>
       <div className="s-list" id="s-list">
         {shown.length === 0 && !hits && (

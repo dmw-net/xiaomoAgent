@@ -32,7 +32,13 @@ assert(!/本机对话/.test(switcher), "主私聊不应再沿用割裂的“本�
 assert(/renameQQConversation/.test(qqSection) && /恢复自动/.test(qqSection), "QQ 群列表应支持自定义群名并可恢复平台名称");
 assert(/qq-conv-search/.test(qqSection) && /qq-conv-scroll/.test(qqSection), "QQ 群列表应支持多群搜索与限高滚动");
 assert(/startRename\(conv\)[\s\S]{0,160}PencilLine[\s\S]{0,40}重命名/.test(qqSection), "群名可重命名：入口在行内「更多」面板里（铅笔 + 文案可辨）");
-assert(/role="switch"/.test(qqSection) && /qq-conv-switch-track/.test(qqSection), "群消息接收状态应使用可识别的开关");
+// 开关统一到 ToggleSwitch（f297d3d）：QQSection 用组件，switch 语义（role/aria-checked）
+// 由组件内部保证——两处都断言，才既不绑死实现、又不丢无障碍契约。
+assert(/<ToggleSwitch[\s\S]*?ariaLabel=\{`\$\{conv\.title\}群消息接收`\}/.test(qqSection),
+  "群消息接收状态应使用可识别的开关");
+const toggleSwitch = readFileSync("frontend/src/components/ToggleSwitch.tsx", "utf8");
+assert(/role="switch"/.test(toggleSwitch) && /aria-checked=\{checked\}/.test(toggleSwitch),
+  "ToggleSwitch 要有 switch 语义");
 assert(!/私聊已并入主对话 · 群名自动读取，也可以手动改/.test(qqSection), "群列表不应再渲染冗长说明");
 assert(/已离群/.test(qqSection) && /disabled=\{toggleBusyId === conv.id \|\| conv.leftAt !== null\}/.test(qqSection), "已离群群的历史可看，但收件开关必须禁用");
 assert(/clearQQConversationHistory/.test(qqSection) && /确认清除/.test(qqSection), "已离群群应提供带二次确认的清除历史入口");

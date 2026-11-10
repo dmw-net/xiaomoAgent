@@ -83,7 +83,7 @@
   --bubble-proactive-border: #eadbc3;
 
   --col: 960px;
-  --chat-col: clamp(760px, 70vw, 960px);
+  --chat-col: clamp(720px, 64vw, 860px);
   --rail-w: 76px;
   --side-w-default: 272px;
   --nav-h: 64px;
@@ -114,12 +114,12 @@
   --radius-3xl: 24px;
   --radius-full: 999px;
 
-  --text-xs:    11px;
-  --text-cap:   11.5px;
-  --text-sm:    12px;
+  --text-xs:    11.5px;
+  --text-cap:   12px;
+  --text-sm:    12.5px;
   --text-aux:   12.5px;
   --text-note:  13px;
-  --text-base:  13.5px;
+  --text-base:  14px;
   --text-md:    14px;
   --text-lg:    15px;
   --text-xl:    17px;

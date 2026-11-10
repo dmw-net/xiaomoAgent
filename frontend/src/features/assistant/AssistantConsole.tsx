@@ -23,6 +23,14 @@ import { AssistantAutoConfirmModal, AssistantTierOptions, PERMISSION_TIERS, TIER
 
 const ACTIVITY_SHOWN = 20;
 
+/**
+ * visibleTools() 在助手分支额外注入的三个只读工具（tools.ts 的 WEB_TOOLS + SKILL_TOOL）。
+ * 它们的 scope 是 companion，所以不在「允许的操作」那张助手清单里；但助手确实用得上
+ * （搜图给联系人配头像、读技能做法），且不随只读档整组摘除。控制台必须列出来，
+ * 否则「允许的操作」会低报助手真正能做的事。新增/删减由 chat-ui-regression 静态断言锁住。
+ */
+const ASSISTANT_EXTRA_TOOLS = ["web_search", "web_fetch", "load_skill"] as const;
+
 /** 今天只报时分，更早的带上日期——审计行的时间一眼能对上"刚才那次操作"。 */
 function formatActTime(ts: number): string {
   const d = new Date(ts);
@@ -92,6 +100,7 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
   };
 
   const assistantTools = state?.tools.filter((t) => t.scope === "assistant") ?? [];
+  const assistantExtraTools = state?.tools.filter((t) => (ASSISTANT_EXTRA_TOOLS as readonly string[]).includes(t.name)) ?? [];
   const readonly = permission === "readonly";
   const tierDesc = PERMISSION_TIERS.find((t) => t.key === permission)?.desc ?? "";
   const shownActivity = activity?.slice(0, ACTIVITY_SHOWN) ?? [];
@@ -173,7 +182,7 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
         <div className="lg-panel-head">
           <div className="lg-panel-title">
             <b>允许的操作</b>
-            <small>实际可用 = 权限档允许 ∩ 台账未收回；读状态的工具常开。</small>
+            <small>写操作 = 权限档允许 ∩ 台账未收回；app_status 常开。助手另能用下面一组只读工具。</small>
           </div>
           <button type="button" className="btn sm" onClick={onGoTools} title="逐项启停在「工具与扩展 → 工具台账」">
             去台账启停
@@ -212,11 +221,39 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
         )}
       </section>
 
+      {state !== null && assistantExtraTools.length > 0 && (
+        <section className="ac-panel">
+          <div className="lg-panel-head">
+            <div className="lg-panel-title">
+              <b>助手也能用的只读工具</b>
+              <small>从陪伴侧借来，供搜图配头像与读技能做法；不改配置，不随只读档关闭，但仍受台账逐项启停约束。</small>
+            </div>
+          </div>
+          <div className="lg-group">
+            {assistantExtraTools.map((tool) => {
+              const off = state.disabledTools.includes(tool.name);
+              return (
+                <div className={"lg-row" + (off ? " is-off" : "")} key={tool.name}>
+                  <span className="lg-dot" aria-hidden="true" />
+                  <div className="lg-copy">
+                    <div className="lg-name">{tool.label}</div>
+                    <div className="lg-summary">{tool.summary}</div>
+                  </div>
+                  <span className={"lg-state" + (off ? " is-muted" : "")}>{off ? "已在台账收回" : "允许"}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div className="ac-note">load_skill 只在库里有可用技能时才会真正出现。</div>
+        </section>
+      )}
+
       <div className="lg-footnote">
         <ShieldAlert size={14} />
         <div>
           逐项启停在「设置 → 工具与扩展 → 工具台账」，这里只看结论；改完回来，两边看到的是同一份状态。
-          助手的管理操作不受陪伴工具的「全关」档影响，免得把管理入口一起关掉。
+          助手的管理操作不受陪伴工具的「全关」档影响，免得把管理入口一起关掉；
+          上面那组联网 / 技能只读工具也不随「只读」档摘除。
         </div>
       </div>
 

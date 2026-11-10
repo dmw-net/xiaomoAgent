@@ -71,6 +71,8 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
   onSaved: (text: string) => void;
 }): JSX.Element {
   const [f, setF] = useState<Draft>(initial);
+  /** 这一家用户起过的名字：按当前接口地址派生，只用于显示，不写回 f.provider（那是提交值）。 */
+  const savedProvider = names[normBase(f.baseUrl)] || "";
   const [busy, setBusy] = useState<"" | "save" | "test" | "list">("");
   const [msg, setMsg] = useState<Banner>(null);
   const [ids, setIds] = useState<string[] | null>(null);
@@ -161,13 +163,16 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
         </div>
         <button type="button" className="ml-btn" title="关闭" aria-label="关闭" onClick={onClose}><X size={16} /></button>
       </div>
+      {/* 预设名说的是「这家的哪个模型」，不是这家供应商叫什么。别把它填进 provider：
+          save() 会拿这个值去发全局 rename，主对话模型里同一 baseUrl 那家的显示名会被一起改掉。
+          框里按 baseUrl 回显已存名只是展示，提交值仍只有 f.provider；复用主模型那排 chips 同理。 */}
       <div className="preset-row">
         {group.presets.map((p) => (
           <button key={p.label} type="button" className="preset"
             aria-pressed={normBase(p.baseUrl) === normBase(f.baseUrl) ? "true" : "false"}
             onClick={() => setF((prev) => ({
               ...prev, baseUrl: p.baseUrl, name: prev.name || p.model || "",
-              voice: prev.voice || p.voice || "", provider: prev.provider || p.label,
+              voice: prev.voice || p.voice || "",
             }))}>{p.label}</button>
         ))}
       </div>
@@ -179,7 +184,7 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
               title={`接口地址与密钥照抄「${r.label}」在主对话模型里的配置`}
               aria-pressed={normBase(r.baseUrl) === normBase(f.baseUrl) ? "true" : "false"}
               onClick={() => setF((prev) => ({
-                ...prev, baseUrl: r.baseUrl, apiKey: r.apiKey, provider: prev.provider || r.label,
+                ...prev, baseUrl: r.baseUrl, apiKey: r.apiKey,
               }))}>{r.label}</button>
           ))}
         </div>
@@ -187,9 +192,9 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
       <div className="form-row">
         <div className="field">
           <label>供应商名（可选）
-            <input value={f.provider} onChange={set("provider")} placeholder="如 DeepSeek、硅基流动" maxLength={24} />
+            <input value={f.provider || savedProvider} onChange={set("provider")} placeholder="如 DeepSeek、硅基流动" maxLength={24} />
           </label>
-          <div className="hint">填个名字方便认；不填就用这家第一个模型的名字。</div>
+          <div className="hint">按地址回显已存名；不动即不改，改了全局同步。</div>
         </div>
         <div className="field">
           <label>显示名

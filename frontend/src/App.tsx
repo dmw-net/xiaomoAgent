@@ -22,6 +22,7 @@ import type { ProfilePage } from "./features/profile/constants";
 import { useHashRoute } from "./hooks/useHashRoute";
 import { useNarrow } from "./hooks/useNarrow";
 import { useDetailHistory } from "./hooks/useDetailHistory";
+import { useScrollHoverLock } from "./hooks/useScrollHoverLock";
 import type { ViewKey } from "./types";
 import { settingsApi, contactId, setContactId } from "./api";
 import { getCachedContacts, refreshContacts, subscribeContacts } from "./lib/contactsStore";
@@ -39,6 +40,8 @@ export default function App(): JSX.Element {
   /** 空 = 联系人主私聊；非空 = 当前打开的 QQ 群会话。 */
   const [conversation, setConversation] = useState<{ id: string; title: string; readOnly: boolean } | null>(null);
   const [view, navigate] = useHashRoute();
+  // 滚动中暂停 hover 反馈（聊天描边 / 设置边框闪），见 hooks/useScrollHoverLock。
+  useScrollHoverLock();
   const [ownerName, setOwnerName] = useState("");
   const [ownerAvatar, setOwnerAvatar] = useState("");
   const [characterName, setCharacterName] = useState("小茉");

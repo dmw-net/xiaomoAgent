@@ -425,7 +425,7 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
           )}
         </div>
       ) : (
-        <div className={"settings-layout" + (group === "media" ? " settings-layout-media" : "")}>
+        <div className="settings-layout">
           {!narrow && nav}
           <div className="set-body">
             {groupPanel("owner", <OwnerSection form={form} onOwnerAvatar={onOwnerAvatar} onDirtyChange={setOwnerDirty} />)}

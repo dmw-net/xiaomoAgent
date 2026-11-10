@@ -27,6 +27,7 @@ import { useToolState } from "../../hooks/useToolState";
 import Tabs, { panelAria, type PanelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import type { PersonaDraft } from "../../lib/persona-doc";
+import { AssistantPermissionPanel, AssistantAuditPanels } from "../assistant/AssistantSettingsPanels";
 
 const shortPreview = (text: unknown, max = 260): string => {
   const s = typeof text === "string" ? text : "";
@@ -329,7 +330,7 @@ function PromptPreviewCard({ promptPreview, previewing, effective, who, onPrevie
  * 编辑内置「设置助手」（contactId=assistant）时只开放头像/名字/对话设置——
  * 它的提示词是代码内置的，不随卡片走，界面上也不给碰。
  */
-export default function ProfileView({ mode, contactId, onBack, onSaved, initialDraft, initialPage }: {
+export default function ProfileView({ mode, contactId, onBack, onSaved, initialDraft, initialPage, threadCount, onGoTools }: {
   mode: ProfileMode;
   contactId: string;
   onBack: () => void;
@@ -338,6 +339,10 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   initialDraft?: PersonaDraft;
   /** 打开时直达的分区（聊天页「⋯」菜单的记忆/主动性入口）。 */
   initialPage?: ProfilePage;
+  /** 助手设置屏专用：工作区数量（权限档面板展示）。 */
+  threadCount?: number;
+  /** 助手设置屏专用：「去台账启停」的出口。 */
+  onGoTools?: () => void;
 }): JSX.Element {
   const isAssistant = mode === "edit" && contactId === "assistant";
   const [draft, setDraft] = useState<Draft>(initialDraft ?? EMPTY_DRAFT);
@@ -832,12 +837,12 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   }, [page, settingsSection]);
 
   return (
-    <div className="pf" data-page={page} ref={pfRootRef}>
+    <div className={"pf" + (isAssistant ? " pf-assistant" : "")} data-page={page} ref={pfRootRef}>
       <div className="pf-topbar">
         <button type="button" className="pf-back" onClick={tryBack}>
           <ArrowLeft size={15} strokeWidth={1.8} />{isAssistant ? "返回助手" : "返回对话"}
         </button>
-        {mode === "edit" && (
+        {mode === "edit" && !isAssistant && (
           <div className="pf-pages" role="tablist" aria-label="设置分区" onKeyDown={onPageKey}>
             <button type="button" role="tab" id="pf-page-tab-persona" aria-selected={page === "persona"}
               tabIndex={page === "persona" ? 0 : -1}
@@ -910,6 +915,10 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
           )}
         </div>
       </div>
+
+      {isAssistant && (
+        <AssistantPermissionPanel contactId={contactId} threadCount={threadCount ?? 0} onBack={tryBack} />
+      )}
 
       {mode === "edit" && !isAssistant && (page === "memory" || page === "proactive") && (
         <div className="pf-care-nav">
@@ -1044,12 +1053,6 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </span>
           </div>
           </div>
-        </div>
-      )}
-
-      {(visitedPages.has("persona") || page === "persona") && isAssistant && (
-        <div className="pf-assist-note" hidden={page !== "persona"} {...pagePanelFor("persona")}>
-          助手的内置提示词由程序固定，不提供修改；切到「对话设置」可以换模型、调回放轮数。
         </div>
       )}
 
@@ -1549,6 +1552,10 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             setFaceRefDirty(false);
           }} />
         </TabPanel>
+      )}
+
+      {isAssistant && (
+        <AssistantAuditPanels onGoTools={onGoTools ?? (() => undefined)} />
       )}
 
       {/* 身份卡在四个分区都可编辑，保存入口因此跟着脏值走而不是跟着分区走：

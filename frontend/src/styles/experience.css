@@ -2341,9 +2341,9 @@ a.btn:hover {
 
 .pf-care-nav,
 .pf-head,
-.pf-assist-note,
 .pf > .tab-panel,
 .pf > .card,
+.pf > .ac-panel,
 .pf-settings {
   width: min(100%, 1040px);
   margin-inline: auto;
@@ -2360,6 +2360,13 @@ a.btn:hover {
   display: flex;
   flex-direction: column;
   gap: 12px;
+}
+
+/* 助手设置屏：板块之间统一 12px 间隔（与上面的卡片间距同值）。
+   从前只有身份卡带 margin，权限档 / 审计面板与设置卡是贴着排的。 */
+.pf-assistant > .ac-panel,
+.pf-assistant > .pf-settings {
+  margin-bottom: 12px;
 }
 
 .pf-settings > .card,

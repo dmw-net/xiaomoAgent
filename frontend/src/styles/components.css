@@ -138,11 +138,6 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   font-size: var(--text-note); font-variant-numeric: tabular-nums;
 }
 .qq-ava-err { flex-basis: 100%; font-size: var(--text-note); color: var(--danger); line-height: 1.5; }
-.pf-assist-note {
-  margin: var(--space-4) 0 0; padding: var(--space-4) var(--space-5); border-radius: var(--radius-lg);
-  background: var(--bg-sunken); border: 1px solid var(--border);
-  font-size: var(--text-sm); color: var(--text-muted); line-height: 1.7;
-}
 .pf-who { min-width: 140px; }
 .pf-eyebrow { font-size: var(--text-xs); letter-spacing: .07em; color: var(--text-subtle); }
 /* 眉标在 .pf-head 里独占一行（flex-wrap 已开）：左边缘于是与头像/卡片内容同一条线，

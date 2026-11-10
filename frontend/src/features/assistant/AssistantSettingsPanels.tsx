@@ -1,19 +1,14 @@
-// 助手设置屏：权限档、最近的配置变更、待确认动作与工作区概览。
+// 助手设置屏的两块面板：权限档 + 审计（变更记录 / 允许的操作）。
 //
-// 从前这一屏 lazy 复用联系人资料页，而资料页对 isAssistant 隐藏了工具/陪伴/显示
-// 几乎所有卡片，点开「设置」等于一屏空白；真正要紧的权限档反而塞在输入区一枚 chip 里。
+// 从前它们和「编辑资料」入口一起装在 AssistantConsole 里，设置屏因此变成两层：
+// 助手设置 → 编辑资料。现在资料页自己就是助手设置屏（身份/对话表单都在那儿），
+// 这两块作为面板直接嵌进去，中间那一层取消。
 //
-// 逐项收回的写路径已撤：这里与「工具与扩展 → 台账」写的是同一份全局 disabledTools，
-// 两处各挂一排开关等于同一件事有两个闸，改这边看不到那边、因果要用户自己拼。
-// 现在这屏只负责助手独有的决策（权限档）+ 事后可见性（变更记录）+ 只读展示允许的操作，
-// 启停统一回台账。身份/头像/模型绑定仍交给资料页那份唯一实现，不重写表单。
-//
-// 「最近的配置变更」是 auto 档唯一的事后可见性：信任但不看见，等于把
-// 「确认疲劳 → 升到 auto」这条滑坡的终点变得更危险。数据来自
-// /api/assistant/activity（后端给写工具统一包了一层活动记录，见 src/mind/assistant.ts）。
+// 拆成两个组件而不是一个大组件，是为了让「权限档」排在身份与对话之前、
+// 「变更记录 / 允许的操作」排在其后——这是助手设置屏唯一合理的阅读顺序。
 
 import { useCallback, useEffect, useState } from "react";
-import { ArrowLeft, History, Layers3, ShieldAlert, UserRound } from "lucide-react";
+import { History, Layers3, ShieldAlert } from "lucide-react";
 import { assistantApi } from "../../api";
 import type { AssistantActivity, AssistantPermission } from "../../api/assistant";
 import { loadToolState } from "../../lib/toolsStore";
@@ -26,7 +21,7 @@ const ACTIVITY_SHOWN = 20;
 /**
  * visibleTools() 在助手分支额外注入的三个只读工具（tools.ts 的 WEB_TOOLS + SKILL_TOOL）。
  * 它们的 scope 是 companion，所以不在「允许的操作」那张助手清单里；但助手确实用得上
- * （搜图给联系人配头像、读技能做法），且不随只读档整组摘除。控制台必须列出来，
+ * （搜图给联系人配头像、读技能做法），且不随只读档整组摘除。这里必须列出来，
  * 否则「允许的操作」会低报助手真正能做的事。新增/删减由 chat-ui-regression 静态断言锁住。
  */
 const ASSISTANT_EXTRA_TOOLS = ["web_search", "web_fetch", "load_skill"] as const;
@@ -40,17 +35,14 @@ function formatActTime(ts: number): string {
   return `${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${hm}`;
 }
 
-export default function AssistantConsole({ onBack, onEditProfile, onGoTools, contactId, threadCount }: {
-  onBack: () => void;
-  onEditProfile: () => void;
-  /** 「允许的操作」面板的出口：关掉弹窗、跳到「工具与扩展 → 工具台账」逐项启停。 */
-  onGoTools: () => void;
+/** 权限档面板：三档选择 + 待确认动作 / 工作区概览。排在助手设置屏的最前。 */
+export function AssistantPermissionPanel({ contactId, threadCount, onBack }: {
   contactId: string;
   threadCount: number;
+  /** 「去处理」的出口：回到对话屏（确认卡片浮在那里）。 */
+  onBack: () => void;
 }): JSX.Element {
-  const [state, setState] = useState<ToolState | null>(null);
   const [permission, setPermission] = useState<AssistantPermission>("confirm");
-  const [activity, setActivity] = useState<AssistantActivity[] | null>(null);
   const [pendingCount, setPendingCount] = useState(0);
   const [busy, setBusy] = useState<AssistantPermission | "">("");
   const [err, setErr] = useState("");
@@ -58,18 +50,12 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
   const [confirmAuto, setConfirmAuto] = useState(false);
 
   const load = useCallback((): void => {
-    loadToolState()
-      .then(setState)
-      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
     assistantApi.getPermission()
       .then((r) => setPermission(r.permission))
       .catch(() => undefined);
     assistantApi.fetchPending(contactId)
       .then((r) => setPendingCount(r.pending.length))
       .catch(() => setPendingCount(0));
-    assistantApi.fetchActivity()
-      .then((r) => setActivity(r.items))
-      .catch(() => setActivity((prev) => prev ?? []));
   }, [contactId]);
   useEffect(() => { load(); }, [load]);
 
@@ -82,10 +68,9 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
       .then((r) => {
         setPermission(r.permission);
         setNote(`权限档已切到「${TIER_LABEL[r.permission]}」，下一条消息起生效。`);
-        // 权限切换本身就是一条变更记录：刷一遍，让这屏说的和自己刚做的一致。
-        assistantApi.fetchActivity()
-          .then((d) => setActivity(d.items))
-          .catch(() => undefined);
+        // 权限切换本身是一条变更记录，且只读档会改「允许的操作」的结论：
+        // 广播给审计面板，让它跟着刷新，两屏说的和自己刚做的一致。
+        window.dispatchEvent(new CustomEvent("xiaomo:assistant-permission-changed"));
       })
       .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)))
       .finally(() => setBusy(""));
@@ -99,49 +84,75 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
     applyTier(next);
   };
 
+  const tierDesc = PERMISSION_TIERS.find((t) => t.key === permission)?.desc ?? "";
+
+  return (
+    <section className="ac-panel">
+      {err !== "" && <div className="ext-banner is-bad" role="alert">{err}</div>}
+      {note !== "" && <div className="ext-banner is-ok" role="status">{note}</div>}
+      <div className="ac-tier-row">
+        <Layers3 size={15} />
+        <span className="ac-tier-label">权限档</span>
+        <span className="ac-note">变更从下一条消息开始生效</span>
+      </div>
+      <AssistantTierOptions permission={permission} busy={busy} onChoose={chooseTier} />
+      <div className="ac-note">{tierDesc}</div>
+      <div className="ac-tier-row">
+        <span className="ac-note">待确认动作 <b>{pendingCount}</b> 张</span>
+        {pendingCount > 0 && (
+          /* 卡片浮在对话那一屏：数字不该是死端，给一条回去处理的路。 */
+          <button type="button" className="btn sm" onClick={onBack} title="回到对话屏，卡片就浮在那里">
+            去处理
+          </button>
+        )}
+        <span className="lg-divider" />
+        <span className="ac-note">工作区 <b>{threadCount}</b> 个</span>
+      </div>
+      <AssistantAutoConfirmModal
+        open={confirmAuto} busy={busy}
+        onCancel={() => setConfirmAuto(false)}
+        onConfirm={() => applyTier("auto")}
+      />
+    </section>
+  );
+}
+
+/** 审计面板：最近的配置变更 + 允许的操作 + 助手也能用的只读工具。排在身份与对话之后。 */
+export function AssistantAuditPanels({ onGoTools }: {
+  /** 「允许的操作」面板的出口：关掉弹窗、跳到「工具与扩展 → 工具台账」逐项启停。 */
+  onGoTools: () => void;
+}): JSX.Element {
+  const [state, setState] = useState<ToolState | null>(null);
+  const [permission, setPermission] = useState<AssistantPermission>("confirm");
+  const [activity, setActivity] = useState<AssistantActivity[] | null>(null);
+  const [err, setErr] = useState("");
+
+  const load = useCallback((): void => {
+    loadToolState()
+      .then(setState)
+      .catch((e: unknown) => setErr(e instanceof Error ? e.message : String(e)));
+    assistantApi.getPermission()
+      .then((r) => setPermission(r.permission))
+      .catch(() => undefined);
+    assistantApi.fetchActivity()
+      .then((r) => setActivity(r.items))
+      .catch(() => setActivity((prev) => prev ?? []));
+  }, []);
+  useEffect(() => { load(); }, [load]);
+  // 权限档在另一块面板里切：档位变了，「允许的操作」的结论与变更记录都要跟着刷新。
+  useEffect(() => {
+    window.addEventListener("xiaomo:assistant-permission-changed", load);
+    return () => window.removeEventListener("xiaomo:assistant-permission-changed", load);
+  }, [load]);
+
   const assistantTools = state?.tools.filter((t) => t.scope === "assistant") ?? [];
   const assistantExtraTools = state?.tools.filter((t) => (ASSISTANT_EXTRA_TOOLS as readonly string[]).includes(t.name)) ?? [];
   const readonly = permission === "readonly";
-  const tierDesc = PERMISSION_TIERS.find((t) => t.key === permission)?.desc ?? "";
   const shownActivity = activity?.slice(0, ACTIVITY_SHOWN) ?? [];
   const activityHidden = (activity?.length ?? 0) - shownActivity.length;
 
   return (
-    <div className="ac-console">
-      <div className="ac-console-head">
-        <button type="button" className="btn sm" onClick={onBack} aria-label="返回助手对话">
-          <ArrowLeft size={14} /> 返回对话
-        </button>
-        <div className="ac-console-title"><b>助手设置</b><small>权限、变更记录与它能动的手，都在这里</small></div>
-        <button type="button" className="btn sm" onClick={onEditProfile}>
-          <UserRound size={14} /> 编辑资料
-        </button>
-      </div>
-
-      {err !== "" && <div className="ext-banner is-bad" role="alert">{err}</div>}
-      {note !== "" && <div className="ext-banner is-ok" role="status">{note}</div>}
-
-      <section className="ac-panel">
-        <div className="ac-tier-row">
-          <Layers3 size={15} />
-          <span className="ac-tier-label">权限档</span>
-          <span className="ac-note">变更从下一条消息开始生效</span>
-        </div>
-        <AssistantTierOptions permission={permission} busy={busy} onChoose={chooseTier} />
-        <div className="ac-note">{tierDesc}</div>
-        <div className="ac-tier-row">
-          <span className="ac-note">待确认动作 <b>{pendingCount}</b> 张</span>
-          {pendingCount > 0 && (
-            /* 卡片浮在对话那一屏：数字不该是死端，给一条回去处理的路。 */
-            <button type="button" className="btn sm" onClick={onBack} title="回到对话屏，卡片就浮在那里">
-              去处理
-            </button>
-          )}
-          <span className="lg-divider" />
-          <span className="ac-note">工作区 <b>{threadCount}</b> 个</span>
-        </div>
-      </section>
-
+    <>
       <section className="ac-panel">
         <div className="lg-panel-head">
           <div className="lg-panel-title">
@@ -234,7 +245,7 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
               const off = state.disabledTools.includes(tool.name);
               return (
                 <div className={"lg-row" + (off ? " is-off" : "")} key={tool.name}>
-                  <span className="lg-dot" aria-hidden="true" />
+                  <span className="lg-dot" aria-hidden />
                   <div className="lg-copy">
                     <div className="lg-name">{tool.label}</div>
                     <div className="lg-summary">{tool.summary}</div>
@@ -256,12 +267,6 @@ export default function AssistantConsole({ onBack, onEditProfile, onGoTools, con
           上面那组联网 / 技能只读工具也不随「只读」档摘除。
         </div>
       </div>
-
-      <AssistantAutoConfirmModal
-        open={confirmAuto} busy={busy}
-        onCancel={() => setConfirmAuto(false)}
-        onConfirm={() => applyTier("auto")}
-      />
-    </div>
+    </>
   );
 }

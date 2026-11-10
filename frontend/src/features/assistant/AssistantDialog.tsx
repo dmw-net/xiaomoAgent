@@ -9,7 +9,6 @@ import ChatView from "../chat/ChatView";
 import ThreadChip from "./ThreadChip";
 import PendingCard from "./PendingCard";
 import AssistantPermissionChip from "./AssistantPermissionChip";
-import AssistantConsole from "./AssistantConsole";
 import { useDismiss } from "../../hooks/useDismiss";
 import { useNarrow } from "../../hooks/useNarrow";
 import { contactsApi, threadContactId, assistantApi, type AssistantThread } from "../../api";
@@ -54,8 +53,6 @@ export default function AssistantDialog({ open, onClose, settingsSeq = 0, ownerN
   const [listErr, setListErr] = useState("");
   /** 弹窗里的第二屏：助手设置。false = 聊天那一屏。 */
   const [showSettings, setShowSettings] = useState(false);
-  /** 设置屏里的第二层：编辑资料仍复用资料页那份唯一实现，控制台是默认落点。 */
-  const [showProfile, setShowProfile] = useState(false);
   /** 会话状态由 ChatView 回吐，名字与它一起进弹窗头部（弹窗里不再显示聊天自带的居中标题栏）。 */
   const [status, setStatus] = useState({ text: "", tone: "" });
   const reportStatus = useCallback((text: string, tone: string): void => { setStatus({ text, tone }); }, []);
@@ -83,10 +80,9 @@ export default function AssistantDialog({ open, onClose, settingsSeq = 0, ownerN
   // 助手是一个临时召唤层：关闭时回到居中，不把上一次的拖动位置带进下一次使用。
   useEffect(() => { if (!open) setDrag(null); }, [open]);
 
-  // 设置搜索「设置助手权限」要求落到设置屏：seq 变了即使已在设置屏也要重新落位（清掉资料层）。
+  // 设置搜索「设置助手权限」要求落到设置屏：seq 变了即使已在设置屏也要重新落位。
   useEffect(() => {
     if (open && settingsSeq > 0) {
-      setShowProfile(false);
       setShowSettings(true);
     }
     // 依赖只留 seq：open 的每次变化都不该触发，否则召唤一次就永久落在设置屏。
@@ -98,7 +94,6 @@ export default function AssistantDialog({ open, onClose, settingsSeq = 0, ownerN
   useEffect(() => {
     const backToChat = (): void => {
       setShowSettings(false);
-      setShowProfile(false);
     };
     window.addEventListener("xiaomo:assistant-perm-open", backToChat);
     return () => window.removeEventListener("xiaomo:assistant-perm-open", backToChat);
@@ -294,7 +289,7 @@ export default function AssistantDialog({ open, onClose, settingsSeq = 0, ownerN
             <button type="button" className={"ws-add" + (showSettings ? " on" : "")}
               title={showSettings ? "回到对话" : "助手设置"}
               aria-label={showSettings ? "回到对话" : "助手设置"} aria-pressed={showSettings}
-              onClick={() => { setShowProfile(false); setShowSettings((v) => !v); }}>
+              onClick={() => { setShowSettings((v) => !v); }}>
               <Settings2 size={16} />
             </button>
             <button type="button" className="ws-add" title="关闭" aria-label="关闭" onClick={onClose}>
@@ -318,23 +313,17 @@ export default function AssistantDialog({ open, onClose, settingsSeq = 0, ownerN
           {showSettings && (
             <Suspense fallback={null}>
               <div className="asst-settings">
-                {showProfile ? (
-                  <ProfileView mode="edit" contactId="assistant" initialPage="settings"
-                    onBack={() => setShowProfile(false)} onSaved={loadIdentity} />
-                ) : (
-                  <AssistantConsole
-                    onBack={() => setShowSettings(false)}
-                    onEditProfile={() => setShowProfile(true)}
-                    onGoTools={() => {
-                      // 跳出弹窗去设置页：先收起助手层，再让 App 处理导航
-                      // （xiaomo:open-settings 与 xiaomo:open-contact 同一套窗口事件通道）。
-                      onClose();
-                      window.dispatchEvent(new CustomEvent("xiaomo:open-settings", { detail: { tab: "tools" } }));
-                    }}
-                    contactId={threadContactId(sel)}
-                    threadCount={threads.length}
-                  />
-                )}
+                {/* 助手设置屏就是资料页本身：身份/对话表单、权限档与审计面板都在这一屏里，
+                    不再有「编辑资料」那一层。 */}
+                <ProfileView mode="edit" contactId="assistant" initialPage="settings"
+                  onBack={() => setShowSettings(false)} onSaved={loadIdentity}
+                  threadCount={threads.length}
+                  onGoTools={() => {
+                    // 跳出弹窗去设置页：先收起助手层，再让 App 处理导航
+                    // （xiaomo:open-settings 与 xiaomo:open-contact 同一套窗口事件通道）。
+                    onClose();
+                    window.dispatchEvent(new CustomEvent("xiaomo:open-settings", { detail: { tab: "tools" } }));
+                  }} />
               </div>
             </Suspense>
           )}

@@ -424,15 +424,6 @@
 /* 「最近的配置变更」审计行：复用 .lg-row 网格，第三列放时间、第四列放成败。 */
 .ac-act-time { font-size: 11px; color: var(--text-subtle); text-align: right; font-variant-numeric: tabular-nums; }
 .ac-act-more { padding: 8px 2px 0; font-size: 11.5px; color: var(--text-subtle); }
-.ac-console {
-  height: 100%; overflow-y: auto; box-sizing: border-box;
-  padding: 18px 22px 28px; background: var(--bg-elevated);
-  display: flex; flex-direction: column; gap: 16px;
-}
-.ac-console-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
-.ac-console-title { flex: 1 1 180px; display: flex; flex-direction: column; gap: 2px; min-width: 0; text-align: center; }
-.ac-console-title b { font-size: 15px; font-weight: 500; color: var(--text); }
-.ac-console-title small { font-size: 12px; color: var(--text-muted); }
 /* 档位数量由后端下发，segmented 用 auto-flow 自动等分，不再写死列数。 */
 
 /* 联系人资料页：档位优先、逐项开关收进折叠区 */

@@ -36,9 +36,10 @@ const themeCss = readFileSync("frontend/src/styles/theme.css", "utf8");
 const assistantDialogSource = readFileSync("frontend/src/features/assistant/AssistantDialog.tsx", "utf8");
 const assistantPermissionSource = readFileSync("frontend/src/features/assistant/AssistantPermissionChip.tsx", "utf8");
 // 权限档共用件（2026-11-08 收敛）：三档 option-card 与 auto 风险弹窗的全站唯一实现，
-// chip 与助手设置屏（AssistantConsole）都从这里取——同一个决策只允许一份实现、一份文案。
+// chip 与助手设置屏（AssistantSettingsPanels）都从这里取——同一个决策只允许一份实现、一份文案。
 const assistantPermissionShared = readFileSync("frontend/src/features/assistant/AssistantPermission.tsx", "utf8");
-const assistantConsoleSource = readFileSync("frontend/src/features/assistant/AssistantConsole.tsx", "utf8");
+// 助手设置屏已并进资料页（2026-11-10）：权限档与审计面板住在 ProfileView 里，不再有独立的控制台层。
+const assistantPanelsSource = readFileSync("frontend/src/features/assistant/AssistantSettingsPanels.tsx", "utf8");
 const assistantPendingSource = readFileSync("frontend/src/features/assistant/PendingCard.tsx", "utf8");
 const settingsSource = readFileSync("frontend/src/features/settings/SettingsView.tsx", "utf8");
 const agentSource = readFileSync("src/chat/agent.ts", "utf8");
@@ -194,11 +195,11 @@ assert(/next === "auto"[\s\S]*?setConfirmAuto\(true\)/.test(assistantPermissionS
 assert(/权限变更从下一条消息开始生效/.test(assistantPermissionSource), "UI 必须说明权限从下一条消息生效");
 assert(/\.asst-perm-chip\.is-auto[\s\S]*?var\(--danger\)/.test(componentsCss), "完全自主 chip 必须常显危险色");
 // 收敛后的硬约束：同一个权限决策，chip 与助手设置屏必须用同一份 option-card 与同一份风险弹窗。
-assert(assistantPermissionSource.includes("<AssistantTierOptions") && assistantConsoleSource.includes("<AssistantTierOptions"),
+assert(assistantPermissionSource.includes("<AssistantTierOptions") && assistantPanelsSource.includes("<AssistantTierOptions"),
   "chip 与助手设置屏必须复用同一份三档 option-card（AssistantPermission.tsx）");
-assert(assistantPermissionSource.includes("<AssistantAutoConfirmModal") && assistantConsoleSource.includes("<AssistantAutoConfirmModal"),
+assert(assistantPermissionSource.includes("<AssistantAutoConfirmModal") && assistantPanelsSource.includes("<AssistantAutoConfirmModal"),
   "「完全自主」风险弹窗全站只能有一份（AssistantPermission.tsx），不允许两处各写一份文案");
-assert(!assistantConsoleSource.includes("lg-segmented"), "助手设置屏不得再保留第二套权限分段按钮");
+assert(!assistantPanelsSource.includes("lg-segmented"), "助手设置屏不得再保留第二套权限分段按钮");
 // 设置搜索必须能找到助手：搜「权限/助手」的落点是跨页召唤，不是工具台账。
 assert(/action: "assistant"[\s\S]*?title: "设置助手权限"/.test(settingsSource), "设置搜索必须收录「设置助手权限」并标记跨页 action");
 assert(assistantDialogSource.includes("settingsSeq") && /open && settingsSeq > 0/.test(assistantDialogSource),
@@ -209,10 +210,18 @@ assert(/当前档位/.test(assistantPendingSource) && assistantPendingSource.inc
 assert(assistantPermissionSource.includes("xiaomo:assistant-perm-open"),
   "权限 chip 必须响应确认卡发来的就近展开事件");
 // auto 档的事后可见性：助手设置屏必须有变更记录面板，数据来自后端活动记录接口。
-assert(assistantConsoleSource.includes("最近的配置变更") && assistantConsoleSource.includes("fetchActivity"),
+assert(assistantPanelsSource.includes("最近的配置变更") && assistantPanelsSource.includes("fetchActivity"),
   "助手设置屏必须有「最近的配置变更」审计面板（/api/assistant/activity）");
-assert(/>\s*去处理\s*</.test(assistantConsoleSource),
+assert(/>\s*去处理\s*</.test(assistantPanelsSource),
   "待确认动作数字>0 时必须给「去处理」出口，不能是死端数字");
+// 助手设置屏已并进资料页：身份/对话表单、权限档与审计面板同一屏，不再有「编辑资料」第二层。
+assert(profileViewSource.includes("<AssistantPermissionPanel") && profileViewSource.includes("<AssistantAuditPanels"),
+  "助手设置屏必须把权限档与审计面板并进资料页（不再有「编辑资料」第二层）");
+assert(!assistantDialogSource.includes("showProfile") && !assistantDialogSource.includes("AssistantConsole"),
+  "助手弹窗不得再挂独立的控制台层 / 「编辑资料」第二层");
+// 各板块间距必须一致：从前只有身份卡带 margin，权限档 / 审计面板与设置卡是贴着排的。
+assert(/\.pf-assistant\s*>\s*\.ac-panel,\s*\.pf-assistant\s*>\s*\.pf-settings\s*\{[\s\S]*?margin-bottom:\s*12px/.test(experienceCss),
+  "助手设置屏各板块之间必须统一 12px 间隔（.pf-assistant 作用域）");
 // 声明与执行共用一份「本轮工具池快照」之后，toolDefsForApi 多了第三个参数；
 // 断言仍要钉住「用启动时的权限快照」，只是不再把参数个数写死。
 assert(
@@ -492,14 +501,14 @@ assert(/"probeMissing"/.test(mediaLibrarySource),
   "打开文件夹失败就地验真标失效——会话中删的文件不用等下一轮对账，清理按钮当场出现");
 
 // ── 设置助手能力补齐（2026-11-09）────────────────────────────────
-// ① 控制台「允许的操作」不能低报助手实际可用的工具：visibleTools 的助手分支还借了
+// ① 助手设置屏「允许的操作」不能低报助手实际可用的工具：visibleTools 的助手分支还借了
 //    WEB_TOOLS 与 load_skill，它们 scope=companion，不进助手清单，但确实可用。
-// assistantConsoleSource 已在文件头部读过（助手设置屏那组断言），这里直接复用。
+// assistantPanelsSource 已在文件头部读过（助手设置屏那组断言），这里直接复用。
 const assistantBackendSource = readFileSync("src/mind/assistant.ts", "utf8");
 const toolsBackendSource = readFileSync("src/mind/tools.ts", "utf8");
-assert(assistantConsoleSource.includes("助手也能用的只读工具"), "助手控制台要单列一组只读工具");
+assert(assistantPanelsSource.includes("助手也能用的只读工具"), "助手设置屏要单列一组只读工具");
 for (const name of ["web_search", "web_fetch", "load_skill"]) {
-  assert(assistantConsoleSource.includes(`"${name}"`), `助手控制台要列出只读工具 ${name}`);
+  assert(assistantPanelsSource.includes(`"${name}"`), `助手设置屏要列出只读工具 ${name}`);
 }
 assert(/return \[\.\.\.base\.filter\(keep\), \.\.\.WEB_TOOLS\.filter\(keep\), \.\.\.skillTools\.filter\(keep\)\]/.test(toolsBackendSource),
   "visibleTools 的助手分支必须继续注入 WEB_TOOLS 与 skillTools（控制台清单据此对齐）");

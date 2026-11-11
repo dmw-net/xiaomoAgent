@@ -859,6 +859,13 @@ export function createQQOneBotService(deps: { isEnabledForContact?: (contactId: 
         active: list.filter((a) => a.enabled).length,
         proactive: list.filter((a) => a.proactive && a.enabled).length,
         trouble,
+        contacts: list.map((a) => ({
+          contactId: a.contactId,
+          name: getContact(a.contactId)?.name || a.contactId,
+          status: a.enabled ? statusOf() : "disabled" as QQStatus,
+          enabled: a.enabled,
+          proactive: a.proactive,
+        })),
       };
     },
     setCredentials: (_contactId: string, _patch: { appId?: unknown; clientSecret?: unknown; enabled?: unknown }) => { unsupported("setCredentials"); hydrate(); return { configured: (accounts ?? []).length > 0 }; },

@@ -889,13 +889,22 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
     return { link: link === null ? null : viewOf(link) };
   };
 
-  /** 全局概况：状态页总览看这个（不属于某一位联系人的连接态）。 */
+  /** 全局概况：状态页总览看这个（不属于某一位联系人的连接态）。
+   *  contacts 是逐位明细：状态页要能直接答「连着的到底是哪几位」，而不是只报条数。 */
   const summary = () => {
     const by: Record<"connected" | "disabled" | "attention" | "paused", number> = {
       connected: 0, disabled: 0, attention: 0, paused: 0,
     };
     const trouble: Array<{ contactId: string; name: string; lastError: string }> = [];
-    for (const link of links.all()) {
+    const all = links.all();
+    const contacts = all.map((link) => ({
+      contactId: link.contactId,
+      name: getContact(link.contactId)?.name || link.contactId,
+      status: statusOf(link),
+      enabled: link.enabled,
+      proactive: link.proactive,
+    }));
+    for (const link of all) {
       const status = statusOf(link);
       by[status] += 1;
       if ((status === "attention" || status === "paused") && trouble.length < 3) {
@@ -903,11 +912,12 @@ export function createWeChatService(deps: { fetchImpl?: typeof fetch; now?: () =
       }
     }
     return {
-      links: links.all().length,
+      links: all.length,
       max: LINK_CAP,
       ...by,
-      proactive: links.all().filter((link) => link.proactive && link.enabled).length,
+      proactive: all.filter((link) => link.proactive && link.enabled).length,
       trouble,
+      contacts,
     };
   };
 

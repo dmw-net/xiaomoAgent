@@ -1085,11 +1085,13 @@ export function createQQService(deps: {
   };
 
   type TroubleItem = { contactId: string; name: string; lastError: string; at: number };
+  /** 状态页逐位明细：名字 + 这一位自己的连接态（凭据缺失按 not-configured）。 */
+  type ContactItem = { contactId: string; name: string; status: QQStatus; enabled: boolean; proactive: boolean };
   /**
    * 只报「现在还值得处理」的事：过期或没有时间戳的历史错误不进 trouble，
    * 也不再变成状态页那条一直挂着的红字。停用的绑定仍然列出（不带错误）。
    */
-  const summary = (): { configured: boolean; appId: string; status: QQStatus; lastError: string; bindings: number; max: number; active: number; proactive: number; trouble: TroubleItem[] } => {
+  const summary = (): { configured: boolean; appId: string; status: QQStatus; lastError: string; bindings: number; max: number; active: number; proactive: number; trouble: TroubleItem[]; contacts: ContactItem[] } => {
     hydrate(); const trouble: TroubleItem[] = [];
     for (const account of accounts) {
       const error = freshError(account);
@@ -1098,7 +1100,8 @@ export function createQQService(deps: {
     }
     const first = accounts[0];
     const firstError = trouble.find((t) => t.lastError !== "")?.lastError ?? "";
-    return { configured: accounts.some((a) => configured(a)), appId: first?.appId ? redact(first.appId) : "", status: gatewayStatus(), lastError: problem !== "" ? problem : firstError, bindings: accounts.length, max: ACCOUNT_CAP, active: accounts.filter((a) => configured(a) && a.enabled).length, proactive: accounts.filter((a) => a.proactive && a.enabled).length, trouble };
+    return { configured: accounts.some((a) => configured(a)), appId: first?.appId ? redact(first.appId) : "", status: gatewayStatus(), lastError: problem !== "" ? problem : firstError, bindings: accounts.length, max: ACCOUNT_CAP, active: accounts.filter((a) => configured(a) && a.enabled).length, proactive: accounts.filter((a) => a.proactive && a.enabled).length, trouble,
+      contacts: accounts.map((a) => ({ contactId: a.contactId, name: getContact(a.contactId)?.name || a.contactId, status: statusOf(a), enabled: a.enabled, proactive: a.proactive })) };
   };
 
   /** 手动清除通道提示：只抹掉状态页那条红字，活动记录里的失败记录一条不删；
@@ -1290,6 +1293,7 @@ export const qq: QQService = {
       active: official.active + ob.active,
       proactive: official.proactive + ob.proactive,
       trouble: [...official.trouble, ...ob.trouble],
+      contacts: [...official.contacts, ...ob.contacts],
     };
   },
   setCredentials: (contactId, patch) => serviceForContact(contactId).setCredentials(contactId, patch),

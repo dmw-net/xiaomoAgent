@@ -490,16 +490,24 @@ const CARD_PLACEHOLDER_EXACT: readonly string[] = [
 const CARD_META_ANY_LENGTH: readonly RegExp[] = [
   /占位/, /待填/, /用户自定义联系人|自定义联系人/, /TBD|TODO|TBC/i,
   /^[\s\-—–_·.。、,，:：*#]+$/, /^\d+$/, /^[(（][^)）]{0,60}[)）]$/,
+  /^(暂无|没有|无)(内容|资料|设定|信息|说明|描述)$/,
 ];
 const CARD_META_SHORT_TEXT: readonly RegExp[] = [
-  /待(用户|你|后续|之后)?(定义|补充|填写|设定|定|细化)/,
+  /待(用户|你|后续|之后)?(定义|补充|填写|设定|定|细化|完善)/,
   /(自行|由用户|用户自行|请你|请用户)(填写|补充|定义|设定|细化|修改)/,
   /(可|请|去|到)(在|到|去)?.{0,8}(编辑资料|资料页|设置页).{0,8}(细化|补充|修改|完善|填写)/,
   /编辑资料.{0,6}(里|中|去)?(细化|补充|修改|完善|填写)/,
   /根据需要再/,
+  /^(未|尚未|暂未)(填写|补充|设定|完善|定义|描述)/,
 ];
 /** 指令式特征只看短文本的界限：真实设定很少在 120 字内通篇还是「去哪里补/谁来填」。 */
 const CARD_SHORT_TEXT_LIMIT = 120;
+/**
+ * 整值比对前削掉首尾标点/空白：模型会把「暂无」写成「暂无。」「N/A.」「待完善！…」，
+ * 精确匹配就会漏成「已完成」。只削边缘，不碰正文中间的标点——「无话不谈的朋友」
+ * 削完仍是完整一句，不会被当成占位。
+ */
+const CARD_EDGE_JUNK_RE = /^[\s\-—–_·.。、,，:：;；!！?？*#]+|[\s\-—–_·.。、,，:：;；!！?？*#]+$/g;
 
 /** 一段卡片正文是否算「真的写好了」。空 / 过短 / 占位或元指令一律 false。 */
 export function isCardFieldComplete(value: unknown): boolean {
@@ -507,9 +515,10 @@ export function isCardFieldComplete(value: unknown): boolean {
   if (text === "") return false;
   // 「同事」「朋友」这类用户明确给出的短关系值是合法设定；只有单字算没写。
   if (text.length < 2) return false;
-  if (CARD_PLACEHOLDER_EXACT.includes(text.toLowerCase())) return false;
-  if (CARD_META_ANY_LENGTH.some((re) => re.test(text))) return false;
-  return !(text.length <= CARD_SHORT_TEXT_LIMIT && CARD_META_SHORT_TEXT.some((re) => re.test(text)));
+  const normalized = text.toLowerCase().replace(CARD_EDGE_JUNK_RE, "");
+  if (normalized === "" || CARD_PLACEHOLDER_EXACT.includes(normalized)) return false;
+  if (CARD_META_ANY_LENGTH.some((re) => re.test(normalized))) return false;
+  return !(normalized.length <= CARD_SHORT_TEXT_LIMIT && CARD_META_SHORT_TEXT.some((re) => re.test(normalized)));
 }
 
 /** 写入侧闸门：留空合法（表示待补全），非空就必须是一段像样的设定正文。 */
@@ -538,6 +547,30 @@ function cardReceipt(card: { background?: string; identity?: string; relationshi
       relationship: isCardFieldComplete(parts.relationship),
     },
   };
+}
+
+/**
+ * 头像投影：给模型的是「有没有」和可长期引用的站内路径，不是原始字段。
+ *
+ * 两种形态都必须收口：
+ * - 资料页上传的头像是 data URL（sanitizeAvatar 允许到 150KB）——原样回给模型
+ *   等于把 base64 塞进工具结果和下一轮上下文，而模型只需要知道「有头像」；
+ * - `/media` 路径要查真实存在性：文件被清理后 `!== ""` 仍会报「有头像」，
+ *   清单据此跳过重设，用户就会一直看到裂图。
+ */
+function avatarProjection(avatar: string): {
+  hasAvatar: boolean;
+  avatar: string;
+  avatarKind: "media" | "inline" | "none" | "broken";
+} {
+  if (avatar === "") return { hasAvatar: false, avatar: "", avatarKind: "none" };
+  if (avatar.startsWith("/media/")) {
+    return mediaUrlExists(avatar)
+      ? { hasAvatar: true, avatar, avatarKind: "media" }
+      : { hasAvatar: false, avatar: "", avatarKind: "broken" };
+  }
+  if (/^data:image\//.test(avatar)) return { hasAvatar: true, avatar: "", avatarKind: "inline" };
+  return { hasAvatar: false, avatar: "", avatarKind: "broken" };
 }
 
 /**
@@ -589,7 +622,7 @@ function statusSnapshot(): Record<string, unknown> {
         identity: isCardFieldComplete(c.card.identity),
         relationship: isCardFieldComplete(c.card.relationship),
       },
-      hasAvatar: c.avatar !== "",
+      hasAvatar: avatarProjection(c.avatar).hasAvatar,
     })),
     /** 六张能力卡的真实生效值（不含密钥）：排查「看图/语音为什么没配上」要靠它。 */
     capabilities: Object.fromEntries(CAPABILITY_NAMES.map((name) => {
@@ -664,6 +697,7 @@ function contactDetail(target: string): Record<string, unknown> {
   if (!r.contact) return { ok: false, error: r.error };
   const c = r.contact;
   const filled = cardReceipt(c.card) as { card: Record<string, string>; cardFilled: Record<string, boolean> };
+  const avatar = avatarProjection(c.avatar);
   return {
     ok: true,
     contact: {
@@ -675,8 +709,9 @@ function contactDetail(target: string): Record<string, unknown> {
       cardPlaceholder: Object.fromEntries(
         Object.entries(filled.card).map(([key, value]) => [key, value.trim() !== "" && !isCardFieldComplete(value)]),
       ),
-      hasAvatar: c.avatar !== "",
-      avatar: c.avatar,
+      hasAvatar: avatar.hasAvatar,
+      avatar: avatar.avatar,
+      avatarKind: avatar.avatarKind,
       modelProfile: c.model_profile || "",
       followsGlobalModel: c.model_profile === "",
       activeProfileId: activeProfileId(),
@@ -710,7 +745,7 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
     name: "app_status",
     description:
       "读取真实配置（脱敏，密钥永不出快照）。系统提示词末尾**每轮已经注入**一份实时快照：生效模型与模型档、联系人（名字 / 模型绑定 / 三段设定完成状态 / 有无头像）、六张能力卡、工具台账、引导完成度、技能 / 扩展 / 媒体库 / 渠道连接，回答配置问题直接以它为准，不要凭记忆猜，也不必先调一次本工具。" +
-      "只有两种情况才调：① 写入配置后要复核结果；② 要看某位联系人的**完整卡片正文**时传 contact（名字或 id），返回三段正文、占位标记、头像路径与模型绑定状态。不传 contact 就是全量快照，不含卡片正文。",
+      "只有两种情况才调：① 写入配置后要复核结果；② 要看某位联系人的**完整卡片正文**时传 contact（名字或 id），返回三段正文、占位标记、头像状态（hasAvatar / avatarKind；dataURL 头像不回字节）与模型绑定状态。不传 contact 就是全量快照，不含卡片正文。",
     parameters: {
       type: "object",
       properties: {
@@ -1030,20 +1065,29 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
       if (!r.contact) return { ok: false, error: r.error };
       const model = clean(args.model);
       if (model === "") {
+        if (r.contact.model_profile === "") {
+          return { ok: true, contact: r.contact.name, bound: null, changed: false, followsGlobal: true, note: "本来就在跟随全局，无需解绑；没有改动。" };
+        }
         updateContact(r.contact.id, { modelProfile: "" });
         return { ok: true, contact: r.contact.name, bound: null, changed: true, followsGlobal: true, note: "已解除绑定，回到跟随全局默认" };
       }
       const p = resolveProfile(model);
       if (!p.id) return { ok: false, error: p.error };
-      // 绑到当前全局档不是 no-op：写入 model_profile 会把「跟随全局」改成「显式钉住」，
-      // 以后切全局档不再波及这位联系人。用户没要求固定，就不该悄悄改掉这层语义。
-      if (p.id === activeProfileId()) {
-        const pinned = r.contact.model_profile !== "";
+      const current = r.contact.model_profile;
+      // 已经钉在这一档上：no-op。必须按「是不是同一档」判，不能只看非空——
+      // 联系人绑在别的档上时，改绑当前全局档是一次真实变更，不能被这里吞掉。
+      if (current === p.id) {
         return {
-          ok: true, contact: r.contact.name, bound: null, changed: false, followsGlobal: !pinned,
-          note: pinned
-            ? `「${p.label}」就是当前全局默认档，这位联系人已经显式绑在它上面；没有改动。想恢复跟随全局就把 model 传空串。`
-            : `「${p.label}」就是当前全局默认档，这位联系人本来就在跟随全局，无需单独绑定；没有改动。`,
+          ok: true, contact: r.contact.name, bound: p.label, changed: false, followsGlobal: false,
+          note: `本来就绑在「${p.label}」上；没有改动。`,
+        };
+      }
+      // 目标就是当前全局档、且联系人还在跟随全局：不写。写入会把「跟随全局」
+      // 改成「显式钉住」，以后切全局档不再波及它——用户没要求固定，就不该悄悄改语义。
+      if (p.id === activeProfileId() && current === "") {
+        return {
+          ok: true, contact: r.contact.name, bound: null, changed: false, followsGlobal: true,
+          note: `「${p.label}」就是当前全局默认档，这位联系人本来就在跟随全局，无需单独绑定；没有改动。`,
         };
       }
       updateContact(r.contact.id, { modelProfile: p.id });
@@ -1220,6 +1264,8 @@ function summarizeWrite(tool: string, args: Record<string, unknown>, result: unk
     activated?: string; bound?: string | null; deleted?: string; id?: string;
     /** 工具明确声明「没有改动」时不该记成一次变更（绑到当前全局档就是这种情况）。 */
     changed?: boolean;
+    /** changed:false 时的原因：跟随全局 / 已钉在同一档，审计行要说得准。 */
+    followsGlobal?: boolean;
   };
   const id = clean(args.id);
   switch (tool) {
@@ -1236,7 +1282,11 @@ function summarizeWrite(tool: string, args: Record<string, unknown>, result: unk
     case "update_contact": return `修改联系人「${r.name ?? clean(args.contact)}」的设定`;
     case "set_contact_avatar": return `给「${r.name ?? clean(args.contact)}」设置头像`;
     case "bind_contact_model":
-      if (r.changed === false) return `「${r.contact ?? clean(args.contact)}」本来就在跟随全局，无需绑定`;
+      if (r.changed === false) {
+        return r.followsGlobal === true
+          ? `「${r.contact ?? clean(args.contact)}」本来就在跟随全局，无需绑定`
+          : `「${r.contact ?? clean(args.contact)}」本来就绑在「${r.bound ?? clean(args.model)}」上，无需改动`;
+      }
       return r.bound ? `把「${r.contact}」绑定到模型「${r.bound}」` : `解除「${r.contact ?? clean(args.contact)}」的模型绑定`;
     case "manage_extensions": {
       const action = clean(args.action);
@@ -1337,7 +1387,7 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
     // 人设 / 关系仍是占位却回「配置完成」。把清单与复核写死，别指望模型自觉。
     "- 配置一个联系人（用户说「建一个XX」「都配置好 / 配置完成 / 一步到位」都按这份清单走，别自己猜「都」包括什么）：\n" +
       "  ① 没有这位联系人就 create_contact；三段设定尽量一次写具体，缺的段用 update_contact 补齐。" +
-      "看本轮快照的 cardFilled：哪段是 false 就补哪段，**不要写占位或操作说明**（它们会原样进角色提示词）。" +
+      "看 create_contact / update_contact 回执（新建的联系人还不在本轮快照里）或 app_status(contact) 的 cardFilled：哪段是 false 就补哪段，**不要写占位或操作说明**（它们会原样进角色提示词）。" +
       "relationship 是用户侧偏好，用户没指定就给中性默认（刚认识、以朋友方式相处）或先问一句，不要凭空编一段亲密关系。\n" +
       "  ② 只有 hasAvatar 为 false 才配头像：set_contact_avatar 走 draw_prompt 时先按工具说明核对外貌，" +
       "不要凭记忆写发色 / 瞳色；用户明确要现成图才 web_search（kind 传 image）按序号请用户挑。已有头像不要重画。\n" +

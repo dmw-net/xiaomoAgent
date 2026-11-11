@@ -2602,6 +2602,19 @@ try {
     JSON.stringify(phRow ?? {}));
   await fetch(`${BASE}/api/contacts/${encodeURIComponent(phCid)}/archive`, { method: "POST" });
   await fetch(`${BASE}/api/contacts/${encodeURIComponent(phCid)}`, { method: "DELETE" });
+  // 头像投影：资料页上传的是 data URL，原样回给模型会把 base64 塞进工具结果与下一轮上下文；
+  // 回执只给 hasAvatar / avatarKind，只有 /media 路径才回字符串。
+  const inlineAvatar = "data:image/png;base64," + png.toString("base64");
+  const inlineMade = await (await jsonPost("/api/contacts", { name: "内联头像对照", avatar: inlineAvatar })).json();
+  const inlineCid = (inlineMade.contact?.id ?? inlineMade.id) as string;
+  const inlineDetailR = await executeTool("app_status", JSON.stringify({ contact: "内联头像对照" }), A);
+  const inlineDetail = inlineDetailR.result as { ok?: boolean; contact?: { hasAvatar?: boolean; avatar?: string; avatarKind?: string } };
+  check("app_status(contact) 不把 dataURL 头像整段回给模型",
+    inlineDetail.ok === true && inlineDetail.contact?.hasAvatar === true
+    && inlineDetail.contact?.avatar === "" && inlineDetail.contact?.avatarKind === "inline",
+    JSON.stringify(inlineDetail.contact ?? {}));
+  await fetch(`${BASE}/api/contacts/${encodeURIComponent(inlineCid)}/archive`, { method: "POST" });
+  await fetch(`${BASE}/api/contacts/${encodeURIComponent(inlineCid)}`, { method: "DELETE" });
   const confR = await executeTool("configure_model", JSON.stringify({
     label: "助手配的", baseUrl: "https://api.assistant.test/v1", apiKey: "sk-assistant-probe-123", model: "assist-model", vision: true,
   }), A);
@@ -2618,8 +2631,14 @@ try {
     && isCardFieldComplete("测试占位") === false
     && isCardFieldComplete("用户自定义联系人") === false
     && isCardFieldComplete("无") === false && isCardFieldComplete("") === false
+    // 整值占位带标点也必须认出来：模型会把「暂无」写成「暂无。」「N/A.」。
+    && isCardFieldComplete("暂无。") === false && isCardFieldComplete("未设定。") === false
+    && isCardFieldComplete("随便。") === false && isCardFieldComplete("N/A.") === false
+    && isCardFieldComplete("待完善！") === false && isCardFieldComplete("未填写") === false
+    && isCardFieldComplete("暂无内容") === false
     && isCardFieldComplete("同事") === true && isCardFieldComplete("朋友") === true
-    && isCardFieldComplete("青梅竹马，一起长大") === true);
+    && isCardFieldComplete("青梅竹马，一起长大") === true
+    && isCardFieldComplete("无话不谈的朋友") === true && isCardFieldComplete("没有特别的关系") === true);
   const capText = "请联系用户到编辑资料里补充细化设定，";
   check("指令式特征只看到 120 字为止（长文本交给语境，避免误伤真实设定）",
     isCardFieldComplete(capText.repeat(6)) === false && isCardFieldComplete(capText.repeat(7)) === true);
@@ -2661,9 +2680,27 @@ try {
   check("绑定到非全局档成功且真的写入", bindR.ok === true
     && (bindR.result as { changed?: boolean }).changed === true);
   check("绑定落到联系人记录", contactModelProfile(newCid) === assistProf?.id);
+  const rebindSameR = await executeTool("bind_contact_model", JSON.stringify({ contact: "助手建的", model: "助手配的" }), A);
+  check("已绑同一非全局档时 changed:false（不再假装改了一次）",
+    rebindSameR.ok === true
+    && (rebindSameR.result as { changed?: boolean }).changed === false
+    && (rebindSameR.result as { followsGlobal?: boolean }).followsGlobal === false
+    && contactModelProfile(newCid) === assistProf?.id);
+  const backupProf = profsNow().find((p) => p.label === "助手备用档");
+  const rebindGlobalR = await executeTool("bind_contact_model", JSON.stringify({ contact: "助手建的", model: "助手备用档" }), A);
+  check("已绑非全局档 → 改绑当前全局档是真实变更（不能被 no-op 分支吞掉）",
+    rebindGlobalR.ok === true
+    && (rebindGlobalR.result as { changed?: boolean }).changed === true
+    && contactModelProfile(newCid) === backupProf?.id);
   const unbindR = await executeTool("bind_contact_model", JSON.stringify({ contact: "助手建的", model: "" }), A);
   check("空串解绑回到跟随全局", unbindR.ok === true
     && (unbindR.result as { followsGlobal?: boolean }).followsGlobal === true
+    && contactModelProfile(newCid) === "");
+  const unbindAgainR = await executeTool("bind_contact_model", JSON.stringify({ contact: "助手建的", model: "" }), A);
+  check("已经跟随全局时再解绑 changed:false（不记假变更）",
+    unbindAgainR.ok === true
+    && (unbindAgainR.result as { changed?: boolean }).changed === false
+    && (unbindAgainR.result as { followsGlobal?: boolean }).followsGlobal === true
     && contactModelProfile(newCid) === "");
   const updR = await executeTool("update_contact", JSON.stringify({ contact: "助手建的", relationship: "同事" }), A);
   const updBody = updR.result as { card?: Record<string, string>; cardFilled?: Record<string, boolean> };

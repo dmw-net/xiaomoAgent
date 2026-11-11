@@ -131,8 +131,8 @@ function validateHeaders(raw: unknown, label: string): Record<string, string> {
 }
 
 /**
- * 自定义工具的 schema 在**导入时**就规范化，与内置工具同一套要求。
- * 从前只检查 `type === "object"`，properties/required 写错照样登记，等模型调用时才炸。
+ * 自定义工具的 schema 在**导入时**就规范化，与内置工具同一套要求——
+ * properties/required 写错必须当场拦下，不能等模型调用时才炸。
  */
 function validateParameters(raw: unknown): Record<string, unknown> {
   if (!isPlainObject(raw)) throw new Error("parameters 必须是 JSON Schema 对象");
@@ -222,7 +222,7 @@ export function validateManifest(raw: unknown): ExtensionManifest {
 
 /**
  * 把模型声明的工具名空间化，防止与内置工具或别的扩展撞名；同时保证最终结果
- * 满足 OpenAI function.name 的 64 字上限。从前 `ext__<48字id>__<40字name>` 能到 95 字，
+ * 满足 OpenAI function.name 的 64 字上限——`ext__<48字id>__<40字name>` 拼满能到 95 字，
  * 部分服务商收到就直接 400。超长时截短并补一段短哈希，避免两个长名字撞成同一个。
  */
 export function extensionToolName(extensionId: string, toolName: string, kind: ExtensionToolKind): string {
@@ -572,8 +572,8 @@ async function runWebhook(handler: Extract<ExtensionHandler, { kind: "webhook" }
     signal: AbortSignal.timeout(handler.timeoutMs),
   });
   const text = await response.text();
-  // 统一带 ok 判别位：从前只回 { error: ... }，工具卡的软失败识别只认 ok === false，
-  // 于是 webhook 报错在界面上是一枚绿勾「执行完成」。
+  // 统一带 ok 判别位：工具卡的软失败识别只认 ok === false，
+  // 裸 { error: ... } 会让 webhook 报错在界面上变成一枚绿勾「执行完成」。
   if (!response.ok) return { ok: false, error: `webhook 返回 HTTP ${response.status}`, body: text.slice(0, 2000) };
   try {
     return text === "" ? { ok: true } : JSON.parse(text);

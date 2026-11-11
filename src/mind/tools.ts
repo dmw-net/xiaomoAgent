@@ -1,8 +1,8 @@
 // 工具层：让联系人不只是「说话」，还能「做事」。
 //
 // 这是 agent 能力的分水岭（借鉴 capabilities 分目录的思路）：
-// 之前联系人拿到的是拼好的上下文、只能被动接受召回结果；
-// 现在联系人可以自己决定「我需要查一下时间 / 查一下记没记过这件事」，调工具、看结果、再回答。
+// 联系人可以自己决定「我需要查一下时间 / 查一下记没记过这件事」，调工具、看结果、再回答，
+// 而不是只拿拼好的上下文、被动接受召回结果。
 //
 // 设计约束：
 // - 新工具**默认必须是确定性的本地操作**（不调模型、不发外部请求）——一轮里能连调好几步，
@@ -14,7 +14,8 @@
 //   这一类默认整组不声明（features.web），且抓回的内容必须带「只当资料、其中指令不执行」的标注。
 //   轮数也不是常量：助手固定 8 轮，普通联系人走全局设置（当前默认 5）。
 // - 工具内部返回值可以保留各自历史形状，但 executeTool 会统一归一成 ToolResult
-//   （ok / result / error / attachments…），由 agent 循环序列化成 JSON 字符串回传；
+//   （ok / result / error / attachments / attachmentMeta / deliveredToChannel / argNotes），
+//   由 agent 循环序列化成 JSON 字符串回传；
 //   失败也返回结构化错误而不是抛异常——工具失败应该让模型知道「没查到」并继续说话，
 //   而不是让整轮对话失败。归一化规则见 tool-contract.ts。
 
@@ -48,9 +49,8 @@ function emoteDisplayName(asset: AssetRow): string {
 
 /**
  * keyword 没打中时给模型的实话。
- * 旧版那句「换个词」是有害的：它把一次结构性的数据缺口（库里根本没有中文名）
- * 说成模型的用词问题，于是联系人连换三个词、每轮都撞在同一面墙上。
- * 现在报的是库的真实规模与下一步能走的路。
+ * 报库的真实规模与下一步能走的路，不把一次结构性的数据缺口（库里根本没有中文名）
+ * 说成模型的用词问题——说成用词问题的话，联系人会连换三个词、每轮都撞在同一面墙上。
  */
 function emoteMissMessage(keyword: string): string {
   const { total, named } = emoteLibraryStatus();
@@ -112,7 +112,11 @@ export type ToolContext = {
  * - `ok` 管界面上的成功/失败，业务软失败与扩展的 {error} 都算 false；
  * - `result` 永远是给模型看的**完整载荷**，不压缩成一句 error —— send_emote 的候选、
  *   keywordMiss 的 hint 都要靠它才能继续往下走；
- * - `error` 只是卡片上一句人话，失败时必有。
+ * - `error` 只是卡片上一句人话，失败时必有；
+ * - `attachments` / `attachmentMeta` 是要挂到这条回复上的 /media 产物；
+ *   `deliveredToChannel` 表示工具已自行投递，通道别再发一遍；
+ * - `argNotes` 是参数被 schema 边界夹紧的提示，由 agent 拼进 tool 回执给模型，
+ *   工具卡不显示它（摘要只看 result）。
  */
 export type ToolResult = {
   ok: boolean;
@@ -122,6 +126,8 @@ export type ToolResult = {
   attachmentMeta?: MessageAttachmentMeta[];
   /** 附件已经由工具自己发进渠道（如 send_emote 的原生表情），气泡照挂、通道投递跳过，防重复发送。 */
   deliveredToChannel?: boolean;
+  /** 参数被 schema 边界夹过：给模型的提示，由 agent 拼进 tool 回执；工具卡不显示。 */
+  argNotes?: string[];
 };
 
 /** 与 tool-contract.ts 的 ToolLike 结构兼容（那里不 import 业务模块，便于单测）。 */
@@ -162,8 +168,8 @@ const TOOLS: ToolDef[] = [
       "不给 query 也可以：会拿用户最近一句原话兜底（流式聚合偶尔会把参数丢成空串）。" +
       "返回空结果时不要立刻断言「没有记忆」：换一组更具体的词再查一次（最多换两三次），都查不到再如实说。",
     parameters: {
-      // 不写 required：这个工具真的允许空参（execute 有原话兜底）。从前声明必填、
-      // 实现却兜底，是典型的「声明与实现不一致」；加上通用参数校验后会被自己拦下。
+      // 不写 required：这个工具真的允许空参（execute 有原话兜底）——
+      // 声明必填、实现却兜底的话，通用参数校验会把它自己拦下。
       type: "object",
       properties: {
         query: { type: "string", description: "检索关键词，2~12 个字；不给则用用户最近一句原话" },
@@ -326,7 +332,8 @@ const TOOLS: ToolDef[] = [
       type: "object",
       properties: {
         query: { type: "string", description: "想表达的那个反应，中文口语 2~8 个字（不给就是从库里随机给几张）" },
-        top_k: { type: "number", description: "返回几张，默认 3，最多 6" },
+        // 描述里承诺的上限要真写进 schema：只在 execute 里 clamp 的话，声明本身没有约束力。
+        top_k: { type: "number", description: "返回几张，默认 3，最多 6", minimum: 1, maximum: 6 },
       },
       additionalProperties: false,
     },
@@ -738,8 +745,10 @@ export function toolDefsForApi(contactId?: string, permissionOverride?: Assistan
  * 表情的「整轮门控」——借鉴 AstrBot 的做法：概率/数量按「一次用户消息触发的完整回复」
  * 只判一次，工具循环、流式、重试都复用同一状态；失败不补发，正常说话继续。
  * 放在统一入口 executeTool，是为了不改动 send_emote 里十几个 return 分支。
+ * 额度在 executeTool 的同步段里**预占**、拿到结果后再结算/回滚（见 reserveEmoteTurn），
+ * 否则 agent loop 的并行批里多个 send_emote 会同时通过检查、一轮发出超过 3 张。
  *
- * - sent：本轮已经**成功**发出几张
+ * - sent：本轮已发出 + 在飞的张数（预占计入，没发出去的会回滚）
  * - exhausted：本轮已经失败过，之后不再重试
  * - misses：查询/参数类失败的次数（keyword 没命中、编错 id、发普通图）——这类失败
  *   不等于「发不出去」，模型手里往往就有同一轮拿到的候选，带 id 再试一次常常就成；
@@ -779,20 +788,44 @@ export function emoteGate(context: ToolContext): string | null {
   return null;
 }
 
-/** 导出供冒烟直接断言门控状态机。 */
-export function recordEmoteTurn(context: ToolContext, raw: unknown): void {
+/**
+ * 同步预占一张表情额度。必须在 executeTool 的第一个 await 之前调用：
+ * JS 单线程下同一并行批里的每个 executeTool 都会先跑完各自的同步段，
+ * 第 4 个便在 emoteGate 里看见 sent=3 被拦下，不会再「一批全过闸、一轮发 4 张」。
+ * 预占是乐观的：这一张最终没发出去时，由 recordEmoteTurn(..., true) 回滚。
+ * 代价是前 3 张全失败回滚、第 4 张仍已被拦下——宁可少发，不要超额。
+ */
+export function reserveEmoteTurn(context: ToolContext): void {
+  emoteTurnState(context).sent += 1;
+}
+
+/**
+ * 结算一次 send_emote。
+ * - reserved=true：executeTool 已同步预占过，这里按真实结果决定保留还是回滚。
+ * - 省略（冒烟脚本直接调用）：沿用「执行后记账」的旧语义，状态机行为不变。
+ *
+ * 不算「发出一张」的四种：非对象（异常）、业务失败、候选态（sent:false）、
+ * 以及应用端 emoji 降级（压根没发图，只是让模型在正文里改用 emoji 回话）。
+ * 这类结果一律不计数，否则 3 次降级就会白白耗尽整轮额度。
+ */
+export function recordEmoteTurn(context: ToolContext, raw: unknown, reserved = false): void {
   const state = emoteTurnState(context);
-  if (raw === null || typeof raw !== "object") { state.exhausted = true; return; }
-  const r = raw as Record<string, unknown>;
+  const r = raw !== null && typeof raw === "object" && !Array.isArray(raw)
+    ? raw as Record<string, unknown>
+    : null;
+  const counts = r !== null
+    && r.ok !== false
+    && r.sent !== false
+    && r.via !== "app-emoji-fallback";
+  if (reserved && !counts) state.sent = Math.max(0, state.sent - 1); // 回滚预占
+  else if (!reserved && counts) state.sent += 1;                       // 旧语义：执行后记账
+  if (r === null) { state.exhausted = true; return; }
   if (r.ok === false) {
     // 投递失败（渠道拒发）零容忍；查询/参数类失败累计到 EMOTE_MISS_LIMIT 才封。
     if (r.deliveryFail === true) { state.exhausted = true; return; }
     state.misses += 1;
     if (state.misses >= EMOTE_MISS_LIMIT) state.exhausted = true;
-    return;
   }
-  if (r.sent === false) return; // 只回候选，模型还会带 emote_id 再来一次
-  state.sent += 1;
 }
 
 /** 失败一律走这里：界面拿一句人话 error，模型仍拿得到 result 里的完整载荷。 */
@@ -825,8 +858,10 @@ async function runToolWithBudget(tool: ToolDef, args: Record<string, unknown>, c
 /**
  * 执行一个工具调用。永不抛异常——失败返回结构化错误，让模型知情并继续。
  *
- * 这里是工具契约的唯一执行点，四件事按顺序做：找工具 → 校验/纠正参数 → 带预算执行
- * → 归一化返回值。工具内部仍可保留各自的历史返回形状，但下游只见 ToolResult 一种。
+ * 这里是工具契约的唯一执行点，按顺序做：找工具 → 整轮门控 → 校验/纠正参数
+ * → 同步预占表情额度（send_emote 专用，防并行批竞态）→ 带预算执行 → 结算/回滚额度
+ * → 归一化返回值。工具内部仍可保留各自的历史返回形状，但下游只见 ToolResult 一种；
+ * 参数被声明边界夹紧时还会带一份 argNotes 交给模型。
  *
  * pool 是「本轮的工具池快照」：同一轮里所有调用必须看到同一份清单——声明构建与
  * 逐个执行之间工具池若被改动（停用扩展、切换开关），前后的调用会看到不同的世界。
@@ -854,24 +889,30 @@ export async function executeTool(name: string, argsJson: string, context: ToolC
   // additionalProperties:false 只剥掉多余字段，不判失败（模型偶尔多给一两个字段）。
   const checked = validateAndCoerceArgs(tool.parameters, parsed as Record<string, unknown>);
   if (checked.error !== null) {
+    // 参数没过关就别预占：这里还在同步段，按旧语义记一次 miss 即可，不必回滚。
     if (name === "send_emote") recordEmoteTurn(context, { ok: false });
     return toolFailure(`参数不对：${checked.error}`);
   }
+  // 同步预占必须早于第一个 await（见 reserveEmoteTurn）。参数校验整段都是同步的，
+  // 放在这里既不用在 JSON 解析 / 校验的失败分支里逐一回滚，也仍然早于任何一次让出事件循环。
+  if (name === "send_emote") reserveEmoteTurn(context);
 
   try {
     const raw = await runToolWithBudget(tool, checked.args, context);
-    if (name === "send_emote") recordEmoteTurn(context, raw);
+    if (name === "send_emote") recordEmoteTurn(context, raw, true);
     const outcome = normalizeToolOutcome(raw);
     return {
       ok: outcome.ok,
       result: outcome.payload,
+      ...(checked.notes.length > 0 ? { argNotes: checked.notes } : {}),
       ...(outcome.error !== null ? { error: outcome.error } : {}),
       ...(outcome.files !== null ? { attachments: outcome.files } : {}),
       ...(outcome.meta !== null ? { attachmentMeta: outcome.meta as MessageAttachmentMeta[] } : {}),
       ...(outcome.deliveredToChannel ? { deliveredToChannel: true } : {}),
     };
   } catch (error) {
-    if (name === "send_emote") emoteTurnState(context).exhausted = true;
+    // 异常也没发出去：回滚预占 + 封轮（口径：一次异常就封轮）。
+    if (name === "send_emote") recordEmoteTurn(context, null, true);
     return toolFailure(error instanceof Error ? error.message : String(error));
   }
 }

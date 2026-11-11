@@ -15,8 +15,7 @@
 // 同一个用户，在 A 角色眼里和在 B 角色眼里本就应该不一样：
 //   A：你是联系人大学同学，联系人知道你现在做后端、最近在熬夜赶项目；
 //   B：你是联系人店里的老客，联系人只知道你常点不加糖的美式。
-// 过去这里是一个全局 OWNER_NAME 变量，等于所有角色共享同一个人设——
-// 那就没有"关系"可言了，只有一个客服账号。
+// 用户档案挂在角色下面，各角色才各有自己的"关系"，而不是共享同一个客服人设。
 
 import type { MemoryEvent } from "./memory.ts";
 import type { ChatMessage } from "../settings/model.ts";
@@ -60,7 +59,7 @@ export function buildOwnerSection(owner: OwnerProfile): string {
   // 用户明确设置的指代方式决定提示词里的代词；未设置时走中性「TA」，不把用户默认成男性。
   const op = ownerPronoun(owner.gender);
   const lines: string[] = [];
-  // 称呼没填就整段不提（原来默认值是「用户」，会拼出「你称呼用户为「用户」」这种自指废话）。
+  // 称呼没填就整段不提，避免拼出「你称呼用户为「用户」」这种自指废话。
   if (owner.name.trim() !== "") lines.push(`你称呼${op}为「${owner.name}」。`);
 
   if (owner.impression.trim() !== "") {
@@ -247,8 +246,7 @@ export function buildSystemPrompt(
  * 供设置页/资料页预览用：让用户改完能立刻看到"模型实际收到什么"。
  *
  * memories 一律由调用方给**真实**条目（不给就是空召回，[记忆] 段显示占位句）。
- * 这里以前塞过两条编造的示例记忆，代价是用户在预览里看到"模型会收到这些"，
- * 而模型其实一个字都没收到——预览必须是真的，宁可显示"没有"。
+ * 预览必须是真的：只放模型实际会收到的内容，宁可显示"没有"，不放编造的示例条目。
  */
 export function previewSystemPrompt(
   character: CharacterCard,

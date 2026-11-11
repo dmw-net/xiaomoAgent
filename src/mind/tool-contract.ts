@@ -3,7 +3,7 @@
 // 这里刻意是零业务依赖的叶子模块：不 import tools.ts / agent.ts / db.ts，
 // 所以回归测试可以单独 import 它，不会把整条启动链拉起来。
 //
-// 解决的是三件从前只靠注释维持的事：
+// 解决三件容易只靠注释糊过去的事：
 // 1. 工具返回值有四种形状（裸对象 / {ok:false} / {files,result} / {error}），
 //    统一入口先归一化，下游只认一种判别结果；
 // 2. JSON Schema 只声明给模型，执行侧全靠每个工具手写兜底；
@@ -53,9 +53,9 @@ function errorText(raw: unknown): string {
 /**
  * 把任意工具返回值归一成一份判别结果。
  *
- * 四种历史形状都还允许存在（改 21 个工具的返回值风险太大），但只在**这一个函数**里认：
+ * 四种历史形状都还允许存在（改 23 个静态工具的返回值风险太大），但只在**这一个函数**里认：
  *   ① {ok:false, error, …}        业务软失败（send_emote / 配置类 / web_*）
- *   ② {error: "…"}                扩展 webhook / MCP isError 的错误（从前漏判成成功）
+ *   ② {error: "…"}                扩展 webhook / MCP isError 的错误（无 ok 判别位，须单独识别）
  *   ③ {files, result, meta, …}    带产物的包装（出图 / 语音 / 表情）
  *   ④ 其它                        成功，载荷原样
  *
@@ -74,7 +74,7 @@ export function normalizeToolOutcome(raw: unknown): NormalizedToolOutcome {
     if (isRecord(raw.needsConfirmation)) return { ...base, ok: true, error: null };
     return { ...base, ok: false, error: errorText(raw.error) };
   }
-  // 没有 ok:true 的 {error} 一律算失败：扩展与 MCP 从前正是这么把失败画成绿勾的。
+  // 没有 ok:true 的 {error} 一律算失败：扩展与 MCP 的失败就长这个形状，不拦会把失败画成绿勾。
   if (raw.ok !== true && typeof raw.error === "string" && raw.error.trim() !== "") {
     return { ...base, ok: false, error: errorText(raw.error) };
   }
@@ -94,32 +94,46 @@ export function normalizeToolOutcome(raw: unknown): NormalizedToolOutcome {
   return base;
 }
 
-/** 按声明类型把正文形式/模型偶发写错的参数掰回来；掰不动就给一句人话错误。 */
-function coerceValue(rule: unknown, value: unknown): { value: unknown; error: string | null } {
-  if (!isRecord(rule)) return { value, error: null };
+type Coerced = { value: unknown; error: string | null; note: string | null };
+
+/**
+ * 按声明类型把正文形式/模型偶发写错的参数掰回来；掰不动就给一句人话错误。
+ * 边界夹紧仍照旧「掰回来」（直接拒绝会让整轮白跑），但要留一句 note 交给模型：
+ * 不回 note 的话，`in_minutes: 1000000` 会被夹成 525600 而模型毫不知情：
+ * 它以为约的是两年后，实际立的是一年后的提醒。
+ */
+function coerceValue(rule: unknown, value: unknown): Coerced {
+  if (!isRecord(rule)) return { value, error: null, note: null };
   const type = rule.type;
   if (type === "number" || type === "integer") {
     const n = typeof value === "number" ? value
       : typeof value === "string" && value.trim() !== "" ? Number(value) : Number.NaN;
-    if (!Number.isFinite(n)) return { value, error: "需要数字" };
+    if (!Number.isFinite(n)) return { value, error: "需要数字", note: null };
     let out = type === "integer" ? Math.round(n) : n;
-    if (typeof rule.minimum === "number") out = Math.max(out, rule.minimum);
-    if (typeof rule.maximum === "number") out = Math.min(out, rule.maximum);
-    return { value: out, error: null };
+    let note: string | null = null;
+    if (typeof rule.minimum === "number" && out < rule.minimum) {
+      note = `${out} 小于下限 ${rule.minimum}，已按 ${rule.minimum} 处理`;
+      out = rule.minimum;
+    }
+    if (typeof rule.maximum === "number" && out > rule.maximum) {
+      note = `${out} 超过上限 ${rule.maximum}，已按 ${rule.maximum} 处理`;
+      out = rule.maximum;
+    }
+    return { value: out, error: null, note };
   }
   if (type === "boolean") {
-    if (typeof value === "boolean") return { value, error: null };
+    if (typeof value === "boolean") return { value, error: null, note: null };
     if (typeof value === "string" && /^(true|false)$/i.test(value.trim())) {
-      return { value: value.trim().toLowerCase() === "true", error: null };
+      return { value: value.trim().toLowerCase() === "true", error: null, note: null };
     }
-    return { value, error: "需要 true / false" };
+    return { value, error: "需要 true / false", note: null };
   }
   if (type === "string") {
-    if (typeof value === "string") return { value, error: null };
-    if (typeof value === "number" || typeof value === "boolean") return { value: String(value), error: null };
-    return { value, error: "需要文本" };
+    if (typeof value === "string") return { value, error: null, note: null };
+    if (typeof value === "number" || typeof value === "boolean") return { value: String(value), error: null, note: null };
+    return { value, error: "需要文本", note: null };
   }
-  return { value, error: null };
+  return { value, error: null, note: null };
 }
 
 /**
@@ -131,17 +145,22 @@ function coerceValue(rule: unknown, value: unknown): { value: unknown; error: st
  *   直接拒绝会让整轮白跑）；
  * - required 只查「有没有这个键」，空字符串算给了：bind_contact_model 用 model:""
  *   表示解除绑定，把它当缺失会改坏功能。
+ *
+ * 返回值里的 `notes` 记录「参数被 minimum/maximum 夹过」：夹紧本身不判失败（照旧掰回来，
+ * 否则整轮白跑），但必须让模型知道自己给的值没被原样采用——由统一入口拼进工具回执。
  */
 export function validateAndCoerceArgs(
   schema: Record<string, unknown>,
   args: Record<string, unknown>,
-): { args: Record<string, unknown>; error: string | null } {
-  if (schema.type !== "object") return { args, error: null };
+): { args: Record<string, unknown>; error: string | null; notes: string[] } {
+  if (schema.type !== "object") return { args, error: null, notes: [] };
   const properties = isRecord(schema.properties) ? schema.properties : {};
   const required = Array.isArray(schema.required)
     ? schema.required.filter((k): k is string => typeof k === "string")
     : [];
   const out: Record<string, unknown> = {};
+  /** 参数被声明边界夹过：由统一入口拼进工具回执，让模型知道自己给的值没被原样采用。 */
+  const notes: string[] = [];
   for (const [key, value] of Object.entries(args)) {
     const rule = properties[key];
     if (rule === undefined) {
@@ -150,19 +169,20 @@ export function validateAndCoerceArgs(
       continue;
     }
     const coerced = coerceValue(rule, value === undefined || value === null ? "" : value);
-    if (coerced.error !== null) return { args, error: `${key}：${coerced.error}` };
+    if (coerced.error !== null) return { args, error: `${key}：${coerced.error}`, notes };
+    if (coerced.note !== null) notes.push(`${key}：${coerced.note}`);
     const enumValues = isRecord(rule) && Array.isArray(rule.enum) ? rule.enum : null;
     if (enumValues !== null && !enumValues.includes(coerced.value)) {
-      return { args, error: `${key}：只能是 ${enumValues.map(String).join(" / ")}` };
+      return { args, error: `${key}：只能是 ${enumValues.map(String).join(" / ")}`, notes };
     }
     out[key] = coerced.value;
   }
   for (const key of required) {
     if (!(key in out) || out[key] === undefined || out[key] === null) {
-      return { args, error: `缺少必填参数 ${key}` };
+      return { args, error: `缺少必填参数 ${key}`, notes };
     }
   }
-  return { args: out, error: null };
+  return { args: out, error: null, notes };
 }
 
 /** chat/agent.ts 的 toolSummary 里显式登记过摘要的工具。 */

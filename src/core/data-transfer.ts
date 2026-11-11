@@ -286,7 +286,7 @@ function safeArchivePath(raw: string, isDir = false): string {
   const allowed = normalized === "manifest.json" || normalized === DB_ENTRY
     || normalized.startsWith("media/") || normalized.startsWith("skills/")
     // 标准 tar 会写目录条目（type=5）：顶层 `media/`、`skills/` 归一化后没有斜杠，
-    // 以前会被文件白名单拒掉，导致“重新打包过的合法备份”整包导入失败。
+    // 文件白名单必须放行目录条目，否则“重新打包过的合法备份”整包导入失败。
     || (isDir && (normalized === "media" || normalized === "skills"));
   if (!allowed) throw new Error(`备份含不在允许范围内的文件：${normalized}`);
   return normalized;

@@ -80,8 +80,8 @@ if (!weHoldLease) {
  * 每个都先判空再赋值，重复调用不会起出第二个定时器。
  */
 const MAINTENANCE_MS = 6 * 3_600_000;
-// 主动性不再是「一个固定间隔的定时器」：它内部是单个闹钟，睡到最早到期时刻才醒。
-// 这里只需要记「起没起」，停下由 stopProactiveLoop 负责（它会顺手清掉闹钟）。
+// 主动性内部是单个闹钟，睡到最早到期时刻才醒：这里只需要记「起没起」，
+// 停下由 stopProactiveLoop 负责（它会顺手清掉闹钟）。
 let proactiveStarted = false;
 let maintenanceTimer: NodeJS.Timeout | null = null;
 
@@ -297,8 +297,8 @@ async function selfCheck(): Promise<void> {
   const settings = modelConfig();
   if (!settings.startupCheck) return;
 
-  // 先测真连通——这才是"能不能用"。从前这里第一步就拉 /models，拉不到直接 return，
-  // 于是不暴露模型列表端点的服务商（火山 plan 实测 404）永远停在门口：
+  // 先测真连通——这才是"能不能用"。第一步就拉 /models 的话，不暴露模型列表端点的
+  // 服务商（火山 plan 实测 404）会永远停在门口：
   // 那句「模型自检失败」一次聊天都没测过，而聊天其实是通的。
   const ping = await pingChat(settings.name, 20_000);
   if (!ping.ok) {
@@ -329,8 +329,7 @@ function maintenance(): void {
   try {
     pruneModelCalls();
     const tasks = pruneFinishedTasks();
-    // 记忆整理曾经搭在「每 30 分钟检查一次主动性」那趟车上；现在主动性按需唤醒，
-    // 这里才是它该待的地方（内部仍按 CONSOLIDATE_INTERVAL_DAYS 节流，6 小时看一眼足够）。
+    // 记忆整理挂在 6 小时维护循环上（内部按 CONSOLIDATE_INTERVAL_DAYS 节流，6 小时看一眼足够）。
     maybeRunConsolidation();
     const media = purgeExpiredMediaTrash();
     // 回收站过期真删之后对账一次：文件从盘上消失，资产行也该跟着销账。

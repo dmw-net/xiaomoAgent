@@ -108,7 +108,7 @@ function channelAccepts(input: EnqueueTextInput): boolean {
 }
 
 export async function enqueueAndDeliver(input: EnqueueTextInput): Promise<OutboundDelivery | null> {
-  // 未绑定/已停用的通道不制造死信：这和以前“没绑定就静默跳过”一致。
+  // 未绑定/已停用的通道不制造死信：直接静默跳过。
   if (!channelAccepts(input)) return null;
   const id = enqueueText(input);
   return await deliverNow(id);

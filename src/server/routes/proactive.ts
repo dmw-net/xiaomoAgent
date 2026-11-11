@@ -32,7 +32,7 @@ export const proactiveRunRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "POST" && path === "/api/proactive/run")) return false;
   const contactId = strictContactId(url, res);
   if (contactId === null) return true;
-  // 从前这条不看租约，于是桌面端 + 终端各点一次「立即检查」，两边都通过
+  // 不看租约的话，桌面端 + 终端各点一次「立即检查」会同时通过
   // spokenCountToday()===0 的门，同一句话投递两次、日配额翻倍。只有租约挡得住跨进程。
   if (!leaseIsFreeOrOurs()) {
     sendJson(res, 409, { ok: false, code: "NOT_PRIMARY", error: "另一个实例正在跑主动性（同一份数据只能有一个当家的），这一边只提供界面与接口" });
@@ -51,8 +51,8 @@ export const proactiveTasksListRoute: Route = ({ res, url, path, method }) => {
   if (!(method === "GET" && path === "/api/proactive/tasks")) return false;
   const contactId = strictContactId(url, res);
   if (contactId === null) return true;
-  // 从前只有 LIMIT、没有 offset 也没有 total：实测小茉 91 条、阿琳 67 条，
-  // 界面写死 40 就等于把后一半永久藏起来，还不报一句。
+  // limit / offset / total 三件齐备：留痕有几十条，只给 LIMIT、界面写死条数
+  // 就等于把后一半永久藏起来，还不报一句。
   const limit = clampInt(url.searchParams.get("limit"), LIST_LIMIT_DEFAULT, 1, LIST_LIMIT_MAX);
   const offset = clampInt(url.searchParams.get("offset"), 0, 0, Number.MAX_SAFE_INTEGER);
   // state 让「待执行」与「执行记录」各查各的：混着翻页时，一条排得靠后的待执行

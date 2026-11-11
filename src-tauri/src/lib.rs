@@ -328,7 +328,7 @@ fn start_backend(app: &tauri::AppHandle, tx: Sender<BootOutcome>) -> Result<(), 
 
 /// 移动端：Tauri 的 sidecar 不支持 Android，本地跑不了 Node。
 ///
-/// 所以这里改成连远程后端。地址按优先级从三个地方找：
+/// 所以这里连远程后端。地址按优先级从三个地方找：
 ///   1. 编译期注入的 `XIAOMO_REMOTE_BASE_URL`（构建时 `--config` 或环境变量）
 ///   2. 运行时的同名环境变量（调试用）
 ///   3. 应用数据目录下的 `remote.json`
@@ -435,9 +435,6 @@ fn resolve_data_dir(config_file: &std::path::Path, anchor: &std::path::Path) -> 
 //
 // **别在这里手抄**：值由 `build.rs` 从 `tauri.conf.json` 的 `plugins.updater.pubkey`
 // 原样生成，与 updater 用的是同一处来源——换发版密钥只改 conf，这里自动跟上。
-// 抄一份的代价 2026-10-17 实测过：那时这里的 `untrusted comment` 行写着 `…4E76`、
-// 真 keyID 是 `E664C16445FA4E7F`。验签没事（minisign 只读第 2 行），但人拿两行一对
-// 就会以为"换过钥匙、已发的包要砖"。
 #[cfg(desktop)]
 const RESOURCE_PUBKEY_B64: &str = env!("XIAOMO_RESOURCE_PUBKEY_B64");
 
@@ -462,7 +459,7 @@ fn verify_resources(app: &tauri::AppHandle) -> Result<(), String> {
         return Ok(());
     }
 
-    // 逃生口（2026-10-19）：硬失败会误伤正常用户——杀软隔离/清理工具删掉 manifest、
+    // 逃生口：硬失败会误伤正常用户——杀软隔离/清理工具删掉 manifest、
     // 或用户手动动过安装目录里的文件，应用就直接打不开且没有任何自愈路径。
     // 约定：在 %APPDATA%\app.xiaomo.ai 下建一个名为 allow-unsigned 的空文件，
     // 本次启动跳过校验（每次启动都会重新检查，删掉标记立即恢复严格模式）。
@@ -531,9 +528,8 @@ fn verify_resources(app: &tauri::AppHandle) -> Result<(), String> {
     }
 
     // 反向校验：安装目录里 backend/ 下的每个文件都必须在清单里。
-    // 只验「清单 → 磁盘」的话，升级残留或塞进来的多文件是查不到的——
-    // 2026-10-19 实测覆盖安装会把上一版的前端 chunk 原样留下（134 个文件、
-    // 清单只认 24 个），那些残留不在签名保护范围内。
+    // 只验「清单 → 磁盘」的话，覆盖安装残留的旧文件或塞进来的多文件是查不到的——
+    // 那些残留不在签名保护范围内。
     // 清单自身两项是例外：manifest 不能包含自己的签名，和构建期 verify-staged.mjs 同一套口径。
     let mut found = 0usize;
     let mut queue = vec![res.join("backend")];
@@ -795,7 +791,7 @@ fn start_sidecar(app: &tauri::AppHandle, tx: Sender<BootOutcome>) -> Result<(), 
 /// sidecar 脚本在资源目录里的绝对路径。
 /// 开发时是源码目录（src/desktop.ts，改完即跑、日志可读）；
 /// 打包后是 resources/backend/src/server.mjs——捆成单文件的压缩产物，
-/// 安装包里【没有任何后端源码】（源码直装 = 解压即读，踩过才知道要防）。
+/// 安装包里【没有任何后端源码】——源码直装等于解压即读。
 #[cfg(desktop)]
 fn resource_script_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let resource_dir = app

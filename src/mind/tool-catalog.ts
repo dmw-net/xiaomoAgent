@@ -128,7 +128,7 @@ export function isToolPresetChoice(value: unknown): value is ToolPresetChoice {
   return typeof value === "string" && TOOL_PRESET_CHOICES.includes(value as ToolPresetChoice);
 }
 
-/** 目录条目：静态 21 个 + 调用方传入的动态扩展（带扩展名，台账据此把启停还回扩展页）。 */
+/** 目录条目：静态 23 个 + 调用方传入的动态扩展（带扩展名，台账据此把启停还回扩展页）。 */
 export function toolCatalog(
   dynamic: ReadonlyArray<{ name: string; description: string; source?: string }> = [],
 ): ToolCatalogEntry[] {

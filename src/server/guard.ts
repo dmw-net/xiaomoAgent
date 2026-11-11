@@ -56,7 +56,7 @@ function hostnameOfOrigin(origin: string): string {
  *
  * 隧道是这套规则唯一的例外：穿透程序把公网域名原样转发进来，它不是本机地址。
  * 因此加了 config.trustedHosts（环境变量 TRUSTED_HOSTS）——只有显式列进去的域名才放行，
- * 且强制 Origin 与 Host 同源。没配就完全没有这个开口，与从前一致。
+ * 且强制 Origin 与 Host 同源。没配就完全没有这个开口。
  */
 export function passesLocalGuard(request: IncomingMessage, hostHeader: string): boolean {
   const loopbackBinds = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -82,8 +82,8 @@ export function passesLocalGuard(request: IncomingMessage, hostHeader: string): 
  *  os.networkInterfaces() 每次现取—— DHCP 换了地址不该要重启才认。
  *  导出来给冒烟钉住：这道门是 LAN 模式下唯一挡 DNS rebinding 的东西。 */
 export function isLocalMachineHost(host: string): boolean {
-  // 空 Host 不放行：HTTP/1.1 强制要求这个头，空着只可能是畸形请求。
-  // 从前这里把 "" 和 localhost 并列放过，于是 LAN 模式下少了一道本该拦住的输入。
+  // 空 Host 不放行：HTTP/1.1 强制要求这个头，空着只可能是畸形请求，
+  // LAN 模式下更不能给它开口子。
   if (host === "") return false;
   if (host === "localhost" || host.endsWith(".localhost")) return true;
   const bound = lan.bindHost();

@@ -61,9 +61,8 @@ const FULL_TEXT_WINDOW = config.devLogKeep;
 /**
  * 单条全文的字节上限。
  *
- * ⚠️ 从前只给 `detail` 切了 2000 字，`res_full` / `res_raw` 原样落库：一个回 2MB HTML
- * 502 页的网关就是 2MB 一行，几次就把库撑到没法备份——正是这个文件为 `req_full`
- * 记下过的那个事故（"原样落盘等于每条日志几 MB"），只是当年只修了请求那一侧。
+ * ⚠️ 全文列必须有单条上限：`res_full` / `res_raw` 不截断的话，一个回 2MB HTML
+ * 502 页的网关就是 2MB 一行，几次就把库撑到没法备份——"原样落盘等于每条日志几 MB"。
  */
 const FULL_TEXT_MAX_CHARS = 200_000;
 
@@ -468,8 +467,8 @@ ensureColumn("model_calls", "profile_id", "profile_id TEXT");
 ensureColumn("model_calls", "req_full", "req_full TEXT");
 ensureColumn("model_calls", "res_full", "res_full TEXT");
 // 这一轮向模型声明了哪些工具、模型实际调了哪些（逗号分隔的名字）。
-// req_full 只在 DEV_MODE 落盘且只留最近几十条，所以「工具声明了却没人调用」这种问题
-// 过去只能靠肉眼复现；这两列常驻、便宜，一条 SQL 就能出率。
+// req_full 只在 DEV_MODE 落盘且只留最近几十条，「工具声明了却没人调用」这种问题
+// 靠肉眼复现很费劲；这两列常驻、便宜，一条 SQL 就能出率。
 ensureColumn("model_calls", "tools_declared", "tools_declared TEXT");
 ensureColumn("model_calls", "tools_called", "tools_called TEXT");
 

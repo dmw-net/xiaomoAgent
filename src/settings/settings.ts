@@ -255,10 +255,10 @@ export function effectiveRecentTurnsSpec(): RecentTurnsSpec {
  * 这里的“轮”是模型轮次：一次带工具定义的模型请求算一轮，同一请求内可以包含多个工具调用；
  * 模型在循环内给出最终文字回复时也会消耗一轮。轮次耗尽后，agent 还会额外做一次无工具收口。
  *
- * 原来这个数是硬编码的 3，但「查表情再发送」通常要两次工具轮次，3 轮很快见底：
+ * 「查表情再发送」通常要两次工具轮次，默认 3 轮很快见底：
  * 联网那一档进来之后，「搜图 → 下载 → 建角色 → 写人设 → 设头像」本身就是五步，
  * 三轮做不完一件事，只会让联系人在半途被强制收口、然后回一句"我还没弄完"。
- * 所以它变成可配：普通联系人统一走全局一档，助手固定 8 轮。
+ * 所以它可配：普通联系人统一走全局一档，助手固定 8 轮。
  */
 export const TOOL_LOOP_TURN_LIMITS = { min: 1, max: 16 };
 export const TOOL_LOOP_TURN_DEFAULT = 5;
@@ -269,7 +269,7 @@ export const TOOL_LOOP_TURN_DEFAULT = 5;
 export const ASSISTANT_TOOL_LOOP_TURNS = 8;
 
 const KV_TOOL_LOOP_TURNS = "agent.tool_loop_turns";
-/** 旧版本曾用过这个键；读取时迁移一次，避免用户已保存的值丢失。 */
+/** agent.tool_rounds 是旧数据键；读取时迁移一次，避免用户已保存的值丢失。 */
 const LEGACY_KV_TOOL_ROUNDS = "agent.tool_rounds";
 
 /**
@@ -601,10 +601,9 @@ function writeJson(key: string, value: unknown): void {
 /**
  * 每次现读库，不在进程内缓存。
  *
- * 这里曾经有过一层 modelCache/personaCache，代价是跨进程永远读到旧值：
- * 桌面多窗口共享同一个库，窗口 A 改了密钥或角色卡，窗口 B 只在**自己**写设置时才置空缓存，
- * 于是 B 会拿旧密钥一直对话下去——报出来的是一句莫名其妙的鉴权错，
- * 和「保存即生效、不需要重启」这条承诺直接矛盾。
+ * 桌面多窗口共享同一个库，进程内缓存只在**自己**窗口写设置时才置空：
+ * 窗口 A 改了密钥或角色卡，窗口 B 会拿旧密钥一直对话下去——报出来的是一句
+ * 莫名其妙的鉴权错，和「保存即生效、不需要重启」这条承诺直接矛盾。
  * 而省下来的那次读取是一次主键 SELECT + 小对象 JSON.parse（几十微秒），
  * 对面是一次动辄几百毫秒的模型调用，根本不值得为它换掉正确性。
  */
@@ -625,9 +624,8 @@ export function personaConfig(): PersonaSettings {
 }
 
 /**
- * 配置驱动的"模型是否可用"。
- * 它取代了过去的常量 modelReady —— 用户可能刚刚才在界面上填好密钥，
- * 那种"启动时算一次"的常量写法会让新配置要等重启才认，而这正是要消灭的问题。
+ * 配置驱动的"模型是否可用"：每次现算，不做成启动时算一次的常量——
+ * 用户可能刚刚才在界面上填好密钥，常量写法会让新配置要等重启才认。
  */
 export function modelReadyNow(settings: ModelSettings = modelConfig()): boolean {
   return settings.mode === "openai" && settings.apiKey !== "" && settings.baseUrl !== "";
@@ -754,8 +752,8 @@ function writeProfiles(profiles: ModelProfile[]): void {
 /**
  * 一次性迁移：把存量配置里「工具调用」的未勾选翻成勾选。
  *
- * 为什么必须有：caps.tools 在 0.2.8 及以前只是元数据（勾不勾都不影响功能），表单默认
- * 又是不勾——存量档里的 false 全是「从没填过」，不是「刻意关闭」。这一版起它是硬闸
+ * 为什么必须有：caps.tools 在旧数据里只是元数据（勾不勾都不影响功能），表单默认
+ * 又是不勾——存量档里的 false 全是「从没填过」，不是「刻意关闭」。现行版本它是硬闸
  * （未勾选 = 不声明也不执行任何工具），直接沿用会把联系人设置里那一排工具开关
  * 全部静默关死（实测踩过）。翻成 true 之后，用户再主动取消勾选仍会照常保存并生效。
  */

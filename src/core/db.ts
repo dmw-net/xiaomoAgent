@@ -174,11 +174,9 @@ CREATE TABLE IF NOT EXISTS proactive_tasks (
 
 CREATE INDEX IF NOT EXISTS idx_proactive_due ON proactive_tasks (status, due_at);
 
--- 主动性节拍（2026-11-05）：care 的「下次什么时候想、想什么」是一行状态，不是队列里的一条任务。
+-- 主动性节拍：care 的「下次什么时候想、想什么」是一行状态，不是队列里的一条任务。
 --
--- 为什么单列一张表：从前把它实现成「每轮插一条 pending 任务」，于是调度与台账共用一张表，
--- 需要 PENDING_CAP、启动去重、四处 kind 特判三套补丁来维持，而且自动清理会误伤用户手建的计划。
--- 现在职责分开：
+-- 职责分开，调度与台账互不干扰：
 --   proactive_state  = care 自己的节拍（每联系人一行，由模型决定下次几分钟后）
 --   proactive_tasks  = 必须兑现的承诺（reminder）、用户手建的计划、执行留痕
 -- 调度器只认两者的最小值 —— 见 mind/proactive.ts 的 nextWakeAt()。
@@ -267,7 +265,7 @@ CREATE TABLE IF NOT EXISTS image_descriptions (
 );
 
 
--- ── 服务端持久出盒箱：T1 投递不丢（2026-11-04）───────────────────
+-- ── 服务端持久出盒箱：T1 投递不丢 ────────────────────
 CREATE TABLE IF NOT EXISTS outbound_deliveries (
   id            TEXT PRIMARY KEY,
   contact_id    TEXT NOT NULL,
@@ -354,12 +352,9 @@ ensureColumn("messages", "tool_detail", "tool_detail TEXT");
 // 数据源是 model_calls（服务商回的 usage + 实测耗时），纯展示列，不进任何回放与抽取。
 ensureColumn("messages", "tokens_per_sec", "tokens_per_sec REAL");
 
-// ── 工具往返的结构化存档（2026-11-03）────────────────────────
-// 从前一张工具卡只有给人看的 {tool, ok, summary}，历史回放时整个往返被压成一句正文
-// 占位符（「喏，发了。」+「[图片：这是你自己发出的图…]」）。模型在上下文里从来没见过
-// 真正的 tool_call，学到的模式就成了「发表情 = 写一句方括号占位符」——那次
-// 「让它发表情，它回了一段 [表情：…] 文字」就是照着历史抄的。
-// 这四列让 assistant.tool_calls + tool 结果能按协议原样回放（见 src/chat/tool-history.ts）。
+// ── 工具往返的结构化存档 ─────────────────────────
+// 这四列让 assistant.tool_calls + tool 结果能按协议原样回放（见 src/chat/tool-history.ts）：
+// 模型在上下文里能看到真正的 tool_call 与结果，而不是压缩成一句正文的占位符。
 // 载荷（args/result）按轮滚动清理，只留最近 TOOL_STORE_TURNS 轮；call_id 与 name 永久保留，
 // 清掉载荷的轮次仍能靠名字拼出「这一轮用过什么」的一行备注。
 ensureColumn("messages", "tool_call_id", "tool_call_id TEXT");
@@ -371,7 +366,7 @@ ensureColumn("messages", "tool_result", "tool_result TEXT");
 ensureColumn("outbound_deliveries", "segments", "segments TEXT");
 ensureColumn("outbound_deliveries", "source_message_id", "source_message_id TEXT");
 ensureColumn("outbound_deliveries", "ignored_at", "ignored_at INTEGER");
-// 旧版只把用尽次数的记录留在 failed；统一迁成显式死信，概览与列表才有稳定口径。
+// 老数据里用尽次数的记录停在 failed：统一迁成显式死信，概览与列表才有稳定口径。
 db.prepare("UPDATE outbound_deliveries SET status = 'dead_letter' WHERE status = 'failed' AND attempts >= max_attempts").run();
 
 // superseded_at：这条消息已不在对话里（还在库里，可以回溯）。
@@ -396,8 +391,8 @@ ensureColumn("turns", "client_id", "client_id TEXT");
 // 流式思考草稿：running 期间给 /api/turn 下发累计推理，收尾后仍保留到前端完成草稿交接。
 ensureColumn("turns", "reasoning_draft", "reasoning_draft TEXT");
 
-// ── 回复多版本（swipe，2026-11-07）──────────────────────────
-// 重答不再销毁旧回复：重答前把这一轮现有的回复气泡序列化进 turns.variants
+// ── 回复多版本（swipe）──────────────────────────
+// 重答不销毁旧回复：重答前把这一轮现有的回复气泡序列化进 turns.variants
 // （JSON 数组，index 0 = 最初版本），新回复生成后追加进去，每轮封顶若干条。
 // 活跃版本的文本仍写回 messages.text —— recentMessages() 的上下文回放零改动，
 // 后续对话自动跟随当前选中的版本。
@@ -426,7 +421,7 @@ ensureColumn("memory_events", "valid_until", "valid_until INTEGER");
 // 记忆可删（P0-2）：墓碑列，旧库补列。
 ensureColumn("memory_events", "deleted_at", "deleted_at INTEGER");
 
-// ── 多联系人迁移（2026-09-17）────────────────────────────
+// ── 多联系人迁移 ────────────────────────────────
 // 每张业务表挂上联系人维度；存量数据全部归属默认联系人 "default"
 // （首次启动时由 contacts.ts 把旧的全局角色卡迁移成这个联系人）。
 ensureColumn("messages", "contact_id", "contact_id TEXT");
@@ -434,7 +429,7 @@ ensureColumn("turns", "contact_id", "contact_id TEXT");
 ensureColumn("memory_events", "contact_id", "contact_id TEXT");
 ensureColumn("proactive_tasks", "contact_id", "contact_id TEXT");
 
-// 主动消息的目标会话：一条主动消息只说给一个地方听（2026-11-02）。
+// 主动消息的目标会话：一条主动消息只说给一个地方听。
 // reminder 记下它是在哪个会话立的（群里立的群里兑现）；care 为 NULL 时到点再按最近动静选。
 ensureColumn("proactive_tasks", "conversation_id", "conversation_id TEXT");
 
@@ -457,14 +452,14 @@ db.exec(
   `CREATE INDEX IF NOT EXISTS idx_messages_contact ON messages (contact_id, created_at);
    CREATE INDEX IF NOT EXISTS idx_messages_contact_recent ON messages (contact_id, created_at DESC, id DESC);
    CREATE INDEX IF NOT EXISTS idx_memory_contact   ON memory_events (contact_id, created_at);
-   -- turns 此前一个索引都没有，而它是只增不减的：状态页与聊天页失败横幅每拍都查
-   -- 「最近的处理单」（ORDER BY created_at DESC），常驻进程跑几个月就是每次全表扫 + 排序。
+   -- turns 只增不减，而状态页与聊天页失败横幅每拍都查
+   -- 「最近的处理单」（ORDER BY created_at DESC）：没有索引就是每次全表扫 + 排序。
    CREATE INDEX IF NOT EXISTS idx_turns_created    ON turns (created_at);
    CREATE INDEX IF NOT EXISTS idx_turns_contact    ON turns (contact_id, created_at);
    CREATE UNIQUE INDEX IF NOT EXISTS idx_turns_client ON turns (contact_id, client_id) WHERE client_id IS NOT NULL;`,
 );
 
-// ── 可插拔陪伴能力（借鉴功能包，2026-09-21）───────────────────
+// ── 可插拔陪伴能力（借鉴功能包）───────────────────
 // features：每联系人的功能开关 JSON（生活线摘要 / 记忆整理 / 到点提醒 / 关系温度计 /
 // 每日主动上限 / 角色作息）。缺省即 FEATURE_DEFAULTS——老库升级零迁移成本。
 ensureColumn("contacts", "features", "features TEXT NOT NULL DEFAULT '{}'");
@@ -490,7 +485,7 @@ ensureColumn("memory_events", "embedding", "embedding BLOB");
 ensureColumn("memory_events", "emb_model", "emb_model TEXT");
 ensureColumn("memory_events", "emb_dim", "emb_dim INTEGER");
 
-// ── 会话隔离（2026-10-26）────────────────────────────────────
+// ── 会话隔离 ─────────────────────────────────────
 // 群聊上线后，contact_id 已经不够区分上下文：同一联系人的本地聊天、QQ 私聊、
 // QQ 群 A/B 必须彼此隔离。存量数据统一迁到 local-<contact_id> 会话。
 ensureColumn("messages", "conversation_id", "conversation_id TEXT");

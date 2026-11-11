@@ -1,9 +1,9 @@
 // 轮次表的只读查询：零业务依赖，通道层可以直接问「这一轮结束了吗」。
 //
-// 为什么单独一层：微信通道的"正在输入"看护只需要读 turns.status，却因此动态
-// import 了整个 agent.ts；而 agent 又要经过出站队列、出站队列又要调微信投递，
-// 形成 outbound → wechat → agent → outbound 的运行时环。把这个纯查询下沉后，
-// 通道层不再认识 Agent 层，依赖变成单向。
+// 为什么单独一层：微信通道的"正在输入"看护只需要读 turns.status，若为它动态
+// import 整个 agent.ts，就会形成 outbound → wechat → agent → outbound 的运行时环
+// （agent 也要经过出站队列、出站队列又要调微信投递）。把这个纯查询下沉到这里，
+// 通道层不认识 Agent 层，依赖保持单向。
 
 import { q } from "../core/db.ts";
 
@@ -27,8 +27,8 @@ export type TurnRow = {
   attachments?: string | null;
   /** 附件元信息 JSON；语音消息的时长、转写与波形都在这里。 */
   attachment_meta?: string | null;
-  /** 历史遗留的作废时间戳（旧版「编辑后作废后续」所打，该机制已由版本切换取代）。
-   *  非空 = 这一轮已不属于当前对话；新数据不会再写入，编辑时仍会清掉它。 */
+  /** 旧数据可能带的作废时间戳（来自已被版本切换取代的「编辑后作废后续」机制）。
+   *  非空 = 这一轮已不属于当前对话；现行写入路径不产生它，编辑时仍会清掉它。 */
   superseded_at?: number | null;
   /**
    * 回复版本存档（swipe）：JSON 数组，index 0 = 最初版本，重答追加、封顶 5。

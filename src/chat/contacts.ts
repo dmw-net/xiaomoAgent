@@ -386,8 +386,8 @@ function rowToContact(row: Record<string, unknown>): Contact {
     avatar: String(row.avatar ?? ""),
     faceRef: String(row.face_ref ?? ""),
     model_profile: String(row.model_profile ?? ""),
-    // -1 = 全部，必须原样读回来；从前这里无脑 max(0,…) 会把「全部」静默抹成"跟随全局"，
-    // 于是存进去是对的、每次读出来都变 0，界面上看像是设置没生效。
+    // -1 = 全部，必须原样读回来；无脑 max(0,…) 会把「全部」静默抹成"跟随全局"，
+    // 存进去是对的、每次读出来都变 0，界面上看像是设置没生效。
     recent_turns: Number(row.recent_turns ?? 0) === ALL_TURNS ? ALL_TURNS
       : Math.min(MAX_TURNS, Math.max(0, Number(row.recent_turns ?? 0) || 0)),
     gender: normalizeGender(row.gender),
@@ -474,8 +474,8 @@ export function createContact(input: {
   gender?: ContactGender;
 }): Contact {
   // 不拿出厂人设补齐：表单里空着的背景/人设/关系，存下来就是空的——
-  // 从前这里会悄悄继承小茉的出厂设定，新建时只写了「人设」一段的话，
-  // 背景和关系就凭空长出一份别人的来历，界面上还看不出是哪一步塞进来的。
+  // 悄悄继承小茉的出厂设定的话，新建时只写了「人设」一段，
+  // 背景和关系就会凭空长出一份别人的来历，界面上还看不出是哪一步塞进来的。
   // 想要现成人设：「按模板填写」「换回默认人设」都是明确按钮。
   const raw = input.card ?? {};
   const card = sanitizeCharacter({
@@ -853,9 +853,9 @@ export function markConversationRead(conversationId: string, messageId: number):
 /**
  * 新建 Conversation 时落下 0 号游标。
  *
- * 有了它，未读数不再依赖“最后一条用户消息”去猜历史边界：同一段会话里连来
- * 两组「用户问 → 机器人分条答」也能逐条累计。只有从旧版本升上来、完全没有
- * 会话级游标的存量会话才会走一次性的历史水位迁移。
+ * 有了它，未读数按会话级游标逐条累计，不靠「最后一条用户消息」猜历史边界：
+ * 同一段会话里连来两组「用户问 → 机器人分条答」也能逐条累计。
+ * 只有存量数据里没有会话级游标的会话才走一次性的历史水位迁移。
  */
 export function ensureConversationReadCursor(conversationId: string): void {
   const map = conversationReadMap();

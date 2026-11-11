@@ -386,8 +386,8 @@ export function deleteAssistantThread(id: string): boolean {
   const list = readThreads();
   if (!list.some((t) => t.id === id)) return false;
   writeThreads(list.filter((t) => t.id !== id));
-  // 消息与图片走清空那条路：它负责回收本轮里那些 /media（从前这里是裸 DELETE，
-  // 图片只靠 24 小时后的全量对账兜着——删了工作区，磁盘要过一天才真的还回来）。
+  // 消息与图片走清空那条路：它负责回收本轮里那些 /media——裸 DELETE 的话图片
+  // 只靠 24 小时后的全量对账兜着，删了工作区磁盘要过一天才真的还回来。
   clearAssistantContactMessages(ASSISTANT_THREAD_PREFIX + id);
   return true;
 }
@@ -403,6 +403,18 @@ export function autoTitleThread(contactId: string, text: string): void {
   }
 }
 
+/**
+ * 助手不是陪伴角色：几千字的内部权衡是噪音，默认不展示思考过程。
+ * 助手资料页不渲染「聊天显示」分区（见 docs/pitfalls.md），用户没法自己关，
+ * 所以只能在这里兜底；存量助手也要迁移，不能只在新建时设。
+ */
+function ensureAssistantDisplayDefaults(id: string): void {
+  const c = getContact(id);
+  if (c && c.features.showThinking !== false) {
+    updateContact(id, { features: { showThinking: false } });
+  }
+}
+
 /** 启动时确保保留联系人存在（幂等；已存在不覆盖用户改过的资料）。 */
 export function ensureAssistantContact(): void {
   const existing = getContact(ASSISTANT_CONTACT_ID);
@@ -410,6 +422,7 @@ export function ensureAssistantContact(): void {
     // 设置助手不是陪伴角色，界面上也不提供指代方式选择；历史版本按默认值落成的
     // female/male 在这里归中性，避免内部提示词继续把它绑定到某种指代。
     if (existing.gender !== "other") updateContact(ASSISTANT_CONTACT_ID, { gender: "other" });
+    ensureAssistantDisplayDefaults(ASSISTANT_CONTACT_ID);
     return;
   }
   createContact({
@@ -422,6 +435,7 @@ export function ensureAssistantContact(): void {
       background: "我运行在应用内部，能读取真实配置状态并直接执行配置操作。",
     },
   });
+  ensureAssistantDisplayDefaults(ASSISTANT_CONTACT_ID);
 }
 
 /** 助手不是陪伴角色：这些行为对所有助手会话（含工作区派生 id）一律关闭。 */
@@ -446,11 +460,93 @@ function clean(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+// ── 角色卡「已配置」判据 ────────────────────────────────────────────────
+// 事故背景：create_contact 的工具描述曾鼓励「先给一句合理的占位描述」，模型就把
+// 「待用户定义（可在编辑资料中细化）」写进 relationship；快照只判 !== ""，
+// 助手看到 cardFilled:true 便报「配置完成」，而这段元指令会被 persona.ts 原样
+// 拼进角色提示词。
+//
+// 主防线在写入侧：create_contact / update_contact 直接拒绝非设定正文。
+// 这里是对**存量数据**与用户在资料页手改的防御层。认的是「让人去填/去改」这类
+// 元指令特征，不是两句固定文案——模型每次生成的占位说法都不同，枚举句子必然漏
+// （库里就出现过「用户自定义联系人」这种变体）。
+//
+// 判据按置信度分三档。两个方向的误判都出在「一刀切」上：长度下限抬太高，会把
+// 用户明确要的「同事」「朋友」这类 2 字合法关系值当占位拒掉；元指令正则只看
+// 短文本，超长的占位段落反而判「已完成」。所以：
+//   ① EXACT——整段就是一个占位词（无/暂无/待定/TBD…）：锚定匹配，任意长度生效；
+//   ② 高置信特征——「占位/待填/TBD/自定义联系人」这类几乎不可能是真实设定的词，
+//      以及纯符号/纯数字/括号壳：任意长度生效；
+//   ③ 指令式特征——「让用户去编辑资料补充」这类句子：真实设定偶尔也带「用户」
+//      等字眼，只在 ≤120 字时生效，长文本交给语境。
+// 刻意不做持久化的 confirmed 标记：用户在资料页改卡不经过工具，标记一旦过期
+// 比内容判据更不可信。真相源始终是卡片正文本身；想核对全文走 app_status(contact)。
+// 改这里的判据必须连着改 smoke [31] 的夹具与断言（占位被拒、合法短值放行两头都要有）。
+const CARD_PLACEHOLDER_EXACT: readonly string[] = [
+  "无", "暂无", "没有", "未知", "待定", "待补充", "待填写", "待完善", "待细化",
+  "未设定", "暂未设定", "后续补充", "以后再说", "先不填", "先空着", "随便", "随意",
+  "tbd", "todo", "tbc", "n/a", "na", "none", "null",
+];
+const CARD_META_ANY_LENGTH: readonly RegExp[] = [
+  /占位/, /待填/, /用户自定义联系人|自定义联系人/, /TBD|TODO|TBC/i,
+  /^[\s\-—–_·.。、,，:：*#]+$/, /^\d+$/, /^[(（][^)）]{0,60}[)）]$/,
+];
+const CARD_META_SHORT_TEXT: readonly RegExp[] = [
+  /待(用户|你|后续|之后)?(定义|补充|填写|设定|定|细化)/,
+  /(自行|由用户|用户自行|请你|请用户)(填写|补充|定义|设定|细化|修改)/,
+  /(可|请|去|到)(在|到|去)?.{0,8}(编辑资料|资料页|设置页).{0,8}(细化|补充|修改|完善|填写)/,
+  /编辑资料.{0,6}(里|中|去)?(细化|补充|修改|完善|填写)/,
+  /根据需要再/,
+];
+/** 指令式特征只看短文本的界限：真实设定很少在 120 字内通篇还是「去哪里补/谁来填」。 */
+const CARD_SHORT_TEXT_LIMIT = 120;
+
+/** 一段卡片正文是否算「真的写好了」。空 / 过短 / 占位或元指令一律 false。 */
+export function isCardFieldComplete(value: unknown): boolean {
+  const text = typeof value === "string" ? value.trim() : "";
+  if (text === "") return false;
+  // 「同事」「朋友」这类用户明确给出的短关系值是合法设定；只有单字算没写。
+  if (text.length < 2) return false;
+  if (CARD_PLACEHOLDER_EXACT.includes(text.toLowerCase())) return false;
+  if (CARD_META_ANY_LENGTH.some((re) => re.test(text))) return false;
+  return !(text.length <= CARD_SHORT_TEXT_LIMIT && CARD_META_SHORT_TEXT.some((re) => re.test(text)));
+}
+
+/** 写入侧闸门：留空合法（表示待补全），非空就必须是一段像样的设定正文。 */
+function rejectCardPlaceholder(fields: Record<string, string>): string | null {
+  for (const [field, value] of Object.entries(fields)) {
+    if (value === "") continue;
+    if (!isCardFieldComplete(value)) {
+      return `${field} 看起来是占位或操作说明，不是设定正文（「${value.slice(0, 30)}」）。请写成具体内容，或留空之后用 update_contact 补全；这类文字会原样进入角色提示词。`;
+    }
+  }
+  return null;
+}
+
+/** 给模型回执用的卡片投影：三段正文 + 完成状态，不带 name 之类的冗余。 */
+function cardReceipt(card: { background?: string; identity?: string; relationship?: string }): Record<string, unknown> {
+  const parts = {
+    background: card.background ?? "",
+    identity: card.identity ?? "",
+    relationship: card.relationship ?? "",
+  };
+  return {
+    card: parts,
+    cardFilled: {
+      background: isCardFieldComplete(parts.background),
+      identity: isCardFieldComplete(parts.identity),
+      relationship: isCardFieldComplete(parts.relationship),
+    },
+  };
+}
+
 /**
  * 给模型的配置快照：以 settingsSnapshot() 为唯一真相源，做**显式白名单投影**。
  * settingsSnapshot 里 model / profiles / capabilities.*.effective 都带真实密钥，
  * 绝不能 spread 进提示词；这里只挑能回答配置问题的标量、短数组与计数。
- * 每轮都会拼进系统提示词，所以不放整份目录，也不放备注正文（只给「填没填」）。
+ * 每轮都会拼进系统提示词，所以不放整份目录，也不放卡片正文（只给「填没填」）。
+ * 「填没填」必须是可信判据——见 isCardFieldComplete；想看某位联系人的完整卡片，
+ * 走 app_status(contact) 按需取，别把正文塞进每轮快照把 prompt 撑大。
  */
 function mediaSnapshot(): Record<string, unknown> {
   try {
@@ -486,7 +582,14 @@ function statusSnapshot(): Record<string, unknown> {
     })),
     contacts: contacts.map((c) => ({
       id: c.id, name: c.name, modelProfile: c.model_profile || "",
-      cardFilled: { background: c.card.background !== "", identity: c.card.identity !== "", relationship: c.card.relationship !== "" },
+      // 空串与「待用户定义」之类元指令都不算已配置：只判 !== "" 的话，
+      // 占位文案被当成完成，助手便会跳过 update_contact 直接报「配置完成」。
+      cardFilled: {
+        background: isCardFieldComplete(c.card.background),
+        identity: isCardFieldComplete(c.card.identity),
+        relationship: isCardFieldComplete(c.card.relationship),
+      },
+      hasAvatar: c.avatar !== "",
     })),
     /** 六张能力卡的真实生效值（不含密钥）：排查「看图/语音为什么没配上」要靠它。 */
     capabilities: Object.fromEntries(CAPABILITY_NAMES.map((name) => {
@@ -551,6 +654,36 @@ function resolveContact(target: string): { contact?: Contact; error?: string } {
   };
 }
 
+/**
+ * 单个联系人的完整资料：卡片正文、占位标记、头像与模型绑定。
+ * 只在 app_status 传了 contact 时按需返回——每轮快照塞正文会随联系人数线性膨胀，
+ * 而绝大多数轮次根本不需要看正文。
+ */
+function contactDetail(target: string): Record<string, unknown> {
+  const r = resolveContact(target);
+  if (!r.contact) return { ok: false, error: r.error };
+  const c = r.contact;
+  const filled = cardReceipt(c.card) as { card: Record<string, string>; cardFilled: Record<string, boolean> };
+  return {
+    ok: true,
+    contact: {
+      id: c.id,
+      name: c.name,
+      card: filled.card,
+      cardFilled: filled.cardFilled,
+      // 明确区分「空着」和「写了占位」：两者都算没配好，但补救话术不同。
+      cardPlaceholder: Object.fromEntries(
+        Object.entries(filled.card).map(([key, value]) => [key, value.trim() !== "" && !isCardFieldComplete(value)]),
+      ),
+      hasAvatar: c.avatar !== "",
+      avatar: c.avatar,
+      modelProfile: c.model_profile || "",
+      followsGlobalModel: c.model_profile === "",
+      activeProfileId: activeProfileId(),
+    },
+  };
+}
+
 function resolveProfile(target: string): { id?: string; label?: string; error?: string } {
   const profiles = listProfiles();
   const byId = profiles.find((p) => p.id === target);
@@ -576,9 +709,19 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
   {
     name: "app_status",
     description:
-      "读取小茉应用当前的真实配置状态（脱敏快照，密钥永不出快照）：生效模型与模型档、联系人、六张能力卡的生效端点、全局工具台账与表达偏好、引导完成度、技能/扩展/媒体库/渠道连接。回答任何与配置相关的问题、或动手改配置之前，先调用它拿事实，不要凭记忆猜。",
-    parameters: { type: "object", properties: {}, additionalProperties: false },
-    execute: () => statusSnapshot(),
+      "读取真实配置（脱敏，密钥永不出快照）。系统提示词末尾**每轮已经注入**一份实时快照：生效模型与模型档、联系人（名字 / 模型绑定 / 三段设定完成状态 / 有无头像）、六张能力卡、工具台账、引导完成度、技能 / 扩展 / 媒体库 / 渠道连接，回答配置问题直接以它为准，不要凭记忆猜，也不必先调一次本工具。" +
+      "只有两种情况才调：① 写入配置后要复核结果；② 要看某位联系人的**完整卡片正文**时传 contact（名字或 id），返回三段正文、占位标记、头像路径与模型绑定状态。不传 contact 就是全量快照，不含卡片正文。",
+    parameters: {
+      type: "object",
+      properties: {
+        contact: { type: "string", description: "可选：只看这一位联系人，拿完整卡片正文与占位标记" },
+      },
+      additionalProperties: false,
+    },
+    execute: (args) => {
+      const target = clean(args.contact);
+      return target === "" ? statusSnapshot() : contactDetail(target);
+    },
   },
   {
     name: "configure_capability",
@@ -715,14 +858,17 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
   {
     name: "create_contact",
     description:
-      "创建一个新联系人。用户说「帮我建一个XX」时调用；background/identity/relationship 三个设定可以先给一句合理的占位描述，让用户之后在「编辑资料」里细化。",
+      "创建一个新联系人。用户说「帮我建一个XX」时调用。background/identity/relationship 三段尽量一次写成**具体内容**：" +
+      "知名作品角色按作品设定把背景与人设写全；不知道就留空，之后用 update_contact 补，绝不要写「待用户定义」「可在编辑资料里细化」这类占位或操作说明——它会原样进入角色提示词。" +
+      "relationship 是用户侧偏好（怎么称呼、什么阶段、边界），用户没指定就留空或给中性默认，不要凭空编一段亲密关系。" +
+      "回执会带实际写入的三段正文与 cardFilled，缺哪段照着补。",
     parameters: {
       type: "object",
       properties: {
         name: { type: "string", description: "联系人名字，≤20 字" },
-        background: { type: "string", description: "背景设定（可选）" },
-        identity: { type: "string", description: "人设（可选）" },
-        relationship: { type: "string", description: "与用户的关系（可选）" },
+        background: { type: "string", description: "背景设定（可选，要写就写具体；留空 = 之后补）" },
+        identity: { type: "string", description: "人设（可选，要写就写具体；留空 = 之后补）" },
+        relationship: { type: "string", description: "与用户的关系（可选；没指定就留空或给中性默认）" },
       },
       required: ["name"],
       additionalProperties: false,
@@ -736,14 +882,27 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
         const v = clean(args[key]);
         if (v !== "") card[key] = v;
       }
+      const rejected = rejectCardPlaceholder({
+        background: card.background ?? "", identity: card.identity ?? "", relationship: card.relationship ?? "",
+      });
+      if (rejected !== null) return { ok: false, error: rejected };
       const created = createContact({ name, card });
-      return { ok: true, contactId: created.id, name: created.name, note: "已创建。设定可以在侧栏「编辑资料」里继续细化" };
+      return {
+        ok: true,
+        contactId: created.id,
+        name: created.name,
+        ...cardReceipt(created.card),
+        hasAvatar: created.avatar !== "",
+        note: "已创建。cardFilled 里为 false 的那几段可以说一声让我补全；也可以自己在侧栏「编辑资料」里写。",
+      };
     },
   },
   {
     name: "update_contact",
     description:
-      "修改已有联系人的设定文本（background/identity/relationship/name 任传其一或多项，只覆盖传了的字段）。contact 传名字或 id。",
+      "修改已有联系人的设定文本（background/identity/relationship/name 任传其一或多项，只覆盖传了的字段）。contact 传名字或 id。" +
+      "设定正文必须写具体内容，不收占位或操作说明（会原样进角色提示词）；留空不覆盖原值。" +
+      "补全卡片的占位段时用它，回执会带更新后的三段正文与 cardFilled。",
     parameters: {
       type: "object",
       properties: {
@@ -769,8 +928,16 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
       }
       if (Object.keys(card).length > 0) patch.card = card;
       if (patch.name === undefined && Object.keys(card).length === 0) return { ok: false, error: "没有要修改的内容" };
+      const rejected = rejectCardPlaceholder(card);
+      if (rejected !== null) return { ok: false, error: rejected };
       const updated = updateContact(r.contact.id, patch as Parameters<typeof updateContact>[1]);
-      return { ok: true, contactId: r.contact.id, name: updated?.name ?? r.contact.name, updatedFields: Object.keys({ ...patch, ...card }) };
+      return {
+        ok: true,
+        contactId: r.contact.id,
+        name: updated?.name ?? r.contact.name,
+        updatedFields: Object.keys({ ...patch, ...card }),
+        ...cardReceipt(updated?.card ?? r.contact.card),
+      };
     },
   },
   {
@@ -780,9 +947,11 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
       "· image_url：抓一张现成的图。可以给网图地址（配合 web_search 的结果用；原图也行，不再受内联体积限制），" +
       "也可以是应用里已有的 /media 路径（比如 web_search 图片结果里的 preview——用户挑中的那张就是它，" +
       "本来就是本地文件、不用再下一遍；或者联系人刚画出来的那张画）。\n" +
-      "· draw_prompt：让联系人画一张。给一句画面描述即可（角色是谁、什么气质、发色衣着），构图由程序补。\n" +
+      "· draw_prompt：让联系人画一张，构图由程序补。写之前必须确认外貌：知名作品角色或对外貌没把握时，" +
+      "先 web_search(kind=\"web\") 查「角色名 外貌 发色 瞳色」，照查到的写，不要凭记忆填发色 / 瞳色；查不到就问用户一句。\n" +
       "两种来源最后都落成本地 /media 文件，图不再依赖外部站点，也不会因为对方换域名而裂图。\n" +
-      "用户说「给XX换个头像」「建一个XX并配好头像」时，先确认这位联系人存在（不存在先 create_contact），再设。",
+      "用户说「给XX换个头像」「建一个XX并配好头像」时，先确认这位联系人存在（不存在先 create_contact），再设；" +
+      "用户明确要「用原图 / 找现成的图」才走 web_search(kind=\"image\") 请用户按序号挑。",
     parameters: {
       type: "object",
       properties: {
@@ -840,7 +1009,9 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
   {
     name: "bind_contact_model",
     description:
-      "给某个联系人单独绑定一个模型档（该联系人的对话与记忆用它来跑）。model 传空字符串表示解除绑定、回到跟随全局默认。",
+      "给某个联系人单独绑定一个模型档（该联系人的对话与记忆用它来跑）。绑定会把「跟随全局」变成「固定这一档」，" +
+      "以后切换全局默认不再波及它；model 传空字符串表示解除绑定、回到跟随全局默认。" +
+      "目标档就是当前全局档时不写入，直接回「本来就在跟随全局，无需绑定」——别做一次无意义（且有副作用）的绑定。",
     parameters: {
       type: "object",
       properties: {
@@ -860,12 +1031,26 @@ const ASSISTANT_TOOL_DEFS: ToolDef[] = [
       const model = clean(args.model);
       if (model === "") {
         updateContact(r.contact.id, { modelProfile: "" });
-        return { ok: true, contact: r.contact.name, bound: null, note: "已解除绑定，回到跟随全局默认" };
+        return { ok: true, contact: r.contact.name, bound: null, changed: true, followsGlobal: true, note: "已解除绑定，回到跟随全局默认" };
       }
       const p = resolveProfile(model);
       if (!p.id) return { ok: false, error: p.error };
+      // 绑到当前全局档不是 no-op：写入 model_profile 会把「跟随全局」改成「显式钉住」，
+      // 以后切全局档不再波及这位联系人。用户没要求固定，就不该悄悄改掉这层语义。
+      if (p.id === activeProfileId()) {
+        const pinned = r.contact.model_profile !== "";
+        return {
+          ok: true, contact: r.contact.name, bound: null, changed: false, followsGlobal: !pinned,
+          note: pinned
+            ? `「${p.label}」就是当前全局默认档，这位联系人已经显式绑在它上面；没有改动。想恢复跟随全局就把 model 传空串。`
+            : `「${p.label}」就是当前全局默认档，这位联系人本来就在跟随全局，无需单独绑定；没有改动。`,
+        };
+      }
       updateContact(r.contact.id, { modelProfile: p.id });
-      return { ok: true, contact: r.contact.name, bound: p.label, note: "该联系人的对话已改用这个模型" };
+      return {
+        ok: true, contact: r.contact.name, bound: p.label, changed: true, followsGlobal: false,
+        note: `该联系人的对话已固定用「${p.label}」，之后切换全局默认不再影响它；想恢复跟随就把 model 传空串。`,
+      };
     },
   },
   {
@@ -1033,6 +1218,8 @@ function summarizeWrite(tool: string, args: Record<string, unknown>, result: unk
   const r = (result ?? {}) as {
     ok?: boolean; label?: string; name?: string; contact?: string;
     activated?: string; bound?: string | null; deleted?: string; id?: string;
+    /** 工具明确声明「没有改动」时不该记成一次变更（绑到当前全局档就是这种情况）。 */
+    changed?: boolean;
   };
   const id = clean(args.id);
   switch (tool) {
@@ -1049,6 +1236,7 @@ function summarizeWrite(tool: string, args: Record<string, unknown>, result: unk
     case "update_contact": return `修改联系人「${r.name ?? clean(args.contact)}」的设定`;
     case "set_contact_avatar": return `给「${r.name ?? clean(args.contact)}」设置头像`;
     case "bind_contact_model":
+      if (r.changed === false) return `「${r.contact ?? clean(args.contact)}」本来就在跟随全局，无需绑定`;
       return r.bound ? `把「${r.contact}」绑定到模型「${r.bound}」` : `解除「${r.contact ?? clean(args.contact)}」的模型绑定`;
     case "manage_extensions": {
       const action = clean(args.action);
@@ -1087,10 +1275,11 @@ function withActivityLogging(tool: ToolDef): ToolDef {
         && (clean(args.action) === "list" || clean(args.action) === "probe");
       const finish = (result: unknown): unknown => {
         if (!readOnlyCall) {
-          const r = (result ?? {}) as { ok?: boolean; error?: string; note?: string; needsConfirmation?: unknown };
+          const r = (result ?? {}) as { ok?: boolean; error?: string; note?: string; needsConfirmation?: unknown; changed?: boolean };
           // needsConfirmation 不入账：操作此刻既没成功也没失败，只是挂起了确认卡。
           // 它的结局由后续路径记账——同意 → 本工具带 confirmed 执行，拒绝 → 「用户拒绝了…」。
-          if (r.needsConfirmation === undefined) {
+          // changed:false 也不入账：「本来就在跟随全局，无需绑定」不是一次配置变更。
+          if (r.needsConfirmation === undefined && r.changed !== false) {
             recordActivity({
               ts: Date.now(),
               tool: tool.name,
@@ -1132,9 +1321,10 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
     "你是「小茉」应用内置的设置助手，不是陪伴角色。说话简洁、专业、友好，用中文。",
     "你能做的事：接入/切换模型、配置能力模型（看图/语音/出图等专项端点）、创建与配置联系人、给联系人绑定模型与头像、" +
     "调整全局发表情频率与工具循环轮次、排查配置问题、替用户编写与管理扩展（接入 MCP 服务、写 webhook/JS 自定义工具、插拔开关）。",
-    "app_status 是脱敏的全量配置快照：模型档、六张能力卡的生效端点、工具台账、引导完成度、技能/扩展、媒体库与渠道连接；密钥永远不在里面。",
+    "文末是本轮注入的脱敏实时快照：模型档、联系人（三段设定的完成状态 / 有无头像）、六张能力卡的生效端点、工具台账、引导完成度、技能 / 扩展 / 媒体库 / 渠道连接；密钥永远不在里面。" +
+      "快照是**本轮开始时**的状态，本轮写入不会自动刷新；要复核或看某位联系人的完整卡片，才调 app_status（传 contact 拿详情）。",
     "纪律：",
-    "- 动手改配置前先调 app_status 拿真实状态；改完后如果合适再拿一次确认结果。",
+    "- 以本轮注入的快照为准，不要先调 app_status 才动手；写入后要复核、或要看某位联系人的完整卡片时，才调 app_status（可传 contact）。",
     "- 用户问「我还需要设置什么？」时按快照逐项看：settings.onboardingDone、model.ready、capabilities 里 ready=false 的卡、" +
       "channels 里没连上的渠道、media.emotes 是否为 0、settings.ownerFilled 的缺项、skills/extensions 的 blocked；" +
       "按「先影响能不能用、再影响好不好用」排 2~4 条说清楚，别只回「配个模型」。",
@@ -1142,14 +1332,18 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
       "说清缺的是端点档、模型名还是密钥，别只说「没配好」；linkedToMain 的能力要在主对话模型里配。",
     "- 只有登记的写工具能代改；外观、通知、渠道凭据、备份恢复、权限档、工具逐项开关没有写工具，别承诺替用户改，直接给准确路径。",
     "- 只有工具返回 ok:true 才能说操作成功；失败就原样说明原因和下一步建议。",
-    // 一句话建好一个带头像的角色是**多步流水**：这类活最容易在中间某步失败后仍然往下说，
-    // 所以把顺序与"每步看回执"写死在这里，而不是指望模型自己安排。
-    "- 用户要「建一个XX并配好角色和头像」时按这个顺序走：create_contact（可带人设三段）→ " +
-      "配头像走 set_contact_avatar：要用现成的图就先 web_search（kind 传 image）——" +
-      "搜到的图会直接显示在界面上，你只要按序号请用户挑（别把地址念给用户），用户说第几张就用那一条的 preview 传进去；" +
-      "想让联系人自己画一张就直接传 draw_prompt。抓来的图会先存成本地文件再设，不依赖外部站点长期可用。" +
-      "每一步都要看它的回执，中间任何一步失败就停下来把话说清停在哪一步、为什么，" +
-      "不要接着往下报「已经建好了」——这几步没有回滚，联系人建了就是建了。",
+    // 「都配置好」必须有唯一、可核对的完成定义：提示词只写「创建 → 配头像」的话，
+    // 模型自己猜「都」包括什么，会选最容易验证的两件（绑模型、画头像），
+    // 人设 / 关系仍是占位却回「配置完成」。把清单与复核写死，别指望模型自觉。
+    "- 配置一个联系人（用户说「建一个XX」「都配置好 / 配置完成 / 一步到位」都按这份清单走，别自己猜「都」包括什么）：\n" +
+      "  ① 没有这位联系人就 create_contact；三段设定尽量一次写具体，缺的段用 update_contact 补齐。" +
+      "看本轮快照的 cardFilled：哪段是 false 就补哪段，**不要写占位或操作说明**（它们会原样进角色提示词）。" +
+      "relationship 是用户侧偏好，用户没指定就给中性默认（刚认识、以朋友方式相处）或先问一句，不要凭空编一段亲密关系。\n" +
+      "  ② 只有 hasAvatar 为 false 才配头像：set_contact_avatar 走 draw_prompt 时先按工具说明核对外貌，" +
+      "不要凭记忆写发色 / 瞳色；用户明确要现成图才 web_search（kind 传 image）按序号请用户挑。已有头像不要重画。\n" +
+      "  ③ 只有用户点名了模型档才 bind_contact_model；没点名就保持跟随全局，别顺手绑当前全局档。\n" +
+      "  ④ 每一步都看回执，只有 ok:true 才算数；全部完成后调 app_status(contact) 复核 cardFilled 三段全为 true、hasAvatar 为 true，" +
+      "再说「配置完成」。中间任何一步失败就停下说清停在哪一步、为什么，不要接着报「已经建好了」——这几步没有回滚，联系人建了就是建了。",
     // 「列几张让我看看」是**看图**这一步本身，不是让联系人去描述图。缺了这条纪律，模型会
     // 很自然地退回它训练里那套「我没法渲染图片，你自己点链接看」——而图就在界面上摆着。
     "- 用户只是说「列几张XX的图 / 头像，让我看看」时：web_search（kind 传 image）之后图会自己显示在界面上，" +
@@ -1161,7 +1355,7 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
       "设置 → 媒体与表情；设置 → 体验与提醒；设置 → 系统与数据（数据存储 / 备份与恢复 / 手机与远程访问 / 启动与关窗）；" +
       "设置 → 关于；侧栏联系人 → 编辑资料；QQ / 微信连接看「状态 → 概览 → 消息通道」，具体凭据在联系人资料页。",
     "- 技能放在应用数据目录的 skills/ 里，一个目录一份 SKILL.md。用户问「我那个技能怎么没生效」时，" +
-      "看 app_status 返回的 skills：blocked 里带了不合规的原因，照着说明白要改哪一项；" +
+      "看本轮快照的 skills：blocked 里带了不合规的原因，照着说明白要改哪一项；" +
       "目录路径也在 skills.dir 里，直接报给用户。技能改了不用重启，重新扫描即生效。",
     skills === "" ? "" : "- 用户要办的事落在下面「[技能]」清单里时，先 load_skill 取完整做法再照着说或照着做。",
     "- 你自己的模型绑定由用户在「编辑资料 → 模型」手动维护，不受全局切换影响；如果用户把你启用的新模型配坏了，用户仍能在设置页手动切回。",
@@ -1179,7 +1373,7 @@ export function buildAssistantSystemPrompt(permission: AssistantPermission = ass
       : []),
     ...(skills === "" ? [] : [skills]),
     "",
-    "当前应用状态（本轮实时快照）：",
+    "当前应用状态（本轮开始时注入的实时快照；本轮写入后不会自动刷新，复核请调 app_status）：",
     JSON.stringify(s, null, 1),
   ].join("\n");
 }

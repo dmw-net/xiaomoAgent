@@ -1,9 +1,8 @@
 // QQ 后端选择状态：全局默认 + 按联系人覆盖，全部落在 SQLite kv。
 //
 // 为什么单独一层：表情渲染（emote/qq-emote.ts）需要知道当前走的是官方 Bot 还是 OneBot，
-// 而 qq.ts 又要 import 表情渲染、qq-onebot.ts 又要 import 表情渲染，原先
-// qq → qq-onebot → qq-emote → qq 构成一个运行时环。后端选型与"通道本身怎么跑"是两件事，
-// 把这份共享状态下沉到零业务依赖的模块后，各方都只向下依赖，环自然断开。
+// 后端选型与"通道本身怎么跑"是两件事。把这份共享状态下沉到零业务依赖的模块，
+// qq / qq-onebot / qq-emote 各方都只向下依赖，没有任何一方反向 import 通道层。
 //
 // 这里不认识任何网关、协议端或表情字段；只回答"某个联系人该用哪个后端"。
 
@@ -33,7 +32,7 @@ export function qqBackendSaved(): QQBackend | null {
   return value === "official" || value === "onebot" ? value : null;
 }
 
-/** 历史兼容：只修改默认值；新界面按联系人保存覆盖。 */
+/** 只改全局默认值；联系人级覆盖走 saveQQBackendForContact（新界面按联系人保存）。 */
 export function saveQQBackend(backend: QQBackend): void {
   kvSet(QQ_BACKEND_KV, backend);
 }

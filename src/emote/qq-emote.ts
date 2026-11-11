@@ -39,7 +39,7 @@ import {
 import { dirFor } from "../media/media-layout.ts";
 import { scheduleCaptureNaming } from "./emote-naming.ts";
 import { applyEmoteNaming, cleanLabel, cleanTags, isMachineName } from "./emote-semantics.ts";
-// 保持原有导出面：isMachineName / applyEmoteNaming 历史上从本模块取，测试与调用方无需改动。
+// 导出面保持在本模块：isMachineName / applyEmoteNaming 从这里重导出，测试与调用方无需改动。
 export { isMachineName, applyEmoteNaming } from "./emote-semantics.ts";
 import { qqBackend, type QQBackend } from "../channels/qq-backend.ts";
 import type { QqMediaRef } from "../channels/qq.ts";
@@ -322,7 +322,7 @@ export function migrateEmoteStore(): boolean {
 }
 
 // 模块加载即迁移：任何消费者（路由 / 工具 / 媒体引用扫描）拿到的都已经是表里的数据，
-// 而且语义列已经拆好——检索层不需要知道 kv 时代曾经存在过。
+// 而且语义列已经拆好——检索层只需要认识 assets 表这一份真相。
 migrateEmoteStore();
 migrateEmoteSemantics();
 

@@ -514,8 +514,8 @@ export type OneBotLoginInfo = {
 
 /** 探测协议端并读出它当前登录的账号：绑定入口靠它把「手填 QQ 号」升级成「确认绑定」。
  *  不抛错——连不上也是合法状态，error 里带原因。
- *  obAction 回的是完整信封（{status,retcode,data,echo}），账号字段在 data 里；
- *  从前直接在信封上读 user_id，永远读出空号——HTTP 通着也判成「没连上」。 */
+ *  obAction 回的是完整信封（{status,retcode,data,echo}），账号字段必须进 data 里读；
+ *  直接在信封上读 user_id 会读出空号——HTTP 通着也会被判成「没连上」。 */
 export async function onebotLoginInfo(): Promise<OneBotLoginInfo> {
   try {
     const envelope = await obAction("get_login_info", {});

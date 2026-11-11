@@ -21,7 +21,7 @@ import {
   qqBackend, qqBackendFor, qqBackendSaved, qqBackendSavedFor, qqUsesBackend,
   saveQQBackend, saveQQBackendForContact, setEffectiveBackend, type QQBackend,
 } from "./qq-backend.ts";
-// 后端选型的导出面历史上在 qq.ts；保留重导出，调用方与回归测试无需改路径。
+// 后端选型的重导出面在 qq.ts：实现本体在 qq-backend.ts，调用方与回归测试从这里取。
 export { qqBackend, qqBackendFor, qqBackendSaved, qqBackendSavedFor, qqUsesBackend, saveQQBackend, saveQQBackendForContact } from "./qq-backend.ts";
 export type { QQBackend } from "./qq-backend.ts";
 
@@ -803,7 +803,7 @@ export function createQQService(deps: {
 
   /**
    * 按会话分派「文字 + 媒体」：私聊走联系人账号，群走该群 external_id。
-   * 普通对话回复带图时用它闭环（之前是文字 + 一句"图发不出去"的兜底）。
+   * 普通对话回复带图时用它闭环。
    */
   const deliverMediaToConversation = async (
     conversationId: string,
@@ -1244,7 +1244,7 @@ const serviceForContact = (contactId: string): QQService => serviceForBackend(qq
 const serviceForConversation = (conversationId: string): QQService =>
   serviceForBackend(qqBackendForConversation(conversationId));
 
-/** 历史兼容：修改默认渠道时不再停掉另一套服务，因为其他联系人可能还在用。 */
+/** 兼容行为：修改默认渠道时另一套服务保持常驻不停——其他联系人可能还在用它。 */
 export function applyQQBackend(backend: QQBackend): void {
   setEffectiveBackend(backend);
   officialService.startAll();

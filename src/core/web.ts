@@ -289,8 +289,8 @@ export async function fetchRaw(url: string, maxBytes: number, abortSignal?: Abor
     }
     throw new WebError("too_many_redirects", "重定向次数太多");
   } finally {
-    // ⚠️ deadline 必须在 finally 清：从前只在 readOne 的 end/error/too_large 里清，
-    // 于是 4xx/5xx、重定向、地址被拒、坏网址全部漏掉——每次失败的抓取都把一个
+    // ⚠️ deadline 必须在 finally 清：只在 readOne 的 end/error/too_large 里清的话，
+    // 4xx/5xx、重定向、地址被拒、坏网址全部漏掉——每次失败的抓取都把一个
     // 20 秒定时器连同一个闭包钉在进程里，自然退出的脚本（冒烟、一次性 CLI）
     // 每次失败多挂 20 秒。外层监听同理，否则取消之后它还挂在调用方的 signal 上。
     clearTimeout(deadline);
@@ -452,8 +452,8 @@ function decodeEntities(text: string): string {
   return text
     .replace(/&#x([0-9a-f]+);/gi, (_all, hex: string) => fromCodePoint(Number.parseInt(hex, 16)))
     .replace(/&#(\d+);/g, (_all, dec: string) => fromCodePoint(Number(dec)))
-    // 不认识的命名实体原样保留，绝不能删成空串：以前 `&trade;` 这类会让「Rock & Roll™」
-    // 变成「Rock & Roll」，标题和正文都缺字，而且没有任何报错。
+    // 不认识的命名实体原样保留，绝不能删成空串：`&trade;` 这类一旦被删掉，
+    // 「Rock & Roll™」会变成「Rock & Roll」，标题和正文都缺字，而且没有任何报错。
     .replace(/&([a-z][a-z0-9]+);/gi, (all, name: string) => ENTITIES[name.toLowerCase()] ?? all);
 }
 

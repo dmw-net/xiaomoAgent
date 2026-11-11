@@ -2,8 +2,8 @@
 //
 // 视角（全部 / 表情包 / 收藏 / 作品 / 聊天）是参数，不是五个功能；联系人也是参数——
 // 「联系人的东西」本来就是全局库，「和某人」只是在这堆东西上多带一个条件。
-// 以前这里是三套各查各源的接口（/api/content 按联系人、/api/emotes 读 kv、/api/media/maintenance 扫盘），
-// 同一个动作在三处各有一份实现，删除语义也对不上。
+// 三套各查各源的接口（/api/content、/api/emotes、/api/media/maintenance）在这里
+// 收成一个查询口，删除语义也归一。
 //
 // 纪律（与全表一致）：用 Ctx.path（不含 query）匹配、url.searchParams 取参数；
 // 所有 /api/* 返回 JSON 且永远带 ok 字段，前端只靠 ok 判断成败。

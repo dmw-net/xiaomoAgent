@@ -84,7 +84,7 @@ export function modelThinkingControl(contactId: string): Record<string, unknown>
   };
 }
 
-/** settingsSnapshot + 三个高频派生字段：原先 8 处响应样板收成一个口。 */
+/** settingsSnapshot + 三个高频派生字段：全站响应统一从这一个口出。 */
 export function snapshotResponse(): Record<string, unknown> {
   return {
     ...settingsSnapshot(),

@@ -594,7 +594,7 @@ function collectMediaSources(): Map<string, MediaSource[]> {
   }
   // 用户明确认领过的资产（表情包素材、收藏）本身就是引用。
   // 少了这一条，「只被表情库认领、没进过任何对话」的梗图会被判成未引用而被清理掉——
-  // 表情标记从前住在 kv 的 blob 里、由下面的 kv 扫描顺带认到；搬进 assets 表后那条扫描就看不见它了。
+  // 表情标记住在 assets 表里，下面的 kv 扫描认不到它。
   for (const row of db.prepare(
     "SELECT url, usable_as_emote, starred FROM assets WHERE usable_as_emote = 1 OR starred = 1",
   ).all() as Array<{ url: string; usable_as_emote: number; starred: number }>) {

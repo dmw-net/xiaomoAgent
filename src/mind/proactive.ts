@@ -1,27 +1,17 @@
 // 主动性：陪伴产品的核心卖点——不是"你问我答"，而是"它觉得该出现了就出现"。
 //
-// 调度（2026-11-05，第三版）：节拍由联系人自己定，闹钟只认「最早该醒的那一刻」。
-//
-// 前两版的问题：第一版每 30 分钟从零想一次该不该联系（无状态）；第二版改成了任务化，
-// 但"下次什么时候想"被实现成"往队列表里插一条 pending 任务"，于是调度和台账共用一张表，
-// 需要 PENDING_CAP、启动去重、四处 kind 特判三套补丁来维持，还带来三个实打实的缺陷：
-//   - 所有到期判断都挂在一个 setInterval(30 分钟) 上，于是"到点必达"的提醒最坏晚 30 分钟，
-//     重启后还要再等一整轮才有第一次机会；
-//   - 免打扰靠"每半小时顺延一次"往后滚，滚满次数就放弃，跨不过 9 小时的静默期；
-//   - 启动时按 kind 去重会连带取消用户自己在面板上立的计划（同样是 kind='care'）。
-//
-// 现在的模型（职责分开，职责一分开那三套补丁就不需要了）：
+// 调度：节拍由联系人自己定，闹钟只认「最早该醒的那一刻」。职责分开：
 //   - proactive_state 一行 = care 的节拍：「下次什么时候想、想什么」；
 //     判断完由模型直接决定 next_check_minutes，写回这一行。
 //   - proactive_tasks 里的 reminder = 用户立的绝对时间戳承诺，模型无权改。
 //   - 调度器睡到两者的最小值（nextWakeAt），醒来只处理已到期的，处理完重排；
-//     免打扰在**排期**时一次跳到时段结束，不再每半小时滚一次。
+//     免打扰在**排期**时一次跳到时段结束。
 //   - 一趟唤醒最多对用户说一句话：发了提醒，care 就顺延半小时。
 //
-// 任务化（2026-09-16，保留）：判断一次，带着具体观察落成"下次关注什么"，到点执行、执行留痕。
-// 区别只是这份观察现在存在状态行里，不再借一条 pending 任务表达调度。
+// 任务化：判断一次，带着具体观察落成"下次关注什么"，到点执行、执行留痕；
+// 这份观察存在状态行里，调度不借 pending 任务表达。
 //
-// 多联系人（2026-09-17）：每个联系人独立一套节拍与「今天是否已说过」的配额——
+// 多联系人：每个联系人独立一套节拍与「今天是否已说过」的配额——
 // 跟 A 聊过天，不代表 B 今天也被关心过。
 //
 // 闸门：免打扰时段与开关是硬闸门；「静默时长」和「每日一次」是**判断依据**注入提示词——
@@ -169,7 +159,7 @@ export function pendingProactiveTask(contactId: string): ProactiveTask | null {
 /** 联系人列表只需要“临近到期”的任务；一次批量查，避免 N 个联系人查 N 次库。 */
 export type PendingSoonTask = Pick<ProactiveTask, "contact_id" | "focus" | "kind" | "due_at">;
 
-/** 临近窗口：1 小时。原先跟着检查间隔走，现在节拍由模型定，窗口必须是固定的一段时间。 */
+/** 临近窗口：1 小时；节拍由联系人自定，窗口必须是固定的一段时间。 */
 const PENDING_SOON_LEAD_MS = 60 * 60_000;
 
 /**
@@ -230,15 +220,15 @@ function insertTask(
     id: Number(result.lastInsertRowid),
     contact_id: contactId, focus, kind, due_at: dueAt, status: "pending",
     postpone_count: 0, result: null, error: null,
-    // 回读也要给真实的建立时刻：从前这里返回 dueAt，于是「刚立的一条」在界面上
-    // 显示成建在未来（立一个明晚的提醒，创建时间就是明晚）。
+    // 回读给真实的建立时刻：若返回 dueAt，「刚立的一条」会在界面上
+    // 显示成建在未来（立一个明晚的提醒，创建时间就变成明晚）。
     created_at: createdAt, finished_at: null,
     conversation_id: conversationId,
   };
 }
 
 /** 只留痕、不进队列：care 的一次判断已经发生完了，写一条历史行给「执行记录」看。
- *  不再用 pending 行表达调度——那正是旧版堆积与误删的来源。 */
+ *  调度由状态行表达，不占用 pending 任务行。 */
 function recordCareHistory(
   contactId: string,
   focus: string,
@@ -355,10 +345,9 @@ function deferNextCheck(contactId: string, at: number): void {
 
 /**
  * 把一个时刻推到「不在免打扰时段」的第一个整点。
- * 旧版是每次检查 +30 分钟往后滚，靠 POSTPONE_MAX 兜底：默认 23-8 是 9 小时，
- * 而 care 的额度只有 6 小时，于是 23:00 之后到期的 care 注定被放弃、连 focus 一起丢掉；
- * reminder 则要滚 18 次，每次都从处理时刻重新算，漂移累积下来还会掉一趟车。
- * 现在一次算清，静默期无论多长都只推一步。
+ * 排期时一次算清：静默期无论多长都只推一步，靠 POSTPONE_MAX 兜底——
+ * 默认 23-8 是 9 小时，而 care 的顺延额度只有 6 小时，只有一步推过才能保住
+ * 23:00 之后到期的 care（连 focus 一起），reminder 也不会因反复步进而漂移掉趟。
  */
 function pushOutOfQuiet(ts: number): number {
   if (!inQuietHours(new Date(ts).getHours())) return ts;
@@ -416,7 +405,7 @@ function scheduledAt(ts: number, contactId: string): number {
 const WAKE_CHUNK_MS = 30 * 60_000;
 /** 已经到期却没能推进（判断抛错等）时，别用 0 延迟自旋。 */
 const WAKE_RETRY_MS = 15_000;
-/** 全新联系人：装上后半小时才有第一次搭话的机会（与旧版手感一致，别一开机就冒一句）。 */
+/** 全新联系人：装上后半小时才有第一次搭话的机会（避免开机即冒一句）。 */
 const CARE_FIRST_CHECK_MINUTES = 30;
 /** 模型给的节拍范围：最快 5 分钟看一眼，最慢一天。 */
 const CARE_MIN_MINUTES = 5;
@@ -496,10 +485,10 @@ export function scheduleWake(): void {
 /**
  * 一趟唤醒：清孤儿 → 先发全体提醒 → 再逐个判断 care → 重排。
  * 用 `waking` 而不是每联系人的锁挡住重叠：重入的那一趟只记一个"待补跑"，
- * 不会像旧版那样靠 checksInFlight 静默丢掉一整个联系人。
+ * 不会静默丢掉任何一位联系人。
  *
  * 为什么必须两段：提醒不需要模型（原样发出去就行），而 care 一次判断要调模型（最坏 90 秒）。
- * 从前是「逐联系人、每人内部先提醒后判断」，于是 B 的 08:00 提醒会排在 A 的判断后面——
+ * 若逐联系人「先提醒后判断」，B 的 08:00 提醒会排在 A 的判断后面——
  * A 的模型慢一分钟，B 的承诺就晚一分钟。这跟模型快慢无关，是顺序问题。
  *
  * 导出仅供 smoke 直接跑一趟：那个测试进程只起了 HTTP 服务，没有租约也没有闹钟，
@@ -630,8 +619,7 @@ async function runProactiveCheckInner(
   // 不看节拍到没到，其它闸门照旧。
   const manual = trigger === "manual" || trigger === "cli";
 
-  // 1) 到点提醒：用户承诺，先兑现。一趟里所有到期的都发完（旧版每趟只消费一条，
-  //    三条 21:00 的提醒会被拆成 21:00 / 21:30 / 22:00）。
+  // 1) 到点提醒：用户承诺，先兑现。一趟里所有到期的都发完。
   //    唤醒路径已经在第一段扫过了，这里直接用结果，不再重复查一遍。
   const reminder = swept !== undefined ? swept : await deliverDueReminders(contactId, now);
   if (reminder !== null) {
@@ -715,7 +703,7 @@ async function runProactiveCheckInner(
   }
 
   // 禁用词同样管住联系人主动说的那句：约束已随 decideWithModel 那条 user 消息摆给联系人了，
-  // 不再事后抹。模型未就绪时走 echoDecision，那条路不问模型、也就没有词表可言。
+  // 无需事后抹。模型未就绪时走 echoDecision，那条路不问模型、也就没有词表可言。
   const cleanText = decision.text?.trim() ?? "";
   const nextAt = quotaLeft
     ? now + decision.nextCheckMinutes * 60_000
@@ -745,8 +733,8 @@ async function runProactiveCheckInner(
     }
     const outcome = await deliverProactiveToTarget(contactId, target, cleanText, images);
     if (!outcome.ok) {
-      // 投递失败不能记成"已发送"：旧版无视返回值、直接把任务写成 done，
-      // 于是用户什么都没收到，界面却说送达了，配额还被吃掉一次。
+      // 投递失败必须如实记"failed"：记成"已发送"的话，用户什么都没收到，
+      // 界面却说送达了，配额还被吃掉一次。
       recordCareHistory(contactId, focus, "failed", `投递失败：${outcome.error}`, outcome.error);
       answerCareTasks(plannedDue, `投递失败，已排重试：${outcome.error}`);
       setNextCheck(contactId, now + CARE_RETRY_MS);
@@ -835,8 +823,7 @@ function idleMinutesNow(contactId: string): number {
 
 /**
  * 到点提醒：不询问模型、不吃每日配额——立下的承诺必须兑现。
- * 一趟里把已到期的全部发完；每一条都按真实投递结果落状态，
- * 失败留 error（旧版无论通道结果都记「已送达」，用户看不到任何异常）。
+ * 一趟里把已到期的全部发完；每一条都按真实投递结果落状态，失败留 error。
  */
 async function deliverDueReminders(contactId: string, now: number): Promise<ProactiveDecision | null> {
   const rows = db
@@ -891,9 +878,9 @@ export function formatDue(dueAt: number, now = Date.now()): string {
 
 // ── 目标会话：一条主动消息只说给一个地方听 ──────────────────────────
 //
-// 从前的做法是「一次生成、到处群发」：同一句文案同时进本机私聊、微信、QQ 私聊，
-// 还原样发进每一个勾选了主动权限的群——私聊里才合适的话进了群，A 群里某位成员的
-// 记忆可能被写进发到 B 群的话里。现在先确定「说给谁听」，再决定用什么上下文：
+// 一句文案若同时进本机私聊、微信、QQ 私聊，还原样发进每一个勾选了主动权限的群，
+// 私聊里才合适的话就会进了群，A 群里某位成员的记忆也可能被写进发到 B 群的话里。
+// 所以先确定「说给谁听」，再决定用什么上下文：
 // 判断（该不该说）看的是全渠道元信息（静默时长、配额）——那是对"这个人"的判断；
 // 生成（说什么）与投递只对目标会话，记忆召回的 scope 也按它收窄。
 
@@ -1170,9 +1157,8 @@ export function inspectGates(contactId = "default"): {
 /**
  * 启动时的一次性数据修复（幂等）：
  * 1) 联系人已被删除的孤儿行（任务行 + 状态行）整批收口；
- * 2) 旧版「每轮插一条 pending care」留下的堆积：把最早那条折成状态行的节拍，
- *    其余标记取消。旧版每次启动都做这件事（还顺带误伤了用户手建的 care 计划）；
- *    现在只做一次——之后 care 的调度只存在于状态行里，不会再往队列里堆。
+ * 2) 遗留数据里的 pending care 堆积：把最早那条折成状态行的节拍，其余标记取消。
+ *    幂等：折过之后该联系人就有了状态行，之后 care 的调度只走状态行，不会再往队列里堆。
  */
 export function pruneProactiveBacklog(): { orphans: number; folded: number } {
   const orphans = pruneOrphans();
@@ -1217,8 +1203,8 @@ function pruneOrphans(): number {
 }
 
 /**
- * 已结束的任务只留 30 天。pruneProactiveBacklog 只管 pending，
- * done/failed/skipped/cancelled 的历史行此前永远不删——常驻进程跑几个月就是一堆死行。
+ * 已结束的任务只留 30 天。pruneProactiveBacklog 只管 pending 行；
+ * done/failed/skipped/cancelled 由这里按窗口清理——常驻进程不清理就会堆死行。
  */
 export function pruneFinishedTasks(maxAgeMs = 30 * 86_400_000): number {
   const result = db

@@ -1,6 +1,7 @@
 // Agent 层：一次「收消息 → 回消息」的完整处理。
 //
-// 关键设计：这是"薄循环"。它只做四件事——召回记忆、拼上下文、调模型、落库。
+// 关键设计：这是"薄循环"。它只做召回记忆、拼上下文、调模型、执行工具与落库；
+// 多轮工具循环、取消让路、上下文溢出重试的细节都收在 runAgentLoop（设计说明见文件后段）。
 
 import { randomUUID } from "node:crypto";
 import { q, withTx } from "../core/db.ts";
@@ -192,7 +193,7 @@ export function deleteAssistantMessagesForTurn(turnId: string): number {
 }
 
 // ── 回复多版本（swipe）─────────────────────────────────────────
-// 重答一轮时旧回复不再消失：它被序列化进 turns.variants 留档，新回复追加为下一个版本，
+// 重答一轮时旧回复不消失：它被序列化进 turns.variants 留档，新回复追加为下一个版本，
 // 用户可以在气泡下方左右切换。活跃版本的正文始终写回 messages.text ——
 // 上下文回放（recentMessages）只认那一列，所以「模型看到哪个版本」与「用户选中哪个版本」天然一致。
 
@@ -479,9 +480,8 @@ function parseStoredAttachmentMeta(raw: unknown): MessageAttachmentMeta[] | unde
 
 /**
  * 聊天窗口的两档大小：首屏 500 条、每点一次「载入更早」再回 200 条。
- * 只有这一处定义——从前界面用 `返回行数 >= 200` 反推「还有没有下一页」，
- * 那个 200 在前后端各写一遍，改一边就悄悄失效（改成 300 后前端会以为到底了）。
- * 现在由服务端直接下发还剩多少条更早的没进界面。
+ * 只有这一处定义：还有没有更早的页由服务端按剩余行数直接下发，
+ * 前后端各写一个阈值反推的话，改一边就会悄悄失效（改成 300 后前端会以为到底了）。
  */
 export const CHAT_FIRST_PAGE = 500;
 export const CHAT_EARLIER_PAGE = 200;
@@ -1059,14 +1059,17 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
 }
 
 /**
- * 处理一轮对话。
- * 注意：调用方应当"先返回、后调用本函数"——它可能要跑十几秒，不能让 HTTP 请求等它。
+ * `respondToTurn` 的设计说明（函数定义在文件后段，这段注释没有紧跟函数，别当成它的 JSDoc）。
+ * 注意：调用方应当"先返回、后调用"——它可能要跑十几秒，不能让 HTTP 请求等它。
  * isRetry=true 时不会重复写用户消息（重试的是同一轮），并会清掉上一次的失败回复。
  */
 /**
- * agent 循环：带工具的多步生成。
+ * `runAgentLoop` 的设计说明（函数定义在 AgentLoopOptions 之后，同样没有紧跟函数）。
  *
- * 流程：模型若请求工具 → 执行（结果 JSON 回传）→ 模型继续 → 最多 3 轮后强制收口。
+ * 流程：模型若请求工具 → 执行（结果 JSON 回传）→ 模型继续 → 轮数用尽时**保留全部工具消息**、
+ * 只追加一句「直接回答」的收口指令。轮数由 `resolveToolLoopTurns` 决定：助手固定 8 轮，
+ * 普通联系人走全局设置（1~16，默认 5）；联网/配置这类多步流水每一步都要看上一步回执，
+ * 余量必须够宽，所以做成可配。
  * 循环内的 tool 往返不进下次历史（recentMessages 已排除）；但每次工具执行会
  * 落一张 kind=tool 的**过程卡**——界面能看见联系人在查，过程不再是黑箱。
  * messages 表里联系人"说的话"仍然只有最终回复（思考过程依旧不回放）。
@@ -1074,9 +1077,9 @@ export function contextUsage(contactId: string, conversationId?: string): Contex
  * 降级：端点不支持 function calling（第一次调用即 400/422）→ 整轮回退为无工具的单次
  * 生成，并记住降级状态（model.ts 内），后续轮次不再撞墙。echo 模式同理直接单次。
  *
- * 轮数不再是常量：助手固定 8 轮，普通联系人走全局设置（见 settings.resolveToolLoopTurns）。
- * 这里的“轮”是一次带工具定义的模型请求，不是一次工具调用；同一请求可发起多个工具。
- * 因为联网这一档的活天然是多步流水，3 轮连一件事都做不完就被强制收口。
+ * 这里的“轮”是一次带工具定义的模型请求，不是一次工具调用；同一请求可发起多个工具：
+ * 独立工具并发（上限 4）、出图单列串行、只读工具按 (name, args) 去重但每个 tool_call_id
+ * 仍各有一条 tool 回执。
  */
 
 /** 工具卡的一句摘要：按工具给用户能看懂的话，而不是甩 JSON。 */
@@ -1088,7 +1091,7 @@ export function toolSummary(name: string, result: unknown): string {
     return clock !== "" ? clock : "查了当前时间";
   }
   if (name === "search_memory") {
-    // 记忆检索返回的是 events（不是 results），以前读错字段导致永远显示「没找到」。
+    // 记忆检索返回的是 events（不是 results），字段读对才有条数可显示。
     const r = result as { events?: unknown[] } | null;
     const n = Array.isArray(r?.events) ? r!.events!.length : 0;
     return n > 0 ? `想起了 ${n} 条相关的事` : "翻了翻，没找到相关的";
@@ -1152,7 +1155,7 @@ export function toolSummary(name: string, result: unknown): string {
   }
   if (name === "configure_model" || name === "activate_model") {
     // configure_model 回 {label, activated:boolean}；activate_model 回 {activated:"档名"}——
-    // 两个工具的形状不同，以前按同一套字段读，切模型那张卡会显示「已启用模型「」」。
+    // 两个工具形状不同，必须各按各的字段读，才能拼出「已启用模型 X」。
     const r = result as { ok?: boolean; label?: string; activated?: boolean | string; error?: string } | null;
     if (!r?.ok) return `失败：${r?.error ?? "未知原因"}`;
     const label = r.label ?? (typeof r.activated === "string" ? r.activated : "");
@@ -1212,8 +1215,7 @@ export function toolSummary(name: string, result: unknown): string {
     }
     return r.action === "delete" ? "删除了一个扩展工具" : "保存了扩展工具";
   }
-  // 兜底绝不回灌原始 JSON：以前 send_emote 没登记时，工具卡上直接显示
-  // 「做了点事 · {"via":"native","native":true,"note":"…"}」——那是给模型的载荷，不是给用户的话。
+  // 兜底绝不回灌原始 JSON：那是给模型的载荷，不是给用户的话。
   // 未登记的工具（尤其是动态扩展）至少报出名字，别用一句「执行完成」盖住它做了什么；
   // 静态工具漏登记由 toolPoolDiagnostics() 在启动时提醒。
   const r = (result ?? {}) as { ok?: unknown; error?: unknown };
@@ -1222,9 +1224,9 @@ export function toolSummary(name: string, result: unknown): string {
 }
 
 /**
- * 「软失败」的识别已上移到 executeTool → normalizeToolOutcome：工具自报
+ * 「软失败」的识别统一收口在 executeTool → normalizeToolOutcome：工具自报
  * {ok:false,error} 与扩展的 {error:"…"} 都在统一入口判成 ok:false，卡片直接用
- * result.ok / result.error。从前这里的一层补丁只会漏掉不带 ok 字段的错误形状。
+ * result.ok / result.error。
  */
 
 /** 工具卡只有一行：失败原因若是一整段给模型的操作指引，只留第一句，别把卡片撑成一面墙。 */
@@ -1241,9 +1243,9 @@ function cardFailureSummary(text: string): string {
  */
 const TOOL_DETAIL_MAX_CHARS = 1500;
 /**
- * 一条回复最多挂几张图。以前是 1，导致「QQ 里收到 N 条表情、应用气泡只显示第一张」。
- * 3 是业内反复出现的阈值（微信 3 张起折叠、Discord sticker ≤3、Telegram album 2–10）。
- * 真正的「整轮门控」在 tools.ts:executeTool，这里只负责展示侧不再硬砍到一张。
+ * 一条回复最多挂几张图。3 是业内反复出现的阈值
+ * （微信 3 张起折叠、Discord sticker ≤3、Telegram album 2–10）。
+ * 真正的「整轮门控」在 tools.ts:executeTool，这里只负责展示侧的挂图上限。
  */
 export const MAX_REPLY_IMAGES = 3;
 
@@ -1341,8 +1343,8 @@ async function guardOverflow<T>(sent: ChatMessage[], send: () => Promise<T>): Pr
 }
 
 /**
- * 工具参数回传前脱敏已下沉到 core/secrets.ts：与 logs.ts 共用同一条字段规则，
- * 且改成**递归**（从前只遍历顶层，嵌在 manifest.mcp.headers 里的密钥会漏）。
+ * 工具参数回传前脱敏下沉在 core/secrets.ts：与 logs.ts 共用同一条字段规则，
+ * 且为**递归**遍历（嵌在 manifest.mcp.headers 里的密钥也逃不掉）。
  *
  * 为什么必须脱敏：助手工具 `configure_model` 的 arguments 里带着用户刚贴的 apiKey，
  * 协议要求把 assistant.tool_calls 原样回传下一轮，那份密钥会跟着每一轮请求发给
@@ -1363,7 +1365,7 @@ async function guardOverflow<T>(sent: ChatMessage[], send: () => Promise<T>): Pr
  *
  * 预算按工具可配（ToolDef.resultBudget）：默认 4000 字，读网页/加载技能这类
  * 天生大载荷的工具单独放宽。**工具的 description 里承诺的上限必须与这里一致**——
- * 从前 web_fetch 说最多 20000 字、实际一律砍到 4000，模型按一份不存在的资料作答。
+ * 承诺得比实际预算多，模型就会按一份不存在的资料作答。
  */
 function capToolResult(value: unknown, toolName: string, budget: number = DEFAULT_TOOL_RESULT_BUDGET): string {
   const limit = Math.max(200, Math.min(100_000, Math.round(budget)));
@@ -1383,40 +1385,53 @@ function capToolResult(value: unknown, toolName: string, budget: number = DEFAUL
   });
 }
 
-async function runAgentLoop(
-  turn: TurnRow,
-  system: string,
-  history: ChatMessage[],
-  signal?: AbortSignal,
+/**
+ * 工具循环的可选出口与取消源，收成一个具名对象：多个相邻的同形回调若按位置传参，
+ * 传错位置不会报错、只会在运行时悄悄把表情图丢进出图队列；具名对象漏一个不影响，
+ * 写错一个 typecheck 当场拦下。
+ */
+type AgentLoopOptions = {
+  signal?: AbortSignal;
   /** 思考内容终态出口（多轮工具调用可能各带一段）：只给界面折叠用，绝不回灌进对话。 */
-  onReasoning?: (text: string, tokens: number) => void,
+  onReasoning?: (text: string, tokens: number) => void;
   /** 思考流式出口：本次调用累计推理，和已完成轮次的推理拼成整轮实时草稿。 */
-  onReasoningDraft?: (text: string) => void,
+  onReasoningDraft?: (text: string) => void;
   /** 工具产出的文件（出图/语音）出口：循环里每产一件就交出去，由调用方挂到这条回复的附件上。 */
-  onFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
+  onFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void;
   /** 工具已自行发进渠道的文件出口（send_emote 原生表情）：挂气泡用，但通道投递要跳过，防同一张图发两遍。 */
-  onChannelDeliveredFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
+  onChannelDeliveredFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void;
   /**
    * 应用端表情附件出口（send_emote via=app-attachment）。工具已经把图挂到这条回复上，
    * 但它不是「出图」：整轮最多 3 张由 tools.ts 的门控负责，这里不能再用出图的一轮一张裁剪。
    * 与 onChannelDeliveredFiles 的区别：应用端图没进 QQ，镜像投递时仍要带走它们。
    */
-  onAppEmoteFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void,
+  onAppEmoteFiles?: (urls: string[], metas?: MessageAttachmentMeta[]) => void;
   /**
    * 流式草稿出口。**只有陪聊这一路会传**（抽取/主动性/整理都不传），
    * 于是也只有它们会向服务商要 `stream: true` —— 那些调用要的是结构不是过程，
    * 流式对它们是纯风险。传与不传就是这条功能的开关，界面上没有第二个开关。
    */
-  onDraft?: (text: string) => void,
+  onDraft?: (text: string) => void;
   /**
    * 让路检查：返回 true 表示这一轮已被取消（本进程 abort 或别的窗口在库里标了 cancelled），
    * 循环应当立刻收手。由 respondToTurn 传进来——它同时握着 controller 和 turn.id，
    * 而取消有两个来源（进程内 signal + 库侧标记），只有它判得全。
    */
-  cancelIfAborted?: () => boolean,
+  cancelIfAborted?: () => boolean;
   /** 发起这一轮时定下的助手权限；后续轮内切档不影响本轮。 */
-  assistantPermissionSnapshot?: AssistantPermission,
+  assistantPermissionSnapshot?: AssistantPermission;
+};
+
+async function runAgentLoop(
+  turn: TurnRow,
+  system: string,
+  history: ChatMessage[],
+  loopOptions: AgentLoopOptions = {},
 ): Promise<string> {
+  const {
+    signal, onReasoning, onReasoningDraft, onFiles, onChannelDeliveredFiles,
+    onAppEmoteFiles, onDraft, cancelIfAborted, assistantPermissionSnapshot,
+  } = loopOptions;
   const base: ChatMessage[] = [{ role: "system", content: system }, ...history];
   // 温度：联系人设过就用联系人的，没设（-1）就留给 model.ts 的全局默认（0.8）。
   const temp = getContact(turn.contact_id ?? DEFAULT_CONTACT_ID)?.features.temperature ?? -1;
@@ -1476,10 +1491,10 @@ async function runAgentLoop(
     return guardOverflow(base, () => callModel(base, options));
   }
   /* 其余三种情况——没有可声明的工具、模型档没开工具调用、端点被探测为不支持 tools——
-     从前直接短路成一次 `callModel`，**连工具循环都不进**。可这恰恰是最需要兼容解析的一条路：
+     也要照常进循环，只是把空清单传下去：这恰恰是最需要兼容解析的一条路，
      端点没收到 tools 声明，Hermes / Qwen 模板的模型仍会把调用写进正文（见 text-tool-calls.ts），
-     真实表现就是"联系人说已经搜到 6 张图了"，而工具一次没跑、界面上一张图都没有。
-     现在照常进循环，只是把空清单传下去：callModelWithTools 见到空 tools 会走无工具分支，
+     短路成一次 `callModel` 的话，真实表现就是"联系人说已经搜到 6 张图了"，
+     而工具一次没跑、界面上一张图都没有。callModelWithTools 见到空 tools 会走无工具分支，
      但那一条分支同样会认正文形式的调用。别给端点发 tools: []——部分服务商直接 400。 */
 
   const conversationId = turn.conversation_id || localConversationId(contactId);
@@ -1493,7 +1508,7 @@ async function runAgentLoop(
   const messages: ChatMessage[] = [...base];
   // 让路检查：没传（抽取/主动性那些副通道）就退化成只看 signal。
   const shouldYield = cancelIfAborted ?? ((): boolean => signal?.aborted === true);
-  // 助手固定 8 轮，普通联系人统一跟全局：见 settings.ts 里「为什么它不再是常量」。
+  // 助手固定 8 轮，普通联系人统一跟全局：见 settings.ts 的 TOOL_LOOP_TURN_LIMITS / resolveToolLoopTurns。
   // “轮”统计的是带工具定义的模型请求；同一请求里的多个工具调用只算一轮。
   const maxToolLoopTurns = resolveToolLoopTurns(isAssistant(contactId));
 
@@ -1507,7 +1522,19 @@ async function runAgentLoop(
       const response = await guardOverflow(messages, () => callModelWithTools(messages, declaredTools, options));
 
       if (!response.toolCalls || response.toolCalls.length === 0) {
-        return response.content || (await guardOverflow(base, () => callModel(base, options)));
+        if (response.content !== "") return response.content;
+        // 第一轮就空正文：没有工具往返可保，干净重试一次。
+        if (toolLoopTurn === 0) {
+          return await guardOverflow(base, () => callModel(base, options));
+        }
+        // 第 2+ 轮空正文：已经执行的工具往返必须保住——换用不带 tools 的 base 重试的话，
+        // 模型既看不到刚查到的资料，也没法再查一次，白跑一整轮。
+        // 保留 messages，补一句收口指令让它就着已有结果作答（与轮数耗尽的收口同理）。
+        const closing: ChatMessage[] = [
+          ...messages,
+          { role: "user", content: "请直接根据上面已经拿到的结果回答我，不要再调用工具。" },
+        ];
+        return await guardOverflow(closing, () => callModel(closing, options));
       }
 
       // 回传 assistant 的工具调用请求（协议要求），再逐个附上执行结果。
@@ -1524,21 +1551,36 @@ async function runAgentLoop(
         })),
       });
       // ── 同轮工具调用的执行策略 ──
-      // 独立工具（搜记忆 / 查时间 / 联网 / 技能 / 扩展）互不依赖：原来逐个 await，
-      // 整轮延迟 = 各工具延迟**之和**（搜索 3s + 出图 15s = 18s 起步）；现在并批跑，
-      // 整轮延迟 = 最慢那一个。
+      // 独立工具（搜记忆 / 查时间 / 联网 / 技能 / 扩展）互不依赖，并批跑：
+      // 整轮延迟 = 最慢那一个（逐个 await 的话就是各工具延迟**之和**，
+      // 搜索 3s + 出图 15s = 18s 起步）。
       // 出图单列串行轨：十几秒一发 + 每日配额闸门（imagesToday/IMAGE_DAILY_LIMIT），
       // 两张并行等于一次烧掉两份额度——昂贵独占操作不做「省事」的并行。
-      // 让路检查保留三处：批前（已取消就整批不发）、批后（在飞的不追回，已画出的图不丢）、
-      // 出图串行轨的逐个之间（原语义）。
+      // 让路检查共四处：轮首（本轮开工前，见上面 shouldYield）、批前（已取消就整批不发）、
+      // 批后（在飞的不追回，已画出的图不丢）、出图串行轨的逐个之间。
       type ToolCallItem = { id: string; name: string; args: string };
       const calls = response.toolCalls as ToolCallItem[];
       const EXPENSIVE_TOOL_NAMES = new Set(["generate_image"]);
       const slots: Array<{ call: ToolCallItem; started: number; result: ToolResult | null; elapsedMs: number }> =
         calls.map((call) => ({ call, started: 0, result: null, elapsedMs: 0 }));
+      // 模型偶尔在同一响应里把同一个只读调用写两遍。按 (name, args) 复用执行结果，
+      // 但每个 tool_call_id 仍各自拿到一条 tool 消息（协议要求一一对应，不能整条跳过）。
+      // 只对明确幂等的一组去重：send_emote 连发同款表情是合法用法，schedule_reminder
+      // 与配置类工具会建真实数据，都不在这里。
+      const IDEMPOTENT_TOOL_NAMES = new Set([
+        "get_current_time", "search_memory", "emote_search", "web_search", "web_fetch", "load_skill", "app_status",
+      ]);
+      const pendingByCall = new Map<string, Promise<ToolResult>>();
       const runSlot = async (slot: (typeof slots)[number]): Promise<void> => {
         slot.started = Date.now();
-        slot.result = await executeTool(slot.call.name, slot.call.args, context, turnTools);
+        const key = `${slot.call.name}\u0000${slot.call.args}`;
+        const dedupable = IDEMPOTENT_TOOL_NAMES.has(slot.call.name);
+        let pending = dedupable ? pendingByCall.get(key) : undefined;
+        if (pending === undefined) {
+          pending = executeTool(slot.call.name, slot.call.args, context, turnTools);
+          if (dedupable) pendingByCall.set(key, pending);
+        }
+        slot.result = await pending;
         slot.elapsedMs = Date.now() - slot.started;
       };
       if (shouldYield()) return "";
@@ -1586,6 +1628,13 @@ async function runAgentLoop(
           call.name,
           turnTools.find((t) => t.name === call.name)?.resultBudget,
         );
+        // 参数被声明边界夹过时带一句提示（例如 in_minutes 从 1000000 夹成 525600），
+        // 别让模型以为自己给的值被原样采用。回传模型与落库必须是**同一个字符串**，
+        // 否则历史回放会与这一轮看到的错位；工具卡摘要仍只看 result.result，不受这行前缀影响。
+        const argNotes = result.argNotes ?? [];
+        const toolMessageText = argNotes.length > 0
+          ? `[参数已按声明范围纠正：${argNotes.join("；")}]\n${toolResultText}`
+          : toolResultText;
         // 工具卡实时落库：界面能"看见联系人在查"，过程不再是黑箱。
         // kind=tool 的行不进 recentMessages（正文回放用它），但工具往返靠这几列单独取——
         // 历史里要让模型看见真正的 assistant.tool_calls + tool 结果，而不是一句正文占位符。
@@ -1613,22 +1662,21 @@ async function runAgentLoop(
           toolCallId: call.id,
           toolName: call.name,
           toolArgs: redactToolArguments(call.args),
-          toolResult: toolResultText,
+          toolResult: toolMessageText,
         });
         messages.push({
           role: "tool",
           tool_call_id: call.id,
-          content: toolResultText,
+          content: toolMessageText,
         });
       }
       // 批后让路：已执行的工具产物已挂上（上面的循环），不再进入下一轮模型调用。
       if (interrupted) return "";
     }
 
-    // 轮数用尽仍没给最终回复：保留全部工具消息，只追加一句收口指令。
-    // 以前这里把 role='tool' 和带 tool_calls 的 assistant 消息一起过滤掉，剩下的就是 base——
-    // 等于让联系人把刚查到的资料全忘掉、重新回答原问题，多轮搜索白做。
-    // 不再传 tools（callModel 本来就不带），所以保留工具历史也不会触发新一轮调用。
+    // 轮数用尽仍没给最终回复：保留全部工具消息，只追加一句收口指令——
+    // 联系人就着已查到的资料作答，不用忘掉一切重新回答。
+    // 不传 tools（callModel 本来就不带），所以保留工具历史也不会触发新一轮调用。
     messages.push({
       role: "user",
       content: "（本轮可用于工具调用的模型轮次已经用完。请直接根据上面已经拿到的结果回答我，不要再调用工具，也不要说自己没查到。）",
@@ -1732,10 +1780,9 @@ function imageMark(reason: string, count: number): string {
 /**
  * 看不见的**用户**图换成一行文字说明；replay 里的图以 base64 真图发出，一个字都不用附。
  *
- * 联系人自己发的图**不往正文里塞说明**。从前这里拼一行
- * 「[图片：这是你自己发出的图，原图不回放给你——记住你当时发了什么就行，别装作看得见图里细节]」，
- * 那是给系统看的备注，却以 assistant 台词的形态出现在历史里；模型下一轮会照着抄，
- * 实测回复里原样冒出整段提示词。发过什么由工具往返/备注告诉模型就够了。
+ * 联系人自己发的图**不往正文里塞说明**：正文里拼一行图片备注的话，那行备注
+ * 会以 assistant 台词的形态出现在历史里，模型下一轮照着抄（实测回复里原样冒出整段提示词）。
+ * 发过什么由工具往返/备注告诉模型就够了。
  * 只有纯图消息（正文为空）留一个极短的锚点，免得回放里出现一条空 assistant 消息。
  *
  * 「别猜也别编」不是废话：实测给联系人一句图片摘要，联系人会**凭摘要推断出摘要里没有的细节**，
@@ -1743,8 +1790,8 @@ function imageMark(reason: string, count: number): string {
  * 三次收紧提示词都没压住；压住它的是把真图重放给联系人看。所以看不见的图必须明说看不见，
  * 给二手信息反而不如不给。
  *
- * 导出是为了冒烟能直接断言：这里曾经只处理纯图消息（text === ""），
- * "文字 + 图"的消息会把图**静默丢掉**，联系人既看不见图也不知道有图。
+ * 导出是为了冒烟能直接断言。「文字 + 图」的消息若被漏掉，图会**静默丢掉**——
+ * 联系人既看不见图也不知道有图，所以这里两种形态都要覆盖。
  */
 export function imageProxiedHistory<T extends { role?: string; text: string; attachments: string | null; attachment_meta?: string | null }>(
   rows: T[],
@@ -1922,8 +1969,8 @@ export async function respondToTurn(
   }
   // 起跑前三步（打断在飞的旧轮、跨进程取消、登记 activeTurns）必须整体受保护：
   // 其中跨进程取消是一句**写库**的 UPDATE，而 db.ts 开了 busy_timeout=5000——
-  // 并发写冲突会在 5 秒后抛。从前它直接冒出 respondToTurn，被 channels/web.ts 的
-  // `void (async () => …)()` 吞掉，于是这一轮**永远停在 queued**：
+  // 并发写冲突会在 5 秒后抛。这句异常若无人接住，会被 channels/web.ts 的
+  // `void (async () => …)()` 吞掉，这一轮**永远停在 queued**：
   // 前端轮询到天荒地老，界面上没有任何错误，只有重启（sweepStaleTurns）才清得掉。
   try {
     for (const row of q(
@@ -1987,8 +2034,8 @@ export async function respondToTurn(
      */
     /**
      * 只找真正的对话气泡，不能把工具卡算进来：同一轮的工具卡也是 role='assistant'，
-     * 而且先于最终回复落库。以前这里只看 role，于是重答「用过工具的旧轮」会把回复
-     * UPDATE 进第一张工具卡（kind 仍是 tool），真正的对话行反而被删掉——
+     * 而且先于最终回复落库，只按 role 挑的话会把回复 UPDATE 进第一张工具卡
+     * （kind 仍是 tool），真正的对话行反而被删掉——
      * 界面看到一张坏掉的工具卡，上下文里也找不到这条回复。
      */
     const collapseIntoId = opts.isRetry && opts.collapseReply
@@ -2167,7 +2214,8 @@ export async function respondToTurn(
         break;
       }
     }
-    // agent 循环：联系人可以在回答前调用工具（查时间、查记忆），最多 3 轮。
+    // agent 循环：联系人可以在回答前调用工具（查时间、查记忆）多轮；上限由
+    // resolveToolLoopTurns 决定——助手固定 8 轮，普通联系人走全局设置（1~16，默认 5）。
     // 上下文里已经注入了环境描述与被动召回的记忆，工具是「联系人主动去查」的补充——
     // 不确定几点、想确认记没记过某件事时，联系人自己决定查不查。
     // 思考内容：多轮工具调用可能各带一段，按顺序拼起来。它只属于"这一轮联系人想过什么"，
@@ -2180,24 +2228,28 @@ export async function respondToTurn(
     const channelDeliveredMeta: MessageAttachmentMeta[] = [];
     const appEmoteFiles: string[] = [];
     const appEmoteMeta: MessageAttachmentMeta[] = [];
-    const reply = await runAgentLoop(turn, system, history, controller.signal,
-      (text) => { if (text.trim() !== "") reasoningParts.push(text.trim()); },
-      reasoningDraftWriter(turn.id, contactId, conversationId),
-      (urls, metas) => {
+    const reply = await runAgentLoop(turn, system, history, {
+      signal: controller.signal,
+      onReasoning: (text) => { if (text.trim() !== "") reasoningParts.push(text.trim()); },
+      onReasoningDraft: reasoningDraftWriter(turn.id, contactId, conversationId),
+      onFiles: (urls, metas) => {
         producedFiles.push(...urls);
         if (metas !== undefined) producedMeta.push(...metas);
       },
       // 已由工具发进渠道的表情图：只挂气泡（带 label 元数据），绝不进 deliveryImages（否则 QQ 会再收一遍）。
-      (urls, metas) => {
+      onChannelDeliveredFiles: (urls, metas) => {
         channelDeliveredFiles.push(...urls);
         if (metas !== undefined) channelDeliveredMeta.push(...metas);
       },
       // 应用端 send_emote 挂上来的表情：不受出图的「一轮一张」限制，一轮最多 3 张。
-      (urls, metas) => {
+      onAppEmoteFiles: (urls, metas) => {
         appEmoteFiles.push(...urls);
         if (metas !== undefined) appEmoteMeta.push(...metas);
       },
-      draftWriter(turn.id, contactId, conversationId), cancelIfAborted, assistantPermissionSnapshot);
+      onDraft: draftWriter(turn.id, contactId, conversationId),
+      cancelIfAborted,
+      assistantPermissionSnapshot,
+    });
     if (cancelIfAborted()) return "";
     const reasoning = reasoningParts.join("\n\n");
     // 生成速度（token/秒）：只取产出最终回复的那次调用，算一次挂到第一颗气泡上。
@@ -2291,8 +2343,8 @@ export async function respondToTurn(
         : parts.map((part, i) => (i === parts.length - 1 ? `${part}\n${note}` : part));
     // 通道投递：QQ 群按群回复，绝不把群回复镜像到联系人私聊；
     // 主私聊里的应用/微信/QQ 消息仍镜像到微信 + QQ 私聊。
-    // 投递的是分好的 parts（气泡序列）而不是整段 reply——"本地几颗气泡，QQ 里几条消息"
-    // 从前只是注释里的愿望：传整段出去，官方按 4000 字硬切、OneBot 更是整条一坨。
+    // 投递的是分好的 parts（气泡序列）而不是整段 reply——"本地几颗气泡，QQ 里几条消息"：
+    // 传整段出去的话，官方按 4000 字硬切、OneBot 更是整条一坨。
     if (conversation?.channel === "qq") {
       void enqueueAndDeliver({
         channel: "qq",
@@ -2429,7 +2481,7 @@ export async function retryTurn(turnId: string, opts: { regenerate?: boolean } =
   if (!turn) throw new Error("处理单不存在");
   // 被编辑作废的轮次一律不许重跑：它已经不在当前对话里了，
   // 重跑会插进一条没有对应提问、且逻辑上已被抹掉的"幽灵回复"，还进上下文。
-  // regenerate 有 isLatestTurnOfContact 挡着，失败重试这条路此前没有等价防护。
+  // regenerate 有 isLatestTurnOfContact 挡着，这里给失败重试补上等价防护。
   if (turn.superseded_at !== null && turn.superseded_at !== undefined) {
     throw new Error("这一轮已经被编辑取代了，不用重试");
   }
@@ -2440,7 +2492,7 @@ export async function retryTurn(turnId: string, opts: { regenerate?: boolean } =
   } else if (turn.status === "done") {
     throw new Error("这一轮已经成功了，不用重试");
   }
-  // 任何一轮都能重答（不再限最新一轮）。区别只在写回哪里：
+  // 任何一轮都能重答。区别只在写回哪里：
   // 最新一轮按正常路径分条重插；较早的那轮必须写回它原来的气泡位置，
   // 否则新回复会顺着自增 id 掉到整段对话末尾。
   const collapseReply = opts.regenerate === true
@@ -2530,8 +2582,8 @@ function resetTurnForEdit(turnId: string, text: string, attachments: string[]): 
  * 语义与「重新生成」对齐（版本式，不是作废式）：
  *   1) 改写这条消息的文本
  *   2) 旧回复进 turn 级版本存档（可左右切换，见 ensureTurnVariants / appendTurnVariant）
- *   3) 重新生成这一轮的回复；**编辑点之后的对话原样保留**——不再整体作废折叠，
- *      上下文回放继续包含后面的轮次（2026-11-07 起，「已被编辑取代」不再产生，
+ *   3) 重新生成这一轮的回复；**编辑点之后的对话原样保留**，不整体作废折叠，
+ *      上下文回放继续包含后面的轮次（现行语义不产生「已被编辑取代」行，
  *      只有历史库里遗留的 superseded_kind='edit' 行还会折叠显示）。
  *
  * 为什么第 3 步不能省：只改文本不重新生成的话，上下文末尾留着的是"针对旧文本的回复"，

@@ -108,7 +108,7 @@ export const config = Object.freeze({
    *
    * 隧道会把公网域名原样转发进来，这个 Host 既不是回环也不是本机网卡地址，默认被本机
    * 守卫按「外来域名」拒掉（穿透访问因此吃 403）。把隧道域名写进这里，守卫就放行该 Host，
-   * 但仍要求 Origin 与它同源——别的网页借不走这个域名。留空 = 与从前完全一致。
+   * 但仍要求 Origin 与它同源——别的网页借不走这个域名。留空 = 不放行任何隧道域名。
    */
   trustedHosts: hostList("TRUSTED_HOSTS"),
   dataDir,
@@ -155,9 +155,6 @@ export const config = Object.freeze({
   }),
   proactive: Object.freeze({
     enabled: bool("PROACTIVE_ENABLED", true),
-    // 从前这里有 intervalMinutes（固定 30 分钟的轮询节拍）：到点提醒最晚会迟到半小时，
-    // 免打扰里还得靠一次次顺延凑过去。现在节拍由联系人自己判断（next_check_minutes），
-    // 调度器只负责在最近的那个时刻醒一次，所以这个旋钮已经不存在了。
     idleMinutes: int("PROACTIVE_IDLE_MINUTES", 120),
     quietHours: str("QUIET_HOURS", "23-8"),
     /** 每联系人每天主动发言的默认上限（联系人功能开关里的 dailyLimit>0 时优先）。 */
@@ -189,14 +186,7 @@ export const config = Object.freeze({
   }),
 });
 
-/**
- * 注意：这里**没有** modelReady 常量了。
- *
- * 曾经它是 `config.model.mode === "openai" && config.model.apiKey !== ""`，
- * 但模型配置现在可以在应用内改（见 settings.ts），常量那种"启动时算一次"的写法
- * 会让用户刚填好的密钥要等重启才认——那正是要消灭的问题。
- * 需要判断时请用 settings.ts 的 modelReadyNow()。
- */
+/** 判断模型是否就绪用 settings.ts 的 modelReadyNow()（模型配置可在应用内改，不能启动时算一次）。 */
 
 /** 判断某个小时是否落在免打扰时段。支持跨零点，例如 23-8 表示 23 点到次日 8 点。 */
 export function inQuietHours(hour: number, spec = config.proactive.quietHours): boolean {

@@ -312,7 +312,8 @@ export const WEB_TOOLS: ToolDef[] = [
       properties: {
         query: { type: "string", description: "搜索词，尽量具体（角色名 + 想了解的那一点）" },
         kind: { type: "string", enum: ["web", "image"], description: "image = 找图；默认 web" },
-        limit: { type: "number", description: "要几条，1~8，默认 5" },
+        // 描述写 1~8，schema 就也得有边界：通用参数校验会先把它夹住，execute 里的 clamp 留作兜底。
+        limit: { type: "number", description: "要几条，1~8，默认 5", minimum: 1, maximum: 8 },
       },
       required: ["query"],
       additionalProperties: false,
@@ -356,8 +357,8 @@ export const WEB_TOOLS: ToolDef[] = [
       "web_search 给出的链接要看细节时调用，或用户直接贴了网址。" +
       "只能读公开的 http/https 页面：读不了需要登录的、本机内网的、以及会一直跳转的地址。" +
       "正文过长会截断，截断时会告诉你截了。",
-    // 声明的上限必须与实际给到模型的预算一致：从前这里写 20000，agent 统一把整份
-    // 结果砍到 4000，模型按一份根本没拿到的资料作答。现在这个工具单独放宽到 12000 字预算。
+    // 声明的上限必须与实际给到模型的预算一致：声明 20000、agent 统一砍到 4000 的话，
+    // 模型会按一份根本没拿到的资料作答。这个工具单独放宽到 12000 字预算。
     resultBudget: 12_000,
     parameters: {
       type: "object",

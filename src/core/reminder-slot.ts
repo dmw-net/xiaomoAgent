@@ -1,9 +1,8 @@
 // 一轮内提醒条数的闸门：纯进程内计数，零依赖。
 //
 // 为什么单独一层：占额度的是工具层（schedule_reminder 执行时），到期兑现的是主动性层。
-// 原先这份状态放在 proactive.ts，tools.ts 反过来 import 它，就形成了
-// agent → tools → proactive → agent 的运行时循环依赖。把共享状态下沉到这里，
-// 两侧各自向下 import，依赖方向变成单向；行为与计数口径完全不变。
+// 共享状态下沉到这个零依赖模块，两侧各自向下 import，依赖方向保持单向
+// （proactive 与 tools 互不反向依赖）；行为与计数口径完全不变。
 
 /** 一轮里最多立几条提醒。 */
 // 模型一次回复可能带多个 tool_calls（schedule_reminder 也在内），轮数上限又是 8——

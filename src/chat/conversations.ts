@@ -263,10 +263,10 @@ export function ensureDefaultConversations(): void {
   // 一对一通道先合流，再统一补一次已读水位，避免旧回复在升级后集体变红。
   mergePrivateConversationsIntoLocal();
   seedConversationReadBaselines();
-  // member 这一层撤掉了（见 memory.ts 的 decideMemoryScope）：群里说的话对全群本就公开，
-  // 归到群名下即可。subject_id / subject_name 原样留着当出处，不再参与任何读写。
+  // member 这一层不设（scope 只有两层，见 memory.ts 的 decideMemoryScope）：群里说的话对全群本就公开，
+  // 归到群名下即可。subject_id / subject_name 原样留着当出处，不参与任何读写。
   db.exec(`UPDATE memory_events SET scope_kind = 'conversation' WHERE scope_kind = 'member'`);
-  // 群成员名册表是给那一层用的，层没了它就没有任何读它的人；它记的每个 id 与昵称
+  // 群成员名册表没有任何读它的人；它记的每个 id 与昵称
   // 本来就能从 messages 重算出来，所以不留一张没人用的表在库里误导后来人。
   db.exec("DROP TABLE IF EXISTS group_members");
 }

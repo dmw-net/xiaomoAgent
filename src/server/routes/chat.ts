@@ -52,7 +52,7 @@ import type { Route } from "../types.ts";
 import { MAX_CHAT_IMAGES } from "../../../shared/limits.ts";
 
 /** 消息四道写入口（/edit、PUT /text、/retract、DELETE）共用的户主校验。
- *  为什么必须有：这些路由原来只认数字 id，而消息 id 是自增整数——看着 A 的界面
+ *  为什么必须有：消息 id 是自增整数，无户主校验的话看着 A 的界面
  *  就能改/撤/删 B 的消息，DELETE 还会真删行并回收图片，不可恢复。
  *  返回 false 表示响应已发完，调用方直接 return。 */
 function ownMessageOrReject(url: URL, response: import("node:http").ServerResponse, id: number): boolean {

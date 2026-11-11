@@ -195,8 +195,8 @@ const staticRoute: Route = async ({ req, res, url, path, method }) => {
   }
   if (method === "GET" && path.startsWith("/assets/")) {
     // Vite 产物在 dist/assets/ 下；URL 的 /assets/ 对应 dist 内的 assets/ 目录。
-    // 文件名带内容 hash：内容一变 URL 就变，所以可以永久缓存——此前一律 no-store，
-    // 每次刷新都要重下 320KB 的 js/css（穿透访问时是好几秒）。
+    // 文件名带内容 hash：内容一变 URL 就变，所以可以永久缓存——
+    // 不缓存的话每次刷新都要重下 320KB 的 js/css（穿透访问时是好几秒）。
     serveDistFile(reactDist, "assets/" + path.slice("/assets/".length), req, res, IMMUTABLE);
     return true;
   }

@@ -248,8 +248,8 @@ export function callSettings(options: CallOptions): ModelSettings {
     thinkingMode: "",
     // 能力卡只有模型/地址/密钥/超时，没有 token 上限这一维（与 capabilityConfig 里
     // baseUrl/apiKey 回落主力档同一套语义），所以沿用聊天档的值。
-    // 从前这里硬写 0 → resolveMaxTokens 兜底成 1024，于是**那一轮只要带了图，
-    // 她的回复就被截到 1024 token**，档上设的 65536 对带图对话完全不生效，
+    // 这里若硬写 0，resolveMaxTokens 会兜底成 1024——**那一轮只要带了图，
+    // 她的回复就被截到 1024 token**，档上设的上限对带图对话完全不生效，
     // 而界面上看不出任何区别。
     maxInputTokens: chat.maxInputTokens,
     maxOutputTokens: chat.maxOutputTokens,
@@ -269,7 +269,7 @@ function callReady(options: CallOptions, settings: ModelSettings): boolean {
  * - 能力通道显式绑档：能力卡没有工具这一维（caps 为空）→ 不带；
  * - 能力通道未显式绑档：请求实际仍落在主模型端点（capabilityConfig 的回落语义），
  *   但「这位联系人关了工具」是联系人级意图，要跟着聊天档走——
- *   从前直接看主档，绑定档 caps.tools=false 会被带图/抽取请求绕过；
+ *   只看主档的话，绑定档 caps.tools=false 会被带图/抽取请求绕过；
  * - 普通调用：就是请求落到的配置本身。
  * 请求层（callModelWithToolsInner）与两处估算（respondToTurn / contextUsage 的 toolsJson）
  * 必须共用这一个函数，圆环和裁剪才不会跟真实请求对不上。
@@ -294,10 +294,10 @@ function attribution(options: CallOptions): { contactId: string | null; profileI
  * - 档上填了「输出上限」(cap)：它是硬顶，调用方显式传的 maxTokens 也要被它收口；
  * - 档上**留空**：返回 undefined = 请求体里整个不带这个字段，交给服务商按上下文窗口决定。
  *
- * 留空不再替服务商猜一个数，是刻意的：从前这里兜底 1024（非聊天 16k），
- * 而思考模型常把这点额度全烧在 reasoning 上，正文一个字都没轮到——
+ * 留空就不替服务商猜一个数，是刻意的：这里若兜底一个固定值（比如 1024），
+ * 思考模型常把这点额度全烧在 reasoning 上，正文一个字都没轮到——
  * 用户付了一次请求的钱，只换来一句「模型没写完」，而且那个数还挡住了自动扩容
- * （扩到 cap 又等于没扩）。界面上的「留空=不填」从此和真实请求一致。
+ * （扩到 cap 又等于没扩）。界面上的「留空=不填」必须和真实请求一致。
  * 两个请求体构造点（attempt / callModelWithTools）都必须走这里。
  */
 function resolveMaxTokens(settings: ModelSettings, options: CallOptions): number | undefined {
@@ -401,13 +401,13 @@ export async function callModel(messages: ChatMessage[], options: CallOptions = 
 
 /**
  * 思考参数：两个请求体构造点（无工具的 attempt、带工具的 callModelWithToolsInner）都必须走这里。
- * 聊天日常走的是**工具那条**，从前只有 attempt 带思考字段 —— 等于界面上开了也没用。
+ * 聊天日常走的是**工具那条**——只给 attempt 带思考字段的话，等于界面上开了也没用。
  *
  * 三种形态（语义见 settings 的 ThinkingParam）：
  * - effort：只有强度没有开关，所以仍由「思考模式」勾选决定发不发。
- * - templateKw / thinkingType：开关系，由 thinkingMode 决定。这里能表达"关"是新加的：
- *   从前模板系硬编码 `enable_thinking: true`，而火山系（`thinking:{type:"disabled"}`）连形态都没有，
- *   于是对默认开思考的模型只能听它的——勾不勾「思考模式」发出去的请求一模一样。
+ * - templateKw / thinkingType：开关系，由 thinkingMode 决定，必须能表达"关"：
+ *   模板系硬编码 `enable_thinking: true`、火山系（`thinking:{type:"disabled"}`）连形态都没有的话，
+ *   对默认开思考的模型只能听它的——勾不勾「思考模式」发出去的请求一模一样。
  * 放在 extraBody 合并之前：手工填的「额外参数」仍能覆盖它。
  */
 export function applyThinkingParams(body: Record<string, unknown>, settings: ModelSettings): void {
@@ -635,7 +635,7 @@ async function readChatStream(
     const lines = buf.split("\n");
     buf = lines.pop() ?? "";
     // SSE 规范：同一个事件里连续的多个 data: 行要用 "\n" 接起来才是完整 payload。
-    // 从前只认最后一行，前面几行被丢掉——一个把一帧 JSON 拆成多行 data: 发的服务商
+    // 只认最后一行的话，一个把一帧 JSON 拆成多行 data: 发的服务商
     // （规范允许，pretty-print 的网关真会这么干）会让 JSON.parse 失败，
     // 而 handleFrame 的 catch 是静默 return：那一帧的正文/工具调用/usage 就无声无息地没了。
     let pending = "";
@@ -690,6 +690,21 @@ async function readChatStream(
   };
 }
 
+/**
+ * 出网前的消息序列化。内部 `ChatMessage.content` 必填，但带 tool_calls 的 assistant
+ * 消息正文常是空串（模型只调工具、不说话）；部分严格网关对 `content: ""` 直接 400，
+ * 而 OpenAI 协议允许这类消息省略 content。只在请求体这一层摘掉字段：上层结构、
+ * 历史回放、token 估算、落库全都保持原样，不用把 content 改成类型上不合法的 null。
+ */
+function toWireMessages(messages: ChatMessage[]): unknown[] {
+  return messages.map((m) => {
+    if (m.role !== "assistant" || m.tool_calls === undefined || m.content !== "") return m;
+    const wire: Record<string, unknown> = { ...m };
+    delete wire.content;
+    return wire;
+  });
+}
+
 async function attempt(
   messages: ChatMessage[],
   options: CallOptions,
@@ -713,7 +728,7 @@ async function attempt(
   const maxTokens = resolveMaxTokens(settings, options);
   const body: Record<string, unknown> = {
     model: settings.name,
-    messages,
+    messages: toWireMessages(messages),
     // 「输出上限」留空时这个字段整个不出现（见 resolveMaxTokens）。
     ...(maxTokens === undefined ? {} : { max_tokens: maxTokens }),
     temperature: options.temperature ?? 0.8,
@@ -722,9 +737,8 @@ async function attempt(
     // 代价只是那一行 token 三列为 NULL，再加这个字段才是有依据的做法。
     ...(streaming ? { stream: true } : {}),
   };
-  // 勾了「支持思考」就发，强度为空时给默认 medium。
-  // 从前这里要求 thinkingLevel 非空，而界面上那个勾选并不会替你填强度 —— 于是"开了思考"
-  // 实测什么字段都不发（勾了没反应，比不给勾更难排查）。
+  // 勾了「支持思考」就发，强度为空时给默认 medium——勾选本身不保证强度已填，
+  // 要求非空的话会出现「开了思考却什么字段都不发」（勾了没反应，比不给勾更难排查）。
   applyThinkingParams(body, settings);
   if (!includeOptionalParams) {
     delete body.max_tokens;
@@ -1057,7 +1071,7 @@ async function callModelWithToolsInner(
   const maxTokens = resolveMaxTokens(settings, options);
   const body: Record<string, unknown> = {
     model: settings.name,
-    messages,
+    messages: toWireMessages(messages),
     tools,
     tool_choice: "auto",
     // 「输出上限」留空时这个字段整个不出现（见 resolveMaxTokens）。
@@ -1094,7 +1108,7 @@ async function callModelWithToolsInner(
     if (!response.ok) {
       const error = buildHttpError(response.status, text, elapsedMs, url, settings.name);
       // 端点不支持 function calling：按端点记标记，让该配置之后的调用直接回落。
-      // 判据见 saysToolsUnsupported——从前只 /tool|function/i，回映请求的网关会把配置永久判死。
+      // 判据见 saysToolsUnsupported——判据过窄（只 /tool|function/i）的话，回映请求的网关会把配置永久判死。
       // 超长报错也可能顺带提到 "function"，不能因此把端点永久判死——所以先排除它。
       if ((response.status === 400 || response.status === 422) && error.code !== "CONTEXT_OVERFLOW" && saysToolsUnsupported(text)) {
         toolsUnsupportedEndpoints.add(toolsKey(settings));
@@ -1763,8 +1777,8 @@ export function safeMediaUrl(value: string): boolean {
  *
  * 为什么不能 `Buffer.from(await res.arrayBuffer())`：那是先把整个响应读完再判大小，
  * 于是一个指错的外链（或配了重定向到某个大文件/无限流的地址）能让内存在判大小之前
- * 先被撑爆，唯一的边界是外层那个 30 秒超时。`web.ts` 早就为抓取做过同一件事
- * （按解压后字节增量截断），出图这条分支是从前漏掉的。
+ * 先被撑爆，唯一的边界是外层那个 30 秒超时。`web.ts` 为抓取做过同一件事
+ * （按解压后字节增量截断），出图这条分支也必须一样。
  *
  * 不直接复用 fetchRaw：那条门会连内网地址一起拒（SSRF 门），而出图外链的地址校验
  * 是 safeMediaUrl 的职责，冒烟里的假端点又跑在 127.0.0.1 上——两件事不该焊在一起。

@@ -4,10 +4,10 @@
 // - logs.ts 的 redactSecrets：整段文本（请求体 / 响应原文 / 摘要）入库前擦一遍；
 // - agent.ts 的 redactToolArguments：工具参数回传给服务商、以及落进 messages.tool_args 之前擦一遍。
 //
-// 从前这两处各写一份正则，且 agent 侧只遍历**顶层**字段。于是嵌在
-// import_extension.manifest.mcp.headers 或 webhook headers 里的密钥，日志挡住了、
-// 工具往返却原样发给下一家服务商、还留在库里。现在统一成下面这两个函数：
-// 结构化的走递归，纯文本的走全文正则，敏感字段名的判定只此一处。
+// 两侧统一用下面这两个函数：结构化的走递归（嵌在
+// import_extension.manifest.mcp.headers 或 webhook headers 里的密钥也逃不掉），
+// 纯文本的走全文正则，敏感字段名的判定只此一处——若各自手写正则或只遍历顶层字段，
+// 会出现「日志挡住了、工具往返却原样发给下一家服务商、还留在库里」的缺口。
 //
 // 字段名允许连字符与数字（x-api-token / access_token / Authorization 都得认），
 // 但刻意不收「auth」「key」这种裸词：author / keyword 会被误伤。

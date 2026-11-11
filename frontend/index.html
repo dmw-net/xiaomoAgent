@@ -80,8 +80,8 @@
     }
     s.setProperty('--msg-time-mine', 'color-mix(in srgb, ' + a.ink + ' ' + Math.round(mt * 100) + '%, transparent)');
   }
-  // 旧版四套“主题风格”已经下线。首帧前把用户当时的色感迁移到强调色，
-  // 清掉旧键和旧属性，避免残留皮肤继续影响 CSS 或让老用户无感丢配置。
+  // 旧键迁移：把遗留「主题风格」键的色感折算成强调色（强调色是个性化主维度），
+  // 然后清掉旧键和旧属性，避免残留皮肤继续影响 CSS 或让老用户无感丢配置。
   try {
     var legacyStyle = localStorage.getItem('xiaomo.themeStyle') || '';
     var legacyAccent = { classic: '#22c55e', night: '#d9821c', paper: '#2f6fed' };
@@ -234,7 +234,7 @@
     else document.documentElement.removeAttribute("data-glass");
   }
   applyWallpaper();
-  // 玻璃不再是独立开关：壁纸开着 = 界面自动进入壁纸适配（半透明玻璃表面）。
+  // 玻璃跟随壁纸：壁纸开着 = 界面自动进入壁纸适配（半透明玻璃表面）。
   // 之后壁纸的开关由 lib/wallpaper.ts 在 applyWallpaper 里同步这块属性。
   applyGlass(wallpaperOn());
   window.__setGlass = applyGlass;

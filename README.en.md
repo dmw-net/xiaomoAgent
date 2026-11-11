@@ -214,8 +214,8 @@ data/           Runtime data (chats / memory / media / keys), not committed
 | --- | --- |
 | `npm run dev` | Run in the browser; the backend restarts on change |
 | `npm run app` | Run in the desktop window (Tauri) with frontend hot reload |
-| `npm run check` | Type-check backend + frontend and verify appearance preference migration |
-| `npm run test:appearance` | Verify legacy theme migration, accent colors and cleanup logic |
+| `npm run check` | Full verification: CSS token scan + backend/frontend type-check + 30+ regression suites (tool contract, context, channels, assistant, ...) + end-to-end smoke |
+| `npm run test:appearance` | Verify theme migration, accent colors and cleanup logic |
 | `npm run doctor` | Environment and config self-check; lists and tests each provider's models |
 | `npm run smoke` | End-to-end smoke test (offline echo mode, 780+ assertions) |
 | `npm run pack` | Build a local Windows installer (finds the signing key and passphrase) |
@@ -249,7 +249,7 @@ Both use **the same key** — the comment in `build.rs` says it plainly: two han
 
 ### Security notes
 
-- **All `/api/*` routes have no authentication.** By default the server only listens on `127.0.0.1`; exposing it directly to the internet publishes your chats. If you need public access, add your own authentication, or use it only behind a trusted tunnel (the tunnel hostname must be whitelisted, otherwise the host guard answers 403)
+- **By default the server only listens on `127.0.0.1`, and every non-local request must pass the access-code gate** (access code + cookie; see "The access-code gate covers LAN and tunnels" below). Exposing the server directly to the internet is still discouraged: `/api/settings` returns model keys in plain text to an **authenticated** caller, so put your own authentication and TLS in front for public deployments
 - **Link previews go out to the network**: when a message contains an http(s) link, the link card fetches title/description/favicon from that site once it enters the viewport (public pages only, read-only, with the same address checks and size limits). The other site therefore sees your IP; to keep a link from being visited, put it in inline code or a code block
 - `DEV_MODE=1` exposes model request bodies (including the system prompt) to the UI; for local debugging only
 - **The access-code gate covers LAN and tunnels**: the only code-free case is “request from this machine **and** to this machine's address”, so LAN phones and tunnel visitors always need the code (implementation in `src/core/lan.ts`; a tunnel request originates locally but its Host is the public hostname, so it still needs the code). This gate can't be skipped: `/api/settings` returns model keys in plain text to the caller, which assumes a local app

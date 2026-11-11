@@ -13,6 +13,9 @@ assert(/import OutboundQueueSection/.test(status), "状态页应接入投递队�
 assert(/key: "queue", label: "投递队列"/.test(status), "活动记录应有投递队列入口");
 assert(/action === "outbound"/.test(status), "运行检查应能跳转到投递队列");
 assert(/outboundApi\.list/.test(queue), "队列组件应读取队列 API");
+assert(/statClass\("open"\)[\s\S]{0,240}?setStatus\("open"\)/.test(queue)
+  && /statClass\("dead"[\s\S]{0,240}?setStatus\("dead"\)/.test(queue), "概况卡应可点击直接筛选待处理 / 死信");
+assert(/statClass\("delivered"\)[\s\S]{0,240}?setStatus\("delivered"\)/.test(queue), "已送达卡应能筛选已送达");
 assert(/outboundApi\.retry/.test(queue) && /outboundApi\.ignore/.test(queue), "用户应能重试或忽略单条记录");
 assert(/devMode &&[\s\S]{0,500}?retryAll\(\)/.test(queue), "批量重试只能在开发模式显示");
 assert(/devMode &&[\s\S]{0,500}?purge\(\)/.test(queue), "终态清理只能在开发模式显示");

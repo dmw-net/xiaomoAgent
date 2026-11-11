@@ -12,6 +12,15 @@ export type GateState = {
   enabled?: boolean;
 };
 
+/** 状态页逐位明细里的一条：连着的是哪位联系人、这一位自己的状态。 */
+export type WeChatContactItem = {
+  contactId: string;
+  name: string;
+  enabled: boolean;
+  proactive: boolean;
+  status: "connected" | "disabled" | "attention" | "paused";
+};
+
 /** 全局微信连接概况（一个联系人至多一条链接，各自一条轮询）。 */
 export type WeChatSummary = {
   links: number;
@@ -22,6 +31,17 @@ export type WeChatSummary = {
   paused: number;
   proactive: number;
   trouble: Array<{ contactId: string; name: string; lastError: string }>;
+  /** 逐位明细（旧后端没有这个字段）：状态页据此直接列出「连着的是哪几位」。 */
+  contacts?: WeChatContactItem[];
+};
+
+/** 状态页逐位明细里的一条（QQ 版）：名字 + 这一位自己的连接态。 */
+export type QQContactItem = {
+  contactId: string;
+  name: string;
+  enabled: boolean;
+  proactive: boolean;
+  status: QQStatus;
 };
 
 /** QQ 通道的全局概况：凭据只有一份（一个机器人服务很多用户），所以这里先报配没配。 */
@@ -37,6 +57,8 @@ export type QQSummary = {
   proactive: number;
   /** at 是错误时间戳（毫秒）；旧后端没有这个字段。 */
   trouble: Array<{ contactId: string; name: string; lastError: string; at?: number }>;
+  /** 逐位明细（旧后端没有这个字段）。 */
+  contacts?: QQContactItem[];
 };
 
 export type StatusData = {

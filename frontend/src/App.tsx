@@ -411,6 +411,8 @@ export default function App(): JSX.Element {
 
   /** 「管理联系人」：直接进「对话」列表页（增删/资料/搜索都在那里），不再有独立抽屉。 */
   const manageContacts = useCallback((): void => { navigateTo("chat"); }, [navigateTo]);
+  /** 状态页通道明细里点某一位：叠上那位的资料页（返回仍回状态页）。 */
+  const openContactById = useCallback((id: string): void => { setProfile({ mode: "edit", id }); }, []);
 
   /** 会话页顶栏那几个入口：都要跟着当前联系人走，且引用要稳定（见 pick 上方说明）。 */
   const editCurrentProfile = useCallback(() => { setProfile({ mode: "edit", id: current }); }, [current]);
@@ -524,8 +526,8 @@ export default function App(): JSX.Element {
                 只有记忆召回试验台按联系人重挂载，见 StatusView 里的 key */}
             <StatusView active={view === "status" && profile === null}
               contactId={current} contactName={characterName} contactAvatar={contactAvatar}
-              onOpenContacts={manageContacts} onSwitchContact={pick} goSettings={openSettingsTab} />
-          </div>
+              onOpenContacts={manageContacts} onOpenContact={openContactById}
+              onSwitchContact={pick} goSettings={openSettingsTab} />          </div>
         )}
         {(visitedViews.has("settings") || view === "settings") && (
           <div className={"view" + (view === "settings" && !profile ? " active" : "")} id="view-settings">

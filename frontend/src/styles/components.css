@@ -2083,6 +2083,53 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 /* 体检行同时是复选框行的类名，卡片里的这些行不可点，别带上手型 */
 .ov-card .check { cursor: default; }
 
+/* 消息通道的逐位明细：紧跟通道行走，左侧缩进一个「灯 + 间距」表达从属关系。
+   整行可点（名字 → 那位的资料页），所以是按钮而不是文本。 */
+.check-extra { padding: var(--space-1) var(--space-7) var(--space-4) calc(var(--space-7) + 7px + var(--space-5)); background: var(--bg-elevated); }
+.ch-contacts { display: flex; flex-direction: column; }
+.ch-contacts-head { display: flex; align-items: center; gap: var(--space-3); padding: 0 var(--space-3); }
+.ch-contacts-count { flex: 1; font-size: var(--text-aux); color: var(--text-subtle); }
+.ch-contacts-toggle {
+  display: inline-flex; align-items: center; gap: var(--space-2);
+  padding: 0 var(--space-2); border: none; border-radius: var(--radius-sm); background: none;
+  font: inherit; font-size: var(--text-aux); color: var(--text-muted); cursor: pointer;
+}
+.ch-contacts-toggle:hover { color: var(--text); }
+/* 折叠箭头：收起时朝右，展开时朝下；方向变化跟高度过渡同时发生。 */
+.ch-contacts-caret {
+  width: 6px; height: 6px; margin-top: -3px;
+  border-right: 1.5px solid currentColor; border-bottom: 1.5px solid currentColor;
+  transform: rotate(45deg); transition: transform var(--dur-base) var(--ease-out);
+}
+.ch-contacts.is-closed .ch-contacts-caret { margin-top: 0; transform: rotate(-45deg); }
+/* 0fr↔1fr 过渡：内容多高都收得干净，不用在 JS 里量高度，也不会因换行算错。 */
+.ch-contacts-body {
+  display: grid; grid-template-rows: 1fr;
+  transition: grid-template-rows var(--dur-base) var(--ease-out);
+}
+.ch-contacts.is-closed .ch-contacts-body { grid-template-rows: 0fr; }
+.ch-contacts-inner { min-height: 0; overflow: hidden; }
+.ch-contacts-list { display: flex; flex-direction: column; }
+/* 明细被 overflow 裁着，焦点圈往里收 2px，键盘走到哪一条都看得见整圈。 */
+.ch-contact:focus-visible { outline-offset: -2px; }
+.ch-contact {
+  display: flex; align-items: center; gap: var(--space-3); width: 100%;
+  padding: var(--space-1) var(--space-3); border-radius: var(--radius-md);
+  font-size: var(--text-note); color: var(--text); text-align: left;
+}
+.ch-contact:hover { background: var(--bg-sunken); }
+.ch-contact-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ch-contact-state { flex: none; font-size: var(--text-aux); color: var(--text-muted); }
+/* 状态文字只给「需要处理」上色：已经连上的保持中性，别把整张卡刷成红绿两色。 */
+.ch-contact.warn .ch-contact-state { color: var(--warning); }
+.ch-contact.bad .ch-contact-state { color: var(--danger); }
+.ch-contact-tag {
+  flex: none; padding: 0 var(--space-2); border-radius: var(--radius-full);
+  border: 1px solid var(--sel-border); background: var(--sel-bg);
+  color: var(--accent-ink); font-size: var(--text-cap); line-height: 1.6;
+}
+.ch-contact-more { padding: var(--space-1) var(--space-3); font-size: var(--text-aux); color: var(--text-subtle); }
+
 /* 减弱动效总闸：循环/闪烁动画一律退让 —— .rec-dot、.dot.typing 这类
    1Hz 级无限闪烁对光敏用户是实质风险（WCAG 2.2.2），不只是审美问题。 */
 @media (prefers-reduced-motion: reduce) {

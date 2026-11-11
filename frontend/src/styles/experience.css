@@ -4337,6 +4337,8 @@ a.btn:hover {
 #callsTable tbody td { padding-top: 11px; padding-bottom: 11px; }
 @media (min-width: 621px) {
   #callsTable .table-wrap { max-height: min(62vh, 680px); overflow-y: auto; }
+  #callsTable thead th { position: sticky; top: 0; z-index: 2; }
+}
 
 /* ── 投递队列 / 死信 ───────────────────────────────────────────── */
 .outbound-head-actions { display: flex; align-items: center; justify-content: flex-end; gap: var(--space-2); flex-wrap: wrap; }
@@ -4350,16 +4352,33 @@ a.btn:hover {
   border-radius: var(--radius-lg);
   background: var(--border);
 }
-.outbound-summary > div {
+.outbound-summary > .outbound-stat {
   display: flex;
   flex-direction: column;
   gap: 2px;
   padding: 12px 14px;
+  border: 0;
   background: var(--bg-elevated);
+  font: inherit;
+  text-align: left;
 }
+/* 前四张卡点一下就把筛选切到同一档；「最老待处理」只是读数，保持静态。 */
+button.outbound-stat {
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out);
+}
+button.outbound-stat:hover { background: var(--bg-sunken); }
+button.outbound-stat:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -3px; }
+button.outbound-stat.on {
+  background: var(--sel-bg);
+  box-shadow: inset 0 0 0 1px var(--sel-border);
+}
+button.outbound-stat.on b,
+button.outbound-stat.on span { color: var(--accent-ink); }
 .outbound-summary b { color: var(--text); font-size: 1.1rem; font-variant-numeric: tabular-nums; }
 .outbound-summary span { color: var(--text-subtle); font-size: var(--text-cap); }
-.outbound-summary > div.bad b { color: var(--danger); }
+/* 死信数是警示读数：未选中时标红，选中后跟其他卡一样走 accent，避免一格里两种强调色。 */
+.outbound-summary > .outbound-stat.bad:not(.on) b { color: var(--danger); }
 .outbound-toolbar { align-items: center; justify-content: space-between; }
 .outbound-channel-select { width: 120px; flex: none; }
 .outbound-search { width: min(300px, 100%); }
@@ -4387,8 +4406,6 @@ a.btn:hover {
 .outbound-actions { display: flex; gap: 4px; flex-wrap: wrap; }
 .activity-status.warn { color: var(--warning); background: var(--warning-soft); border-color: color-mix(in srgb, var(--warning) 24%, transparent); }
 
-  #callsTable thead th { position: sticky; top: 0; z-index: 2; }
-}
 .code-tag { margin-left: 7px; font-family: var(--font-mono); font-size: var(--text-cap); }
 #callsBody td:nth-child(2),
 #turnsBody td:nth-child(2),
@@ -4593,10 +4610,18 @@ a.btn:hover {
 
 @media (max-width: 620px) {
   .outbound-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 5 张卡两列排会空一格；让末位的「已送达」通栏收尾，格子不缺口。 */
+  .outbound-summary > .outbound-stat:last-child { grid-column: span 2; }
   .outbound-toolbar { align-items: stretch; flex-direction: column; }
   .outbound-search, .outbound-channel-select { width: 100%; }
+  /* 工具条转成竖排后，`.media-search` 的 `flex: 1 1 220px` 会变成 220px 的高度。 */
+  .outbound-toolbar .outbound-search { flex: none; }
   .outbound-head-actions { justify-content: flex-start; margin-top: var(--space-2); }
-  .outbound-table { min-width: 860px; }
+  /* 窄屏表格走全站的「逐行堆叠」形态（foundation.css 已把 thead 收掉），
+     再写 min-width: 860px 只会把每一行拉出屏外横向滚动。 */
+  .outbound-table { min-width: 0; }
+  /* 堆叠形态下不再套内层滚动：卡片长度不定，内滚会和页面滚动打架。 */
+  .outbound-table-wrap { max-height: none; overflow: visible; }
   #callsTable .table-wrap,
   #turnsTable .table-wrap {
     overflow: visible;

@@ -18,6 +18,9 @@ const STATUS_LABEL: Record<OutboundStatus, string> = {
 
 const CHANNEL_LABEL: Record<string, string> = { qq: "QQ", wechat: "微信", web: "应用内" };
 
+/** 概况卡里可点的那几张：点一下就是把下面的筛选切到同一档，省掉再去 chips 里找一次。 */
+type StatFilter = OutboundStatus | "open" | "dead";
+
 function ageText(at: number | null | undefined): string {
   if (!at) return "—";
   const ms = Math.max(0, Date.now() - at);
@@ -124,6 +127,10 @@ export default function OutboundQueueSection({ active, devMode, onChanged }: {
 
   const rows = page.page?.rows ?? [];
 
+  /** 卡片选中态跟着筛选值走；「最老待处理」只是读数，保持静态。 */
+  const statClass = (key: StatFilter, tone = ""): string =>
+    "outbound-stat" + (tone ? ` ${tone}` : "") + (status === key ? " on" : "");
+
   return (
     <div className="section outbound-queue" id="outboundQueue">
       <div className="activity-title-row">
@@ -147,12 +154,26 @@ export default function OutboundQueueSection({ active, devMode, onChanged }: {
       </div>
 
       {summary && (
-        <div className="outbound-summary" aria-label="投递队列概况">
-          <div><b>{summary.open}</b><span>待处理</span></div>
-          <div className={summary.dead > 0 ? "bad" : ""}><b>{summary.dead}</b><span>死信</span></div>
-          <div><b>{summary.counts.in_flight}</b><span>发送中</span></div>
-          <div><b>{ageText(summary.oldestOpenAt)}</b><span>最老待处理</span></div>
-          <div><b>{summary.counts.delivered}</b><span>已送达</span></div>
+        <div className="outbound-summary" role="group" aria-label="投递队列概况">
+          <button type="button" className={statClass("open")} aria-pressed={status === "open"}
+            title="只看待处理" onClick={() => setStatus("open")}>
+            <b>{summary.open}</b><span>待处理</span>
+          </button>
+          <button type="button" className={statClass("dead", summary.dead > 0 ? "bad" : "")} aria-pressed={status === "dead"}
+            title="只看死信" onClick={() => setStatus("dead")}>
+            <b>{summary.dead}</b><span>死信</span>
+          </button>
+          <button type="button" className={statClass("in_flight")} aria-pressed={status === "in_flight"}
+            title="只看正在发送" onClick={() => setStatus("in_flight")}>
+            <b>{summary.counts.in_flight}</b><span>发送中</span>
+          </button>
+          <div className="outbound-stat">
+            <b>{ageText(summary.oldestOpenAt)}</b><span>最老待处理</span>
+          </div>
+          <button type="button" className={statClass("delivered")} aria-pressed={status === "delivered"}
+            title="只看已送达" onClick={() => setStatus("delivered")}>
+            <b>{summary.counts.delivered}</b><span>已送达</span>
+          </button>
         </div>
       )}
 

@@ -44,6 +44,8 @@ function obfuscate(): Plugin {
       ]);
       await Promise.all(targets.map(async ([_fileName, chunk]) => {
         const obfuscated = Obfuscator.obfuscate(chunk.code, {
+          // 关掉免费版推广广告（默认 advertisement: true，每个 chunk 打一遍）。
+          advertisement: false,
           seed: 20261017,
           compact: true,
           simplify: true,

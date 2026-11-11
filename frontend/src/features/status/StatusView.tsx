@@ -118,7 +118,7 @@ function rawCopyPayload(call: ModelCallRow): string {
 }
 
 /** 状态视图（全局）：总览（状态与配置）/ 模型用量 / 调用记录 / 最近处理 / 记忆召回测试。切到哪个 tab 才拉哪个的数据。 */
-export default function StatusView({ active = true, contactId, contactName, contactAvatar, onSwitchContact, onOpenContacts, goSettings }: {
+export default function StatusView({ active = true, contactId, contactName, contactAvatar, onSwitchContact, onOpenContacts, onOpenContact, goSettings }: {
   /** 视图是否真正可见：保活后的隐藏页不偷偷刷新。 */
   active?: boolean;
   contactId: string;
@@ -126,6 +126,8 @@ export default function StatusView({ active = true, contactId, contactName, cont
   contactAvatar: string;
   onSwitchContact: (id: string) => void;
   onOpenContacts: () => void;
+  /** 点通道明细里的某一位：打开这位联系人的资料页。 */
+  onOpenContact: (contactId: string) => void;
   goSettings: (tab: SettingsTab) => void;
 }): JSX.Element {
   const [tab, setTab] = useState<Tab>("overview");
@@ -396,6 +398,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
               d={status}
               caps={caps} capsErr={capsErr} onRetryCaps={() => setCapsNonce((n) => n + 1)}
               onOpenContacts={onOpenContacts}
+              onOpenContact={onOpenContact}
               onRefresh={refreshStatus}
               notice={statusErr !== "" ? `刷新失败：${statusErr}（下面显示的是上次的结果）` : undefined}
               goSettings={goSettings} goTab={() => {

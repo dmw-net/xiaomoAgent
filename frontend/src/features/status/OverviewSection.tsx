@@ -1,7 +1,7 @@
-import { ReactNode, useState } from "react";
+import { Fragment, ReactNode, useState } from "react";
 import { clockOf, relTime, whenText } from "../../lib/datetime";
 import CheckRow from "./CheckRow";
-import { qqApi } from "../../api";
+import { qqApi, wechatApi } from "../../api";
 import type { StatusData, CapabilityName } from "../../types";
 import type { Caps } from "../../lib/capsStore";
 import type { PanelAria } from "../../components/Tabs";
@@ -13,12 +13,14 @@ const worse = (a: Led, b: Led): Led => RANK[Math.max(RANK.indexOf(a), RANK.index
 
 const DAY = 86_400_000;
 
-/** 一行的完整形态：led=灯，silent=只在卡里出现不进提醒条，note=提醒条里的一句人话。 */
+/** 一行的完整形态：led=灯，silent=只在卡里出现不进提醒条，note=提醒条里的一句人话。
+ *  extra=紧跟在这一行下面的附加明细（消息通道用它列出「连着的是哪几位」）。 */
 type Row = {
   led: Led;
   k: string;
   v: ReactNode;
   fix?: ReactNode;
+  extra?: ReactNode;
   silent?: boolean;
   note?: string;
   action?: { label: string; on: () => void };
@@ -72,9 +74,98 @@ function Card({ title, rows, goto }: {
         {goto && <button type="button" className="ov-goto" onClick={goto.on}>{goto.label}</button>}
       </div>
       <div className="checks">
-        {rows.map((r) => <CheckRow key={r.k} led={r.led} k={r.k} v={r.v} fix={r.fix} />)}
+        {rows.map((r) => (
+          <Fragment key={r.k}>
+            <CheckRow led={r.led} k={r.k} v={r.v} fix={r.fix} />
+            {r.extra && <div className="check-extra">{r.extra}</div>}
+          </Fragment>
+        ))}
       </div>
     </section>
+  );
+}
+
+/** 通道明细里的状态灯：能收发的绿，出问题红，用户自己停用的不按故障算。 */
+function contactLed(status: string): Led {
+  if (status === "connected") return "ok";
+  if (status === "attention" || status === "paused") return "bad";
+  if (status === "connecting" || status === "not-configured") return "warn";
+  return "ok"; // disabled：用户主动关掉的，不是故障
+}
+
+/** 排序：能收发的排前面，出问题的居中，停用的沉底——这张卡先回答「谁正在用」。 */
+function contactRank(status: string): number {
+  if (status === "connected") return 0;
+  if (status === "attention" || status === "paused") return 1;
+  if (status === "connecting" || status === "not-configured") return 2;
+  return 3;
+}
+
+/** 逐位明细的显示上限：通道上限是 40 位，全铺开会把整页撑长，其余去列表页看。 */
+const CONTACT_LIST_CAP = 6;
+
+/** 通道行下面的逐位明细：名字可点，直达那位的资料页（「连接方式」就在里面）。
+ *  QQ 可能同时挂着官方与 OneBot 两套绑定（同一位联系人两条），这里按联系人合并成一行，
+ *  状态取更需要注意的那个——「有一条在报错」不该被另一条正常绑定盖住。
+ *  两位以上才给「收起/展开」：只有一个联系人时折起来只是一行标题，白占一次点击。 */
+function ChannelContacts({ items, labels, onOpen }: {
+  items: Array<{ contactId: string; name: string; enabled: boolean; proactive: boolean; status: string }>;
+  labels: Record<string, string>;
+  onOpen: (contactId: string) => void;
+}): JSX.Element {
+  const [open, setOpen] = useState(true);
+  const merged = new Map<string, typeof items[number]>();
+  for (const item of items) {
+    const prev = merged.get(item.contactId);
+    merged.set(item.contactId, prev === undefined
+      ? item
+      : {
+        ...prev,
+        enabled: prev.enabled || item.enabled,
+        proactive: prev.proactive || item.proactive,
+        status: contactRank(item.status) > contactRank(prev.status) ? item.status : prev.status,
+      });
+  }
+  const sorted = [...merged.values()].sort((a, b) => contactRank(a.status) - contactRank(b.status));
+  const shown = sorted.slice(0, CONTACT_LIST_CAP);
+
+  const list = (
+    <div className="ch-contacts-list">
+      {shown.map((c) => {
+        const led = contactLed(c.status);
+        return (
+          <button type="button" className={"ch-contact " + led} key={c.contactId}
+            title={`打开「${c.name}」的资料页`} onClick={() => onOpen(c.contactId)}>
+            <span className={"led " + led} aria-hidden="true" />
+            <span className="ch-contact-name">{c.name}</span>
+            <span className="ch-contact-state">{labels[c.status] ?? c.status}</span>
+            {c.proactive && <span className="ch-contact-tag">主动</span>}
+          </button>
+        );
+      })}
+      {sorted.length > shown.length && (
+        <span className="ch-contact-more">还有 {sorted.length - shown.length} 位，去「对话」列表里查看</span>
+      )}
+    </div>
+  );
+
+  if (sorted.length <= 1) return <div className="ch-contacts">{list}</div>;
+
+  return (
+    <div className={"ch-contacts" + (open ? "" : " is-closed")}>
+      <div className="ch-contacts-head">
+        <span className="ch-contacts-count">{sorted.length} 位联系人</span>
+        <button type="button" className="ch-contacts-toggle" aria-expanded={open}
+          onClick={() => setOpen((v) => !v)}>
+          {open ? "收起" : "展开"}
+          <span className="ch-contacts-caret" aria-hidden="true" />
+        </button>
+      </div>
+      {/* 高度用 grid 0fr↔1fr 过渡：展开/收起都有动画，且不用量高度、不怕内容换行。 */}
+      <div className="ch-contacts-body">
+        <div className="ch-contacts-inner">{list}</div>
+      </div>
+    </div>
   );
 }
 
@@ -91,7 +182,7 @@ const CHANNEL_LABEL: Record<string, string> = { web: "网页", wechat: "微信" 
  * 记忆条数、微信绑定都在各联系人的资料页里，总览按联系人显示等于随机挑一位。
  * 提醒条同理只收真会坏事的：按设计如此的静默/配额不该天天报警。
  */
-export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, goTurns, goQueue, onOpenContacts, onRefresh, panel }: {
+export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice, actions, goSettings, goTab, goTurns, goQueue, onOpenContacts, onOpenContact, onRefresh, panel }: {
   panel: PanelAria;
   d: StatusData;
   /** 清除通道提示后重新拉一次 /api/status，让红字当场消失。 */
@@ -110,6 +201,8 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
   goTurns: () => void;
   goQueue: () => void;
   onOpenContacts: () => void;
+  /** 通道明细里点某一位：打开这位联系人的资料页（连接方式在那一组里）。 */
+  onOpenContact: (contactId: string) => void;
 }): JSX.Element {
   const now = Date.now();
   // 「数据截至」取载荷自带的生成时刻（d.time），而不是组件里另记 receivedAt：
@@ -208,6 +301,9 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
       note: wxTrouble > 0 ? `${wxTrouble} 条微信连接收不到消息` : undefined,
       v: !wx ? "读取中…" : wx.links === 0 ? "还没有联系人绑定微信"
         : <>共 {wx.links} 条 · 在线 {wx.connected}{wx.disabled > 0 ? ` · 停用 ${wx.disabled}` : ""}</>,
+      extra: wx && (wx.contacts?.length ?? 0) > 0
+        ? <ChannelContacts items={wx.contacts ?? []} labels={wechatApi.WECHAT_STATUS_LABEL} onOpen={onOpenContact} />
+        : undefined,
       fix: wx && wxTrouble > 0
         ? <>{wx.trouble.map((x) => x.name + (x.lastError ? "：" + x.lastError.slice(0, 40) : "")).join("；")}，到各自联系人的「对话设置」里重连</>
         : undefined,
@@ -230,6 +326,9 @@ export default function OverviewSection({ d, caps, capsErr, onRetryCaps, notice,
         v: !q ? "读取中…" : !q.configured ? "还没填机器人凭据"
           : q.bindings === 0 ? "凭据已配 · 还没有联系人绑定 QQ"
             : <>共 {q.bindings} 条 · {qqApi.QQ_STATUS_LABEL[q.status]} · 启用 {q.active}</>,
+        extra: q && (q.contacts?.length ?? 0) > 0
+          ? <ChannelContacts items={q.contacts ?? []} labels={qqApi.QQ_STATUS_LABEL} onOpen={onOpenContact} />
+          : undefined,
         fix: q && q.status === "attention" && q.lastError !== ""
           ? withClear(<>{q.lastError.slice(0, 90)}（沙箱/未发布要去开放平台把机器人发布后再连）</>)
           : qTrouble > 0

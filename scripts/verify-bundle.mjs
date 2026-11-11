@@ -271,10 +271,8 @@ try {
 } finally {
   for (const inst of [src, dsk]) {
     if (inst.child.exitCode === null) inst.child.kill("SIGKILL");
-    // 2026-10-17 实测：刚被 SIGKILL 的子进程还攥着 xiaomo.db / -wal / -shm（目录里就剩这三个
-    // 文件），这时 rmSync 立刻报 EPERM——实测 1ms 就返回，带上 maxRetries: 20 / retryDelay: 300
-    // 也没用（这个耗时说明那 20 次重试根本就没发生）。等 exit 只解决一半：句柄还会晚一拍才回收，
-    // 所以自己带节奏重试。实测等 100ms 就能删掉，这里给到 ~2 秒再认输。
+    // 刚被 SIGKILL 的子进程还会攥着 xiaomo.db / -wal / -shm 一小会儿，rmSync 立刻报 EPERM。
+    // 等 exit 只解决一半：句柄还会晚一拍才回收，所以自己带节奏重试，给到 ~2 秒再认输。
     await waitExit(inst.child);
     let lastErr = null;
     for (let i = 0; i < 10; i++) {
@@ -287,8 +285,8 @@ try {
         await new Promise((r) => setTimeout(r, 200));
       }
     }
-    // 认输时打全量 message：以前截断了 60 字符，正好把「到底是哪个文件被占」切掉，
-    // 看上去像是 Temp 根目录被拒——其实那只是 \\?\ 前缀的长路径开头。
+    // 认输时打全量 message，不要截断——得能看出到底是哪个文件被占（\\?\ 前缀的长路径
+    // 开头很容易被误读成 Temp 根目录被拒）。
     if (lastErr) console.log(`（临时目录没删掉，可手动清理：${inst.dir} —— ${lastErr.code} ${lastErr.message}）`);
   }
 }

@@ -2,7 +2,7 @@
  * QQ 群消息响应方式回归。
  *
  * 闸门必须 fail-closed：默认档（仅 @）下，不 @ 的群消息一条都不能进处理队列——
- * 这是升级前就有的保护，改「接受方式」时不能顺手把它放开。新增的两档只在
+ * 既有保护，改「接受方式」时不能顺手放开。新增的两档只在
  * 已登记且开收件的群上生效（会话查找在 handleInbound 里，先于这里）。
  *
  * 运行：node --experimental-sqlite scripts/qq-group-trigger.test.mjs

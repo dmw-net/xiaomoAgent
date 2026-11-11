@@ -74,7 +74,7 @@ for (const abs of walk(stagedRoot)) {
   extras.push(rel);
 }
 if (extras.length > 0) {
-  // 实测一次能冒出几十条（旧产物累积），全列出来反而看不清根因——只给样本 + 总数。
+  // 旧产物累积一次能冒出几十条，全列出来反而看不清根因——只给样本 + 总数。
   const sample = extras.slice(0, 5).map((r) => "    " + r).join("\n");
   fail(`暂存区有 ${extras.length} 个多余文件（会被打进包，但不在清单里 → 未经校验）：\n${sample}`
     + (extras.length > 5 ? `\n    …还有 ${extras.length - 5} 个` : "")

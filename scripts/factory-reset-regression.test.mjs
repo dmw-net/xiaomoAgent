@@ -38,7 +38,7 @@ assert(address && typeof address === "object", "测试服务器没有拿到端�
 const base = `http://127.0.0.1:${address.port}`;
 
 try {
-  // 种下三张「曾经漏清」的表 + 一条核心业务数据，然后全部清空。
+  // 种下三张容易被漏清的表 + 一条核心业务数据，然后全部清空。
   const now = Date.now();
   db.prepare("INSERT INTO proactive_state (contact_id, next_check_at, focus, updated_at) VALUES (?, ?, ?, ?)")
     .run("default", now + 60_000, "旧节拍不该被新小茉继承", now);
@@ -52,8 +52,8 @@ try {
     .run("default", "conv-1", "user", "清空前的消息", now);
 
   // media 文件按现在的目录化布局放：两个子目录 + 遗留平铺各一张，回收站一份。
-  // 曾有回归：releaseMediaFiles 按 assets.rel_path 解析路径，而 assets 在同一事务里被清空，
-  // 子目录文件解析不出来被静默跳过——整棵媒体树只有平铺文件删得掉。
+  // 回归口径：releaseMediaFiles 若按 assets.rel_path 解析路径，而 assets 在同一事务里被清空，
+  // 子目录文件会解析不出来被静默跳过——整棵媒体树只有平铺文件删得掉。
   const mediaDir = join(root, "media");
   for (const rel of ["图片/aabbccdd11223344.png", "表情包/梗图/ccee0011223344ff.gif", "legacy00ab00cd00ef0011.jpg"]) {
     const file = join(mediaDir, ...rel.split("/"));
@@ -74,7 +74,7 @@ try {
   assert.equal(body.ok, true);
   assert.ok(body.note.includes("已回到初始状态"), `note 应报告回到初始状态：${body.note}`);
 
-  // 清除清单里的每一张表都必须见底——包括曾经漏掉的三张。
+  // 清除清单里的每一张表都必须见底——包括容易被漏清的那三张。
   // conversations 例外：路由在清空后会为新联系人重种主会话，所以只断言旧行没了。
   const wipedTables = [
     "messages", "turns", "memory_events", "proactive_tasks", "proactive_state",

@@ -1,9 +1,7 @@
 // 从 koishijs/QFace 的 QQNT 表情索引生成「face id → 中文表情名」全量表。
 //
-// 为什么要生成而不是手写：项目原先在 qq-emote.ts 里手搓了 16 条 FACES，
-// 逐条比对 QFace 索引后 15 条对不上（id 14 实际是「微笑」，手写表写的是「晕」）。
-// QQ 的编号有三套（老 CQ 表 / QQNT emojiId / qzoneCode），且会随协议端漂移，
-// 手写表既不全也不可靠。QFace 是 Koishi 团队用 NapCat(QQNT) 容器扫出来的，
+// 为什么要生成而不是手写：QQ 的编号有三套（老 CQ 表 / QQNT emojiId / qzoneCode），
+// 且会随协议端漂移，手写表既不全也不可靠。QFace 是 Koishi 团队用 NapCat(QQNT) 容器扫出来的，
 // 与我们对接的协议端同源，是眼下最可信的一份。
 //
 // 用法：

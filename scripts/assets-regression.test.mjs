@@ -178,8 +178,8 @@ const columns = db.prepare("PRAGMA table_info(assets)").all().map((c) => String(
 assert.ok(!columns.includes("prompt") && !columns.includes("transcript"), "展示字段没有被抄一份进资产表");
 
 // ── 7) 表情标记与收藏本身就是引用：只被表情库认领的梗图绝不能被清理 ─────────
-// 表情标记从前住在 kv 的 blob 里，由引用扫描的 kv 那一路顺带认到；搬进 assets 表之后
-// 那一路就看不见它了——不补这一条，「导入但还没在对话里用过」的表情会被判成未引用删掉。
+// 表情标记住在 assets 表里，引用扫描必须认 assets 这一路——
+// 不补这一条，「导入但还没在对话里用过」的表情会被判成未引用删掉。
 const sticker = media.saveImage(TINY_PNG, "image/png").url;
 assets.markEmote(sticker, { label: "接梗", tags: ["梗"] });
 media.reconcileAssets();
@@ -223,7 +223,7 @@ assert.strictEqual(assets.assetStats().total, totalBefore, "派生形态不增�
 assert.ok(assets.assetStats().bytes > bytesBefore, "但它占的盘要算进存储");
 assert.ok(!assets.listAssets({ limit: 100, offset: 0 }).items.some((a) => a.url === still), "派生形态不出现在媒体库里");
 assert.strictEqual(await rend.staticFrameOf(gifUrl), still, "同一份动图只派生一次");
-// 自检：派生出来必须是单帧。曾经 { animated: true } 会交出整条竖排长图，发出去就是坏图。
+// 自检：派生出来必须是单帧——{ animated: true } 会交出整条竖排长图，发出去就是坏图。
 const stillMeta = await (await import("sharp")).default(
   (await import("node:fs")).readFileSync(join(media.mediaDir(), still.slice("/media/".length))),
 ).metadata();

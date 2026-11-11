@@ -8,7 +8,7 @@
  * 后端逻辑（工具契约、表情语义、资产行为等）请写到对应的行为回归里，真库/真接口驱动，
  * 不要在这里再复刻一份：源码断言会随合理重构失效，是之前最大的维护负担。
  *
- * 覆盖曾经真实出现的问题：
+ * 覆盖的问题：
  * 1. MessageRow 在“普通消息 → 已撤回”时提前 return，跳过后面的 useMemo，
  *    React 报 error #300（Rendered fewer hooks than expected），整页白屏。
  * 2. 移动端通用 Modal 一律贴底，聊天确认框也变成底部面板；聊天里需要的是
@@ -19,7 +19,7 @@
  * 5. 设置助手里的上下文浮层必须压在弹窗之上，否则点击后看似没有反应。
  * 6. ChatView 里 portal 到 body 的浮层（模型/表情/会话切换）统一用 --z-chat-pop：
  *    从设置助手弹窗里点开时，--z-subpop(65) 会被弹窗(--z-dialog 79)压住，
- *    表现是弹层只在弹窗边缘露一截（2026-11-09 新加的表情面板再次复现）。
+ *    表现是弹层只在弹窗边缘露一截。
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join } from "node:path";
@@ -35,10 +35,10 @@ const componentsCss = readFileSync("frontend/src/styles/components.css", "utf8")
 const themeCss = readFileSync("frontend/src/styles/theme.css", "utf8");
 const assistantDialogSource = readFileSync("frontend/src/features/assistant/AssistantDialog.tsx", "utf8");
 const assistantPermissionSource = readFileSync("frontend/src/features/assistant/AssistantPermissionChip.tsx", "utf8");
-// 权限档共用件（2026-11-08 收敛）：三档 option-card 与 auto 风险弹窗的全站唯一实现，
+// 权限档共用件：三档 option-card 与 auto 风险弹窗的全站唯一实现，
 // chip 与助手设置屏（AssistantSettingsPanels）都从这里取——同一个决策只允许一份实现、一份文案。
 const assistantPermissionShared = readFileSync("frontend/src/features/assistant/AssistantPermission.tsx", "utf8");
-// 助手设置屏已并进资料页（2026-11-10）：权限档与审计面板住在 ProfileView 里，不再有独立的控制台层。
+// 助手设置屏已并进资料页：权限档与审计面板住在 ProfileView 里，不再有独立的控制台层。
 const assistantPanelsSource = readFileSync("frontend/src/features/assistant/AssistantSettingsPanels.tsx", "utf8");
 const assistantPendingSource = readFileSync("frontend/src/features/assistant/PendingCard.tsx", "utf8");
 const settingsSource = readFileSync("frontend/src/features/settings/SettingsView.tsx", "utf8");
@@ -130,16 +130,15 @@ assert(/key: "media"/.test(settingsViewSource) && /groupPanel\("media"/.test(set
 assert(!/"emote"/.test(settingsViewSource.match(/type ModelTab =[^;]+;/)?.[0] ?? ""), "模型分区的页签里不该再有「表情」");
 assert(/<EmoteFrequencySection/.test(mediaSectionSource) && /发表情频率/.test(emoteFrequencySource), "表情频率应作为媒体库的全局设置，不再散落到单个联系人");
 assert(!/设置 → 表情/.test(profileViewSource), "联系人功能开关的说明不该再把人指向已删除的 设置→表情");
-// 命名一致性：两处是同一个库，名字必须成对改。曾经一个叫「她的东西」、一个叫「内容库」，
-// 用户会以为是两个地方。
+// 命名一致性：两处是同一个库，名字必须成对改——名字不一致，用户会以为是两个地方。
 assert(/label: "媒体与表情"/.test(settingsViewSource), "设置一级分区应叫「媒体与表情」");
 assert(/title="媒体"/.test(profileViewSource), "联系人页那个视角的标题应与设置侧同源（媒体）");
 assert(!/她的东西|内容库/.test(mediaSectionSource + (settingsViewSource.match(/const GROUPS[^;]+;/)?.[0] ?? "")), "旧的临时命名不该还留在界面上");
 assert(/markEmote/.test(mediaLibrarySource), "媒体库里要能直接把一张图设为表情包素材");
 
-// 媒体页曾经单独用 `244px minmax(0,1fr)` 撑宽内容区。设置容器在宽屏（≥1240px）会顶到
+// 媒体页与基础页必须共用同一套网格宽度。设置容器在宽屏（≥1240px）会顶到
 // 1160px 上限，此时基础网格是 `244px 760px` 居中、媒体网格是拉伸——导航列左移 30px、
-// 内容区左移 30px 且变宽 60px，切过去就是用户报的「全屏切换到媒体表情页闪一下」。
+// 内容区左移 30px 且变宽 60px，切过去就是「全屏切换到媒体表情页闪一下」。
 // 1180px 默认窗口下两者恰好同宽，所以只在全屏/最大化时出现。媒体网格
 // minmax(150px,1fr) 在 760px 与 820px 下都是 4 列，收回到统一档不损失列数。
 assert(
@@ -167,8 +166,8 @@ assert(
 const cssZ = (name) => Number(themeCss.match(new RegExp("--" + name + ":\\s*(\\d+)"))?.[1]);
 assert(cssZ("z-chat-pop") > cssZ("z-dialog"), "上下文浮层层级必须高于设置助手弹窗");
 // ChatView 里 portal 到 body 的浮层：宿主可能是设置助手弹窗，档位必须按弹窗取值。
-// 这张清单是防复发闸门——上下文浮层、权限 chip 各修过一次，新加的表情面板又踩了同一个坑，
-// 所以不再逐个打补丁：composer 一族统一登记，新增同类浮层必须一起登记并走 --z-chat-pop。
+// 这张清单是防复发闸门：portal 到 body 的 composer 一族浮层统一登记，
+// 新增同类浮层必须一起登记并走 --z-chat-pop，不许逐个打补丁。
 const assistantHostedPops = [
   [componentsCss, ".model-pop"],
   [componentsCss, ".emote-pop"],
@@ -219,7 +218,7 @@ assert(profileViewSource.includes("<AssistantPermissionPanel") && profileViewSou
   "助手设置屏必须把权限档与审计面板并进资料页（不再有「编辑资料」第二层）");
 assert(!assistantDialogSource.includes("showProfile") && !assistantDialogSource.includes("AssistantConsole"),
   "助手弹窗不得再挂独立的控制台层 / 「编辑资料」第二层");
-// 各板块间距必须一致：从前只有身份卡带 margin，权限档 / 审计面板与设置卡是贴着排的。
+// 各板块间距必须一致：权限档 / 审计面板与设置卡、身份卡统一带同样的 margin。
 assert(/\.pf-assistant\s*>\s*\.ac-panel,\s*\.pf-assistant\s*>\s*\.pf-settings\s*\{[\s\S]*?margin-bottom:\s*12px/.test(experienceCss),
   "助手设置屏各板块之间必须统一 12px 间隔（.pf-assistant 作用域）");
 // 声明与执行共用一份「本轮工具池快照」之后，toolDefsForApi 多了第三个参数；
@@ -299,8 +298,8 @@ assert(/imgsFolded/.test(messageRowSource) && /点开看全部/.test(messageRowS
 assert(/\.msg-img-fold-btn/.test(componentsCss), "折叠/展开按钮要有样式");
 
 // 设置助手自己的「对话设置」也要能存：回复方式 / 回放比例 / 历史占比上限就摆在那一屏上，
-// 从前 formPayload 用一条 isAssistant 分支把整块 features 跳过，于是这三个开关点了既不出
-// 脏值条也没有保存入口——用户看到的就是「没有保存按钮、改了不生效」。
+// formPayload 不许用 isAssistant 分支把整块 features 跳过——跳过的话这三个开关
+// 既不出脏值条也没有保存入口，用户看到的就是「没有保存按钮、改了不生效」。
 const profileSource = readFileSync("frontend/src/features/profile/ProfileView.tsx", "utf8");
 assert(
   /payload\.features = \{ splitReply: f\.splitReply, turnPct: f\.turnPct, tokenPct: f\.tokenPct \}/.test(profileSource),
@@ -500,7 +499,7 @@ assert(/清理此项/.test(mediaLibrarySource) && /"dropMissing"/.test(mediaLibr
 assert(/"probeMissing"/.test(mediaLibrarySource),
   "打开文件夹失败就地验真标失效——会话中删的文件不用等下一轮对账，清理按钮当场出现");
 
-// ── 设置助手能力补齐（2026-11-09）────────────────────────────────
+// ── 设置助手能力补齐 ────────────────────────────────────────────
 // ① 助手设置屏「允许的操作」不能低报助手实际可用的工具：visibleTools 的助手分支还借了
 //    WEB_TOOLS 与 load_skill，它们 scope=companion，不进助手清单，但确实可用。
 // assistantPanelsSource 已在文件头部读过（助手设置屏那组断言），这里直接复用。

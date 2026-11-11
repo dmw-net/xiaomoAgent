@@ -1,7 +1,7 @@
 // 桌面打包前置：把整个后端捆成【一个压缩 + 中文编码过的 ESM 文件】。
 //
-// 为什么要这一步：Tauri 的 resources 会把文件原样装进安装包，
-// 之前直接打包 src/*.ts 源码——任何人解压安装目录就能读全部后端源码。
+// 为什么要这一步：Tauri 的 resources 会把文件原样装进安装包——
+// 直接打包 src/*.ts 源码的话，任何人解压安装目录就能读全部后端源码。
 // 捆成单文件 + minify 后，安装包里只有机器友好的压缩产物，
 // 读源码的成本从「打开文件」变成「逆向压缩 JS」。（诚实边界：
 // JS 产物无法真正加密，这只抬门槛、不是防弹。）
@@ -18,11 +18,11 @@
 //      扫描器瞎掉的静默失效；
 //   C) 编码条数 > 0，否则 A/B 可能只是空转；
 //   D) 改写后的文本必须还能被 esbuild 解析（扫坏语法在这里停下，而不是装出白屏）；
-//   E) 按「段」口径再量一遍（容忍中文标点与空白，同样不依赖扫描器）——实测靠它揪出过
-//      插值里再嵌模板、被扫描器整批漏编的 48 段中文。
+//   E) 按「段」口径再量一遍（容忍中文标点与空白，同样不依赖扫描器）——
+//      插值里再嵌模板这类会被扫描器整批漏编，这道门兜住。
 // 门之外还有一条**运行期实证**：npm run verify:bundle 起两个隔离实例（源码版 / 捆包版），
-// 比对同一份输入拼出的系统提示词必须逐字节相同——上面五道门全绿的包也曾经一启动就崩
-// （esbuild inject 把解码器缩名成 `c`，撞上产物里已有的顶层 `c`），只有真跑才抓得到。
+// 比对同一份输入拼出的系统提示词必须逐字节相同——五道门全是静态检查，
+// 只有真跑才抓得到运行期问题。
 //
 // 用法：node scripts/bundle-backend.mjs   （desktop / desktop:build 会自动先跑）
 
@@ -75,9 +75,9 @@ const first = await esbuild.build({ ...common, entryPoints: [entry] });
 const plain = first.outputFiles[0].text;
 
 // 3) 给产物挂上解码器。
-//    ⚠️ 刻意**不用** esbuild 的 inject + 第二遍打包：实测它会把注入的 `xm` 缩成 `c`，
-//    而 pass-1 的顶层作用域里已经有一个 `c`（agent.ts 里标记消息归属的那个函数），
-//    于是解码调用打到 SQL 上，捆包一起来就 `no such table: messages`。
+//    ⚠️ 刻意**不用** esbuild 的 inject + 第二遍打包：注入的解码器名会被 minify 缩短，
+//    撞上 pass-1 顶层作用域里已有的同名标识符（比如 agent.ts 里标记消息归属的那个），
+//    解码调用就会打到别的符号上。
 //    也不用「先插 `xm(` 再全文替换成别的名字」：pass-1 产物里本来就有 `function xm(...)`，
 //    替换会连它的声明一起改，和解码器撞成重复声明。
 //    做法：先挑一个**在 pass-1 产物里一次都没出现过**的长专名，编码时直接按这个名字发调用。
@@ -88,7 +88,7 @@ const decoderName = (() => {
   throw new Error("[bundle-backend] 找不到不冲突的解码器名字");
 })();
 
-// 3.5) 资产密钥：base64 载荷在 2026-10-19 被实测 5 行 python 全解，升级为 XOR + 密钥。
+// 3.5) 资产密钥：载荷为 XOR + 每包随机密钥（见 cjk-encode）。
 //     密钥**不进** server.mjs：gen-asset-key 生成 32 字节，build.rs 烧进 exe，
 //     外壳 spawn sidecar 时经 XM_ASSET_KEY 环境变量交给运行时。
 //     拿到安装包的人要解提示词，得先从 exe 里把密钥挖出来。
@@ -109,7 +109,7 @@ const encodedChars = values.reduce((sum, v) => sum + v.length, 0);
 // 静默乱码会让用户看到满屏问号还以为数据坏了，明确报错才能一眼定位到"启动方式不对"。
 // ⚠️ 外层 IIFE 必须是双参 `(m,k)=>b=>…`：写成柯里化 `m=>k=>b=>…` 的话外层只收一个实参，
 // Buffer 会被静默丢掉，xmAssetText 第一次调用返回的是函数——p.exec 收到函数就是
-// "The sql argument must be a string"（首跑实测踩中，esbuild 语法门抓不到这种语义错）。
+// "The sql argument must be a string"（esbuild 语法门抓不到这种语义错）。
 const decoder =
   `const ${decoderName}=((m,k)=>b=>{if(!k||!k.length)throw new Error("asset key missing (XM_ASSET_KEY)");` +
   `const h=m.get(b);if(h!==void 0)return h;` +
@@ -135,14 +135,9 @@ const unescapedFinal = final.replace(/\\u([0-9a-fA-F]{4})/g,
 const survived = assets.filter((v) => unescapedFinal.includes(v));
 
 // 4) 清掉资源暂存目录 target/{debug,release}/backend/。
-//    整个 backend/ 都是 Tauri 的资源暂存区，不是只 src/：
-//      - src/            上一代打包方式残留的 .ts 源码。NSIS 的文件清单早已不含它们
-//                        （实测 installer.nsi 只装 server.mjs），但 cargo 只增量重建、
-//                        Tauri 拷资源也不删多余文件——谁把 resources 改成「整目录拷 backend/」
-//                        就会静默泄漏。
-//      - frontend/dist/  Tauri 拷资源时**只增量、从不删除**。实测累积到 81 个文件，
-//                        其中 SettingsView-*.js 有 8 个历史版本，一路打进安装包
-//                        （包体浪费 + 把版本演进白送出去）。
+//    整个 backend/ 都是 Tauri 的资源暂存区；cargo 只增量重建、Tauri 拷资源只增不删，
+//    上一轮的残留（旧 .ts 源码、旧前端 chunk）会原样留进安装包——既浪费包体，
+//    又把不在清单保护范围内的旧文件白送出去。
 //    删掉后 tauri build 会按 tauri.conf.json 的 resources 重新拷一份干净的。
 let swept = 0;
 for (const profile of ["debug", "release"]) {
@@ -157,7 +152,7 @@ for (const profile of ["debug", "release"]) {
 /**
  * sharp 的运行期依赖闭包。
  *
- * 不能手写清单：sharp 还要 detect-libc，手列的第一版就漏了它，装到模拟目录里才炸出来。
+ * 不能手写清单：sharp 还要 detect-libc 这类间接依赖，手写兜不全，要靠程序化递归收。
  * 顺着 package.json 的 dependencies 递归收；optionalDependencies 里那些按平台分的原生包
  * 只留本机这一个（npm 也只会装对本平台有效的那个，但仓库里可能残留别平台的目录，
  * 比如 sharp-wasm32 有 9MB，塞进安装包纯属浪费）。
@@ -308,8 +303,8 @@ if (/@img\/sharp-/.test(String(final))) {
 if (sharpDeps.staged.length === 0) {
   fails.push(`门 F：没有 stage 任何 sharp 运行期包（${sharpDeps.reason ?? `缺 ${process.platform}-${process.arch} 的原生包`}），打包版派生动图静帧会不可用`);
 }
-// G：光 stage 了不算，得在「和安装包同形状的目录」里真跑一次派生。
-//    上一版手写清单漏了 detect-libc，就是这条门该拦下来而当时没有的东西。
+// G：光 stage 了不算，得在「和安装包同形状的目录」里真跑一次派生——
+//    手写依赖清单漏掉的包，只有这里能暴露。
 if (installProblem !== null) {
   fails.push(`门 G：模拟安装目录里派生不出来 —— ${installProblem}`);
 }

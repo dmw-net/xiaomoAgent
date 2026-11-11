@@ -3,8 +3,8 @@
  * CSS 令牌纪律检查（css-token-check.mjs）
  *
  * 背景：theme.css 的令牌表是这套界面的宪法（「组件只消费语义令牌，不写散落色值」），
- * 但没有机器把守——历史上已经出现过三类静默劣化：
- *   ① 消费了从未定义的令牌（--text-secondary / --line / --surface-2 共 13 处），
+ * 本脚本用于拦截三类静默劣化：
+ *   ① 消费了从未定义的令牌，
  *      var() 无 fallback 时声明按 invalid 处理、颜色悄悄退回继承值，肉眼不可见；
  *   ② 裸 z-index 游离于 theme.css 的档位表外，弹层层级打架时无从排查；
  *   ③ 裸时长（.16s ease 之类）绕开动效三档，reduced-motion 的 .01ms 总闸罩不住它们。

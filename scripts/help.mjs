@@ -37,9 +37,10 @@ const GROUPS = [
   {
     title: "检查与诊断",
     items: [
-      ["check", "类型检查（后端 + 前端）"],
+      ["check", "完整验证：CSS 令牌 + 前后端 typecheck + 30 余个回归套件 + 冒烟"],
       ["doctor", "环境与配置自检"],
       ["smoke", "冒烟测试（跑源码，不覆盖捆包产物）"],
+      ["verify-context", "上下文/记忆/工具循环回归（独立库，已并入 check）"],
     ],
   },
 ];
@@ -47,7 +48,7 @@ const GROUPS = [
 const INTERNAL = [
   "manifest", "verify:staged", "stage-sidecar", "bundle:backend", "cjk:test",
   "verify:bundle", "tauri", "fe:build", "typecheck", "start", "desktop",
-  "verify-context", "hooks:test", "proactive:once",
+  "hooks:test", "proactive:once",
 ];
 
 const missing = [];
@@ -61,7 +62,9 @@ for (const g of GROUPS) {
   console.log(`  ${g.title}`);
   for (const [cmd, desc] of g.items) {
     if (!pkg.scripts[cmd]) missing.push(cmd);
-    const head = `    npm run ${pad(cmd, 14)}`;
+    // 恒定留两格：pad 只补到 14，命令名正好 14 字（如 verify-context）时不会补空格，
+    // 描述会直接贴到命令名后面。
+    const head = `    npm run ${pad(cmd, 14)}  `;
     if (width(head + desc) <= 100) {
       console.log(head + desc);
     } else {

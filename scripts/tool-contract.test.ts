@@ -1,5 +1,5 @@
 /**
- * 工具契约回归：把「从前只靠注释维持的规范」变成机器断言。
+ * 工具契约回归：把工具契约规范变成机器断言。
  *
  * 运行：node --experimental-sqlite scripts/tool-contract.test.ts
  *
@@ -80,6 +80,12 @@ console.log("\n[2] 通用参数校验：required / type / enum / 边界 / 多余
   check("数字/布尔字符串被纠正、数值按 schema 夹住", coerced.error === null
     && coerced.args.limit === 8 && coerced.args.force === true);
   check("additionalProperties:false 剥掉多余字段但不判失败", !("junk" in coerced.args));
+  // 夹紧不能是静默的：模型给 limit:99 却按 8 执行，回执里必须有一句提示让它知情。
+  check("越界夹紧会回 note（不再静默改写模型给的值）",
+    coerced.notes.length === 1 && coerced.notes[0]!.includes("limit") && coerced.notes[0]!.includes("8"),
+    coerced.notes.join(" | "));
+  const inRange = validateAndCoerceArgs(schema, { url: "https://x", limit: 3 });
+  check("范围内的值不产生 note", inRange.notes.length === 0);
 
   const badEnum = validateAndCoerceArgs(schema, { url: "https://x", kind: "video" });
   check("enum 之外的取值被拦下", badEnum.error !== null && badEnum.error.includes("kind"));
@@ -101,8 +107,8 @@ console.log("\n[3] 递归脱敏：嵌套密钥与带连字符的 header 名");
   });
   const out = JSON.parse(redactToolArguments(args)) as Record<string, any>;
   check("顶层 apiKey 被遮", out.apiKey === "<已省略>");
-  check("嵌套 Authorization 被遮（从前漏）", out.manifest.mcp.headers.Authorization === "<已省略>");
-  check("带连字符的 x-api-token 被遮（从前漏）", out.manifest.mcp.headers["x-api-token"] === "<已省略>");
+  check("嵌套 Authorization 被遮", out.manifest.mcp.headers.Authorization === "<已省略>");
+  check("带连字符的 x-api-token 被遮", out.manifest.mcp.headers["x-api-token"] === "<已省略>");
   check("数组里的嵌套 client_secret 被遮", out.list[0].client_secret === "<已省略>");
   check("普通字段与形状不变", out.label === "DeepSeek" && out.list[0].harmless === "keep-me" && out.manifest.name === "ext");
   check("全文正则与结构化脱敏同源", redactSecrets(args).includes('"apiKey":"<已省略>"')
@@ -117,8 +123,13 @@ console.log("\n[4] 静态工具池自检：真实定义必须有 0 个 error");
   const pool = staticToolPool();
   const diagnostics = toolPoolDiagnostics();
   const errors = diagnostics.filter((d) => d.level === "error");
+  const warnings = diagnostics.filter((d) => d.level === "warning");
   check(`静态工具数量与名字集合一致（${pool.length} 个）`, pool.length === STATIC_TOOL_NAMES.size);
   check("真实工具池 0 个 error", errors.length === 0, errors.map((d) => `${d.tool}: ${d.message}`).join(" | "));
+  // 漏设 additionalProperties:false 只报 warning；只拦 error 的话「23 个全设了」
+  // 没有门禁保障，新工具漏一个也不会红灯。warning 一并当门禁。
+  check("真实工具池 0 个 warning（含 additionalProperties:false 与卡片摘要登记）",
+    warnings.length === 0, warnings.map((d) => `${d.tool}: ${d.message}`).join(" | "));
   check("所有工具名唯一", new Set(pool.map((t) => t.name)).size === pool.length);
   check("所有工具名满足 OpenAI 64 字约束", pool.every((t) => TOOL_NAME_RE.test(t.name)));
   check("所有静态工具都登记了卡片摘要", [...STATIC_TOOL_NAMES].every((n) => CARD_SUMMARY_TOOLS.has(n)));
@@ -129,6 +140,11 @@ console.log("\n[4] 静态工具池自检：真实定义必须有 0 个 error");
     !Array.isArray((pool.find((t) => t.name === "search_memory")?.parameters as { required?: unknown }).required));
   check("schedule_reminder 补上了 required:text",
     JSON.stringify(pool.find((t) => t.name === "schedule_reminder")?.parameters).includes('"required":["text"]'));
+  const schemaText = (name: string): string => JSON.stringify(pool.find((t) => t.name === name)?.parameters ?? {});
+  check("描述承诺的上限真的进了 schema：emote_search.top_k 最多 6",
+    schemaText("emote_search").includes('"maximum":6') && schemaText("emote_search").includes('"minimum":1'));
+  check("描述承诺的上限真的进了 schema：web_search.limit 1~8",
+    schemaText("web_search").includes('"maximum":8') && schemaText("web_search").includes('"minimum":1'));
 }
 
 console.log("\n[5] 自检能抓到坏工具");

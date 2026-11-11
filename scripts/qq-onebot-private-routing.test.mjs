@@ -1,7 +1,7 @@
 /**
  * OneBot 私聊路由回归：机器人号（self_id / qqNumber）不能当作主人号（ownerQq）。
  *
- * 覆盖两条曾经坏掉的链路：
+ * 覆盖两条关键链路：
  *   1. 入站：self_id 找机器人，user_id 必须等于 ownerQq；机器人自己的回声必须丢弃。
  *   2. 出站：send_private_msg 的 user_id 必须是 ownerQq，而不是协议端登录号。
  */

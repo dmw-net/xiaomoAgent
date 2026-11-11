@@ -3,6 +3,7 @@
 //
 // 为什么单独一个脚本而不是塞进 smoke.ts：smoke 全程 echo 模式（不需要网络与密钥），
 // 而这里必须看见真发出去的请求体。用独立数据库（data/verify-context.db），不碰正式数据。
+// 已接进 npm run check（排在 tool-contract 之后）；新增用例请连跑几次确认没有抖动。
 
 process.env.DB_PATH = "./data/verify-context.db";
 // 图片目录隔开，理由同 smoke.ts：别把测试图混进真实数据目录。
@@ -180,7 +181,10 @@ updateContact(cid, { features: { recap: false } });
 check("开关关掉后整段不出现（不留空壳）", companionPromptExtras(getContact(cid)!).recap === "");
 
 console.log("\n[6] 整理触发：新增堆积可以不等满一周");
-updateContact(cid, { features: { consolidate: true, lastConsolidatedAt: Date.now() } });
+// 别用 Date.now() 当「上次整理时间」：newEventsSince 判的是 created_at > since，
+// 同一毫秒里插进来的前几条会被判成「不是新增」，22 条凑不够 20 条门槛，断言随机变红。
+// 退到一分钟前，既仍是「离一周差得远」，又让这 22 条全部稳稳算作新增。
+updateContact(cid, { features: { consolidate: true, lastConsolidatedAt: Date.now() - 60_000 } });
 for (let i = 0; i < 22; i += 1) addMemoryEvent({ kind: "fact", content: `堆积条目 ${i}`, contactId: cid });
 let consolidateSeen = false;
 responder = (req) => {
@@ -191,7 +195,12 @@ responder = (req) => {
   return json({ events: [], bond: null });
 };
 maybeRunConsolidation();
-await new Promise((r) => setTimeout(r, 400));
+// consolidateContact 是 fire-and-forget（void …catch），固定 sleep 400ms 在慢机器上不够，
+// 这条断言会随机变红，脚本也因此一直没敢进 npm run check。按条件轮询，最多等 5 秒；
+// 快机器上不必白等 400ms。
+for (let i = 0; i < 250 && !consolidateSeen; i += 1) {
+  await new Promise((r) => setTimeout(r, 20));
+}
 check("距上次整理才几小时，但堆积够 → 照样整理", consolidateSeen);
 check("失败退避不再伪造「上次整理时间」", (getContact(cid)!.features.lastConsolidatedAt ?? 0) <= Date.now());
 
@@ -294,7 +303,7 @@ await pLive;
 check("调用结束后登记清掉", chatLive().length === 0, JSON.stringify(chatLive()));
 responder = () => ({ body: "好呀" });
 
-console.log("\n[11] 编辑早先一句之后，刚重生成的那一轮就是「最新的有效轮」");
+console.log("\n[11] 编辑早先一句之后，下游轮次原样保留、任何一轮都还能重答");
 const waitTurn = async (id: string): Promise<void> => {
   for (let i = 0; i < 100; i += 1) {
     const status = getTurn(id)?.status;
@@ -311,9 +320,9 @@ await respondToTurn(getTurn(regenB)!, {});
 const regenAMsg = db.prepare("SELECT id FROM messages WHERE turn_id = ? AND role = 'user'").get(regenA) as { id: number };
 editAndRegenerate({ messageId: regenAMsg.id, text: "早先一句（改过）" });
 await waitTurn(regenA);
-check("编辑把后面那一轮整批作废", getTurn(regenB)!.superseded_at !== null);
-// 此前的口径按 rowid 取最新一轮、不看 superseded_at：作废的那轮 rowid 仍然最大，
-// 于是刚重生成的这轮被判成「不是最新」，再点重新生成就被拒（用户报的就是这个）。
+check("编辑后下游轮次原样保留", getTurn(regenB)!.superseded_at === null);
+// editAndRegenerate 是版本式：编辑点之后的对话原样保留，下游轮次不打 superseded_at。
+// 「最新有效轮」的口径也要锁住：regenB 有效且 rowid 更大，重答早先那轮不该被拒。
 let regenErr = "";
 try {
   await retryTurn(regenA, { regenerate: true });
@@ -322,15 +331,13 @@ try {
   regenErr = error instanceof Error ? error.message : String(error);
 }
 check("刚重生成的那一轮还能再重新生成", regenErr === "" && getTurn(regenA)!.status === "done", regenErr || getTurn(regenA)!.status);
-db.prepare(`UPDATE turns SET superseded_at = NULL WHERE id = ?`).run(regenB);
 let guardErr = "";
 try {
   await retryTurn(regenA, { regenerate: true });
 } catch (error) {
   guardErr = error instanceof Error ? error.message : String(error);
 }
-// 这一条原来断的是「只许重答最新一轮」，而 src/chat/agent.ts 已改成任何一轮都能重答
-// （区别只在写回原气泡还是分条重插），断言留着就是假红灯。
+// 现行口径：任何一轮都能重答（区别只在写回原气泡还是分条重插），所以这里不该被拒。
 check("后面还有有效轮次时也能重答（按现行口径：区别只在写回位置）", guardErr === "", guardErr);
 
 console.log("\n[12] 召回精度：整句都参与筛选，不再只看前半句");
@@ -426,8 +433,8 @@ check("空结果进入 emptyRate 统计，而不是失败计数",
   `samples=${emptyStats.extractSamples} emptyRate=${emptyStats.emptyRate}`);
 
 console.log("\n[16] 输出上限留空=不发 max_tokens；截断扩到 16k 起步；必填端点自动兜底");
-// 留空就是真的不填：请求体里连这个字段都没有，上限交给服务商按窗口决定。
-// 从前这里兜底 1024（非聊天 16k）——思考模型把额度烧光后正文一个字都写不出来，
+// 留空就是真的不填：请求体里连这个字段都没有，上限交给服务商按窗口决定——
+// 硬兜一个 1024（非聊天 16k）会把思考模型的额度烧光后正文截没，
 // 而那个数又把扩容夹了回去（next 永远 ≤ cap），错误文案却写着「已自动加大重试过」。
 updateModel({ maxOutputTokens: 0 });
 responder = () => json({ should: false, reason: "不必主动", focus: "", nextCheckHours: 6 });
@@ -514,6 +521,61 @@ check("给它填上 128K → 分母跟着变（不用去动全局那一档）",
   filledUsage.limit === 131072 && filledUsage.limitIsFallback === false && filledUsage.profile?.id === boundProfile.id,
   `${filledUsage.limit} fallback=${filledUsage.limitIsFallback}`);
 updateContact(cid, { modelProfile: "" });
+
+console.log("\n[19] 出网序列化：空正文的 assistant.tool_calls 不带 content:\"\"");
+{
+  const { callModel } = await import("../src/settings/model.ts");
+  responder = () => ({ body: "好呀" });
+  const toolCall = { id: "wire-call-1", type: "function" as const, function: { name: "get_current_time", arguments: "{}" } };
+  await callModel([
+    { role: "system", content: "系统提示" },
+    { role: "user", content: "查一下时间" },
+    { role: "assistant", content: "", tool_calls: [toolCall] },
+    { role: "tool", tool_call_id: toolCall.id, content: "{\"text\":\"现在十点\"}" },
+  ], { purpose: "chat" });
+  const wire = (lastBody.messages ?? []) as Array<Record<string, unknown>>;
+  const blank = wire.find((m) => m.role === "assistant" && m.tool_calls !== undefined);
+  check("空正文的 assistant.tool_calls 出网时省掉 content（严格网关不 400）",
+    blank !== undefined && !("content" in blank), JSON.stringify(blank));
+  await callModel([
+    { role: "user", content: "再说一句" },
+    { role: "assistant", content: "我先查一下", tool_calls: [toolCall] },
+    { role: "tool", tool_call_id: toolCall.id, content: "{}" },
+  ], { purpose: "chat" });
+  const wire2 = (lastBody.messages ?? []) as Array<Record<string, unknown>>;
+  const withText = wire2.find((m) => m.role === "assistant" && m.tool_calls !== undefined);
+  check("有正文的 assistant 消息照旧保留 content", withText?.content === "我先查一下", JSON.stringify(withText));
+}
+
+console.log("\n[20] agent loop 多轮工具循环：轮数耗尽收口时保住已拿到的工具结果");
+{
+  const { setGlobalToolLoopTurns } = await import("../src/settings/settings.ts");
+  setGlobalToolLoopTurns(2);
+  // 用正文形式的调用（Hermes/Qwen 模板）驱动工具循环：这是项目里真实的兼容路径，
+  // 不必给 mock 层加 tool_calls 协议字段，也不依赖端点是否声明支持 tools。
+  const toolCallBody = '<tool_call>{"name":"get_current_time","arguments":{}}</tool_call>';
+  let chatCalls = 0;
+  responder = (req) => {
+    const first = String(req.messages[0]?.content ?? "");
+    if (SIDE_CHANNEL.test(first)) return json({ events: [], bond: null });
+    chatCalls += 1;
+    // 前两次只给工具调用，逼出多轮循环；第 3 次（收口）才给正文。
+    return chatCalls <= 2 ? { body: toolCallBody } : { body: "查完了，现在十点。" };
+  };
+  const countToolCards = (): number => (db.prepare(
+    `SELECT COUNT(*) AS c FROM messages WHERE contact_id = ? AND kind = 'tool'`,
+  ).get(cid) as { c: number }).c;
+  const cardsBefore = countToolCards();
+  const reply = await runTurn("帮我查一下现在几点");
+  check("轮数耗尽仍拿到最终回复", reply.includes("十点"), reply);
+  check("两轮工具调用各落一张工具卡", countToolCards() - cardsBefore === 2,
+    `新增 ${countToolCards() - cardsBefore} 张`);
+  const closing = lastChat();
+  check("收口时保留全部工具往返，不让模型假装没查过",
+    closing.messages.some((m) => m.role === "tool")
+    && JSON.stringify(closing.messages).includes("轮次已经用完"),
+    `消息 ${closing.messages.length} 条 / 角色 ${closing.messages.map((m) => m.role).join(",")}`);
+}
 
 console.log(`\n${failures === 0 ? "全部通过 ✅" : `${failures} 项失败 ❌`}`);
 process.exit(failures === 0 ? 0 : 1);

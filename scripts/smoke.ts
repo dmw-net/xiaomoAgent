@@ -22,7 +22,7 @@ process.env.QUIET_HOURS = "0-0";
 process.env.TRUSTED_HOSTS = " Xiaomo.Example.Test , xm.2025521.xyz ";
 
 // 每次从干净库开始：跨运行残留会让「找第一条匹配消息」类断言
-// 命中上一轮留下的旧行（实测被历史数据坑过）。必须在 import db 之前删。
+// 命中上一轮留下的旧行。必须在 import db 之前删。
 import { readFileSync, readdirSync, rmSync } from "node:fs";
 import { request as httpRequest } from "node:http";
 for (const f of ["./data/smoke.db", "./data/smoke.db-wal", "./data/smoke.db-shm"]) rmSync(f, { force: true });
@@ -451,7 +451,7 @@ try {
   check("今天不会重复打扰（已发送留痕最多 1 条）", spokenRows.length <= 1, `count=${spokenRows.length}`);
 
   // 跨进程双发闸门：另一个进程握着未过期的租约时，手动检查必须被挡掉。
-  // 从前这条不看租约，于是桌面端 + 终端里一句 proactive:once（或两个窗口各点一次）
+  // 这条门不看租约的话，桌面端 + 终端里一句 proactive:once（或两个窗口各点一次）
   // 会都通过 spokenCountToday()===0 的门，同一句话投递两遍、日配额翻倍。
   {
     const { db: smokeDb } = await import("../src/core/db.ts");
@@ -625,8 +625,8 @@ try {
   const ping = await (await fetch(`${BASE}/api/model/ping`, { method: "POST" })).json();
   check("/api/model/ping 在 echo 模式下不报错", ping.ok === true, `modelReady=${ping.modelReady}`);
 
-  // want 把"测连通"和"拉模型列表"拆开：不暴露 /models 的服务商（火山 plan 实测 404）
-  // 从前要白等满列表超时才出测试结果，而且列表失败会被当成测试失败。
+  // want 把"测连通"和"拉模型列表"拆开：不暴露 /models 的服务商也能测连通，不必先拉到列表。
+  // 列表失败不该被当成测试失败，连通结果也不能白等列表超时才出。
   const shape = async (payload: Record<string, unknown>) => (await (await fetch(`${BASE}/api/model/ping`, {
     method: "POST", headers: { "content-type": "application/json" },
     body: JSON.stringify({ baseUrl: "http://127.0.0.1:9/v1", apiKey: "sk-smoke-shape", ...payload }),
@@ -644,8 +644,8 @@ try {
   check("/healthz 暴露模型失败计数", typeof health2.modelFailures === "number", `modelFailures=${health2.modelFailures}`);
 
   // 局域网模式的本机守卫：这道门是 HOST=0.0.0.0 下唯一挡 DNS rebinding 的东西。
-  // 从前只要求 Origin 与 Host 同主机，而两者都由攻击者的 Host/Origin 提供——
-  // attacker.com 解析到受害者局域网 IP 时按构造必然相等，于是远程网页拿到全部写权限。
+  // 只比「Origin 与 Host 同主机」挡不住 DNS rebinding：两者都由攻击者的 Host/Origin 提供，
+  // attacker.com 解析到受害者局域网 IP 时按构造必然相等，远程网页就拿到全部写权限。
   check("本机地址认得自己（127.0.0.1 / localhost）",
     isLocalMachineHost("127.0.0.1") && isLocalMachineHost("localhost"), "");
   {
@@ -948,8 +948,8 @@ try {
   ).json();
   check("非法表情频率被拒", emoteFreqBad.ok === false && String(emoteFreqBad.error).includes("表情使用频率"), emoteFreqBad.error);
 
-  // 表情是全局唯一开关：档位开着，所有联系人的预览都该出现表情段（从前这里要先给联系人开 emotes，
-  // 结果真库出现过「全局调到主动、13 个联系人只有 1 个能用」的两档断链）。
+  // 表情是全局唯一开关：档位开着，所有联系人的预览都该出现表情段——
+  // 不存在「全局档 + 联系人开关」两档断链，工具声明与提示词段必须同源。
   const emoteHintContact = await (
     await fetch(`${BASE}/api/contacts`, {
       method: "POST", headers: { "content-type": "application/json" },
@@ -1267,7 +1267,7 @@ try {
   check("新消息是有效的", firstUser.superseded_at === null, `id=${firstUser.id}`);
 
   // 跨联系人收口的前置：在另一个联系人里发一句（它的 id 比 firstUser 大），
-  // 编辑 default 时这句绝不能被折叠——历史上这里没按 contact_id 收口，一次编辑会折掉全站后续消息。
+  // 编辑 default 时这句绝不能被折叠——折叠按 contact_id 收口，一次编辑不许折掉其他联系人的消息。
   const foldB = await (await fetch(`${BASE}/api/contacts`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "折叠隔离", identity: "临时" }) })).json();
   const foldBid = (foldB.contact?. id ?? foldB.id) as string;
   const foldSay = await (await fetch(`${BASE}/api/say`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "折叠隔离说一句", contactId: foldBid }) })).json();
@@ -1296,8 +1296,8 @@ try {
   check("这条的文本已经改写", afterEdit !== undefined && afterEdit.text.includes("周末不去了"));
   check("这条自己仍然有效", afterEdit !== undefined && afterEdit.superseded_at === null);
 
-  // 版本式重答（7b08e38）：编辑不再作废后续，旧回复进 turns.variants 可切回。
-  // 老语义这里会整批 superseded，所以「后续还在不在」是这次改动的核心分水岭。
+  // 版本式重答：编辑不作废后续，旧回复进 turns.variants 可切回。
+  // 「后续还在不在」是这条口径的核心分水岭：后续消息一条都不该被打上 superseded。
   const laterRows = board.messages.filter((m) => m.id > firstUser.id);
   check(
     "后续消息全部保留、不作废",
@@ -1334,7 +1334,6 @@ try {
   );
 
   // ── 编辑带图消息：删图/换图要同时落到消息和处理单，删掉的图要回收 ──
-  // 此前编辑框只有文字：带图消息一进编辑态图就"消失"，用户删不掉也换不了。
   const editPng = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
   const imgA = ((await (await fetch(`${BASE}/api/media`, { method: "POST", headers: { "content-type": "image/png" }, body: editPng })).json()).url) as string;
   const imgB = ((await (await fetch(`${BASE}/api/media`, { method: "POST", headers: { "content-type": "image/png" }, body: editPng })).json()).url) as string;
@@ -1417,8 +1416,8 @@ try {
   });
   check("非法的消息 id 被挡", badIdRes.status === 400);
 
-  // 已失效的消息不能再改。现在唯一还会打 superseded 标记的入口是撤回
-  // （7b08e38 后编辑不再作废后续），所以先撤回一条再试着改它。
+  // 已失效的消息不能再改。当前唯一还会打 superseded 标记的入口是撤回，
+  // 所以先撤回一条再试着改它。
   const staleTarget = board.messages.find((m) => m.role === "user" && m.text.includes("编辑测试乙"));
   if (staleTarget) {
     const retractRes = await fetch(`${BASE}/api/message/${staleTarget.id}/retract`, { method: "POST" });
@@ -1431,14 +1430,14 @@ try {
     check("已失效的不能再改", staleRes.status === 400);
   }
 
-  // 被编辑的那一轮必须**仍在**处理单里：它是当前有效的一轮。
-  // （这里踩过坑：supersedeAfter 一开始没排除它自己，导致那一轮既失效又在跑，状态页直接看不到它。）
+  // 被编辑的那一轮必须**仍在**处理单里：它是当前有效的一轮，
+  // supersedeAfter 不能把它自己排除掉，否则状态页直接看不到它。
   const recent = await (await fetch(`${BASE}/api/turns/recent?limit=50`)).json();
   const recentIds = (recent.turns ?? []).map((t: { id: string }) => t.id);
   check("被编辑的那一轮仍在处理单里", recentIds.includes(edit.turnId), `共 ${recentIds.length} 条`);
 
-  // 历史遗留的消息（没有 turn_id，例如导入的或早期版本写下的）也必须能编辑，
-  // 而且**不能多插一条重复的**——这是实测踩到的坑。
+  // 孤儿消息（没有 turn_id，例如导入的）也必须能编辑，
+  // 而且**不能多插一条重复的**。
   const orphanId = Number(
     db
       .prepare(
@@ -1538,8 +1537,8 @@ try {
   check("撤回不存在的消息被挡", retractMissing.status === 404);
 
   // ── 跨联系人越权：四道写入口都必须先比户主 ─────────────────────
-  // 消息 id 是自增整数，从前这四条只认 id 不认 contact_id，
-  // 于是看着 A 的界面就能改/撤/删 B 的消息（DELETE 还真删行并回收图片）。
+  // 消息 id 是自增整数，这四条只认 id 不认 contact_id 的话，
+  // 看着 A 的界面就能改/撤/删 B 的消息（DELETE 还真删行并回收图片）。
   {
     const post = (path: string, body: unknown): Promise<Response> =>
       fetch(`${BASE}${path}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
@@ -1547,7 +1546,7 @@ try {
       (await (await post("/api/contacts", { name })).json()).contact.id as string;
 
     // 新建不拿出厂人设补齐：只填一段，另两段必须是空串——
-    // 从前空段会悄悄继承小茉的出厂设定，用户以为没写的东西也在发给模型。
+    // 空段一旦悄悄继承出厂设定，用户以为没写的东西也会发给模型。
     {
       const made = await (await post("/api/contacts", { name: "补齐测试", identity: "只写了人设" })).json();
       const card = made.contact.card as Record<string, string>;
@@ -1739,7 +1738,7 @@ try {
   const cancelAgain = await fetch(`${BASE}/api/proactive/tasks/${cancelTarget.id}/cancel`, { method: "POST" });
   check("重复取消被挡（404）", cancelAgain.status === 404);
 
-  // ── 用户自己立一条计划（从前只能看她立的，界面连入口都没有）──
+  // ── 用户自己立一条计划（界面要有入口，能立也能取消）──
   const taskPost = (body: Record<string, unknown>): Promise<Response> =>
     fetch(`${BASE}/api/proactive/tasks`, {
       method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
@@ -1847,8 +1846,8 @@ try {
   check("工具声明符合 OpenAI tools 协议", declared.every(
     (d) => d.type === "function" && typeof d.function.name === "string" && typeof d.function.parameters === "object",
   ));
-  // 从前只断言「三个字段存在」，写坏名字 / 撞名 / schema 缺 type 都能绿灯通过。
-  // 现在与启动自检同一套 validator：静态池 0 error，且每个声明名真的合法。
+  // 断言与启动自检同一套 validator：写坏名字 / 撞名 / schema 缺 type 都过不了——
+  // 静态池 0 error，且每个声明名真的合法。
   const poolErrors = toolPoolDiagnostics().filter((d) => d.level === "error");
   check("工具池自检 0 error（名称唯一 / 合法 / schema 合规 / 卡片已登记）", poolErrors.length === 0,
     poolErrors.map((d) => `${d.tool}: ${d.message}`).join(" | "));
@@ -1859,7 +1858,7 @@ try {
   // 工具台账端点：目录、四档、全局开关的写入与恢复（写完必须还原，别污染后面的用例）。
   const ledger0 = await (await fetch(`${BASE}/api/tools`)).json() as Record<string, any>;
   check("台账端点下发目录与逐项状态", ledger0.ok === true && Array.isArray(ledger0.tools)
-    && ledger0.tools.length >= 21 && typeof ledger0.status === "object");
+    && ledger0.tools.length >= 23 && typeof ledger0.status === "object");
   check("台账端点下发三档、总闸与联系人档位", Array.isArray(ledger0.presets) && ledger0.presets.length === 3
     && typeof ledger0.toolsEnabled === "boolean" && Array.isArray(ledger0.contacts));
   const presetBefore = ledger0.globalPreset as string;
@@ -2241,14 +2240,38 @@ try {
   const c3 = gateCtx("gate-cand-" + Date.now());
   toolsMod.recordEmoteTurn(c3, { sent: false, candidates: [], note: "" });
   check("只回候选不算发送也不算失败，模型还能带 id 再挑", toolsMod.emoteGate(c3) === null);
+  // 并行批里的 check-then-act：额度必须在第一个 await 之前同步预占，否则一轮 4 个
+  // send_emote 会同时通过 sent>=3 的检查、实际发出 4 张。这里按真实调度顺序重放
+  // 四个调用的同步段，第 4 个必须被 gate 拦下。
+  const cRace = gateCtx("gate-race-" + Date.now());
+  let blockedAt = -1;
+  for (let i = 0; i < 4; i += 1) {
+    if (toolsMod.emoteGate(cRace) !== null) { blockedAt = i; break; }
+    toolsMod.reserveEmoteTurn(cRace);
+  }
+  check("并行批第 4 张 send_emote 被同步预占拦下（不再一轮发 4 张）", blockedAt === 3, `blockedAt=${blockedAt}`);
+  // 应用端 face/mface 降级只让模型改用 emoji 回话，一个图都没发，曾被记成「发出一张」：
+  // 3 次降级就白白耗尽整轮额度。
+  const cFallback = gateCtx("gate-fallback-" + Date.now());
+  toolsMod.recordEmoteTurn(cFallback, { via: "app-emoji-fallback", native: false, note: "用 emoji 代替" });
+  check("app-emoji-fallback 不占表情额度（一个图都没发）", toolsMod.emoteGate(cFallback) === null);
+  const cRollback = gateCtx("gate-rollback-" + Date.now());
+  toolsMod.reserveEmoteTurn(cRollback);
+  toolsMod.recordEmoteTurn(cRollback, { via: "app-emoji-fallback", native: false, note: "" }, true);
+  check("预占后遇 emoji 降级会回滚额度", toolsMod.emoteGate(cRollback) === null);
   const { readFileSync: readSrc } = await import("node:fs");
+  const emoteSrcText = readSrc("src/mind/tools.ts", "utf8");
+  const reserveAt = emoteSrcText.indexOf("reserveEmoteTurn(context);");
+  const firstAwaitAt = emoteSrcText.indexOf("await runToolWithBudget");
+  check("预占留在第一个 await 之前（挪到后面就重新引入竞态）",
+    reserveAt > 0 && firstAwaitAt > reserveAt, `reserveAt=${reserveAt} firstAwaitAt=${firstAwaitAt}`);
   check("提示词与工具描述都写明一轮最多 3 张",
     readSrc("src/mind/persona.ts", "utf8").includes("一轮最多 3 张")
     && readSrc("src/mind/tools.ts", "utf8").includes("最多 3 张"));
   check("展示侧上限同步提到 3 张", readSrc("src/chat/agent.ts", "utf8").includes("MAX_REPLY_IMAGES = 3"));
 
-  // [2e] 展示侧三条附件队列：2026-11-05「一轮发了 3 张表情、气泡却只挂 1 张」的回归。
-  // 当时应用端表情混进 producedFiles，被出图的「一轮一张」slice(0,1) 砍掉后两张。
+  // [2e] 展示侧三条附件队列：应用端表情、渠道已发、出图分列互不混算——
+  // 应用端表情混进 producedFiles 就会被出图的「一轮一张」slice(0,1) 砍掉。
   const threeApp = agentMod.replyAttachmentBuckets({
     producedFiles: [], appEmoteFiles: ["/media/a.png", "/media/b.png", "/media/c.png"], channelDeliveredFiles: [],
   });
@@ -2271,12 +2294,12 @@ try {
     agentSrc.includes("onAppEmoteFiles?.(result.attachments")
     && agentSrc.includes("replyAttachmentBuckets({"));
 
-  // 图片回收：此前 releaseMediaFiles 的 SQL 非法（LIMIT 写在 UNION ALL 之前），每次调用都抛错，
-  // 而 deleteMessage 没兜异常——「删掉一条带图消息」会在事务提交后报 500，图片永久泄漏在磁盘上。
+  // 图片回收：「删掉一条带图消息」后没人引用的图必须从磁盘消失——
+  // releaseMediaFiles 抛错或 deleteMessage 不兜异常，都会把图片永久泄漏在磁盘上。
   const orphanUrl = ((await (await fetch(`${BASE}/api/media`, { method: "POST", headers: { "content-type": "image/png" }, body: png })).json()).url) as string;
   releaseMediaFiles([orphanUrl, up.url]);
   const onDisk = mediaFileOnDisk;
-  check("没人引用的图片被回收（此前这里的 SQL 每次都抛错）", !onDisk(orphanUrl), orphanUrl);
+  check("没人引用的图片被回收", !onDisk(orphanUrl), orphanUrl);
   check("仍被消息引用的图片不删", onDisk(up.url));
 
   // 全量对账：落盘只由「删消息 / 编辑换图 / 删联系人」触发，传了图没发出去的那些
@@ -2399,7 +2422,7 @@ try {
 
   {
     // 思考参数到底往请求体里塞了什么。三种形态各一条，外加"关"必须真发得出去——
-    // 从前模板系硬编码 enable_thinking:true，而火山系连形态都没有，默认开思考的模型关不掉。
+    // 模板系不许硬编码 enable_thinking:true，火山系要给得出形态，默认开思考的模型必须关得掉。
     const { applyThinkingParams } = await import("../src/settings/model.ts");
     const { modelConfig: cfgNow, sanitizeThinkingParam, sanitizeThinkingMode } = await import("../src/settings/settings.ts");
     const base = cfgNow();
@@ -2465,7 +2488,7 @@ try {
     const beforeReset = modelFailureCount();
     const rowsBefore = countModelCalls();
     check("故意记一条失败后，失败读数涨上去", beforeReset >= 1, String(beforeReset));
-    // 日志与重置落在同一毫秒时，那条失败会因 `created_at >= 水印` 被算回来（实测翻车）。
+    // 日志与重置落在同一毫秒时，那条失败会因 `created_at >= 水印` 被算回来——毫秒水印必须避开。
     // 睡 2ms 把两者错开，断言才是确定性的——生产里用户点按钮不会和日志同毫秒。
     await new Promise((resolve) => setTimeout(resolve, 2));
     const reset = await (await fetch(`${BASE}/api/status/reset-counters`, { method: "POST" })).json();
@@ -2567,6 +2590,18 @@ try {
   const statusR = await executeTool("app_status", "{}", A);
   const statusJson = JSON.stringify(statusR);
   check("app_status 可执行且不含密钥", statusR.ok === true && !statusJson.includes("sk-") && !statusJson.includes("apiKey"));
+  // 防御层：不经工具进来的占位（早期写入的存量 / 用户在资料页手改）也要被判「未填」——
+  // 否则助手照样看着 cardFilled:true 报「配置完成」。
+  const phMade = await (await jsonPost("/api/contacts", { name: "占位防御对照", identity: "待用户定义（可在编辑资料中细化）" })).json();
+  const phCid = (phMade.contact?.id ?? phMade.id) as string;
+  const statusPhR = await executeTool("app_status", "{}", A);
+  const phRow = (statusPhR.result as { contacts?: Array<{ id: string; cardFilled?: Record<string, boolean>; hasAvatar?: boolean }> })
+    .contacts?.find((c) => c.id === phCid);
+  check("快照判据认得出不经工具进来的占位（不再被 !== \"\" 的假象骗过）",
+    phRow?.cardFilled?.identity === false && phRow?.cardFilled?.relationship === false && phRow?.hasAvatar === false,
+    JSON.stringify(phRow ?? {}));
+  await fetch(`${BASE}/api/contacts/${encodeURIComponent(phCid)}/archive`, { method: "POST" });
+  await fetch(`${BASE}/api/contacts/${encodeURIComponent(phCid)}`, { method: "DELETE" });
   const confR = await executeTool("configure_model", JSON.stringify({
     label: "助手配的", baseUrl: "https://api.assistant.test/v1", apiKey: "sk-assistant-probe-123", model: "assist-model", vision: true,
   }), A);
@@ -2574,14 +2609,70 @@ try {
   const { activeProfileId: aidNow, listProfiles: profsNow } = await import("../src/settings/settings.ts");
   const assistProf = profsNow().find((p) => p.label === "助手配的");
   check("生效配置指向助手建的档且带视觉声明", aidNow() === assistProf?.id && assistProf?.caps.vision === true);
-  const ccR = await executeTool("create_contact", JSON.stringify({ name: "助手建的", identity: "测试占位" }), A);
-  check("create_contact 创建成功", ccR.ok === true && (ccR.result as { contactId?: string }).contactId !== undefined);
-  const newCid = (ccR.result as { contactId: string }).contactId;
+  // 占位判据（isCardFieldComplete）的单元断言：判据分三档——整值占位、高置信特征
+  // 任意长度生效；指令式特征只看短文本。改判据时这两头（占位被拒 / 合法短值放行）
+  // 必须同时成立，只锁一头的话收紧判据就会把「同事」这类合法短值一起拒掉。
+  const { isCardFieldComplete, buildAssistantSystemPrompt } = await import("../src/mind/assistant.ts");
+  check("占位判据：元指令/整值占位是 false，合法短值是真的",
+    isCardFieldComplete("待用户定义（可在编辑资料中细化）") === false
+    && isCardFieldComplete("测试占位") === false
+    && isCardFieldComplete("用户自定义联系人") === false
+    && isCardFieldComplete("无") === false && isCardFieldComplete("") === false
+    && isCardFieldComplete("同事") === true && isCardFieldComplete("朋友") === true
+    && isCardFieldComplete("青梅竹马，一起长大") === true);
+  const capText = "请联系用户到编辑资料里补充细化设定，";
+  check("指令式特征只看到 120 字为止（长文本交给语境，避免误伤真实设定）",
+    isCardFieldComplete(capText.repeat(6)) === false && isCardFieldComplete(capText.repeat(7)) === true);
+  const promptText = buildAssistantSystemPrompt();
+  check("系统提示词写死「都配置好」清单（完成定义不再靠模型猜）",
+    promptText.includes("都配置好")
+    && promptText.includes("不要写占位或操作说明")
+    && promptText.includes("只有用户点名了模型档才 bind_contact_model")
+    && promptText.includes("cardFilled 三段全为 true"));
+  const gateR = await executeTool("create_contact", JSON.stringify({
+    name: "占位对照", identity: "待用户定义（可在编辑资料中细化）",
+  }), A);
+  check("create_contact 拒绝占位正文（元指令进不了角色卡）",
+    gateR.ok === false && String((gateR.result as { error?: string }).error ?? gateR.error ?? "").includes("占位"),
+    String((gateR.result as { error?: string }).error ?? "").slice(0, 40));
+  const longPh = "（说明：具体设定留给用户之后在编辑资料里补充和细化，这里先写一句基础框架，用户可以后续在资料页继续完善填写修改相关内容，先这样放着不用管。）";
+  const gateLongR = await executeTool("create_contact", JSON.stringify({ name: "长占位对照", identity: longPh }), A);
+  check("超长占位段落同样被拒（指令式特征不只看 ≤48 字）", gateLongR.ok === false,
+    String((gateLongR.result as { error?: string }).error ?? "").slice(0, 40));
+  const ccR = await executeTool("create_contact", JSON.stringify({
+    name: "助手建的", identity: "说话简短的助手型联系人，喜欢列清单把事情讲清楚。",
+  }), A);
+  const ccBody = ccR.result as { contactId?: string; card?: Record<string, string>; cardFilled?: Record<string, boolean> };
+  check("create_contact 创建成功", ccR.ok === true && ccBody.contactId !== undefined);
+  const newCid = ccBody.contactId as string;
+  check("回执带实际写入的正文与完成状态（模型照着 cardFilled 补，不用猜库里的样子）",
+    ccBody.card?.identity === "说话简短的助手型联系人，喜欢列清单把事情讲清楚。"
+    && ccBody.cardFilled?.identity === true && ccBody.cardFilled?.relationship === false);
+  const bindSameR = await executeTool("bind_contact_model", JSON.stringify({ contact: "助手建的", model: "助手配的" }), A);
+  check("绑当前全局档不写入（「跟随全局」不能被悄悄改成「钉住」）",
+    bindSameR.ok === true && (bindSameR.result as { changed?: boolean }).changed === false
+    && contactModelProfile(newCid) === "");
+  const conf2R = await executeTool("configure_model", JSON.stringify({
+    label: "助手备用档", baseUrl: "https://api.assistant.test/v2", apiKey: "sk-assistant-probe-456", model: "assist-model-2",
+  }), A);
+  check("第二档建档并启用（给非全局绑定当靶子）", conf2R.ok === true
+    && (conf2R.result as { activated?: boolean }).activated === true);
   const bindR = await executeTool("bind_contact_model", JSON.stringify({ contact: "助手建的", model: "助手配的" }), A);
-  check("bind_contact_model 绑定成功", bindR.ok === true);
+  check("绑定到非全局档成功且真的写入", bindR.ok === true
+    && (bindR.result as { changed?: boolean }).changed === true);
   check("绑定落到联系人记录", contactModelProfile(newCid) === assistProf?.id);
+  const unbindR = await executeTool("bind_contact_model", JSON.stringify({ contact: "助手建的", model: "" }), A);
+  check("空串解绑回到跟随全局", unbindR.ok === true
+    && (unbindR.result as { followsGlobal?: boolean }).followsGlobal === true
+    && contactModelProfile(newCid) === "");
   const updR = await executeTool("update_contact", JSON.stringify({ contact: "助手建的", relationship: "同事" }), A);
-  check("update_contact 只改传入字段", updR.ok === true);
+  const updBody = updR.result as { card?: Record<string, string>; cardFilled?: Record<string, boolean> };
+  check("update_contact 收下合法短关系值（2 字不算占位）且回执带完成状态",
+    updR.ok === true && updBody.card?.relationship === "同事" && updBody.cardFilled?.relationship === true);
+  check("update_contact 只改传入字段（identity 原样保留）",
+    updBody.card?.identity === "说话简短的助手型联系人，喜欢列清单把事情讲清楚。");
+  const backR = await executeTool("activate_model", JSON.stringify({ model: "助手配的" }), A);
+  check("全局档切回「助手配的」（后续用例沿用原状态）", backR.ok === true && aidNow() === assistProf?.id);
   const badTarget = await executeTool("activate_model", JSON.stringify({ model: "不存在的档" }), A);
   // 工具契约统一后，业务软失败也归一化成外层 ok:false；result 仍是完整载荷（模型看它）。
   check("找不到目标时返回候选而不是乱选", badTarget.ok === false && (badTarget.result as { ok?: boolean }).ok === false);
@@ -2984,7 +3075,7 @@ try {
     check("提醒执行留痕", remTask.status === "done" && remTask.result.includes("到点提醒"));
 
     // 目标会话：一条主动消息只说给一个地方听。
-    // 从前是「一次生成、到处群发」，群记忆还会漏进主动召回——这里把目标选择与召回收窄一起钉住。
+    // 目标选择按最近动静收窄到单个会话，群记忆也不许漏进其他会话的主动召回。
     {
       const { ensureConversation, setConversationEnabled, setConversationGroupProactive, localConversationId } =
         await import("../src/chat/conversations.ts");
@@ -3051,12 +3142,12 @@ try {
     const s0 = await settings();
     check("设置快照包含记忆抽取能力档", s0.capabilities?.memoryExtract !== undefined);
     // 这张卡没单独启用时就是「跟随主力」，就绪与否必须和主力一致。
-    // 老行为在这里无条件报就绪，于是 echo 模式下状态页写着「已就绪」、实际只会拿到假回复。
+    // 无条件报就绪的话，echo 模式下状态页写着「已就绪」、实际只会拿到假回复。
     check("跟随主力时记忆提取就绪与主力一致",
       s0.capabilitiesReady?.memoryExtract === s0.modelReady,
       `卡=${s0.capabilitiesReady?.memoryExtract} 主力=${s0.modelReady}`);
     // 顺序是界面秩序的唯一来源：后端这张表动了，前端 CAPABILITY_GROUPS 与状态页总览必须同序，
-    // 否则同一个能力在两个页面上位置不一样（图像生成就曾经孤零零挂在末尾）。
+    // 否则同一个能力在两个页面上位置不一样。
     check("能力顺序：记忆提取 → 向量化记忆 → 图片理解 → 图像生成 → 语音识别 → 语音合成",
       Object.keys(s0.capabilities).join(",")
       === "memoryExtract,embedding,imageVision,imageGeneration,speechToText,textToSpeech",
@@ -3181,8 +3272,8 @@ try {
       await jsonPost("/api/settings", { model: modelBefore });
     }
 
-    // 「超时」那一格留空 = 不覆盖、回落默认。从前清空它必 400：Number("") 正好是 0，
-    // 而校验只认 1000~600000，于是这一项一旦填过就再也清不掉（界面上看着像坏了）。
+    // 「超时」那一格留空 = 不覆盖、回落默认；0 也按「清空」处理落回默认——
+    // 若按 1000~600000 把 0 一并拒掉，这一项一旦填过就再也清不掉（界面上看着像坏了）。
     {
       const setT = await capJson({
         capability: "imageVision", op: "save", label: "超时档",
@@ -3196,7 +3287,7 @@ try {
         capability: "imageVision", op: "save", id: tId,
         label: "超时档", baseUrl: "https://t.test/v1", apiKey: "k-t", name: "t-vl", timeoutMs: 0,
       });
-      check("超时填 0 落回默认 90 秒，而不是像从前那样必 400",
+      check("超时填 0 落回默认 90 秒，而不是必 400",
         cleared.ok === true
         && (cleared.capabilities?.imageVision?.effective as Record<string, number>)?.timeoutMs === 90000,
         JSON.stringify(cleared.capabilities?.imageVision?.effective ?? cleared.error));
@@ -3208,7 +3299,7 @@ try {
       await capJson({ capability: "imageVision", op: "delete", id: tId });
     }
 
-    // 能力通道必须继承档上的 token 上限：从前 callSettings 给能力硬写 maxOutputTokens=0，
+    // 能力通道必须继承档上的 token 上限：callSettings 若给能力硬写 maxOutputTokens=0，
     // resolveMaxTokens 就兜底成 1024 —— 于是**那一轮只要带了图，她的回复被截到 1024 token**，
     // 用户在模型档上设的输出上限对带图对话完全失效，而界面上看不出任何区别。
     const { updateModel, modelConfig } = await import("../src/settings/settings.ts");
@@ -3454,7 +3545,7 @@ try {
       check("主动性判断指令：开了才要她想配图与画面描述", withImg.includes("with_image") && withImg.includes("image_prompt"));
 
       // 只有重答**较早**的一轮才走 collapse（最新一轮是删掉重插，见 respondToTurn 的 collapseIntoId）。
-      // 那条路径的语义我这轮改了：原来固定把 attachments 写成 NULL，现在按本轮有没有新图来写。
+      // collapse 写回时 attachments 按本轮有没有新图来写，不是一律清成 NULL。
       // 种一张图进较早那轮的气泡再重答它（echo 画不出图），附件应被清掉而位置保持不变——
       // 话换成新的、图还是上一版的，是最难被发现的那种错。
       const sayOld = await (await jsonPost("/api/say", { text: "先给我画一张", contactId: cid })).json();
@@ -3501,7 +3592,7 @@ try {
       });
       check("把别人的画设成自己的长相被拒（403）", cross.status === 403, String(cross.status));
       // 同一道户主校验必须对**每一个** op 生效，不只 setFaceRef：
-      // star/delete 从前不过户主，看着 A 的界面就能删掉 B 的画（还连文件一起释放）。
+      // star/delete 不过户主的话，看着 A 的界面就能删掉 B 的画（还连文件一起释放）。
       for (const op of ["star", "delete"] as const) {
         const hijack = await fetch(`${BASE}/api/artifacts`, {
           method: "POST", headers: { "content-type": "application/json" },
@@ -4124,7 +4215,7 @@ try {
         gm2Meta.length === 1 && gm2Meta[0]?.kind === "image" && gm2Meta[0]?.mime === "image/png",
         JSON.stringify(gm2Meta));
 
-      // 纯图消息（正文为空）以前会被当成空消息丢掉。
+      // 纯图消息（正文为空）是合法消息，不许被当成空消息丢掉。
       sock.emit({ op: 0, t: "GROUP_AT_MESSAGE_CREATE", s: 13, d: {
         id: "gm3", group_openid: "GROUP-A", group_name: "测试群 A",
         author: { member_openid: "M-2", member_name: "李四" }, content: "",
@@ -4237,8 +4328,8 @@ try {
         ).get(groupA?.id ?? "") as { c: number }).c) === historyBeforeLeave,
         JSON.stringify(rejoinedA));
 
-      // 清除历史的口径（2026-10 改）：在收的群同样允许清历史（清完继续收），
-      // 防手滑由界面二次确认负责——不再按 left_at 拦（见 conversations.ts clearQQGroupHistory）。
+      // 清除历史的口径：在收的群同样允许清历史（清完继续收），
+      // 防手滑由界面二次确认负责（见 conversations.ts clearQQGroupHistory）。
       const activeClear = await fetch(
         `${BASE}/api/conversations/${encodeURIComponent(groupA?.id ?? "")}/history?contactId=${encodeURIComponent(qqCid)}`,
         { method: "DELETE" },
@@ -4469,7 +4560,7 @@ try {
 
     // 这条是这次加固的核心回归：隧道虽然从本机发起，但它不是本机用户在操作。
     const noCode = await viaTunnel("/api/settings", "smoke-tunnel.example.com");
-    check("隧道请求没带码 → 401（从前是 200 裸奔）", noCode.status === 401, `status=${noCode.status}`);
+    check("隧道请求没带码 → 401", noCode.status === 401, `status=${noCode.status}`);
     const localDirect = await viaTunnel("/api/settings", "127.0.0.1");
     check("本机直连仍然免码", localDirect.status === 200, `status=${localDirect.status}`);
     const tunnelLogin = await viaTunnel("/__lan", "smoke-tunnel.example.com");
@@ -5013,8 +5104,8 @@ try {
     check("抓取路径真的拦住内网地址（不是只有工具函数拦）", intranetCode === "blocked_host", intranetCode);
 
     // 出图外链那道门（safeMediaUrl）必须与 isPrivateAddress 同一套口径。
-    // 它从前自己写了一套 IPv6 前缀匹配，只认字面 [::1]，于是 [::] 和 [::ffff:127.0.0.1]
-    // （URL 归一化成 [::ffff:7f00:1]）全部漏过——图片端点被劫持时能把本机响应当成图存下来。
+    // IPv6 要按归一化后的地址判——[::] 与 [::ffff:127.0.0.1]（URL 归一化成 [::ffff:7f00:1]）
+    // 都是本机写法，漏过任何一种，图片端点被劫持时就能把本机响应当成图存下来。
     // 注意返回值语义：safeMediaUrl 为 true 表示"放行"，所以 mustBlock 要取反。
     for (const [url, mustBlock] of [
       ["http://[::1]:8099/a.png", true],
@@ -5032,8 +5123,8 @@ try {
       check(`出图外链门 ${url} → ${mustBlock ? "拦" : "放"}`, safeMediaUrl(url) === !mustBlock, String(safeMediaUrl(url)));
     }
 
-    // MIME 白名单不能"遵守才有效"：不发 content-type 的主机从前能把任意二进制
-    // 按 UTF-8 解成乱码喂进模型上下文。判据是纯函数，直接钉（走本机假站点测不了——
+    // MIME 白名单不能"遵守才有效"：不发 content-type 的响应若是任意二进制，
+    // 就会被按 UTF-8 解成乱码喂进模型上下文。判据是纯函数，直接钉（走本机假站点测不了——
     // SSRF 门本来就该把 127.0.0.1 拦下，那条另有断言）。
     for (const [type, want] of [
       ["text/html; charset=utf-8", true],
@@ -5050,8 +5141,8 @@ try {
       check(`content-type ${JSON.stringify(type)} → ${want ? "读" : "拒"}`, isFetchableMime(type) === want, String(isFetchableMime(type)));
     }
 
-    // 这条钉的是我踩过的第二个坑：搜索结果里的关键词被 <strong> 包着，
-    // 标签换成空格就把「玛奇玛」切成「玛 奇玛」，整词相关性判定会因此丢光所有真结果。
+    // 搜索结果里的关键词会被 <strong> 包着：内联标签若换成空格，「玛奇玛」就被切成
+    // 「玛 奇玛」，整词相关性判定会因此丢光所有真结果——内联标签必须整个吃掉。
     const highlighted = htmlToText('<h2><a href="x"><strong>玛</strong>奇玛_百度百科</a></h2>');
     check("内联标签整个吃掉而不是换成空格（高亮词不能被打断）",
       highlighted === "玛奇玛_百度百科", JSON.stringify(highlighted));
@@ -5392,14 +5483,14 @@ try {
     const codename = await (await jsonPost("/api/contacts", { name: "暗号测试客" })).json();
     const cid = codename.contact.id as string;
     // PUT 收的是顶层 background/identity/relationship（不是嵌套 card），写错会变成
-    // "设定根本没落库"然后搜索断言假红——上一版就是这么红的。
+    // "设定根本没落库"，然后搜索断言假红。
     await fetch(`${BASE}/api/contacts/${cid}`, {
       method: "PUT", headers: { "content-type": "application/json" },
       body: JSON.stringify({ background: "她在一只蓝伞下长大的小镇，镇上有人叫它「紫罗兰灯塔」" }),
     });
 
-    // 三段人设的**合计**额度：前端常量与后端必须报同一个数。这一条曾经各写各的
-    // （前端写死 2000、后端每段截 10000），界面上的「超出会被截断」于是成了假话。
+    // 三段人设的**合计**额度：前端常量与后端必须报同一个数——两边数对不上，
+    // 界面上的「超出会被截断」就是假话。
     const { PERSONA_TOTAL_MAX } = await import("../frontend/src/features/profile/constants.ts");
     const { sanitizeCharacter, PERSONA_TOTAL_MAX: BACKEND_TOTAL_MAX } = await import("../src/settings/settings.ts");
     check("前端写的合计上限 = 后端实际截断值", PERSONA_TOTAL_MAX === BACKEND_TOTAL_MAX,

@@ -69,8 +69,7 @@ assert.equal(trimDraftBeforeToolCall("<tool_call><function=web_search>"), "", "�
 assert.equal(trimDraftBeforeToolCall("没有调用块的正文"), "没有调用块的正文", "没有调用块时草稿原样返回");
 
 // 7) 接线：解析必须同时接在「有 tools 的路径」和「端点没启用 tools 的路径」上。
-// 后者才是本机踩到的那个坑——Agnes 档没勾工具能力，请求里根本没有 tools 字段，
-// 只接一处等于什么都没修。
+// 端点没启用 tools 时请求里根本没有 tools 字段，只接一处等于什么都没修。
 const modelSource = readFileSync("src/settings/model.ts", "utf8");
 assert.equal(
   (modelSource.match(/parseTextToolCalls\(/g) ?? []).length,
@@ -83,8 +82,8 @@ assert(
 );
 const agentSource = readFileSync("src/chat/agent.ts", "utf8");
 assert(/trimDraftBeforeToolCall\(text\)/.test(agentSource), "流式草稿写入前要截掉正文里的调用块，不能实时闪一段 XML");
-// 这条是真踩到的第二个坑：门控在 runAgentLoop 里又短路了一次，`declaredTools.length === 0`
-// 直接 return callModel，于是 callModelWithTools 里的兼容解析根本轮不到执行。
+// 门控不许在 runAgentLoop 里又短路一次：`declaredTools.length === 0` 若
+// 直接 return callModel，callModelWithTools 里的兼容解析根本轮不到执行。
 assert(
   !/\|\|\s*declaredTools\.length === 0[\s\S]{0,120}?callModel\(base, options\)\)/.test(agentSource),
   "「没有可声明工具」不能短路成一次 callModel：那条路会跳过正文形式工具调用的解析",

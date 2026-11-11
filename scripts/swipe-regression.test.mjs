@@ -1,9 +1,8 @@
 /**
  * 回复多版本（swipe）的回归测试。
  *
- * 背景：重答从前是销毁式的——旧回复被 deleteAssistantMessagesForTurn 删掉或被
- * collapse 原地覆写，用户想要旧版本没得选。现在重答前把旧回复序列化进 turns.variants
- * 留档，新回复追加为下一个版本，气泡下方 ◀ 2/3 ▶ 左右切换。
+ * 背景：重答不销毁旧回复——重答前把旧回复序列化进 turns.variants 留档，
+ * 新回复追加为下一个版本，气泡下方 ◀ 2/3 ▶ 左右切换，旧版本随时可切回。
  *
  * 覆盖：
  *   1. 存档初始化：重答前旧气泡（含分条、附件、思考）原样进 variants[0]；
@@ -69,7 +68,7 @@ assert(/setTurnVariant/.test(apiSrc), "前端 API 层要有 setTurnVariant");
 assert(/variantCount/.test(rowSrc) && rowSrc.includes("variant-bar"), "气泡组件要有版本切换条");
 assert(/variantCount >= 1/.test(rowSrc), "版本条要常驻（1/1 也显示），不能只在重答后才出现");
 assert(/changeVariant/.test(viewSrc) && viewSrc.includes("onVariantChange={changeVariant}"), "聊天页要接上切换回调");
-assert(/onVariantGenerate/.test(rowSrc) && viewSrc.includes("onVariantGenerate={requestVariantGenerate}"),
+assert(/onVariantGenerate/.test(rowSrc) && viewSrc.includes("onVariantGenerate={doRegenerate}"),
   "版本条右位（已是最新版本时）要提供重新生成入口，不能灰着");
 assert(/\(a\.variant_index \?\? 0\) === \(b\.variant_index \?\? 0\)/.test(viewSrc),
   "sameRow 必须比较版本字段，否则切换后 memo 挡住不重绘");

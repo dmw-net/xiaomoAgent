@@ -2,7 +2,7 @@
 //
 //   node scripts/publish-release.mjs [--dry-run] [--skip-build] [--notes 文本]
 //
-// 三道门是刻意的，都对应真出过的事故：
+// 三道门是刻意的，各自拦一类发版事故：
 //   1. 三处版本号必须完全一致（根 package.json / tauri.conf.json / Cargo.toml）。
 //      不一致时"检查更新"会拿系统报告的版本和 latest.json 比，界面显示旧版却装新版，反复重装。
 //   2. 只发非 draft、非 prerelease：GitHub 的 releases/latest 不认 prerelease，
@@ -20,10 +20,10 @@ const RELEASE_REPO = "dmw-net/xiaomoAgent";
 // 上传用的资产一律 ASCII 名：productName 保持「小茉」（装了以后快捷方式/注册表键都认它），
 // 只有 GitHub 上的文件名换成 xiaomo，免得中文路径在备用源/下载工具里出岔子。
 const ASSET_STEM = "xiaomo";
-// 定义在这儿而不是下面：--verify-only 那条路会在打包之前就用它（挪在后面会撞 TDZ，实测踩过）。
+// 定义在这儿而不是下面：--verify-only 那条路会在打包之前就用它（挪在后面会撞 TDZ）。
 const LATEST_JSON = `https://github.com/${RELEASE_REPO}/releases/latest/download/latest.json`;
 // 端上取清单里哪个键由 Rust 侧 target() 决定：`{os}-{arch}`，Windows x64 → windows-x86_64。
-// 写成 windows-x64 是我第一次发版踩的坑，而且当时的自检读的是同一个错键（自证式检查，测不出东西），
+// 键名写错的话，自检若还从同一个错键取值就测不出东西（自证式检查），
 // 所以这里把它提成常量，清单与自检都从这一处取，并在自检里额外断言"线上清单的键必须包含它"。
 const PLATFORM_KEY = "windows-x86_64";
 
@@ -51,7 +51,7 @@ function cargoVersion() {
 /**
  * shell 只在调 npm 时开（Windows 上 npm 是 npm.cmd，不开 shell 起不来）。
  * gh 是 .exe，走 shell:false——开 shell 会把参数拼成一行交给 cmd.exe，中文参数就会按
- * 控制台代码页重编码，那是这台机上反复咬过人的坑（见 docs/packaging.md 末尾）。
+ * 控制台代码页重编码（见 docs/packaging.md 末尾）。
  */
 function run(cmd, args, options = {}) {
   const r = spawnSync(cmd, args, {
@@ -142,12 +142,12 @@ if (sign.code !== 0) die(`签名预检失败（退出码 ${sign.code}）：私�
 console.log("✓ 门 0：私钥能签（口令正确）");
 
 // 预检过了才注入给构建用。tauri 的打包签名只读 TAURI_SIGNING_PRIVATE_KEY，而且要的是
-// **私钥文件内容**本身；`signer generate` 提示里的 _PATH 只给独立签名命令用——实测踩过：
+// **私钥文件内容**本身；`signer generate` 提示里的 _PATH 只给独立签名命令用——
 // 设了 _PATH 照样报 "A public key has been found, but no private key"，包打完了却没 .sig。
 // 顺序也不能反：这一经 env 之后，再拿 -f 去调 signer sign 会撞 clap 的 Usage 错。
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY) process.env.TAURI_SIGNING_PRIVATE_KEY = readFileSync(keyPath, "utf8");
 // 口令同样要交给构建链：desktop:build 里的 make-manifest 也从环境变量拿它。
-// 不写回去的话——预检过了、构建到签名那一步照样失败（实测踩过）。
+// 不写回去的话——预检过了、构建到签名那一步照样失败。
 if (!process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD) process.env.TAURI_SIGNING_PRIVATE_KEY_PASSWORD = pass;
 
 // ── 打包 ─────────────────────────────────────────────────────────

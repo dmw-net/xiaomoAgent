@@ -413,7 +413,7 @@ if (PHASE === "1") {
 
       // 语义同分时，使用次数不能制造出“第一名明显领先”的假象（决策只看纯语义）；
       // 但整词命中名字的同分桶不算不确定——查「热度同分测试」，两张名字一模一样，
-      // 随机甩一张正是人干的事，交回候选只会多烧一轮还诱发连锁失败（实测翻车现场）。
+      // 随机甩一张正是人干的事，交回候选只会多烧一轮还诱发连锁失败。
       const hotUrl = savePng();
       const coldUrl = savePng();
       emote.registerEmoteAsset(hotUrl, { label: "热度同分测试" });
@@ -632,7 +632,7 @@ if (PHASE === "1") {
       {
         const packDir = mkdtempSync(join(tmpdir(), `emote-pack-${backend}-`));
         writeFileSync(join(packDir, "10N01_猫猫搓手.png"), TINY_PNG);
-        // 6MB：真库那两张就是这么被旧口径静默丢掉的。导入这一条放宽到 20MB（MAX_IMPORT_IMAGE_BYTES），
+        // 6MB 这张要进得来：导入这一条的上限是 20MB（MAX_IMPORT_IMAGE_BYTES），
         // 因为它收的是用户主动交上来的本地文件；全局那道 5MB 闸管的是自动抓来的字节，不跟着抬。
         const six = Buffer.concat([TINY_PNG, Buffer.alloc(6 * 1024 * 1024, 7)]);
         writeFileSync(join(packDir, "N06_略略略.png"), six);
@@ -666,7 +666,7 @@ if (PHASE === "1") {
       const { updateContact } = await import("../src/chat/contacts.ts");
       const { ensureLocalConversation } = await import("../src/chat/conversations.ts");
       const contact = createContact({ name: "表情闭环测试" });
-      // 表情现在是全局唯一开关（出厂 normal 就是开的），不再按联系人开——从前这里要 updateContact 开 emotes。
+      // 表情是全局唯一开关（出厂 normal 就是开的），没有按联系人的开关。
       const conv = ensureLocalConversation(contact.id);
       const ctx = { contactId: contact.id, conversationId: conv.id, turnId: "turn-" + Date.now(), lastUserAt: null };
 
@@ -734,7 +734,7 @@ if (PHASE === "1") {
       // error 是给工具卡的一句人话；库的真实规模在 hint 里（拆开是为了软失败卡不刷红字）。
       const missHint = String(miss.result?.hint ?? "");
       assert.ok(/张/.test(missHint), "失败回执的 hint 报的是库的真实规模，不是「换个词」：" + missHint);
-      // 门控容错（实测翻车现场）：候选交回 → 模型换词撞墙 → 同一轮按候选 id 补发，
+      // 门控容错：候选交回 → 模型换词撞墙 → 同一轮按候选 id 补发，
       // 这一步不许被「别再重试」拦死——查询失败不等于投递失败。
       const recovery = freshCtx();
       const missThenId = await executeTool("send_emote", JSON.stringify({ keyword: "qwq 库里绝对没有的词" }), recovery);
@@ -749,8 +749,8 @@ if (PHASE === "1") {
       const sealedMsg = sealed.ok === false ? String(sealed.error) : String(failOf(sealed) ?? "");
       assert.ok(sealedMsg.includes("别再重试"), "连续两次查询失败后整轮封死，不再补发：" + sealedMsg);
       // 表情是全局唯一开关：档位设成「关闭」时工具与提示词段一起下线，开回来时一起回来。
-      // 这条门要防的是真库上翻过的车：从前有「全局倾向 + 联系人开关」两档，全局调到「主动」，
-      // 13 个联系人里却只有 1 个开了联系人档——开关看着开着，底下全断。
+      // 不存在「全局倾向 + 联系人开关」两档——工具声明与提示词段必须同源，
+      // 不会一边有一边没有（开关看着开着、底下全断的那种断链）。
       const { setGlobalEmoteFrequency } = await import("../src/settings/settings.ts");
       const { emoteFrequencyForContact } = await import("../src/chat/contacts.ts");
       const promptOf = async (id) => (await import("../src/mind/persona.ts"))
@@ -775,8 +775,8 @@ if (PHASE === "1") {
       assert.ok(buildDecideSystem("他", false, undefined, true).includes("挑不出贴的就只发文字"),
         "字段说明写的是「够贴才带」，不是每条主动消息都配表情");
       // 埋点自证：这一轮向模型声明了哪些工具、模型实际调了哪些，必须能在 model_calls 里查到。
-      // 从前只有 DEV_MODE 才落 req_full（真库 14063 行里只有 30 行有值），
-      // 「给了手却没人用」这种问题连分母都凑不出来，只能靠肉眼复现。
+      // tools_declared / tools_called 要无条件落库（不能只在 DEV_MODE 落），
+      // 否则「给了手却没人用」这种问题连分母都凑不出来，只能靠肉眼复现。
       {
         const { callModelWithTools } = await import("../src/settings/model.ts");
         const { db: dbMod } = await import("../src/core/db.ts");
@@ -805,10 +805,8 @@ if (PHASE === "1") {
         assert.strictEqual(logged.tools_called, "emote_search", "模型实际调用的工具名要落库（没调就是空串，和「没声明」要能区分）");
         updateModel({ caps: { tools: false, vision: true, thinking: false, thinkingOnly: false, customProtocol: false } });
       }
-      // 14) 迁移不再啃已识别的行，也不再靠词频猜文件夹。这条是真库上翻过的车：
-      //     识别写完 tags 之后再重启一次应用，「女仆 / 摆烂 / 可爱」这类被多张图共享的语义标签
-      //     会被当成批次名搬进 pack，而 pack 刻意不参与检索匹配——等于每次重启都在悄悄啃掉一层语义。
-      //     文件夹层改成来源事实后，共享语义词留在 tags 里，文件夹只认登记时写的那个。
+      // 14) 迁移不啃已识别的行，也不存在词频猜文件夹的路径：文件夹层只认来源事实，
+      //     共享语义词留在 tags 里，文件夹只认登记时写的那个（pack 刻意不参与检索匹配）。
       {
         const namedUrls = [savePng(), savePng()];
         const controlUrls = [savePng(), savePng(), savePng()];
@@ -826,8 +824,8 @@ if (PHASE === "1") {
           "没识别过的行：共享语义词也不再被猜成文件夹——词频推断整个退役了");
         assert.deepEqual(control.emotePack, ["默认"], "没有导入来源的图归默认文件夹");
 
-        // 「退回」整条链已退役（词频猜文件夹没了，误归场景就没了）：改归属只有一条路——
-        // 弹窗单选（applyEmoteSemantics 带 pack），并带着磁盘一起搬。
+        // 改归属只有一条路——弹窗单选（applyEmoteSemantics 带 pack），并带着磁盘一起搬；
+        // 不存在整批「退回」的入口。
         assetsMod.applyEmoteSemantics(namedUrls[0], { pack: ["可爱"] });
         const movedRow = assetsMod.getAssetByUrl(namedUrls[0]);
         assert.deepEqual(movedRow.emotePack, ["可爱"], "改归属走弹窗那条写路径");
@@ -1108,7 +1106,7 @@ if (PHASE === "1") {
         try {
           writeFileSync(join(sameDir, "同机图.png"), OB_ALT);
           // a) 入站表情要**解析**，不是一律压成「[表情]」：按 id 查表、取 summary，
-          //    认不出来才留占位（纯表情消息从前在「text 为空就 return」那道闸直接蒸发）。
+          //    认不出来才留占位——纯表情消息不许被「text 为空就 return」的闸丢掉。
           assert.strictEqual(onebot.obInboundText([{ type: "face", data: { id: "14" } }]), "[微笑]🙂", "face 段按 QFace 全量表解析成表情名+emoji");
           assert.strictEqual(onebot.obInboundText([{ type: "text", data: { text: "早" } }, { type: "mface", data: { summary: "[微笑]" } }]), "早[微笑]", "文字后面的 mface 取 summary");
           assert.strictEqual(onebot.obInboundText("[CQ:face,id=14]好"), "[微笑]🙂好", "字符串消息的 CQ 码同样解析");
@@ -1141,7 +1139,7 @@ if (PHASE === "1") {
           assert.strictEqual(m3.urls.length, 1, "裸文件名经 get_image 拿回字节");
           const m4 = await onebot.obMaterializeMedia([{ type: "image", data: { file: "net.png" } }]);
           assert.strictEqual(m4.urls.length, 1, "get_image 换回 URL 也照样取");
-          // 语音段落盘后归 audio——从前一律标 image，语音条在前端渲染成裂图。
+          // 语音段落盘后归 audio——标成 image 的话，语音条在前端渲染成裂图。
           const wav = Buffer.alloc(44);
           wav.write("RIFF", 0); wav.writeUInt32LE(36, 4); wav.write("WAVE", 8);
           wav.write("fmt ", 12); wav.writeUInt32LE(16, 16); wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22);

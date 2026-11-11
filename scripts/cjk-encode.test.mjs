@@ -159,7 +159,7 @@ check("门 B 量的是编码前后的汉字降幅（反证：带标点的长串�
   JSON.stringify(remainingCjkRuns(dirty)));
 check("门 B 在干净产物上汉字归零", totalCjk(clean) === 0, `实际 ${totalCjk(clean)}`);
 
-// ── XOR 载荷路径（2026-10-19 新增）：传 key 时必须编成 base64(XOR(·,key))，且能逐字还原 ──
+// ── XOR 载荷路径：传 key 时必须编成 base64(XOR(·,key))，且能逐字还原 ──
 {
   const key = Buffer.from("0123456789abcdef0123456789abcdef", "utf8");
   const src = `let m="${LONG}";let n="短标签";`;

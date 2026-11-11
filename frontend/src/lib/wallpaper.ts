@@ -9,7 +9,7 @@
  * 换设备恢复备份后文件可能不在了，不能因此白屏。
  *
  * 壁纸模式（第三种形态）：壁纸开着 = 界面自动进入壁纸适配——
- * 玻璃表面常开（data-glass 跟着壁纸走，不再是独立开关）、
+ * 玻璃表面跟随壁纸常开（data-glass 由壁纸开关裁决）、
  * 明暗固定为壁纸专属的暗色基底（index.html 的 apply 里裁决，浅色/深色偏好原样保留）。
  * 关掉壁纸，两样都自动还原。
  */
@@ -184,8 +184,8 @@ function buildMedia(pref: WallpaperPref, token: number): HTMLElement {
 function applySurfaceVars(surface: number): void {
   const root = document.documentElement.style;
   // 0 仍然是完全不透明，45 左右刚好让壁纸参与构图，80 则接近真正的薄玻璃。
-  // 从前 45 就落在 69% 左右，所有表面叠起来像深色塑料；线性下探后，默认档
-  // 的 wash 约 53%，再由方向光与顶缘高光维持层级，而不是靠把底压黑。
+  // wash 随透明度线性下探，默认档约 53%，再由方向光与顶缘高光维持层级，
+  // 而不是靠把底压黑。
   const gw = Math.max(42, 100 - surface * 1.05);
   const chrome = Math.min(96, Math.max(46, gw + 4));
   root.setProperty("--wp-glass-wash", `${gw}%`);
@@ -222,7 +222,7 @@ export function applyWallpaper(): void {
   root.dataset.wallpaper = pref.kind;
   setWallpaperTint(pref.kind === "preset" ? (PRESET_TINTS[pref.preset] ?? DEFAULT_TINT) : DEFAULT_TINT);
   applySurfaceVars(pref.surface);
-  // 玻璃跟着壁纸走：壁纸模式 = 半透明玻璃表面自动生效，不再让用户补一个开关
+  // 玻璃跟着壁纸走：壁纸模式 = 半透明玻璃表面自动生效，无需单独开关
   window.__setGlass?.(true);
   // 明暗切到壁纸专属基底（同样只是生效值变了，偏好原样保留）；
   // themechange 顺带让 Rail 菜单 / 设置页把「浅色/深色」控件换成壁纸适配状态。

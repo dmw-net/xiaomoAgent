@@ -180,9 +180,8 @@ function GlobalTurnsCard({ form }: { form: SettingsForm }): JSX.Element {
 
   /**
    * 一次请求把两个字段写齐：模式互斥在服务端 updatePersona 里兜底，这里显式带上更直观。
-   * 成败提示走全局 toast（lib/toast.ts）：note 原来绑在这张卡的就地 banner 上，
-   * 用户改完回放范围切个分组就看不见了；带后果说明的长文案（如「回放全部历史」
-   * 的代价）也一并进 toast，8 秒的停留读得完。
+   * 成败提示走全局 toast（lib/toast.ts）：用户改完回放范围切个分组也看得见；带后果说明的
+   * 长文案（如「回放全部历史」的代价）也一并进 toast，8 秒的停留读得完。
    */
   const save = (patch: { recentTurns: number; recentTurnsPct: number }, ok: string): void => {
     if (busy) return;

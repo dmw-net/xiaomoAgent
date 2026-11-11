@@ -121,7 +121,7 @@ export default function MessageMenu({ menu, setMenu, addNotice, onEdit, onReedit
 
   let body: JSX.Element;
   if (m.superseded_kind === "retract") {
-    // 撤回过的消息此前只剩「彻底删除」一个出口，等于把说过的话丢了。
+    // 撤回过的消息给「重新编辑」（把说过的话捞回来）与「彻底删除」两个出口。
     // 「编辑」在这里不给：它的语义是从那条重建对话，而这条已经不在对话里了。
     body = (
       <>

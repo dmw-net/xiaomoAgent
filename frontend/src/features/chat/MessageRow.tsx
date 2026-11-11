@@ -183,8 +183,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
       )}
       {/* key 用地址本身：编辑消息换了链接时强制重挂载，避免新链接下还显示旧卡的标题/域名。 */}
       {previewUrl !== "" && <LinkPreviewCard key={previewUrl} url={previewUrl} />}
-      {/* 底部元信息行：版本条靠左、时间与速度靠右，合成一行——原先版本条独占一行，
-          与时间行叠成两行，气泡尾部显高。时间贴右靠 margin-left:auto 而不是
+      {/* 底部元信息行：版本条靠左、时间与速度靠右，合成一行，气泡尾部不额外增高。
+          时间贴右靠 margin-left:auto 而不是
           space-between（只有时间时也要贴右）。三者全缺省则整行不渲染。 */}
       {(time || speedLabel || variantBar !== null) && (
         <div className="msg-meta">

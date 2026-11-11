@@ -46,7 +46,7 @@ const FEATURE_DEFAULTS: CompanionFeatures = {
 const EMPTY_BOND: BondState = { stage: "", warmth: 50, mood: "", updated_at: null };
 
 /** 档位选项的唯一真源在 tool-catalog.ts，经 /api/tools 的 choices 下发（见 useToolState）；
- *  这里不再复刻一份 label/desc——那份复刻漂移过，两边各说各话。 */
+ *  这里的 label/desc 一律取自这份下发数据，不另行复刻。 */
 
 /** 联系人「对话设置」的第二层导航：只按改动目的分三组，工程参数全部沉进各组的高级折叠区。 */
 type ContactSettingsSection = "chat" | "abilities" | "channels";
@@ -205,8 +205,8 @@ function NumField({ label, className, ariaLabel, min, max, precision = 0, suffix
 
 /**
  * 禁用词录入框：一个词一枚标签，输入→回车即成一枚，× 或空输入框上的退格删掉。
- * 刻意不再要求用户自己写逗号/顿号来分隔（那是把解析规则的负担甩给填表的人），
- * 但落库仍是后端 parseBannedWords 认的那一行原文（逗号连接），存储与出站拼接都不动。
+ * 词与词的拆分由组件做掉，不要求用户自己写逗号/顿号分隔（那是把解析规则的负担甩给填表的人）；
+ * 落库仍是后端 parseBannedWords 认的那一行原文（逗号连接），存储与出站拼接都不动。
  */
 function WordChips({ value, onChange, ariaLabel, placeholder }: {
   value: string; onChange: (raw: string) => void; ariaLabel: string; placeholder: string;
@@ -262,9 +262,8 @@ type PreviewData = {
  * 卡里三段内容各归一个分区管：「人设与关系」「最近对话」对着「对话」分区里的回放范围
  * （调完轮数/占比能立刻看到带了几轮），「会想起的记忆」则对着「能力与记忆」里的
  * 记忆提取/翻记忆；删掉任何一边，那一类调整就失去了唯一能提前验收的地方。
- * 但过去是两段几乎相同的 JSX 各抄一份，改一处漏一处（漂移风险），所以抽成同一个组件：
- * 数据同源（promptPreview 只有一份 state，草稿一改即清空过期预览）、渲染同一份逻辑，
- * 两个页签看到的是同一张卡的两次呈现，不是两份数据。
+ * 抽成同一个组件：数据同源（promptPreview 只有一份 state，草稿一改即清空过期预览）、
+ * 渲染同一份逻辑，两个页签看到的是同一张卡的两次呈现，不是两份数据。
  */
 function PromptPreviewCard({ promptPreview, previewing, effective, who, onPreview }: {
   promptPreview: PreviewData | null;
@@ -468,7 +467,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
   const [consNote, setConsNote] = useState("");
   // 提示词预览（按此联系人）：还原下一轮发消息时该联系人实际收到的完整内容。
   // 数据形状（PreviewData）与渲染（PromptPreviewCard）都提到模块层——「对话」与
-  // 「能力与记忆」两个分区渲染的是同一个组件、同一份 state，不再各抄一份 JSX。
+  // 「能力与记忆」两个分区渲染的是同一个组件、同一份 state。
   const [promptPreview, setPromptPreview] = useState<PreviewData | null>(null);
   const [previewing, setPreviewing] = useState(false);
   /** 未保存就点返回 / 模板会覆盖已有三段 → 都先拦一次。拦在动作上，不拦在提示上。 */
@@ -610,8 +609,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
     if (!asMarkdown) {
       setMdDraft(buildMd(effective));
     } else {
-      // 切回分段：把 Markdown 里的改动落回 draft。从前只翻视图不落回，
-      // 实测在 .md 里追加一段再切回来，那段字就没了 —— 而上面的注释写着"切换不丢内容"。
+      // 切回分段：把 Markdown 里的改动落回 draft，切换不丢内容。
       setDraft(effective);
     }
     setAsMarkdown(!asMarkdown);
@@ -683,8 +681,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       payload.bond = { stage: bd.stage.trim(), warmth: bd.warmth, mood: bd.mood.trim() };
     } else {
       /* 助手页**也**有可改的对话设置：回复方式、回放比例、历史占比上限就摆在它自己的
-         「对话设置」里。从前整块 features 被这条 isAssistant 分支跳过了，于是那三个开关
-         点下去既不出脏值条、也没有保存入口——用户看到的就是「没有保存按钮、改了不生效」。
+         「对话设置」里，保存路径与普通联系人相同（出脏值条、有保存入口）。
          只回传这三项，人格三段与陪伴能力仍一律不碰：后端按 key 合并，漏传即保留内置值。 */
       const f = over.features ?? features;
       payload.features = { splitReply: f.splitReply, turnPct: f.turnPct, tokenPct: f.tokenPct };
@@ -873,8 +870,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
       </div>
 
       <div className="card card-pad pf-head">
-        {/* 眉标单独占一行：从前它嵌在名字那一列里，左边线被头像顶到 391px，
-            而卡片内容/头像从 337px 起 —— 看着像浮在卡片上边、不属于任何东西。 */}
+        {/* 眉标单独占一行：不和名字挤在同一列，与头像各归各的层级。 */}
         <div className="pf-eyebrow">{mode === "create" ? "新建联系人" : isAssistant ? "助手设置" : "正在编辑"}</div>
         <div className="pf-ava-col">
           <button
@@ -970,9 +966,9 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
             </div>
           </div>
           <div className="card card-pad">
-          {/* 三段一次摊开：从前这里是「段落 tab × 一个大 textarea」，一次只看得见三段里的一段，
-              切段时整块换掉，上面还摆了一行「当前编辑 / 整份人格文档（.md）」的文件隐喻——
-              系统里根本没有文件，只会让人以为自己在写的是一份份文档而不是同一个人。 */}
+          {/* 三段一次摊开：背景 / 人设 / 关系同屏可见，改哪段一目了然；
+              「编辑方式」只是同一份人格的两种书写格式（分段 / 整份 Markdown），
+              不是一份份独立文档。 */}
           <div className="pf-mode-row">
             <span className="pf-mode-label">编辑方式</span>
             <div className="pf-mode-ctl" role="radiogroup" aria-label="人格文档的编辑方式">
@@ -1266,7 +1262,7 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                   <>
                     <div className="pf-preset-chips" role="radiogroup" aria-label="这位联系人的工具档位">
                       {/* 「全关」与各档合并成一条轴（与设置页台账同一套心智）：
-                          存储仍是 tools + toolPreset 两个字段，选中时一次写齐，不再单设总闸。 */}
+                          存储仍是 tools + toolPreset 两个字段，选中时一次写齐，不单设总闸。 */}
                       {CONTACT_PRESET_AXIS.map((option) => {
                         const on = contactPreset === option.key;
                         return (
@@ -1498,10 +1494,9 @@ export default function ProfileView({ mode, contactId, onBack, onSaved, initialD
                     value={bond.stage}
                     onChange={(e) => setBond({ ...bond, stage: e.target.value })}
                   />
-                  {/* 亲密度走 NumField 口径（失焦/回车才夹紧）：原来的 onChange 即时 clamp
-                      会吃掉打到一半的数字——清空立刻变 0，接着打就成了 0x，NumField 注释里
-                      记下的那个坑。warmth 只在底部「保存」时经 formPayload 落库，失焦夹紧
-                      只是写进草稿，不存在把夹紧值提前落库的问题。 */}
+                  {/* 亲密度走 NumField 口径（失焦/回车才夹紧）：打到一半的数字不会被
+                      即时夹紧吃掉（清空变 0、接着打成 0x 那类）。warmth 只在底部「保存」时
+                      经 formPayload 落库，失焦夹紧只是写进草稿，不存在把夹紧值提前落库的问题。 */}
                   <NumField label="" className="pf-comp-tiny" ariaLabel="亲密度，0 到 100"
                     min={0} max={100} disabled={!features.bond}
                     shown={String(bond.warmth)}

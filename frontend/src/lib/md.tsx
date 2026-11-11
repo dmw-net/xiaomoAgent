@@ -220,8 +220,8 @@ export function renderMd(text: string, highlight = ""): ReactNode {
 function parseMd(text: string): ReactNode {
   const lines = text.split("\n");
   const out: ReactNode[] = [];
-  // 围栏代码块整段原样放进 <pre>：以前只跳过 ``` 标记行、内容仍走 inline()，
-  // 代码里的 URL 会变成可点链接，**粗体** 之类也会被误当 Markdown 解析。
+  // 围栏代码块整段原样放进 <pre>：内容不走 inline()，
+  // 代码里的 URL 不会变成可点链接，**粗体** 之类也不会被误当 Markdown 解析。
   let fenceKey = "";
   let fenceLines: string[] = [];
   const flushFence = (): void => {

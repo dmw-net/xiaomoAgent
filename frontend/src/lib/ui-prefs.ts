@@ -111,8 +111,7 @@ export function setAccent(hex: string): void {
 }
 
 /**
- * 管理面列表每页多少条：调用记录 / 处理单 / 记忆 / 主动性打算四处共用一个值。
- * 从前是 25、15、200、40 各写各的（还和后端默认值不一致），改一处要在四个界面里找。
+ * 管理面列表每页多少条：调用记录 / 处理单 / 记忆 / 主动性打算四处共用一个值，改一处四处生效。
  * 聊天的首屏窗口不在这里——那是"渲染多少条"不是"翻一页"，由服务端定。
  */
 export const LIST_PAGE_SIZES = [25, 50, 100] as const;
@@ -172,9 +171,9 @@ export function setProfilePage(cid: string, page: string): void {
 
 
 /**
- * 旧版“主题风格”已下线。迁移策略只保留用户当时最有感知的强调色：
+ * 「主题风格」旧键迁移：只保留用户最有感知的强调色——
  * 薄荷/夜航/和纸分别落到对应色，暖房回到品牌默认赤陶；页面材质统一。
- * 壁纸、玻璃与透明度偏好完全不在这里改动。
+ * 壁纸、玻璃与透明度偏好不在这里改动。
  */
 const LEGACY_THEME_STYLE_KEY = "xiaomo.themeStyle";
 const LEGACY_STYLE_ACCENT: Record<string, string> = {

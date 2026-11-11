@@ -152,8 +152,7 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
   const [out, setOut] = useState<Out>(null);
   const [err, setErr] = useState("");
 
-  // 两个页签各查各的一堆（服务端按 state 过滤 + 报 total）：从前一次混取 40 条，
-  // 实测小茉 91 条、阿琳 67 条，后一半既翻不到也没人报一句。
+  // 两个页签各查各的一堆（服务端按 state 过滤 + 报 total），分页走「界面 → 列表每页」那一档。
   const fetchTasks = useCallback((limit: number, offset: number) =>
     proactiveApi.fetchProactiveTasks(limit, offset, tab === "history" ? "history" : "pending", contactId)
       .then((d) => ({ rows: d.tasks, total: d.total })), [tab, contactId]);
@@ -322,8 +321,8 @@ export default function ProactivePanel({ active = true, contactId, who = "联系
             <div className="list-card">
               {GATE_DEFS.map((def, i) => {
                 const info = gateMap[def.key] ?? { passed: true, detail: "" };
-                // 判定必须认 info.passed：从前只看 blockedAt，于是「今天说够了」
-                // 即使配额已满也渲染成「通过」，底下还总结「全部检查项通过」。
+                // 判定必须认 info.passed：blockedAt 只标记卡点位置，配额已满时
+                // 未过的检查项要如实渲染成「未通过」，不能总结成「全部检查项通过」。
                 let cls = info.passed ? "passed" : "none";
                 let verdict = info.passed ? "通过" : "未通过";
                 if (blockedAt !== null && def.key === blockedAt) { cls = "blocked"; verdict = "卡在这里"; }

@@ -9,9 +9,9 @@ export type OpenResult = { ok: true } | { ok: false; error: string };
  * 时 openUrl 直接 reject），浏览器里是弹窗被拦（window.open 返回 null）。
  *
  * ⚠️ windowFeatures 里不能写 `noopener`：按 HTML 规范，带 noopener 时 window.open
- * **一定返回 null**（哪怕标签页已经正常打开）。以前就是因为它，手机浏览器里每次
- * 成功打开外链都会被当成“被拦截”。改成打开后手动把 opener 置空，
- * 防篡改效果一样；Referer 由页面响应头 `Referrer-Policy: no-referrer` 管。
+ * **一定返回 null**（哪怕标签页已经正常打开），成功打开也会被误判成「被拦截」。
+ * 防篡改由打开后手动把 opener 置空实现，效果等价；Referer 由页面响应头
+ * `Referrer-Policy: no-referrer` 管。
  */
 export async function openExternal(url: string): Promise<OpenResult> {
   if ("__TAURI_INTERNALS__" in window) {

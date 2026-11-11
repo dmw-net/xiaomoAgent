@@ -1,7 +1,7 @@
 /*
  * 小茉 · Quiet Studio 体验层
  *
- * 只负责“产品结构与视觉表达”的最终覆盖；历史功能样式仍留在 legacy/app 中。
+ * 只负责“产品结构与视觉表达”的最终覆盖。
  * 原则：导航有文字、内容有层级、表面有节制、移动端不横向溢出。
  */
 
@@ -371,16 +371,7 @@ select {
   gap: 3px;
 }
 
-/* 长会话的离屏跳渲染（content-visibility: auto）试过两次都撤掉了：
-   第一次是「常开」，落底那一刻离屏行还是估高，真高替换后落底实测漂了 1352px
-   （foundation.css 那条「撤」注释）；第二次改成「boot 落底稳定两拍后再放开」，
-   估高误差确实绕开了，但它和这套滚动契约的根本冲突还在——跳转落点附近的行
-   在跳完之后才完成最终布局，scrollHeight 随后变化让一次性 scrollTop 赋值停在
-   半空，「一键到底」「切人落底」接连失准；且跳转自己触发的 scroll 事件是在高度
-   长完之后才派发的，onScroll 重判 stickRef 会把自动跟随摘掉。两轮修收敛循环都
-   只能打补丁，最终整体撤除：这套消息流的滚动正确性（贴底 ±2px、未读计数、
-   搜索/地图定位）比长会话的渲染收益更值钱。scrollDown 的收敛循环保留，它对
-   图片解码、链接卡长高这类正常的落底后高度变化仍然有效。 */
+/* 禁用离屏跳渲染（content-visibility: auto）：与滚动契约（贴底/未读计数）冲突，见 ChatView.tsx。 */
 
 .msg-row.contact {
   gap: 10px;
@@ -2362,8 +2353,8 @@ a.btn:hover {
   gap: 12px;
 }
 
-/* 助手设置屏：板块之间统一 12px 间隔（与上面的卡片间距同值）。
-   从前只有身份卡带 margin，权限档 / 审计面板与设置卡是贴着排的。 */
+/* 助手设置屏：板块之间统一 12px 间隔（与上面的卡片间距同值），
+   身份卡 / 权限档 / 审计面板与设置卡一视同仁。 */
 .pf-assistant > .ac-panel,
 .pf-assistant > .pf-settings {
   margin-bottom: 12px;
@@ -4798,8 +4789,8 @@ a.btn:hover {
 .ml-pack-caret { transition: transform var(--dur-fast) ease; flex-shrink: 0; }
 .ml-pack-caret.on { transform: rotate(180deg); }
 
-/* 锚在按钮上的下拉弹层，与 foundation.css 的 .mem-space-pop 同族，走 --z-subpop；
-   原来的裸 40 与 --z-backdrop 撞档（读起来像遮罩层），42 则是来历不明的孤值。 */
+/* 锚在按钮上的下拉弹层，与 foundation.css 的 .mem-space-pop 同族，走 --z-subpop
+   （内容弹层档，不占 --z-backdrop 的遮罩档）。 */
 .ml-pack-pop {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: var(--z-subpop);
   width: min(320px, calc(100vw - 32px));
@@ -4831,7 +4822,7 @@ a.btn:hover {
 .ml-capture { display: flex; align-items: center; gap: 6px; margin: 8px 2px 0; font-size: 12.5px; color: var(--text-muted); }
 
 /* 窄屏时筛选行会换行、文件夹按钮落到左侧：此时下拉若仍右对齐会伸出屏幕左缘
-   （实测 420px 下 pop 的 x=-129）。改成左对齐，宽度仍受视口约束。 */
+   （实测 420px 下 pop 的 x=-129）。窄屏下左对齐，宽度仍受视口约束。 */
 @media (max-width: 700px) {
   .ml-pack-pop { left: 0; right: auto; }
 }
@@ -5041,9 +5032,8 @@ a.btn:hover {
    图库不是表单：视角用下划线 tab，筛选收进工具行，智能识别状态压成一条状态线。
    浏览时不铺复选框，选中后才出现批量条。 */
 /* 所有分组共用 .settings-layout 的 244px + 1fr，切分组时导航列与内容区位置必须完全一致。
-   曾经媒体页单独用 244px+1fr 拉伸、其余分组用 244px+760px 居中：宽屏（设置容器顶到
-   1160px 上限）下导航列左移 30px、内容区左移 30px 且变宽 60px，就是用户报的
-   「全屏切换到媒体表情页闪一下」（1180px 默认窗口下两者恰好同宽，所以只在全屏出现）。 */
+   媒体页不单独改列宽或居中——宽屏（设置容器顶到 1160px 上限）下偏差最显眼，
+   表现为切换分组时整块跳位。 */
 #settings-media > #settings-emote-frequency {
   padding: 0;
   border: 0;
@@ -5166,7 +5156,7 @@ a.btn:hover {
   left: 0;
   top: calc(100% + 6px);
   box-sizing: border-box;
-  /* 下拉弹层与 .ml-pack-pop / .mem-space-pop 同族，走 --z-subpop（原裸 42 是孤值） */
+  /* 下拉弹层与 .ml-pack-pop / .mem-space-pop 同族，走 --z-subpop（内容弹层档） */
   z-index: var(--z-subpop);
   width: min(230px, calc(100vw - 32px));
   max-height: 300px;
@@ -5289,7 +5279,7 @@ a.btn:hover {
   cursor: pointer;
   white-space: nowrap;
 }
-/* 「自动收录」已换成 .toggle-switch，input 选择器随之删除。 */
+/* 「自动收录」用 .toggle-switch（不走 input 勾选皮），没有 input 派生选择器。 */
 .ml-progress {
   height: 2px;
   margin: -4px 0 8px;
@@ -5522,9 +5512,9 @@ a.btn:hover {
 }
 
 /* ── 在途气泡的呼吸圆点 ──
-   乐观占位此前只有「失败」「待发送」两个事后态，已发出、回执未到的几秒是视觉真空。
-   给一颗 8px 呼吸圆点挂在气泡右上角：它只说「在路上」，不代表任何问题——所以不出
-   红黄那两档（那是失败的语义），不用图标不加文字，鼠标悬停有 title「发送中」即可；
+   表示「已发出、回执未到」的在途态：8px 呼吸圆点挂在气泡右上角，它只说「在路上」，
+   不代表任何问题——所以不出红黄那两档（那是失败的语义），不用图标不加文字，
+   鼠标悬停有 title「发送中」即可；
    aria-hidden：读屏用户已经能从发送按钮的忙碌态知道在途，再念一个点是噪音。 */
 .bubble.pend-going .pend-flight {
   position: absolute; top: 7px; right: 7px; width: 8px; height: 8px;
@@ -5561,8 +5551,8 @@ a.btn:hover {
 .composer-bar .model-wrap { flex: 0 1 auto; min-width: 0; }
 
 /* ── 「载入更早的消息」窄条控件（ChatView）──
-   此前借用建议 chip 的样式：悬在消息流顶部像个静态标签，可供性太弱——用户不确定
-   它能不能点。收成独立的窄条：居中、上下留白、描边胶囊 + hover 反馈点明「可点」。
+   独立的窄条样式：居中、上下留白、描边胶囊 + hover 反馈，点明「可点」
+   （与建议 chip 的静态观感区分开）。
    行为不动：仍走 fetchEarlierMessages、仍由服务端报剩余条数，滚动锚定逻辑原样。 */
 .load-earlier-row { display: flex; justify-content: center; padding: var(--space-2) 0 var(--space-3); }
 .load-earlier {

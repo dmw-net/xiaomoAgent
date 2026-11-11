@@ -15,11 +15,8 @@ import { useDismiss } from "../hooks/useDismiss";
 import type { PanelAria } from "./Tabs";
 
 /**
- * 媒体库：联系人有过、收到过、画过的东西都在这一页。
- *
- * 这一页取代了原来那两处内容浏览实现（设置里「表情」的网格、联系人页的「媒体」面板）。
- * 它们本来就在做同一件事——列一批 /media 文件、能搜能筛能预览能删——只是各写了一遍，
- * 于是同一个「删除」在两处含义不同。现在视角是参数：
+ * 媒体库：联系人有过、收到过、画过的东西都在这一页——全站唯一的媒体浏览页。
+ * 列一批 /media 文件，能搜能筛能预览能删；视角是参数：
  * 「表情包」「收藏」「作品」「聊天」「和某人」都是这一页上的一个筛选条件。
  *
  * 不含媒体维护弹窗：它管回收站 / 恢复 / 彻底删除，是存储运维，不是内容浏览。
@@ -625,7 +622,7 @@ const renameOne = async (): Promise<{ label: string; caption: string; tags: stri
   };
   const activeView = VIEWS.find((v) => v.key === view) ?? VIEWS[0]!;
   // 选中文件夹时，命名状态 chips 的数字跟着文件夹走：全库数字不随筛选变，
-  // 会被读成「筛选坏了」（2026-11-02 用户实测：未命名 0 × 鲸鱼娘·静态 89 → 空网格 + 数字不动）。
+  // 否则空网格 + 不动的数字会被读成「筛选坏了」。
   const packRow = pack === "" ? undefined : packs.find((p) => p.pack === pack);
   const scopeCounts = packRow === undefined
     ? { unnamed: naming.total - naming.named, file: naming.file, auto: naming.auto, manual: naming.manual }

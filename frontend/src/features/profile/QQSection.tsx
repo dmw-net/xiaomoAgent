@@ -44,7 +44,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
   const [obAvatar, setObAvatar] = useState("");
   const [ownerAvatar, setOwnerAvatar] = useState("");
   const [obProbeTick, setProbeTick] = useState(0);
-  /** 协议端连接面板：地址可就地改（热生效），不再逼用户去改配置文件。 */
+  /** 协议端连接面板：地址可就地改（热生效），无需去改配置文件。 */
   const [obAddr, setObAddr] = useState("");
   const [obWsAddr, setObWsAddr] = useState("");
   const [obAddrBusy, setObAddrBusy] = useState(false);
@@ -86,7 +86,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
   const [groupQuery, setGroupQuery] = useState("");
   /** 群操作菜单一次只展开一个；日常只露收件开关，重命名/响应/清理/移除按需展开。 */
   const [openGroupMenuId, setOpenGroupMenuId] = useState("");
-  /** 连接级设置（暂停、主动消息、断开）集中在一个弹层，卡片首屏不再出现三个入口。 */
+  /** 连接级设置（暂停、主动消息、断开）集中在一个弹层，不占卡片首屏。 */
   const [showConnectionSettings, setShowConnectionSettings] = useState(false);
   const [toggleProactiveBusyId, setToggleProactiveBusyId] = useState("");
   /** 「绑定」两个字复制成功的瞬时反馈；两秒后自己落回复制图标。 */
@@ -323,7 +323,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
   };
 
   /** 换渠道时清掉上一个渠道的探测残留；探测过程中的旧值保留到新值回来，
-   *  面板不闪烁（从前每轮绑定轮询都会把探测态清空重测，卡每 5 秒闪一次）。 */
+   *  面板不闪烁。 */
   useEffect(() => {
     setObStatus(null); setObAvatar("");
   }, [backend]);
@@ -365,7 +365,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
     return () => { cancelled = true; };
   }, [backend, obProbeTick, boundNow]);
 
-  /** 「我的 QQ」与登录 QQ 用同一种身份卡：头像也从 QQ 号取，不再只是一行文字。 */
+  /** 「我的 QQ」与登录 QQ 用同一种身份卡：头像也从 QQ 号取，不只是一行文字。 */
   useEffect(() => {
     const ownerQq = binding?.ownerQq?.trim() ?? "";
     if (ownerQq === "") { setOwnerAvatar(""); return; }
@@ -432,7 +432,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
   };
 
   /** OneBot 模式：把真实 QQ 号绑到这位联系人（一键绑定 / 手填 / 编辑复用同一入口），成功后刷新快照。
-   *  编辑态保存成功只清草稿，不再把成功提示写成「已绑定」——那是首次绑定才该说的话。 */
+   *  编辑态保存成功只清草稿，成功提示不写成「已绑定」——那是首次绑定才该说的话。 */
   const saveOneBotBind = async (numberOverride?: string): Promise<void> => {
     const number = (numberOverride ?? obQqNumber).trim();
     if (number === "") { setErr("先填上这位联系人的真实 QQ 号"); return; }
@@ -833,7 +833,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
         )}
       </div>
 
-      {/* 官方接入只展示到「绑定完成」为止；回复窗口属于日常使用状态，不再伪装成接入步骤。 */}
+      {/* 官方接入只展示到「绑定完成」为止；回复窗口属于日常使用状态，不放进接入步骤里。 */}
       {backend === "official" && binding?.hasUserOpenId !== true && (
         <ChannelSteps steps={officialSteps} label="QQ 官方接入步骤" />
       )}
@@ -938,7 +938,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
       )}
 
       {/* ①'' OneBot 已绑定：绑定信息卡（号 + 主人号 + 协议端连接状态）+ 就地编辑，
-           不再要「解绑再绑」改「我的 QQ」。协议端掉线时整块退化成修复面板。 */}
+           改「我的 QQ」不用「解绑再绑」。协议端掉线时整块退化成修复面板。 */}
       {backend === "onebot" && binding && obStatus !== null && !editingObBind && (
         <div className="qq-creds">
           {obStatus.reachable && obStatus.userId !== "" ? (
@@ -1157,7 +1157,7 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
                 </div>
                 <div className="qq-conv-actions">
                   {/* 状态词（收件中/已停用/已离群）只是给人看的反馈；真正的开关语义
-                      由 ariaLabel 补全，样式随 aria-checked 在 CSS 里染色，不再私有一套。 */}
+                      由 ariaLabel 补全，样式随 aria-checked 在 CSS 里染色，不另私有一套。 */}
                   <ToggleSwitch
                     checked={conv.enabled && conv.leftAt === null}
                     ariaLabel={`${conv.title}群消息接收`}
@@ -1246,8 +1246,8 @@ export function QQSection({ contactId }: { contactId: string }): JSX.Element {
                 {binding.enabled ? "暂停" : "恢复"}
               </button>
             </div>
-            {/* 原来是裸 checkbox，同样是「开启某功能」的语义：统一换成滑块开关。
-                label 改 div——不再用 label 包住控件，点击文案不切换，命中区由开关自身外扩补足。 */}
+            {/* 「开启某功能」语义的控件统一用滑块开关。
+                文案不包进 label：点击文案不切换，命中区由开关自身外扩补足。 */}
             <div className="qq-setting-row">
               <span className="qq-setting-copy">
                 <strong>允许主动发送</strong>

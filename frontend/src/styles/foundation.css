@@ -1,10 +1,8 @@
-/* 基础主题令牌已迁移到 theme.css。
-   此处保留文件头，旧规则继续消费同一组语义变量。 */
+/* 主题令牌定义在 theme.css；本文件的规则消费同一组语义变量。 */
 
 /* ── 动效令牌（明暗共用）────────────────────────────────────────
-   从前全站散着 .1 / .12 / .13 / .14 / .15 / .16 / .18 / .22 八种时长和裸 ease，
-   同一句"轻微反馈"在不同控件上手感各异。收成三档时长 + 两条曲线：
-   fast 给点按回声，base 给状态切换，slow 给面板入场；确实要"弹一下"才用 spring。
+   全站统一三档时长 + 两条曲线：fast 给点按回声，base 给状态切换，slow 给面板入场；
+   确实要"弹一下"才用 spring。
    裸时长映射口径（scripts/css-token-check.mjs 把守）：
    - 意图优先：hover/focus/按压反馈一律 fast；面板、卡片、抽屉的出现 base；
      大块内容转场 slow。
@@ -47,7 +45,7 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* 主题切换就该是瞬时的：上一条全局 body 过渡已删，这里也不再需要兜底。 */
+/* 主题切换就该是瞬时的：body 不挂全局过渡，切换即时完成。 */
 
 /* 键盘焦点可见：非交互元素用 accent 描边，按钮用 ring 风格描边 */
 :focus-visible {
@@ -55,10 +53,10 @@ body {
   outline-offset: 2px;
 }
 input, textarea, select { outline: none; }
-/* 输入类不给 focus-visible 描边：从前这里还挂着一条 inset 2px accent 的环，点进输入框
-   就描一圈绿（Chrome 对可打字元素连鼠标点击也算 focus-visible），嵌在浅色容器里的两处
-   （联系人搜索框、禁用词标签框）被描成「框中框」。这条覆盖必须留着且不能只写在外层
-   input{} 上——上面那条裸 :focus-visible 特异度更高，少了它输入框会改吃一圈 2px outline。
+/* 输入类不给 focus-visible 描边：Chrome 对可打字元素连鼠标点击也算 focus-visible，
+   嵌在浅色容器里的两处（联系人搜索框、禁用词标签框）会被描成「框中框」。
+   这条覆盖必须留着且不能只写在外层 input{} 上——上面那条裸 :focus-visible
+   特异度更高，少了它输入框会改吃一圈 2px outline。
    焦点提示交回下面那条 input:focus 的 border-color，以及光标本身。 */
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline: none; }
 button:focus-visible,
@@ -66,9 +64,9 @@ button:focus-visible,
 .s-item:focus-visible {
   outline: 2px solid var(--focus-ring);
   outline-offset: 2px;
-  /* 这里从前还写了一条 border-radius:6px ——它改的是元素自己的形状，不是描边的：
-     悬浮球（50%）、联系人芯片（radius-full）、段落按钮在聚焦那一刻全被压成 6px 方角，
-     失焦再跳回。outline 本来就随元素圆角走，这条声明净效果只有破坏。 */
+  /* 这里不写 border-radius——它改的是元素自己的形状，不是描边的：
+     悬浮球（50%）、联系人芯片（radius-full）这类异形钮会在聚焦那一刻被压成方角、
+     失焦再跳回。outline 本来就随元素圆角走。 */
 }
 
 a { color: var(--accent-ink); text-decoration: none; }
@@ -255,8 +253,8 @@ input, textarea {
    主动消息不再"去人格化"——她说的话有头像有尾巴，只在行角挂「主动」小徽标。 */
 .msg-row.contact { flex-direction: row; align-items: flex-start; position: relative; }
 /* 首字母头像：全站 10 处做的是同一件事（气泡·侧栏·窄屏·Rail·关于·资料页·
-   下拉·页头芯片），此前每处把 display/flex/居中/底色/字色/字重各抄一遍，
-   于是字重 600/700 混用、圆角 6/12/14/50% 各表。公共部分一次写定。 */
+   下拉·页头芯片），公共的盒模型/居中/底色/字色在这里一次写定，
+   各处只补自己的尺寸（--ava）与圆角。 */
 .msg-ava, #rail .brand, .s-ava,
 .pf-avatar, .chip-ava, .switch-ava, .owner-ava {
   display: flex; align-items: center; justify-content: center;
@@ -264,8 +262,7 @@ input, textarea {
   width: var(--ava); height: var(--ava);
   background: var(--accent); color: var(--accent-text);
   font-weight: 700;
-  /* 首字母是图形不是排版：随盒宽等比走（.42），不再每个尺寸各定一个字号。
-     此前两个 56px 头像一个用 20px 字形、一个用 24px，纯属各表。 */
+  /* 首字母是图形不是排版：字号随盒宽等比走（.42），一个系数覆盖全部尺寸。 */
   font-size: calc(var(--ava) * .42);
 }
 
@@ -280,9 +277,8 @@ input, textarea {
 .msg-row.contact.gap { margin-top: var(--space-5); }
 /* 我的消息右侧头像（微信式）。用 --ava-mine 与她的绿区分，纯色不用渐变。 */
 .msg-row.me:not(.proactive) { flex-direction: row; justify-content: flex-end; align-items: flex-start; }
-/* 「我」的三处头像同一个底色：聊天右侧 / 左上角 Rail / 设置「我的资料」。
-   从前只有聊天这处记得用 --ava-mine，另两处漏用成 --accent 绿——
-   同一个人在这屏绿、那屏蓝。有图时不垫底色仍归下面 .has-img 接管
+/* 「我」的三处头像同一个底色：聊天右侧 / 左上角 Rail / 设置「我的资料」，
+   都走 --ava-mine，同一个人在任何一屏颜色一致。有图时不垫底色仍归下面 .has-img 接管
    （#rail .brand.has-img 特异性更高，与源序无关）。 */
 .msg-ava.mine, #rail .brand, .owner-ava { background: var(--ava-mine); color: var(--ava-mine-text); }
 .msg-ava.mine { margin-right: 0; margin-left: var(--space-4); }
@@ -345,8 +341,7 @@ input, textarea {
 .daysep {
   align-self: center;
   margin: var(--space-8) 0 var(--space-4);
-  /* 微信式胶囊底：从前是裸灰字漂在消息流里，和系统提示挤成一片。
-     垫一层极浅的底色，把它和真气泡明确分成两种元素。 */
+  /* 微信式胶囊底：垫一层极浅的底色，把日期和真气泡明确分成两种元素。 */
   padding: 2px var(--space-5); border-radius: var(--radius-full);
   background: color-mix(in srgb, var(--accent) 7%, var(--bg-elevated));
   border: 1px solid color-mix(in srgb, var(--accent) 11%, transparent);
@@ -525,6 +520,12 @@ input, textarea {
    只关直接子代的 pointer-events（子代都没显式设，继承即可），滚动容器本身仍是 auto，
    滚轮滚动不受影响。停滚 150ms 后摘类，"停下来看某一条"的暗示仍然有效。 */
 .is-scrolling > * { pointer-events: none; }
+/* 同时把滚动容器提升为合成层：滚动由合成器直接完成，不再每帧重新分层/栅格化。
+   实测（headless Chrome trace，1.5s 快速滚动）：Layerize 94→18ms、
+   GPUTask 320→102ms、RunTask 2327→2023ms。停滚 150ms 后摘类即释放图层，
+   不长期占显存。will-change:transform 只给 fixed 后代换包含块，
+   #log/.view/#side 里没有 fixed 后代（弹层都 portal 到 body），安全。 */
+.is-scrolling { will-change: transform; }
 
 /* 弹出菜单：fixed 定位到点击处，靠近视口边缘会自动翻转（见 positionMenu） */
 .msgmenu {
@@ -542,8 +543,7 @@ input, textarea {
 /* 退场：与入场 menuIn 互为镜像——menuIn 从 -3px 沉降到原位，退场原路浮回、淡出
    （挂 data-closing 由组件侧 useExitVisible 驱动；animationend 或 240ms 兜底计时收场）。
    动 translate 而不是 transform：translate 是独立属性，不会冲掉 switch-pop 一族
-   翻转定位用的 transform: translateY(-100%)（menuIn 动 transform 是历史写法，
-   首帧同样盖掉翻转位移，只是 0% 就在 opacity:0 上没人看见）。reduced-motion 下
+   翻转定位用的 transform: translateY(-100%)。reduced-motion 下
    theme.css 把 --dur-* 压成 .01ms，动画一瞬即逝，由兜底计时器收场。 */
 @keyframes menuOut { to { opacity: 0; translate: 0 -3px; } }
 .msgmenu[data-closing] { animation: menuOut var(--dur-fast) var(--ease-out) forwards; pointer-events: none; }
@@ -575,9 +575,9 @@ input, textarea {
    所以这里用白叠加而不是 --bg-hover。别在下一轮统一掉。 */
 .msgmenu.dark button:hover { background: rgba(255, 255, 255, .14); }
 .msgmenu.dark button .lb { color: #f2f2f2; white-space: nowrap; }
-/* 说明文字同样不跟随主题：从前漏继承浅色菜单的 --text-muted（#5f5a51），
-   压在 rgba(30,30,30,.94) 上只有约 2:1——「放回输入框再发一次」这类最有价值的
-   提示实际看不清。白系 64% 在同底色上 ≈6.4:1，与 .lb 的层级关系保留。 */
+/* 说明文字同样不跟随主题：白系 64% 压在 rgba(30,30,30,.94) 上 ≈6.4:1；
+   浅色菜单的 --text-muted 是深字，压这个深底只有约 2:1，不适用——
+   「放回输入框再发一次」这类最有价值的提示要看得清，与 .lb 的层级关系保留。 */
 .msgmenu.dark button .nt { color: rgba(242, 242, 242, .64); }
 .msgmenu.dark button.danger .lb { color: #ff6b61; }
 .msgmenu.dark button.danger .nt { color: rgba(255, 122, 110, .66); }
@@ -600,17 +600,16 @@ input, textarea {
   font-size: var(--text-base); color: var(--text-muted);
 }
 .del-row button:hover { border-color: var(--border-strong); color: var(--text); }
-/* 危险按钮：浅底 + 语义色字 + 语义色描边。
-   从前是白字压 var(--danger)，暗档 #d08b81 上只有约 2.8:1——这套界面里最要看清的
-   两个按钮（删联系人、删消息）反而最看不清。components.css 后来立了同一口径，但那条选择器
-   写的是 button.primary.danger，管不到这里的裸 .danger，同一个 bug 只修了一个入口。 */
+/* 危险按钮：浅底 + 语义色字 + 语义色描边，明暗两主题下对比度都站得住。
+   components.css 的 button.primary.danger 是同一口径；这里是裸 .danger，
+   两条规则各管各的入口，改的时候两处一起看。 */
 .del-row button.danger { color: var(--danger); background: var(--danger-soft); border-color: var(--danger); }
 
 /* 轻提示（toast）：底部居中浮层，自动消失，不再混排进消息流 */
 .toast-layer {
   position: fixed; left: 50%;
-  /* 从前是裸 96px：既没算底部安全区，也没跟 --kb（键盘弹起时输入条上移）。
-     同一屏上的 undo-bar / composer / 悬浮球都按这两样让位，只有它按一个巧合的数字。 */
+  /* 底部基准 96px 之外补上安全区与 --kb（键盘弹起时输入条上移），
+     与同屏的 undo-bar / composer / 悬浮球同口径让位。 */
   bottom: calc(96px + env(safe-area-inset-bottom, 0px) + var(--kb, 0px));
   transform: translateX(-50%);
   z-index: var(--z-chat-pop);
@@ -685,8 +684,8 @@ input, textarea {
 }
 .editbox-close:hover { background: var(--bg-hover); color: var(--text); }
 .editbox textarea {
-  /* 长到这里就出滚动条：原来是 overflow:hidden + JS 另算一个高度上限，
-     两个上限打架，超出的那截既看不见也滚不动，改长消息时像内容被吞了。 */
+  /* 长到这里就出滚动条：高度上限只有 min/max-height 这一处口径，
+     超出部分始终可见、可滚，不会出现内容被吞的死区。 */
   width: 100%; resize: none; overflow-y: auto; box-sizing: border-box;
   font-size: var(--text-md); line-height: 1.65;
   min-height: 82px; max-height: min(240px, 36vh); max-height: min(240px, 36dvh);
@@ -741,16 +740,15 @@ input, textarea {
   #log { padding: var(--space-7) var(--space-6) var(--space-2); }
   #bar { padding: var(--space-5) var(--space-6) var(--space-4); }
   /* 手机上一行输入不需要 64px 的空白高度；收紧后把空间还给消息流，
-     多行内容仍按原来的 max-height 自动长高。 */
+     多行内容仍按 max-height 自动长高。 */
   #composer { padding: 0 var(--space-5) calc(8px + env(safe-area-inset-bottom, 0px)); }
   #ipt { min-height: 52px; padding-top: var(--space-4); }
   .composer-bar { gap: var(--space-3); }
   .bubble { max-width: 84%; }
-  /* 编辑框顶的是整行，不是半条气泡。从前它按内容 shrink-to-fit，又挨着头像那一列：
-     360 屏上头像+间距先吃掉 46px，框只剩 276，去掉内边距能写字的是 247，
-     而同一屏底下的输入框有 326 —— 改一条长消息全程在比正常输入更窄的栏里换行。
-     编辑态让出头像那一列并铺满整行：整行宽的块谈不上"横移半格"，位置感由它
-     仍站在原气泡那一行给出。桌面不动（那里编辑框与气泡同为 78%/520 是刻意的）。 */
+  /* 编辑框顶的是整行，不是半条气泡：编辑态让出头像那一列并铺满整行，
+     与底下输入框同宽，改长消息不在更窄的栏里换行；整行宽的块谈不上
+     "横移半格"，位置感由它仍站在原气泡那一行给出。
+     桌面不动（那里编辑框与气泡同为 78%/520 是刻意的）。 */
   .msg-row.editing .msg-ava { display: none; }
   .msg-row.editing .editbox { width: 100%; max-width: none; padding: var(--space-5); }
   .composer-bar .tip { display: none; }
@@ -824,9 +822,7 @@ input, textarea {
 .s-ava img { width: 100%; height: 100%; border-radius: inherit; object-fit: cover; display: block; }
 .s-ava.has-img { overflow: hidden; }
 
-/* 我头像的资料弹层早已改成「点头像直达设置页」（Rail.tsx 的 onOpenProfilePage），
-   .rail-pop / .pop-* 那一整块（约 13 行）连同 .has-pop 钩子都是没人认领的死规则，已删。
-   留着的时候注释写着「点头像弹出资料卡」，读代码的人会被带到不存在的行为上去。 */
+/* 我头像点击直达设置页（Rail.tsx 的 onOpenProfilePage），没有资料弹层。 */
 #railMenuBtn[aria-expanded="true"] { background: var(--bg-hover); color: var(--text); }
 .rail-menu {
   position: absolute; left: 58px; bottom: 0; width: 216px;
@@ -1049,8 +1045,8 @@ input, textarea {
   scrollbar-gutter: auto;
 }
 /* 视图是 #content 这条 flex 列里唯一伸缩的孩子：断网提示条占的是它上面一行。
-   从前写 height:100%，加上提示条后整列基线超 100%，flex-shrink 把视图压掉一条，
-   被压掉的正好是会话页底部那条带安全区内边距的输入区。 */
+   高度由 flex 撑出、不写 height:100%——同列多一行提示条时基线会超 100%，
+   flex-shrink 会把视图压掉一条（被压的正好是会话页底部带安全区内边距的输入区）。 */
 .view { display: none; flex: 1 1 auto; min-height: 0; overflow-y: auto; }
 /* 常驻预留滚动条槽位：内容长短随联系人变化时，
    滚动条忽现忽隐会让居中的内容横向抖 8px，看起来就像间距变了 */
@@ -1058,13 +1054,9 @@ input, textarea {
 /* 消息流例外：槽位只在右侧预留，会把右对齐的「我的头像」比她的头像多推 10px
    （实测 24 vs 14）。聊天流本来就贴着底部，这条滚动条没有导航价值——
    不显示也就没有忽现忽隐，预留槽要解决的问题同样不存在。 */
-/* 消息行不做 content-visibility 跳渲染——「常开」与「落底后再放开」两个变体都试过、
-   都撤了：常开时离屏行塌缩成估算高度，「进会话落底」量到的 scrollHeight 是假的
-   （实测 500 行差 1352px）；「落底稳定两拍后再放开」绕开了估高，但跳转落点附近的
-   行在跳完之后才完成最终布局，scrollHeight 随后变化让一次性 scrollTop 赋值停在半空，
-   且跳转自己触发的 scroll 事件在高度长完之后才派发、会把 onScroll 重判的 stickRef
-   摘掉——「一键到底」「切人落底」接连失准。滚动正确性（贴底 ±2px、未读计数、
-   搜索/地图定位）比长会话的渲染收益值钱，整体撤除，详见 experience.css 的撤除记录。
+/* 消息行不做 content-visibility 跳渲染：离屏估高会让 scrollHeight 在跳转后才变化，
+   「一键到底」「切人落底」接连失准——与滚动契约（贴底 ±2px、未读计数、搜索/地图定位）
+   冲突，见 experience.css 同款说明与 ChatView.tsx。
    scrollDown 的收敛循环保留：对图片解码、链接卡长高这类正常的落底后高度变化仍有效。 */
 
 /* 触屏没有 Ctrl+Enter / Shift+Enter，这类快捷键说明只在有物理指针时出现 */
@@ -1078,10 +1070,8 @@ input, textarea {
 #view-chat.active #chat { height: 100%; }
 
 /* ── 主动性面板（内嵌联系人资料页）── */
-/* 列表卡：一个面 + 行间一条细线。主动性面板的几类行容器此前各写一遍
-   「elevated 底 + 1px 边框 + 圆角」，圆角还分 --radius-md / lg / xl 三档 ——
-   同一层级的信息给了三种盒子，而它们本来就坐在资料页的卡片里，卡里再套一圈
-   卡只是把可用宽度吃掉。参照微信/钉钉的设置列表：外框一次，行与行用线分开。 */
+/* 列表卡：一个面 + 行间一条细线——外框一次，行与行用线分开（参照微信/钉钉的
+   设置列表）。同一层级的行容器共用同一种盒子，不卡里再套卡。 */
 .list-card {
   display: flex; flex-direction: column;
   background: var(--bg-elevated); border: 1px solid var(--border);
@@ -1188,10 +1178,8 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 .at-custom { margin-top: var(--space-3); }
 
 .head { margin-bottom: var(--space-10); }
-/* 页标题：状态与设置原来是两套，一切就跳。状态走 .head h1（--text-xl = 16px/600），
-   设置在 .head-row 里压根没配规则，落在浏览器默认的 2em（30px/700）——
-   于是「状态 ↔ 设置」互切时标题忽大忽小，连上下留白都跟着晃。
-   同一个位置同一件事，写一次两边同用；上下留白也一并拉平（见 #status .head）。 */
+/* 页标题：状态与设置同一个位置同一件事，.head h1 与 .head-row h1 共用这一条，
+   写一次两边同用，互切时标题字号与上下留白都稳定（见 #status .head）。 */
 .head h1, .head-row h1 {
   margin: var(--space-7) 0 var(--space-5);
   /* 30px/700 是在"喊"，不是在做标题。压到 30px/600 读起来更笃定；
@@ -1215,8 +1203,8 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
   background: var(--bg-sunken); border: 1px solid var(--border);
   border-radius: var(--radius-lg); transition: border-color var(--dur-fast);
 }
-/* 「聚焦」语义全站一个颜色语言：全局输入走 --accent-ink（foundation.css 输入段），
-   这里从前落在 --border-strong 上，同一个动作两种颜色。 */
+/* 「聚焦」语义全站一个颜色语言：--focus-ring 即 --accent-ink，与全局输入同色，
+   同一个动作不落第二种颜色。 */
 .probe input:focus { border-color: var(--focus-ring); }
 .probe input::placeholder { color: var(--text-subtle); }
 .probe button {
@@ -1337,8 +1325,8 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 .mem-space-btn { display: inline-flex; align-items: center; gap: 5px; max-width: 220px; }
 .mem-space-caret { transition: transform var(--dur-fast) ease; flex-shrink: 0; }
 .mem-space-caret.on { transform: rotate(180deg); }
-/* 锚在按钮上的下拉弹层，与 .s-add-pop / .chatmenu-pop 同族，走 --z-subpop；
-   原来的裸 40 与 --z-backdrop 撞档，读起来像遮罩层，其实是内容弹层。 */
+/* 锚在按钮上的下拉弹层，与 .s-add-pop / .chatmenu-pop 同族，走 --z-subpop
+   （内容弹层档，不占 --z-backdrop 的遮罩档）。 */
 .mem-space-pop {
   position: absolute; right: 0; top: calc(100% + 6px); z-index: var(--z-subpop);
   width: min(300px, calc(100vw - 32px));
@@ -1377,10 +1365,8 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 }
 
 /* 统一空态：搜索、记忆列表、模型列表等共用同一视觉口径。
-   这里从前写的是 `.empty-state { @extend .empty; }`（三行）——@extend 是 Sass 语法，
-   纯 CSS 里浏览器把整条声明块丢掉，而构建没有预处理管它：产物 dist 里原样躺着
-   `.empty-state,.s-empty,.ml-empty{@extend .empty;}`，于是这句「统一」从来没生效过。
-   要共用就老老实实写组选择器。字号/颜色口径在 components.css 末尾那一组里。 */
+   @extend 是 Sass 语法，纯 CSS 里整条声明块会被浏览器丢掉——
+   共用视觉就老老实实写组选择器。字号/颜色口径在 components.css 末尾那一组里。 */
 .empty, .empty-state, .s-empty, .ml-empty, .switch-empty {
   padding: var(--space-6) var(--space-5); text-align: center; line-height: 1.8;
 }
@@ -1421,9 +1407,8 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 
 #status {
   max-width: var(--col); margin: 0 auto; padding: var(--space-10) var(--space-8) 64px;
-  /* 一列。每个分区本来就是一块整宽的 .section，总览内部的多列卡片归它自己的 .ov-grid 管。
-     此前写成 repeat(auto-fit, minmax(400px, 1fr))：880px 的容器正好排得下两列，
-     于是五个分区里有四个被塞进左半栏，右半栏整片空白（实测 section 414px / 可用 844px）。 */
+  /* 一列。每个分区本来就是一块整宽的 .section，总览内部的多列卡片归它自己的
+     .ov-grid 管；分区层面固定单列，五个分区始终等宽通栏，不给右半栏留空档。 */
   display: grid; grid-template-columns: minmax(0, 1fr);
   gap: var(--space-7); align-items: start;
 }
@@ -1449,8 +1434,7 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 }
 #status .table-wrap { overflow-x: auto; }
 
-/* 模型用量：维度四选一（chips），单表展示；标题行是卡片的一部分（内边距 + 分隔线），
-   不再是压在圆角框上的裸文字。 */
+/* 模型用量：维度四选一（chips），单表展示；标题行是卡片的一部分（内边距 + 分隔线）。 */
 .u-dims { display: flex; flex-wrap: wrap; gap: var(--space-3); margin: var(--space-6) 0 var(--space-5); }
 .u-card { min-width: 0; }
 .u-head {
@@ -1463,9 +1447,9 @@ h2.sub { margin: var(--space-8) 0 var(--space-4); font-size: var(--text-md); fon
 /* 按日表的翻页条：贴在卡片内部底边，样式与调用记录页的 .tbl-pager 对齐 */
 .u-card .tbl-pager { padding: var(--space-4) var(--space-6); border-top: 1px solid var(--border); margin-top: 0; }
 
-/* margin-bottom 已统一到上面那一份 .head（此前这里写 20px，与另两份 22px 互相覆盖） */
+/* margin-bottom 由上面那一份 .head 的口径统一给出 */
 /* flex 头部只属于状态页（标题+描述在左、刷新在右）；
-   曾经写成全局 .head，把记忆/打算页的标题和正文挤成了同一行。 */
+   记忆/打算页的 .head 保持块状上下排布。 */
 #status .head { display: flex; align-items: flex-start; gap: var(--space-6); }
 .head .t { flex: 1; }
 .head button.refresh {
@@ -1648,8 +1632,7 @@ td .raw-hint {
 @media (max-width: 620px) {
   .check { flex-wrap: wrap; }
   .check .k { width: auto; }
-  /* 87px 那段缩进是按桌面 `.check .k{width:76px}` + 间距算出来的裸值；.k 改成 auto 之后
-     不清掉它，手机上每条「修复建议」仍白让出 87px，360px 屏里正文只剩 185px 一条竖栏。 */
+  /* 手机上 .k 是 auto 宽，紧跟其后的 .fix 不留桌面那 87px 缩进，正文铺满整行。 */
   .check .fix { margin-left: 0; max-width: 100%; text-align: left; }
   .gate { flex-wrap: wrap; }
   .gate .name { width: auto; }
@@ -1723,7 +1706,7 @@ input:focus, textarea:focus, select:focus {
 input::placeholder, textarea::placeholder { color: var(--text-subtle); }
 textarea { resize: vertical; line-height: 1.7; min-height: 78px; }
 /* 原生 select 去系统外观：Windows/Electron 默认渲染在暗色下是浅蓝高亮的"补丁感"下拉，
-   统一换成自绘箭头；下拉弹层本身无法被 CSS 控制，所以能不用 select 的场景都改成了分段控件。 */
+   箭头自绘；下拉弹层本身无法被 CSS 控制，能用分段控件替代的场景都不用 select。 */
 select {
   cursor: pointer;
   appearance: none; -webkit-appearance: none;
@@ -1742,10 +1725,8 @@ select {
 }
 .check input { width: auto; margin-top: 3px; flex: none; }
 
-/* 按钮：两个配色底 + 一个尺寸档，正交组合。此前 button.primary 与
-   button.btn.primary 是同一个盒子描了两遍，.actions 里没带 class 的裸按钮
-   另有第三套皮 —— 现在一律 class="primary"（强调）/ class="btn"（中性），
-   要紧凑再加 "sm"。 */
+/* 按钮：两个配色底 × 一个尺寸档，正交组合——
+   class="primary"（强调）/ class="btn"（中性），要紧凑再加 "sm"。 */
 button.primary, button.btn {
   padding: var(--space-4) var(--space-7); border-radius: var(--radius-lg);
   font-size: var(--text-md); font-weight: 500; cursor: pointer;
@@ -1946,19 +1927,19 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
     transform: translateY(1px) scale(.985);
     filter: brightness(.95);
   }
-  /* 只靠 hover 露出来的装饰在触屏上等于从不显示：长按消息那圈描边改成常驻不了，
-     但它本来只是"这里可以右键"的暗示，触屏有长按，撤掉即可。 */
+  /* 只靠 hover 露出来的装饰在触屏上等于从不显示：长按消息那圈描边没有触屏等价物
+     ——它本来只是"这里可以右键"的暗示，触屏有长按语境，不做即可。 */
   .msg-row:hover .bubble { outline: none; }
 }
 
 
 
-/* 主题风格层已移除：产品只保留明暗、强调色和壁纸三个正交维度。 */
+/* 主题只有明暗、强调色和壁纸三个正交维度，没有独立的风格调色层。 */
 
 /* ── 壁纸与玻璃（个性化层）──────────────────────────────────────
    壁纸是 body 下面的一个固定层（#wp-layer，z-index:-1，由 lib/wallpaper.ts 管理）；
-   界面各表面改用 color-mix 半透明，壁纸从底下透出来。
-   玻璃不再是独立开关：html[data-glass="on"] 跟着壁纸走（壁纸开着就开），
+   界面各表面用 color-mix 半透明，壁纸从底下透出来。
+   玻璃跟随壁纸：html[data-glass="on"] 随壁纸开启（壁纸开着就开），
    给 Rail / 侧栏 / 弹窗这几块固定表面加 backdrop-filter。
    纪律：模糊只给「不随内容滚动的大块表面」——
    滚动容器自己开 backdrop-filter 是 WebView 上单条最贵的样式（见 components.css 同款告诫）。 */
@@ -1979,8 +1960,8 @@ button.tool-btn, button.bar-btn, button.ml-btn, button.key-eye, .switch-act,
 
 /* 内置预设「星空流星」：三层视差星空（密星闪烁 + 亮星缓漂）+ 星云微光 + 十四道流星。
    性能纪律：动画只碰 transform/opacity；星云的柔光直接烘进渐变里——
-   从前在动画层上叠 filter: blur(80px) + mix-blend-mode: screen，每帧都要重采样，
-   是整块壁纸最贵的一条样式，视觉上却和预柔化渐变几乎分不出差别。
+   动画层不叠 filter / mix-blend-mode（每帧重采样，是整块壁纸最贵的一条样式，
+   视觉上和预柔化渐变几乎分不出差别）。
    页面不可见时 html[data-wp-paused] 统一暂停（lib/wallpaper.ts 管）；
    reduced-motion 不作用于壁纸内容——它是用户显式选中的动态素材。 */
 #wp-layer[data-wp="starry"] { background: linear-gradient(180deg, #090e22 0%, #1d1b3e 60%, #352f5c 100%); }
@@ -2234,8 +2215,7 @@ html[data-glass="on"] {
   --glass-noise: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.88' numOctaves='2' stitchTiles='stitch'/%3E%3CfeColorMatrix type='saturate' values='0'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)' opacity='.065'/%3E%3C/svg%3E");
 }
 
-/* 资料页顶栏原来用 90% 的 --bg 压暗，壁纸一开就会变成一条黑塑料。
-   这里把它变成真正的悬浮玻璃条；标签组再嵌入一条更暗的凹槽，层级才清楚。 */
+/* 资料页顶栏：壁纸之上的悬浮玻璃条；标签组再嵌入一条更暗的凹槽，层级才清楚。 */
 html[data-glass="on"] .pf-topbar {
   padding: 6px 8px;
   border: 1px solid var(--glass-edge-soft);

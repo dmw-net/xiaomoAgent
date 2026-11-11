@@ -7,8 +7,7 @@ import type { GateState, TaskRow } from "../types";
 export function runProactiveCheck(cid?: string): Promise<{ started: boolean; note?: string }> {
   return postJson(cq("/api/proactive/run", cid));
 }
-/** state 分查「待执行 / 已执行」；limit/offset 走统一的那一档（从前这里写死 40，
- *  而服务端只发 LIMIT 不发 total —— 取满就静默到底）。 */
+/** state 分查「待执行 / 已执行」；limit/offset 走「界面 → 列表每页」那一档，服务端随带 total。 */
 export function fetchProactiveTasks(limit: number, offset = 0, state?: "pending" | "history", cid?: string):
   Promise<{ tasks: TaskRow[]; total: number }> {
   return getJson(cq("/api/proactive/tasks?limit=" + limit + "&offset=" + offset

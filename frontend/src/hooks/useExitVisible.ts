@@ -7,11 +7,10 @@ import { useCallback, useEffect, useRef, useState, type AnimationEvent } from "r
 export const EXIT_FALLBACK_MS = 240;
 
 /**
- * 弹层退场动画的共享计时器（Modal / UndoBar 那套交接的收口版）。
+ * 弹层退场动画的共享计时器（Modal / UndoBar 的退场交接也走这里）。
  *
  * 入场动画由 CSS 自己播，退场却做不到「卸载了再播」——节点一摘动画就没了，
- * 所以关闭时必须先留几帧淡出，播完才真正卸载。此前这套逻辑在 Modal 和
- * UndoBar 各手写一遍，其余弹层一律瞬时消失；这里收成一个口，所有弹层复用：
+ * 所以关闭时必须先留几帧淡出，播完才真正卸载。这里收成一个口，所有弹层复用：
  *
  *   const { visible, closing, onAnimationEnd } = useExitVisible(open, "menuOut");
  *

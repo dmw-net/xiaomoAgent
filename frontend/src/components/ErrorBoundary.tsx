@@ -50,9 +50,8 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
     if (this.state.error === null) return this.props.children;
     const message = this.state.error.message || String(this.state.error);
     const shortStack = lastCaught?.stack ?? "";
-    // 降级卡片同样只消费主题令牌：从前是全内联裸值（z-index 1000、radius 14、
-    // rgba(0,0,0,.18) 阴影、#fff 文字），是全站唯一不跟随主题的组件——暗色下
-    // 详情代码块的 rgba(0,0,0,.06) 底色会整个失效。字号走 --text-* 档位。
+    // 降级卡片同样只消费主题令牌，明暗两主题下底色、阴影、文字都成立。
+    // 字号走 --text-* 档位。
     return (
       <div
         role="alert"

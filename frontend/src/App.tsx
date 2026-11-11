@@ -352,8 +352,6 @@ export default function App(): JSX.Element {
   });
 
   useEffect(() => {
-    // 此前这个 effect 没有依赖数组：App 每渲染一次就解绑再重绑一次全局
-    // keydown，而 contactsStore 每 10s 广播一次全站重渲染。
     const h = (e: KeyboardEvent): void => keyHandlerRef.current(e);
     window.addEventListener("keydown", h);
     return () => window.removeEventListener("keydown", h);
@@ -424,8 +422,7 @@ export default function App(): JSX.Element {
     setProfile({ mode, id, draft });
   }, []);
 
-  /** 搜索命中要跳到位：消息命中滚到那句话并闪一下，记忆命中直接打开那位的记忆分区。
-   *  从前两类都只切到人——号称「回车搜全历史」，点完还得自己在长会话里往下翻。 */
+  /** 搜索命中要跳到位：消息命中滚到那句话并闪一下，记忆命中直接打开那位的记忆分区。 */
   const [focusMsg, setFocusMsg] = useState<number | null>(null);
   const openHit = useCallback((kind: "message" | "memory", id: string, messageId: number): void => {
     if (kind === "memory") {
@@ -470,9 +467,8 @@ export default function App(): JSX.Element {
   }, [chatShown]);
 
   /** 助手是覆盖式弹窗，盖在任何一屏之上都能召唤——包括资料页（它只是 #content 里的又一层，
-   *  z 档 78/79 本就在其上方）。它自己的「助手设置」不再甩到外面的资料页去了：
-   *  那一屏现在渲染在弹窗内部（见 AssistantDialog），返回就回到原来那条会话；
-   *  从前是收起弹窗、开一张身后的整页资料，返回只把整页收掉，人再也回不到助手里。 */
+   *  z 档 78/79 本就在其上方）。它自己的「助手设置」渲染在弹窗内部（见 AssistantDialog），
+   *  返回就回到召唤前的会话。 */
   const asstShown = assistantOpen;
   const shellRef = useRef<HTMLDivElement>(null);
   const titlebarContext = profile

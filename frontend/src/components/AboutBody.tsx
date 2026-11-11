@@ -6,8 +6,7 @@ const RELEASES_URL = "https://github.com/dmw-net/xiaomoAgent/releases";
 
 /**
  * 外壳里 <a target="_blank"> 点了没反应，外链统一走这里（见 open-external.ts）。
- * 打开失败时把原因和原始地址摊在这一行下面：从前只写 console.warn，
- * 用户看到的就是「点了没反应」，连该怪谁都不知道。
+ * 打开失败时把原因和原始地址摊在这一行下面——不然用户看到的就是「点了没反应」，连该怪谁都不知道。
  */
 function ExtLink({ href, children }: { href: string; children: string }): JSX.Element {
   const [note, setNote] = useState("");

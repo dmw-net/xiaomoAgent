@@ -9,9 +9,7 @@ let openModalCount = 0;
 const EXIT_FALLBACK_MS = 240;
 
 /**
- * 通用弹窗：点遮罩关闭、Esc 关闭、role=dialog + aria-modal。
- * 此前 WeChatSection / ModelSection / MemoryPanel 各写一套，
- * 无障碍语义全缺——收成一个口。
+ * 通用弹窗：点遮罩关闭、Esc 关闭、role=dialog + aria-modal，全站收成一个口。
  */
 export default function Modal({ onClose, label, className = "", head, children, placement = "sheet" }: {
   onClose: () => void;
@@ -34,11 +32,10 @@ export default function Modal({ onClose, label, className = "", head, children, 
       if (openModalCount === 0) document.documentElement.classList.remove("modal-open");
     };
   }, []);
-  // 退场动画：入场有 scrimIn/cardIn，关闭以前是瞬时消失——Quiet Studio 的收尾
-  // 突兀感是全站最明显的动效缺口。挂上 data-closing 先播淡出，动画结束（或
+  // 退场动画：入场有 scrimIn/cardIn，关闭也走淡出收尾。挂上 data-closing 先播淡出，动画结束（或
   // EXIT_FALLBACK_MS 兜底，覆盖 reduced-motion 下 animation:none 的情形）才真正
   // 卸载。遮罩点击 / Esc 这两条内部收口走 requestClose；children 里按钮直接调
-  // parent 的 onClose 的路径保持原样瞬时关——那是调用方语义，不强行拦。
+  // parent 的 onClose 的路径仍是瞬时关——那是调用方语义，不强行拦。
   const [closing, setClosing] = useState(false);
   const finishedRef = useRef(false);
   const onCloseRef = useRef(onClose);
@@ -54,8 +51,8 @@ export default function Modal({ onClose, label, className = "", head, children, 
   // 卡片本体就是"内部"：点它不关，点遮罩关。开层那一发手势不会被这里看到
   // （useDismiss 听的是 pointerdown，比这个监听器存在更早），所以不需要时间宽限。
   useDismiss(!closing, requestClose, cardRef);
-  // 此前弹窗既不给初始焦点也不在关闭后交还：Tab 会溜到遮罩背后，关掉之后
-  // 焦点掉回 body，键盘用户得从头走一遍页面。
+  // 焦点管理：打开时把焦点收进弹窗（首个可聚焦元素），关闭后交还给打开前的元素；
+  // 缺了这两步，Tab 会溜到遮罩背后，关掉之后焦点掉回 body，键盘用户得从头走一遍页面。
   useEffect(() => {
     const back = document.activeElement as HTMLElement | null;
     // preventScroll：焦点该进弹窗，但不该因此卷动背景列表

@@ -40,13 +40,12 @@ import { MAX_CHAT_IMAGES } from "../../../../shared/limits";
 type Pending = { text: string; at: number; imgs: string[]; localId: string; turnId?: string; failed?: boolean; queued?: boolean; outbox?: boolean; voice?: MessageAttachmentMeta };
 type ModelOption = { value: string; label: string; detail: string; provider: string };
 
-/** 会丢掉或重写已有内容的聊天动作，一律先经过同一个确认框。 */
+/** 会丢掉已有内容的聊天动作，一律先经过同一个确认框。重新生成可逆（旧版本留档），不经这条确认。 */
 type PendingChatConfirm =
   | { kind: "edit-switch"; m: MessageRow; textOnly: boolean }
-  | { kind: "regenerate"; m: MessageRow }
   | { kind: "retract"; m: MessageRow };
 
-/** 消息流的渲染节点：普通消息之间插日分隔；时间戳落在气泡内，不再占独立行。 */
+/** 消息流的渲染节点：普通消息之间插日分隔；时间戳落在气泡内、不单独占行。 */
 type ListNode =
   /* day：daysep 的 React key 用日期串而不是 label——「今天」这类相对称呼跨页拼接
      （载入更早 / 搜索窗口合并）后列表里可能出现两条同 label 的分隔，label 做 key
@@ -166,8 +165,8 @@ function mergeRowsFullPage(oldRows: MessageRow[], next: MessageRow[]): MessageRo
 }
 
 /**
- * 正在打的字按会话留着（微信口径）：换联系人以前会连草稿一起吞掉，
- * 因为会话页按联系人 key 挂载，重挂载就把输入框打回空。
+ * 正在打的字按会话留着（微信口径）：会话页按联系人 key 挂载，不留的话
+ * 重挂载就把输入框打回空。
  *
  * 只存文字、不存待发图片：没发出去的图在 /api/media 里属于孤儿，
  * sweepOrphanMedia 满 24 小时无引用就删，留回来只剩个碎图占位。
@@ -302,8 +301,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   ownerAvatar: string;
   contactAvatar: string;
   /** 当前联系人的中文代词。 */
-  /** 只用来在「选中的联系人已经被删掉」时切回默认会话——顶栏那颗切人芯片早已不在这里渲染
-   *  （窄屏给的是返回钮，宽屏侧栏就在旁边），所以不再收 onOpenContacts。 */
+  /** 只用来在「选中的联系人已经被删掉」时切回默认会话。顶栏不渲染切人芯片
+   *  （窄屏给的是返回钮，宽屏侧栏就在旁边），也就不收 onOpenContacts。 */
   onSwitchContact?: (id: string) => void;
   /** 助手工作区：会话按派生联系人 id 隔离，不走全局当前联系人。 */
   contactIdOverride?: string;
@@ -457,7 +456,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const [menu, setMenu] = useState<MenuState | null>(null);
   // 删除的二次确认：微信式居中弹窗（菜单只留短标签，说明文字放这里）。
   const [delTarget, setDelTarget] = useState<MessageRow | null>(null);
-  // 切编辑目标、重新生成、撤回共用同一张确认框：菜单只负责发起，不再点一下就直接改数据。
+  // 切编辑目标、重新生成、撤回共用同一张确认框：菜单只负责发起，不直接改数据。
   const [pendingConfirm, setPendingConfirm] = useState<PendingChatConfirm | null>(null);
   // 会话内搜索：只搜当前联系人，命中后按窗口跳转。
   const [searchOpen, setSearchOpen] = useState(false);
@@ -506,7 +505,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       .catch((e: Error) => { setCtx(null); setCtxErr(e.message); });
   }, [cid, conversationId]);
 
-  // ── 思考强度：收进模型选择浮层做二级区（不再是并排的独立按钮）──
+  // ── 思考强度：收进模型选择浮层做二级区 ──
   const [thinking, setThinking] = useState<ThinkingControl | null>(null);
   const [thinkBusy, setThinkBusy] = useState(false);
   const loadThinking = useCallback((): void => {
@@ -704,7 +703,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       })
       .finally(() => setThinkBusy(false));
   };
-  // 这两个浮层此前只认「点遮罩」，键盘用户按 Esc 什么都不会发生。
+  // 两个浮层（模型弹层 / 上下文弹层）走 useDismiss：点外部 / 按 Esc 都能关。
   // 浮层本体标 data-keep-menu，内部点击才不会被 useDismiss 误判成外部点击。
   useDismiss(ctxOpen, () => { setCtxOpen(false); });
   // 定位 hook 吃 visible：退场帧里坐标原样保留（useAnchoredPop 关掉会清成 null，
@@ -814,11 +813,10 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const wasPausedRef = useRef(!!paused);
   /**
    * 沉睡 = 标签页切走 / 宿主暂停 / 自身被 display:none 收起。
-   * 第三条最易漏：窄屏的会话列表页与资料页叠层时 ChatView 仍在全速轮询。
+   * 第三条最易漏：窄屏的会话列表页与资料页叠层时，会话页只是被藏住、组件还活着。
    *
    * 提到组件作用域是故意的：轮询链与在飞处理单的 watch 链**都要**看它，
-   * 而 watch 那条从前各写一份判断，结果关着的助手弹窗还在以约 2.2 req/s 打 4.5 分钟。
-   * 一个定义两处用，就不会再漂移。
+   * 一个定义两处用，两条链的判断不会漂移。
    */
   const asleep = useCallback((): boolean => document.hidden
     || pausedRef.current
@@ -914,8 +912,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const pullRef = useRef<() => Promise<void>>();
   const pullAllRef = useRef<() => Promise<void>>();
   const pullTurnRef = useRef<(turnId: string, prefetched?: MessageRow[]) => Promise<MessageRow[]>>();
-  /** 比当前最早那条更早、还没进界面的行数（服务端报的，0 = 已经到顶）。
-   *  从前是 `返回行数 >= 200` 反推，那个 200 前后端各写一遍，改一边就悄悄失效。 */
+  /** 比当前最早那条更早、还没进界面的行数（服务端报的，0 = 已经到顶）。 */
   const [olderLeft, setOlderLeft] = useState(0);
   /** 连续无变化的轮询次数：驱动退避（2.5s→5s→10s），任何动静都归零。 */
   const idleTicksRef = useRef(0);
@@ -1032,8 +1029,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             setBusy(false);
             idleTicksRef.current = 0; // 刚有动静：轮询回到最快档
             if (turn.status === "failed") {
-              // 失败必须当场说破：此前只有 checkTurnState（首屏/有新消息那一拍）会立横幅，
-              // watch 的收尾一路静默 —— 模型挂掉后「正在回复」一灭就什么都不剩，
+              // 失败必须当场说破，否则「正在回复」一灭就什么都不剩，
               // 会话里凭空少一条。横幅（详情+重试）与轻提示双保险，重试成功后一起收掉。
               setFailure({ id: turnId, error: turn.error ?? null });
               addNotice("这条没回上来，点重试再试一次", { retryTurnId: turnId });
@@ -1169,7 +1165,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
    * 为什么必须查：typing/busy/pendingTurnRef 全在这个组件实例里，而会话页按联系人
    * `key` 挂载 —— 重答跑了一半你切走再回来，人还在答，界面却已经"在线"了，
    * 连「停止」都够不到（实测：切回时顶栏=在线、无停止钮、气泡数比离开时少两条）。
-   * 顺带覆盖另一条此前没人接的路：联系人从微信/别的窗口回话，这边同样该显示在忙。
+   * 顺带覆盖另一条路：联系人从微信/别的窗口回话，这边同样该显示在忙。
    *
    * 在飞的那一轮不能只在「最新一条」里找：重答**较早**轮次时，那一轮的 created_at
    * 还是它当初的时间，排不进 LIMIT 1 —— 切走再切回（或刷新页面）就找不到在飞轮，
@@ -1227,8 +1223,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     for (const m of data.messages) {
       if (m.id <= lastIdRef.current) continue;
       // 占位认领：只负责移除占位气泡，真实消息一律要进列表。
-      // legacy 版认领=把占位 DOM 升级成真消息；这里如果认领后不 push，
-      // 用户刚发的那句话会当场消失（0.1.0 实测踩过）。
+      // 认领后若不 push，用户刚发的那句话会当场消失。
       if (m.role === "user") {
         // 有 turn_id 且占位也已回填才按单认领（精确）；占位还没拿到 turnId（/api/say
         // 的响应比这一拍轮询慢）或老数据没有 turn_id 时回落文本全等——否则认领不上，
@@ -1439,7 +1434,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
 
   /** 点选一张表情 = 独立发一条「表情消息」：attachments + kind:image 的 meta（label 随行），
    *  与 send_emote 在应用端的落库口径一致——模型回放历史时靠 meta.label 记住发过哪张。
-   *  文本留空：图即是这句话，气泡里不再并排一行字。 */
+   *  文本留空：图即是这句话，气泡里不并排一行字。 */
   const sendEmote = useCallback((pick: { url: string; label: string }): void => {
     send("", {
       attachments: [pick.url],
@@ -1572,8 +1567,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   const doRegenerate = useCallback((m: MessageRow): void => {
     if (!m.turn_id || busyGuard()) return;
     const tid = m.turn_id;
-    // 与 send / retry 同一套：登记在飞的处理单、点亮「正在回复」、盯着它直到出结果。
-    // 此前只把旧气泡撤下就结束了，接下来十几秒界面毫无动静——看不出到底有没有在重答。
+    // 与 send / retry 同一套：登记在飞的处理单、点亮「正在回复」、盯着它直到出结果，
+    // 让重答全程都有「正在回复」的可见反馈。
     pendingTurnRef.current = tid;
     setTyping(true);
     setBusy(true);
@@ -1603,13 +1598,6 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       .catch(() => addNotice("没切换成，稍后再试", { info: true }))
       .finally(() => setBusy(false));
   }, [addNotice, busyGuard, cid]);
-
-  /** 版本条右位的「再来一版」：与菜单「重新生成」同一条确认弹窗，
-   *  确认后 doRegenerate 重答，旧版本留档、新回答追加为下一个版本。 */
-  const requestVariantGenerate = useCallback((m: MessageRow): void => {
-    if (busyGuard()) return;
-    setPendingConfirm({ kind: "regenerate", m });
-  }, [busyGuard]);
 
   useLayoutEffect(() => {
     if (editingId === null) return;
@@ -1708,7 +1696,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     setPendingConfirm(null);
     if (!target) return;
     // 弹窗开着的时候目标可能已经被删/被作废（另一端停止、重答中）。按 id 从最新列表
-    // 重取一行再动手——拿陈旧行去 regenerate/retract 会打到失效目标上，
+    // 重取一行再动手——拿陈旧行去 retract 会打到失效目标上，
     // 拿它填编辑框则会把已被取代的内容当原文。
     const fresh = msgs.find((m) => m.id === target.m.id);
     if (!fresh) {
@@ -1716,7 +1704,6 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       return;
     }
     if (target.kind === "edit-switch") beginEdit(fresh, target.textOnly);
-    else if (target.kind === "regenerate") doRegenerate(fresh);
     else doRetract(fresh);
   };
 
@@ -1764,7 +1751,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
       return;
     }
     // 改后重聊 = 版本式重答（与重新生成同构）：旧回复进版本条、新回答落回这一轮的位置，
-    // 编辑点之后的对话原样保留——不再作废折叠。
+    // 编辑点之后的对话原样保留，不作废、不折叠。
     stickRef.current = true;
     userHoldRef.current = false;
     chatApi.editMessage(id, text, imgs, cid)
@@ -1795,8 +1782,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     // 作废的那一段折在哪儿：只有**被编辑那一轮的重新回答**排在它上面（那条回复是
     // 新起的行号，按 id 会落到废弃尾巴之后，不挪就把新回复挤到折叠组下面，看着像
     // 联系人在回答那堆已作废的话）。判据只用轮号：轮号等于折叠组上面那条现有消息的，
-    // 才是"取代它的内容"。从前这里比的是生成时刻，于是编辑之后继续聊的每一条都算
-    // "更新"，折叠组被一路推到底——所有「已被编辑取代」都沉到聊天框底部。
+    // 才是"取代它的内容"。换成比生成时刻就兜不住：编辑之后继续聊的每一条都算
+    // "更新"，折叠组会被一路推到底，所有「已被编辑取代」都沉到聊天框底部。
     let lastLiveTurn: string | null = null;
     const flushStale = (): void => {
       if (stale.length) { out.push({ t: "stale", items: stale }); stale = []; }
@@ -1877,7 +1864,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
     /* 流式草稿落在它那一轮该在的位置，而不是永远吊在整列表末尾：重新生成/编辑都是
        就地重答——重答写回原行号（后端），落点在本轮现有消息之后；草稿跟着同一个位置，
        才不会出现"先在最后一条输出、完成后跳回原位"。本轮的行还没进列表（刚发出去、
-       只有本地占位）时留在末尾，与以前一致。
+       只有本地占位）时留在末尾。
        条件就是 draftLive：逐字揭示完成后草稿必须真正退场，否则会与同轮真气泡并存；
        typing 为真但还没有正文时 draftLive 仍为真，三个点照常挂在锚点后面。 */
     if (draftLive) {
@@ -1947,13 +1934,12 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         scrollDown(true);
       }
       // 落底与恢复都靠 scrollDown / 锚点定位自身收敛（见 scrollDown 的收敛循环），
-      // 这里不再有「落底后放开跳渲染」的后续动作——content-visibility 实验撤掉了，
-      // 它与这套滚动契约（scroll 事件重判 stickRef、贴底 ±2px、未读计数）冲突了两次，
-      // foundation.css 与 experience.css 各留了一条「为什么撤」的记录。
+      // 不做落底后的离屏跳渲染（content-visibility）：它与这套滚动契约
+      // （scroll 事件重判 stickRef、贴底 ±2px、未读计数）冲突，说明留在 experience.css。
       // 首屏这一拍也要认处理单：重答跑到一半切走再回来，界面得接着显示"正在回复"。
       // 增量拉取不会把"上一轮还在飞"通知给前端，不主动查就永远看不到了。
       void checkTurnState();
-      // 不再补一拍增量拉取：全量刚落、lastIdRef 必是最新，这一发实测必空。
+      // 不补一拍增量拉取：全量刚落、lastIdRef 必是最新，这一发实测必空。
       // 竞态窗口里进来的消息由空闲链（2.5s 一拍）与事件总线兜住，不值得多打一发。
     }).catch((e: Error) => {
       setLoaded(true);
@@ -1982,9 +1968,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   //
   // 这个 effect 必须**每实例只跑一次**。本组件按作用域 key 挂载（App 的 key={current}、
   // 助手弹窗的 key={sel}），换人就是换实例，草稿/附件/编辑态/录音随之重生，不需要在这里清；
-  // 从前它挂在 [scrollDown, boot] 上，而 boot 认调用方回调的引用 —— App 每重渲染一次
-  // 就重跑一次。实测代价（隔离实例 + 真模型）：别人回一条消息 → 未读总数跳变 → App 重渲染
-  // → 正在打的草稿被清空 + 视口从阅读位置一步砸回底部（跳 9994px）+ 白发送一次 500 条全量。
+  // 依赖数组留空：boot 经 bootRef 取最新，若把 scrollDown 这类每次渲染都新的引用挂进
+  // 依赖，App 一重渲染整条启动链就会重跑一遍。
   useEffect(() => {
     bootRef.current();
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2010,8 +1995,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         schedule();
       }, delay);
     };
-    /** 沉睡 = 标签页切走 / 宿主暂停 / 自身被 display:none 收起。
-        最后一条此前漏了：窄屏的会话列表页与资料页叠层时 ChatView 仍在全速轮询。 */
+    /** 沉睡 = 标签页切走 / 宿主暂停 / 自身被 display:none 收起；
+        第三条最易漏：窄屏的会话列表页与资料页叠层时，会话页只是被藏住、组件还活着。 */
     const wake = (): void => {
       if (asleep() || stopped) return;
       idleTicksRef.current = 0;
@@ -2578,7 +2563,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   };
 
   // ── 多媒体动作 ───────────────────────────────────────────
-  // 拉不到就保持保守值（入口不显示）：这与之前的行为一致，只是不再每个会话实例各拉一份。
+  // 拉不到就保持保守值（入口不显示）。
   useEffect(() => {
     loadCaps().then(setCaps).catch(() => {});
   }, []);
@@ -2836,8 +2821,6 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
   /**
    * 消息流的键盘走位：整个 #log 只占**一个** Tab 停靠点，↑↓ 在消息行之间移动，
    * Enter/空格打开当前这条的菜单。
-   * 从前是每条气泡各自 tabIndex=0（首屏 500 条 = 按 500 次 Tab 才到输入框，
-   * 而那些 div 既没有 role 也没有可访问名，读屏只会念 500 次「未命名」）。
    */
   const rowNav = useCallback((e: React.KeyboardEvent<HTMLDivElement>): void => {
     const box = e.currentTarget;
@@ -3068,7 +3051,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
             variantCount={m.variant_count ?? 0}
             variantIndex={m.variant_index ?? 0}
             onVariantChange={changeVariant}
-            onVariantGenerate={requestVariantGenerate}
+            onVariantGenerate={doRegenerate}
             demo={globalModelEcho}
             highlight={searchOpen && searchHitIds.has(m.id) ? searchQ.trim() : ""} />
         );
@@ -3245,9 +3228,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           if (at) bottomIdRef.current = lastIdRef.current;
         }}>
         {olderLeft > 0 && msgs.length > 0 && (
-          // 专用窄条控件（.load-earlier，样式在 experience.css 末尾）：此前借用建议 chip 的样式，
-          // 弱可供性——悬在消息流顶部像个静态标签，点不点没把握。行为不动：仍走
-          // fetchEarlierMessages + 服务端报剩余数，滚动锚定逻辑也不变。
+          // 专用窄条控件（.load-earlier，样式在 experience.css 末尾）：明确可点的按钮，
+          // 点击走 fetchEarlierMessages + 服务端报剩余数，滚动锚定逻辑不变。
           <div className="load-earlier-row">
             <button type="button" className="load-earlier" disabled={earlierBusy} onClick={() => {
               const first = msgs[0];
@@ -3255,15 +3237,14 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
               setEarlierBusy(true);
               void chatApi.fetchEarlierMessages(first.id, cid, conversationId).then((d) => {
                 if (d.messages.length > 0) setMsgs((prev) => [...d.messages, ...prev]);
-                // 还剩多少条由服务端报：从前这里用 `行数 >= 200` 反推，
-                // 那个 200 与后端页大小各写一遍，改一边就悄悄翻不到底。
+                // 还剩多少条由服务端报（olderRemaining），不靠本地行数反推。
                 setOlderLeft(d.olderRemaining ?? 0);
               }).catch(() => { addNotice("没读到更早的消息，稍后再试"); })
                 .finally(() => { setEarlierBusy(false); });
             }}>{earlierBusy ? "读取中…" : `载入更早的消息（还有 ${olderLeft} 条）`}</button>
           </div>
         )}
-        {/* 翻到顶了说一句总数：长会话里"上面还有没有"这件事，从前只能靠一直点按钮试。
+        {/* 翻到顶了说一句总数：长会话里"上面还有没有"这件事，一句「已经到最早了」就交代清楚。
             加载量过 EARLIEST_HINT_MIN_ROWS 才显示——短会话/新会话没翻过页，不挂这句。 */}
         {olderLeft === 0 && msgs.length >= EARLIEST_HINT_MIN_ROWS && (
           <div className="hint" style={{ textAlign: "center", margin: "2px 0 8px" }}>
@@ -3296,8 +3277,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         )}
       </div>
 
-      {/* 回到消息底部：往上翻历史时联系人回了一句，从前没有任何信号——人得自己滚下来找。
-          带条数就是微信那个「↓ 1 条新消息」的手感。 */}
+      {/* 回到消息底部：往上翻历史时联系人回了一句，这里给一枚带条数的入口，
+          就是微信那个「↓ 1 条新消息」的手感。 */}
       {!atBottom && loaded && msgs.length > 0 && (
         <button type="button" className="to-bottom" aria-label="回到最新消息" title="回到最新消息"
           onClick={() => {
@@ -3717,7 +3698,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 回合在飞（typing/busy 且有 pendingTurn）→ ■ 停止，点它=不要这次回答了；
                 本地操作收尾（撤回/删除/编辑/重试共用的 busy，没有 pendingTurn）→ 小 spinner。
                 spinner 只说「在忙」不说「发送中」——send() 是即时的，写文案会说谎，图形不会。
-                不再出现「停止 + 请稍候…」两个按钮描述同一个 busy。 */}
+                一个 busy 只有一个按钮位来表达。 */}
             <div className="composer-actions">
               {(typing || busy) && pendingTurnRef.current !== null ? (
                 <button type="button" id="send" className="stopping" title="不要这次回答了" onClick={stopTurn}>
@@ -3742,29 +3723,24 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         onEdit={startEdit} onReedit={reeditRetracted}
         onRetract={(mm) => { setMenu(null); setPendingConfirm({ kind: "retract", m: mm }); }}
         onRequestDelete={(mm) => { setMenu(null); setDelTarget(mm); }}
-        onRegenerate={(mm) => { setMenu(null); setPendingConfirm({ kind: "regenerate", m: mm }); }}
+        onRegenerate={(mm) => { setMenu(null); doRegenerate(mm); }}
         onRemember={rememberMessage} />
 
       {pendingConfirm && (
         <Modal label="操作确认" placement="center" onClose={() => setPendingConfirm(null)}>
           <div className="del-title">
-            {pendingConfirm.kind === "edit-switch" ? "切换编辑到这条消息？"
-              : pendingConfirm.kind === "regenerate" ? "重新生成这条回复？"
-                : "撤回这条消息？"}
+            {pendingConfirm.kind === "edit-switch" ? "切换编辑到这条消息？" : "撤回这条消息？"}
           </div>
           <div className="del-note">
             {pendingConfirm.kind === "edit-switch"
               ? "当前正在编辑的内容还没保存，切换后会丢弃；新打开的这一条不会立即改动。"
-              : pendingConfirm.kind === "regenerate"
-                ? "会生成一个新的回答，原来的留成旧版本（最多留 5 个），可以在气泡下方左右切换。重新生成期间不能发送其他消息。"
-                : `撤回后${characterName}不会再记得这句，但会留下一条“已撤回”记录。`}
+              : `撤回后${characterName}不会再记得这句，但会留下一条“已撤回”记录。`}
           </div>
           <div className="del-row">
             <button type="button" onClick={() => setPendingConfirm(null)}>取消</button>
             <button type="button" className={pendingConfirm.kind === "retract" ? "danger" : "primary"}
               onClick={acceptPendingConfirm}>
-              {pendingConfirm.kind === "edit-switch" ? "切换编辑"
-                : pendingConfirm.kind === "regenerate" ? "重新生成" : "撤回"}
+              {pendingConfirm.kind === "edit-switch" ? "切换编辑" : "撤回"}
             </button>
           </div>
         </Modal>
@@ -3786,8 +3762,8 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
         </Modal>
       )}
 
-      {/* 归档确认：与删消息同一套居中弹窗；菜单里只留短标签，不再原地换「确认？」文案 */}
-      {/* 操作反馈：轻提示（toast）浮层，不再混排进消息流底部 */}
+      {/* 归档确认：与删消息同一套居中弹窗；菜单里只留短标签，说明文字交给弹窗 */}
+      {/* 操作反馈：轻提示（toast）浮层，不混排进消息流 */}
       {/* 这两层必须 portal 到 body：助手弹窗本体带 transform（居中用），
           transform 会把自己变成 position:fixed 后代的包含块——留在原地时
           「全屏大图」只会盖住弹窗那一块、关闭钮跑到弹窗角上，轻提示也按弹窗定位。 */}

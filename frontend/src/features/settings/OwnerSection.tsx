@@ -165,13 +165,13 @@ export default function OwnerSection({ form, onOwnerAvatar, onDirtyChange }: {
           </div>
           <p className="owner-see-note">这是所有联系人共享的背景；每位联系人自己的关系设定仍在各自的资料页里。</p>
         </div>
-        {/* 保存结果不再渲染就地 personaBanner：绑在「我的资料」分区里，用户点完保存
-            切个分组就看不见。成败统一走全局 toast（useSettingsForm.saveOwner 内
+        {/* 保存结果不渲染就地 personaBanner（绑在「我的资料」分区里，用户点完保存
+            切个分组就看不见）。成败统一走全局 toast（useSettingsForm.saveOwner 内
             offerToast）；这里的脏值条（ownerDirty）只负责「还没保存」这件事，
             放弃改动走 applySnapshot 不经过 saveOwner，不会误弹「已保存」。 */}
         <div className="actions">
           {/* 没有 dirty 时禁用，与资料页 ProfileView 的保存条同一口径：
-              从前这里永远可点、点了也常常是空保存，反而盖住了真正的脏值。 */}
+              空保存会盖住真正的脏值。 */}
           <button type="button" className="primary" id="btn-save-owner" disabled={form.busy !== "" || !ownerDirty}
             title={ownerDirty ? undefined : "没有需要保存的改动"} onClick={form.saveOwner}>
             {form.busy === "owner" ? "保存中…" : "保存资料"}
@@ -182,7 +182,7 @@ export default function OwnerSection({ form, onOwnerAvatar, onDirtyChange }: {
 
       {/* 脏值提示条：对齐 ProfileView 的底部保存条（pf-dock / pf-dock-note / pf-save 都是
           现成样式，sticky 贴在滚动视口底缘）。称呼/印象/备注写完不保存就切分组，
-          从前既不提示也不保存——用户最容易在这里白写一段，所以改动时必须看得见。 */}
+          改动必须看得见，不然用户最容易在这里白写一段。 */}
       {ownerDirty && (
         <div className="pf-dock">
           <span className="pf-dock-note" role="status">有未保存的改动</span>

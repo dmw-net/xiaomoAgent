@@ -21,8 +21,8 @@ export default function ToolLoopSection({ form }: { form: SettingsForm }): JSX.E
   const customValid = custom.trim() !== "" && Number.isInteger(customValue)
     && customValue >= limits.min && customValue <= limits.max;
 
-  // 成败提示走全局 toast（hook 内 offerToast）：这条 note 原来绑在台账卡的就地
-  // banner 上，用户设完轮次切个分组就看不见了。这里只保留按钮级的「保存中…」。
+  // 成败提示走全局 toast（hook 内 offerToast）：用户设完轮次切个分组也看得见。
+  // 这里只保留按钮级的「保存中…」。
   const saveTurns = (turns: number): void => {
     if (busy || form.busy !== "" || turns === current) return;
     setBusy(true);

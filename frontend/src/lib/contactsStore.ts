@@ -4,8 +4,7 @@ import { onBusEvent } from "./eventBus";
 import type { ContactItem } from "../types";
 
 /**
- * 联系人列表的模块级缓存：全站唯一一条 10s 轮询链。
- * 此前 App 与 Sidebar 各轮各的（review P2-18 双份轮询），这里收口。
+ * 联系人列表的模块级缓存：全站唯一一条 10s 轮询链，App 与 Sidebar 都从这里取。
  * 后端不可达时广播 xiaomo:net-down，恢复时广播 xiaomo:net-ok——断网提示有唯一来源。
  */
 

@@ -1,8 +1,8 @@
 // 工具台账状态（/api/tools）的模块级缓存。
 //
 // 形状沿用 extensionsStore 的收口思路：写动作（设置页）的回包就是整份新快照，
-// 直接收下不再发 GET；读方各自决定要不要新鲜数据。这份数据以前被设置台账和
-// 助手控制台各持一份本地副本，跨视图互不同步——现在全部走这里。
+// 直接收下不再发 GET；读方各自决定要不要新鲜数据。台账与助手控制台等
+// 所有视图共用这一份缓存，它是工具台账的唯一数据源。
 //
 // 读方三种：
 // - 台账 / 控制台挂载：loadToolState() 强制拉新（它们是写方，必须看到最新）；
@@ -46,7 +46,7 @@ export function invalidateToolState(): void {
 }
 
 /** 聊天工具卡的动作短语表：后端 TOOL_META 的 chat 字段是唯一真源，
- *  前端不再维护第二份工具名 → 短语映射（那份复刻漏登记时会把 JSON 甩给用户）。 */
+ *  前端不另行维护映射；没登记 chat 的工具在表里就没有条目。 */
 export function chatLabelsOf(state: ToolState | null): Record<string, string> {
   const map: Record<string, string> = {};
   if (state === null) return map;

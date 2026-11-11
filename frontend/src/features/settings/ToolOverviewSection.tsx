@@ -24,7 +24,7 @@ import type { SettingsForm } from "./useSettingsForm";
 
 /** 「全关」与三档合并成一条档位轴（off / quiet / balanced / full）。
  *  存储上仍是两个字段（toolsEnabled + globalPreset），写入时一次请求带上；
- *  界面不再出现「总闸」这张卡——总闸×档位×逐项的三层门控，用户只需要理解一层。 */
+ *  门控只有档位这一层，用户只需要理解一层。 */
 type PresetChoice = ToolPreset | "off";
 
 function choiceLabelsOf(state: ToolState): Record<ToolPresetChoice, string> {
@@ -114,8 +114,7 @@ export default function ToolOverviewSection({ form, onGoModel, onGoCapability, o
   const [state, setState] = useState<ToolState | null>(null);
   const [busy, setBusy] = useState("");
   // err 只留给「台账没读出来」：它带重试按钮、绑定这张卡，属于就地诊断。
-  // 写入类（档位/逐项开关/跟随全局）的成败走全局 toast——note 原来绑在台账卡上，
-  // 用户拧完开关切个分组就看不见了。
+  // 写入类（档位/逐项开关/跟随全局）的成败走全局 toast——用户拧完开关切个分组也看得见。
   const [err, setErr] = useState("");
 
   const load = useCallback((): void => {

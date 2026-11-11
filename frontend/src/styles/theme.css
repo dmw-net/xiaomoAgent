@@ -33,8 +33,7 @@
   --accent-glow:   color-mix(in srgb, var(--accent) 18%, transparent);
 
   /* 选中 chip 的全站唯一配方：底 = accent 12% 叠在卡片底上，描边 = accent 44% 叠在
-     常规描边上。从前十来处「选中」各自手调（accent-soft / 10% mix / bg-hover /
-     bg-elevated 四种底色并存），跨页看是「不是一个应用」的观感。分段控件
+     常规描边上；全站所有「选中」共用这一组令牌，跨页观感一致。分段控件
      （.seg）与选项行（.model-option）语义不同，不在此列。 */
   --sel-bg:     color-mix(in srgb, var(--accent) 12%, var(--bg-elevated));
   --sel-border: color-mix(in srgb, var(--accent) 44%, var(--border));
@@ -46,8 +45,8 @@
   --danger:        #ad3449;
   --danger-soft:   #faeaed;
 
-  /* 自己的气泡跟随所选强调色：皮肤体系下线后，强调色是唯一的个性化维度，
-     品牌面不能锁死在赤陶上。对比度由 index.html 的 adapt() 保障——
+  /* 自己的气泡跟随所选强调色：强调色是个性化的主维度，品牌面不锁死在单一色相上。
+     对比度由 index.html 的 adapt() 保障——
      它保证 --accent 与 --accent-text 在明暗两档下都 ≥4.5:1。 */
   --bubble-mine:       var(--accent);
   --bubble-mine-text:  var(--accent-text);

@@ -35,9 +35,7 @@ export type ProfileInput = {
 
 /**
  * 超时的统一口径：界面按「秒」说话（1~600 的整数），落库仍是毫秒（timeoutMs）。
- * 从前主模型那格是裸文本标「毫秒」、能力端点那格标着「秒」回填的却是毫秒值，
- * 两边保存时都靠 `Number(x) || 90000` 把非法值静默洗白。现在保存/测试前先过
- * timeoutSecOf，非法或空值给行内提示并拦下，不再吞。
+ * 保存/测试前先过 timeoutSecOf，非法或空值给行内提示并拦下，不做静默兜底。
  */
 export const TIMEOUT_MIN_SEC = 1;
 export const TIMEOUT_MAX_SEC = 600;
@@ -51,18 +49,15 @@ export const timeoutSecOf = (raw: string): number | null => {
 /**
  * 设置页的全部表单状态与动作，集中在一个 hook 里。
  * 每个 tab 自己保存自己；模型相关全部围绕「档」进行（列表 + 添加/编辑/应用/删除），
- * 不再有一张裸的全局表单和一根「保存全部」横杆。
+ * 没有一张裸的全局表单，也没有一根「保存全部」横杆。
  *
  * 反馈口径（为什么要分层）：
  * - 纯结果类（保存成功/失败）一律 offerToast 走全局轻提示——就地 banner 绑在某个
- *   分区上，用户点完保存立刻切分组就看不见了（这类事故发生过一次，resetBanner
- *   那种「提示跟着按钮搬家」的补丁一个个堵不完），现在统一收敛到跨视图的出口。
+ *   分区上，用户点完保存立刻切分组就看不见了，统一收敛到跨视图的出口。
  * - 带上下文/差异信息的诊断（试连结果、拉模型清单）留在就地 banner：用户正盯着
  *   表单等结果，且文案里带「下一步怎么办」，toast 3 秒读不完就没了。
- * - 所有异步动作 try/finally 管理 busy：早期审查 P1-7——saveToolLoopTurns 等方法
- *   裸奔 Promise，调用方漏接时既产生 unhandled rejection、busy 也可能永远不复位。
- *   现在失败在 hook 内 toast 报因并吞掉（返回 null/false 区分成败），调用方不必
- *   再各自 .catch。
+ * - 所有异步动作 try/finally 管理 busy，无论成败 busy 都会复位；失败在 hook 内
+ *   toast 报因并吞掉（返回 null/false 区分成败），调用方不必各自 .catch。
  */
 export function useSettingsForm(onChanged: () => void): {
   saved: SettingsSnapshot | null;
@@ -124,8 +119,8 @@ export function useSettingsForm(onChanged: () => void): {
   // 就看不见；「按钮在系统页、提示也要落在系统页」那类补丁到 toast 出口为止。
   const [profileTestResult, setProfileTestResult] = useState<Record<string, { kind: "ok" | "bad"; text: string } | undefined>>({});
   /**
-   * 危险操作的确认一律走应用内的居中弹窗（<Modal>），不再用 window.confirm：
-   * 项目里删消息、归档、删画、解绑微信早就都是弹窗了，原生 confirm 在 iOS Safari 上
+   * 危险操作的确认一律走应用内的居中弹窗（<Modal>），不用 window.confirm：
+   * 项目里删消息、归档、删画、解绑微信都是弹窗，原生 confirm 在 iOS Safari 上
    * 长成另一个样子，而且 `\n` 排出来的说明没人看得下去。
    */
   const [ask, setAsk] = useState<{ title: string; note: string; run: () => void } | null>(null);
@@ -214,8 +209,7 @@ export function useSettingsForm(onChanged: () => void): {
         }
         const list = data.list as { ok?: boolean; ids?: string[]; chatIds?: string[]; elapsedMs?: number; message?: string; code?: string } | undefined;
         if (list && list.ok) {
-          // 全量留下，不截断：从前砍到 24 个，剩下的 298 个用户在界面里根本够不着，
-          // 只能回去手打。清单现在自己可搜、限高滚动，交得下三百条。
+          // 全量留下，不截断：清单可搜、限高滚动，三百条也交得下。
           const ids = list.chatIds && list.chatIds.length ? list.chatIds : list.ids ?? [];
           setModelList({ show: ids.length > 0, ids });
           setModelBanner({ kind: "ok", text: `拉到 ${ids.length} 个模型：输入即筛，点一个填上。` });
@@ -238,8 +232,8 @@ export function useSettingsForm(onChanged: () => void): {
       mode: "openai",
       baseUrl: input.baseUrl.trim(),
       name: input.name.trim(),
-      // 调用方已用 timeoutSecOf 把「秒」校验并 ×1000 过。不再 `|| 90000` 兜底：
-      // 那个兜底会把打错的值悄悄洗成默认值，用户毫不知情。
+      // 调用方已用 timeoutSecOf 把「秒」校验并 ×1000 过，不做 `|| 90000` 兜底：
+      // 那种兜底会把打错的值悄悄洗成默认值，用户毫不知情。
       timeoutMs: Number(input.timeoutMs),
       extraBody: input.extraBody,
       caps: input.caps,
@@ -318,10 +312,8 @@ export function useSettingsForm(onChanged: () => void): {
   };
 
   /**
-   * 保存全局工具循环轮次。早期审查 P1-7 的代表案例：这个方法原来是裸 Promise——
-   * 调用方漏接 .catch 就是一个 unhandled rejection，而且 hook 层没有 busy，
-   * 失败时全页的「保存中…」闸门状态也对不齐。现在 busy、错误提示（toast）、
-   * 快照回灌都在 hook 内收口，失败返回 null，调用方只分辨成败。
+   * 保存全局工具循环轮次。busy、错误提示（toast）、快照回灌都在 hook 内收口，
+   * 失败返回 null，调用方只分辨成败。
    */
   const saveToolLoopTurns = async (turns: number): Promise<number | null> => {
     setBusy("toolLoop");
@@ -357,9 +349,8 @@ export function useSettingsForm(onChanged: () => void): {
   };
 
   /**
-   * 保存「我的资料」。成功/失败都走 toast：结果提示原来是 personaBanner，绑在
-   * 「我的资料」分区里，用户点完保存立刻切到别的分组就看不见了。保存成功后
-   * 快照被 fill() 灌回，OwnerSection 的脏值条自然消失——放弃改动（applySnapshot）
+   * 保存「我的资料」。成功/失败都走全局 toast，用户点完保存切到别的分组也看得见结果。
+   * 保存成功后快照被 fill() 灌回，OwnerSection 的脏值条自然消失——放弃改动（applySnapshot）
    * 不经过这里，所以「放弃后误弹已保存」不会发生。
    */
   const saveOwner = (): void => {
@@ -423,8 +414,7 @@ export function useSettingsForm(onChanged: () => void): {
   };
 
   /**
-   * 换我的头像：上传 → 存全局 owner → 快照同步。原来是裸 async（P1-7 的另一例），
-   * 调用方漏接就是 unhandled rejection。现在 hook 内收口：busy 走 try/finally，
+   * 换我的头像：上传 → 存全局 owner → 快照同步。hook 内收口：busy 走 try/finally，
    * 成败都 toast（用户换完头像常顺手切去别的分组，「更新了没」不该只能猜），
    * 失败不抛、返回 false——调用方的成功链（改本地头像缓存、写就地提示）必须
    * 拿到 true 才继续跑，否则会把没保存成的 dataUrl 当成已生效的。

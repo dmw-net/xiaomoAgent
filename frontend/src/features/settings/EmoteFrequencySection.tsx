@@ -5,8 +5,7 @@ import type { SettingsForm } from "./useSettingsForm";
 /**
  * 表情能力的唯一开关（全局一档，所有联系人共享）。
  * 「关闭」时表情工具不再声明、系统提示里也不出现表情段；其余三档只改“主动不主动”，
- * 不改检索阈值。曾经这里还有一句「联系人没开表情工具时不生效」——那一层已删，
- * 正因为有两档，才出现过「全局开着、13 个联系人里只有 1 个真能用」这种断链。
+ * 不改检索阈值。
  */
 const OPTIONS: Array<{ value: EmoteFrequency; name: string; hint: string }> = [
   { value: "off", name: "关闭", hint: "不发表情：表情工具和表情提示一起下线" },

@@ -36,8 +36,7 @@ const NOTE_ICON: Record<NoteTone, typeof Info> = {
 };
 
 /**
- * 提示条：从前 wx-note / wx-error / hint 三种裸文本混排，轻重不分、来源不明。
- * 收成四种语义态，各带一枚图标——人扫一眼颜色和图标就知道这条在说什么事。
+ * 提示条：四种语义态各带一枚图标——人扫一眼颜色和图标就知道这条在说什么事。
  */
 export function ChannelNote({ tone = "info", children }: { tone?: NoteTone; children: ReactNode }): JSX.Element {
   const Icon = NOTE_ICON[tone];
@@ -54,7 +53,7 @@ export type ChannelStep = { label: string; state: "done" | "current" | "todo"; h
 
 /**
  * 纵向步骤条：QQ 官方（创建机器人 → 绑定你的 QQ）与 OneBot（装 → 启动 → 扫码 → 绑号）
- * 都是多步流程，从前靠条件渲染的碎片拼出来，人不知道自己走到第几步。
+ * 都是多步流程，一眼能看到走到第几步。
  */
 export function ChannelSteps({ steps, label }: { steps: ChannelStep[]; label: string }): JSX.Element {
   return (

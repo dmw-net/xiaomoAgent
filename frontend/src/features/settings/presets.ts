@@ -30,8 +30,7 @@ export type CapabilityPresetGroup = {
 /**
  * 顺序与后端 CAPABILITY_NAMES 严格一致：记忆提取排第一（它最常配、也最容易配错），
  * 向量化记忆排第二（和记忆提取同属记忆链路，紧挨着好理解），
- * 然后按「看得见的」两张（图片理解、图像生成）再「听得到的」两张（语音识别、语音合成）——
- * 从前图像生成孤零零挂在末尾，夹在两个语音中间看着像语音的子项。
+ * 然后按「看得见的」两张（图片理解、图像生成）再「听得到的」两张（语音识别、语音合成）。
  */
 export const CAPABILITY_GROUPS: CapabilityPresetGroup[] = [
   {

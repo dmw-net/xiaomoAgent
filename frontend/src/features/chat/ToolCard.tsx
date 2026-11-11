@@ -25,8 +25,8 @@ function ToolCard({ m, contactAvatar, contactName = "小茉", onImageClick, imag
   }, [m.text]);
   const [open, setOpen] = useState(false);
   const ok = p.ok !== false;
-  // 动作短语由后端 TOOL_META 的 chat 字段下发（toolsStore 缓存，App 启动预热），
-  // 前端不再复刻一份工具名 → 短语映射——那份复刻漏登记时会把原始函数名兜成「做了点事」。
+  // 动作短语由后端 TOOL_META 的 chat 字段下发（toolsStore 缓存，App 启动预热）：
+  // 工具名 → 短语映射的唯一来源是这份工具台账，前端不另行维护；漏登记的工具兜底成「做了点事」。
   const toolState = useToolState();
   const labels = useMemo(() => chatLabelsOf(toolState), [toolState]);
   const label = labels[p.tool ?? ""] ?? "做了点事";

@@ -119,7 +119,7 @@ function rawCopyPayload(call: ModelCallRow): string {
 
 /** 状态视图（全局）：总览（状态与配置）/ 模型用量 / 调用记录 / 最近处理 / 记忆召回测试。切到哪个 tab 才拉哪个的数据。 */
 export default function StatusView({ active = true, contactId, contactName, contactAvatar, onSwitchContact, onOpenContacts, goSettings }: {
-  /** 视图是否真正可见：保活后的隐藏页不再偷偷刷新。 */
+  /** 视图是否真正可见：保活后的隐藏页不偷偷刷新。 */
   active?: boolean;
   contactId: string;
   contactName: string;
@@ -173,7 +173,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
       .catch((e: Error) => setStatusErr(e.message));
   }, [contactId]);
 
-  // 能力就绪与总览并行拉。能力卡此前挂在「/api/status 回来了」之后，白多串一个往返。
+  // 能力就绪与总览并行拉，省一个串行往返。
   useEffect(() => {
     if (!active || tab !== "overview") return;
     loadCaps()
@@ -284,7 +284,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
     window.setTimeout(() => setRawCopy("idle"), 1800);
   };
 
-  /** 失败的处理单直达那一次调用：从前只有手写探针才看得到请求原文。 */
+  /** 失败的处理单直达那一次调用的请求原文。 */
   const openRawForTurn = (turnId: string): Promise<void> =>
     getJson<{ calls: ModelCallRow[] }>(`/api/logs?turnId=${encodeURIComponent(turnId)}&limit=1`)
       .then((d) => {
@@ -618,8 +618,7 @@ export default function StatusView({ active = true, contactId, contactName, cont
         </TabPanel>
       )}
 
-      {/* 原文弹窗挂在分区外层：从前它写在「调用记录」里面，
-          从「最近处理」点"看请求原文"——请求发了、原文取回来了，弹窗却渲染不出来。 */}
+      {/* 原文弹窗挂在分区外层：从「调用记录」或「最近处理」点"看请求原文"都渲染得出来。 */}
       {rawId !== null && (
         <Modal label="活动详情" className="raw-modal" onClose={closeRaw}>
           <div className="raw-head">

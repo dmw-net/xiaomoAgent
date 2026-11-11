@@ -3,13 +3,12 @@
    那套为技能条目设计的两行截断布局，扩展卡片有自己的结构。 */
 
 /* ── 开关 ────────────────────────────────────────────────────
-   「关闭/开启」双按钮分段的 Switch（复用 .choice-row）已退役：
    全站开关统一为 components/ToggleSwitch.tsx 的真滑块（role="switch"），
-   样式在 components.css 的 .toggle-switch。这里不再留收紧档与危险色钩子。
+   样式在 components.css 的 .toggle-switch。
    .choice-row 本身别动——它还被「开机自动启动」等真正的二选一场景使用。 */
 
-/* 台账已无独立总闸：「全关」并入档位轴的最左档（见 ToolOverviewSection），
-   这里的总闸卡样式随之移除，档位卡沿用 .lg-preset-card。 */
+/* 「全关」是档位轴的最左档（见 ToolOverviewSection），没有独立总闸卡；
+   档位卡沿用 .lg-preset-card。 */
 .lg-fixed {
   justify-self: end; font-size: 11px; color: var(--success);
   padding: 4px 9px; border-radius: 999px; background: var(--success-soft);

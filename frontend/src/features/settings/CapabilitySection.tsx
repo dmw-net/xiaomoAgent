@@ -34,7 +34,7 @@ const draftOf = (p: CapabilityEndpoint, provider: string): Draft => ({
   apiKey: p.apiKey ?? "",
   name: p.name ?? "",
   voice: p.voice ?? "",
-  // 库里是毫秒，界面按秒说话：从前直接把毫秒值塞进标着「秒」的框，90000 秒的超时就是这么来的。
+  // 库里是毫秒，界面按秒说话：回填时除以 1000 取整。
   timeout: p.timeoutMs != null ? String(Math.round(p.timeoutMs / 1000)) : "90",
 });
 
@@ -86,7 +86,7 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
   };
 
   const test = async (): Promise<void> => {
-    // 超时先过校验：非法/空值就地拦下说清楚，不再把秒的数字当毫秒发出去。
+    // 超时先过校验：非法/空值就地拦下说清楚，不把秒的数字当毫秒发出去。
     const sec = timeoutSecOf(f.timeout);
     if (sec === null) { setMsg({ kind: "bad", text: TIMEOUT_HINT }); return; }
     setBusy("test");
@@ -122,8 +122,8 @@ function EndpointForm({ group, initial, names, reuse, onClose, onSaved }: {
     }
   };
 
-  // 与主模型清单同一套口径：全量保留、输入即筛（前缀命中的排前面）、限高滚动。
-  // 从前砍到 80 条，剩下的长尾模型在界面上根本够不着，只能回去手打。
+  // 与主模型清单同一套口径：全量保留、输入即筛（前缀命中的排前面）、限高滚动，
+  // 长尾模型在清单里也够得着。
   const lq = filter.trim().toLowerCase();
   const shownIds = (ids ?? [])
     .filter((id) => lq === "" || id.toLowerCase().includes(lq))
@@ -284,8 +284,8 @@ function CapCard({ group, form }: { group: CapabilityPresetGroup; form: Settings
   const [editing, setEditing] = useState<Draft | null>(null);
   const [busy, setBusy] = useState(false);
 
-  // 启用/删除档的结果走全局 toast：banner 原来渲染在 <details> 的展开体里，
-  // 用户点完「使用中」把卡一折叠、或切个分组，结果就看不见了。
+  // 启用/删除档的结果走全局 toast：用户点完「使用中」把卡一折叠、或切个分组，
+  // 结果也看得见。
   // 弹窗内的校验/试连提示（EndpointForm 的 msg）留在就地——用户正盯着表单。
   const run = (payload: Record<string, unknown>, ok: string): void => {
     setBusy(true);

@@ -17,7 +17,7 @@ import type { PersonaDraft } from "../lib/persona-doc";
 
 type ItemMenu = { contact: ContactItem; x: number; y: number };
 /** 只有「彻底删除」弹确认窗——那一步真清库。归档是可逆的，按 undo.ts 定的口径直接做掉给 5 秒反悔，
- *  和聊天页「⋯→归档」同一套；从前两个入口一个问一句不问，还能反悔的只有其中一个。 */
+ *  和聊天页「⋯→归档」同一套：两个入口问法一致、都给反悔。 */
 type ConfirmState = { contact: ContactItem };
 
 export default function Sidebar({ current, currentConversation, onPick, onLeaveCurrent, onContactsChanged, onOpenProfile, onOpenHit }: {
@@ -29,8 +29,8 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
   onLeaveCurrent: () => void;
   onContactsChanged: () => void;
   onOpenProfile: (mode: "create" | "edit", id: string, draft?: PersonaDraft) => void;
-  /** 全局搜索的点一条命中：消息命中要跳到那句话，记忆命中要跳到那位的记忆分区。
-   *  从前两者都只做"切到这个人"，于是搜索号称能查全历史，点进去却还得自己翻。 */
+  /** 全局搜索的点一条命中：消息命中要跳到那句话，记忆命中要跳到那位的记忆分区，
+   *  不止"切到这个人"——搜索要能直达全历史里的那一条。 */
   onOpenHit: (kind: "message" | "memory", contactId: string, id: number) => void;
 }): JSX.Element {
   const [contacts, setContacts] = useState<ContactItem[]>(getCachedContacts());
@@ -99,8 +99,8 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
     el.style.top = Math.round(Math.max(pad, top)) + "px";
   }, [menu]);
 
-  // 搜索改到后端筛：人设正文不再随列表下发（它曾占列表响应体的 48%，而这份列表
-  // 前台每 10 秒整份重拉一次且 no-store），本地那份 identity 也随之没有了。
+  // 搜索走后端筛：人设正文不随列表下发（这份列表前台每 10 秒整份重拉一次且 no-store，
+  // 带上正文太重），本地也就没有 identity 副本可搜。
   useEffect(() => {
     const q = query.trim();
     if (q === "") {

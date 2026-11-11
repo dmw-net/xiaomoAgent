@@ -21,11 +21,11 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   overflow: auto; padding: var(--space-3);
   animation: scrimIn var(--dur-base) var(--ease-out);
 }
-/* 遮罩淡入 + 卡片上浮微缩：从前弹窗是"啪"地整块出现，和它下面的页面没有任何交接。
+/* 遮罩淡入 + 卡片上浮微缩：弹窗出现与底下的页面有交接，不做整块硬切。
    用独立 translate / scale 属性写，不和卡片自己的 transform 抢通道。 */
 @keyframes scrimIn { 0% { opacity: 0; } }
 @keyframes cardIn { 0% { opacity: 0; translate: 0 10px; scale: .97; } }
-/* 退场与入场互为镜像：从前关闭是瞬时消失，和「细腻」的定位直接冲突。
+/* 退场与入场互为镜像：关闭也走一段过渡，不瞬时消失。
    Modal 挂 data-closing 后等 animationend（或 240ms 兜底）才真正卸载；
    forwards 定格在透明帧，避免卸载前闪回。 */
 @keyframes scrimOut { to { opacity: 0; } }
@@ -33,7 +33,7 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
 .modal-overlay[data-closing] { animation: scrimOut var(--dur-base) var(--ease-out) forwards; pointer-events: none; }
 .modal-overlay[data-closing] .modal-card { animation: cardOut var(--dur-base) var(--ease-out) forwards; }
 .modal-card {
-  /* 兜住 320px 这类小屏：从前是裸 340px，卡片本身就比屏幕宽。 */
+  /* 兜住 320px 这类小屏：宽度取 min，卡片恒比屏幕窄。 */
   width: min(340px, calc(100vw - 24px));
   padding: var(--space-6) var(--space-6) var(--space-5); border-radius: var(--radius-3xl);
   max-height: calc(100dvh - 24px); overflow-y: auto;
@@ -209,15 +209,13 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   display: inline-flex; align-items: center; gap: var(--space-2);
   font-size: var(--text-base); color: var(--text); cursor: pointer;
 }
-/* 「启用」控件已换成 .toggle-switch（自带禁用态），input 时代的选择器随之删除。 */
-/* 与全应用那条「窄」边界同一条查询：从前这里写 720，721-760 这一段就落在
+/* 「启用」控件用 .toggle-switch（自带禁用态），不走 input 勾选皮。 */
+/* 与全应用那条「窄」边界同一条查询：721-760 这一段不能落在
    既不算窄屏壳、又放不下桌面排布的空档里。 */
 @media (max-width: 760px), (max-height: 520px) { .cap-pro-save { margin-left: 0; width: 100%; } }
-/* 段落切换贴着它切换的文本框（编辑卡首行），不挂在身份卡上——身份卡因此在四个分区间等高。
+/* 段落切换贴着它切换的文本框（编辑卡首行），不挂在身份卡上——身份卡因此在四个分区间等高。 */
 /* 人格三段摊开成一列：段落名 + 它的写法提示 + 该段的框，一屏看全一个人。
-   从前是「段落 tab × 一个大 textarea」，一次只看得见三段里的一段，切段时整块换掉，
-   上面还摆了一行「当前编辑 / 整份人格文档（.md）」——系统里根本没有文件，
-   那个隐喻只会让人以为自己在写几份文档，而不是同一个角色的三面。 */
+   三段是同一个角色的三面，不做分段 tab 式的一次只看一段。 */
 .pf-secs { display: flex; flex-direction: column; gap: var(--space-6); }
 .pf-sec { display: flex; flex-direction: column; gap: var(--space-2); }
 .pf-sec-h { display: flex; align-items: baseline; gap: var(--space-3); flex-wrap: wrap; cursor: pointer; }
@@ -244,9 +242,7 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   border-radius: var(--radius-lg); padding: var(--space-4) var(--space-5); margin-bottom: var(--space-5);
 }
 
-/* .pf-editor-card 已并入公共 .card + .card-pad，不再需要独立规则。 */
-/* .pf-file-row / -label / -name / -path / -actions（"当前编辑"那一行文件隐喻）随
-   段落 tab 一起删了；.pf-ghost 保留给模板与导出两枚按钮。 */
+/* .pf-ghost：模板与导出两枚按钮共用的幽灵钮（透明底 + 描边）。 */
 .pf-ghost {
   display: inline-flex; align-items: center; gap: var(--space-2); white-space: nowrap;
   font-size: var(--text-aux); padding: var(--space-2) var(--space-5); border-radius: var(--radius-md);
@@ -281,9 +277,9 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
 }
 
 /* ── 对话页顶栏 ──
-   `.bar-chip` 那两条已删：CSS 默认 display:none、只在窄屏显示，而 ChatView 的渲染分支
-   恰好相反（窄屏给的是「←」返回钮，宽屏才渲染芯片），两个区间互斥，这颗芯片在任何
-   宽度下都不可能出现。useNarrow 的查询串与这里的断点逐字符相同，所以也不存在错位窗口。 */
+   顶栏没有按断点显隐的芯片样式：窄屏给「←」返回钮、宽屏给其余控件，
+   都由 ChatView 的渲染分支决定；useNarrow 的查询串与这里的断点逐字符相同，
+   不存在错位窗口。 */
 
 /* 触屏专属说明：与 .kbd-only 反着走（物理指针那侧把它藏掉），
    免得手机上读到「Enter 发送 · 右键消息」。 */
@@ -294,9 +290,9 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
 #log:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
 
 /* 设置页：与其他视图共用顶部分段控件；内容区各 section 之间加分隔线 */
-/* `.set-actions`（吸底动作条）已删：全仓没有一处宿主，而 #settings/#status 底部那
-   72px/64px/56px 三份 padding 正是为它留的净空。设置页四个分区各自带「保存」，
-   用的是静态 .actions，按钮跟着内容滚走——承诺与实现两回事，先按实现改注释。 */
+/* 设置页没有吸底动作条：四个分区各自带「保存」，用静态 .actions，按钮跟着内容滚走。
+   #settings/#status 底部 72px/64px/56px 三份 padding 是底部净空口径（容纳吸底元素
+   的空间预留），收紧前先确认页面底部没有吸底元素。 */
 
 /* 页头「当前联系人」芯片：多联系人场景下标明作用对象 */
 .head-row { display: flex; flex-direction: row; align-items: flex-start; gap: var(--space-5); }
@@ -467,9 +463,8 @@ button, [role="button"], a, label, input, textarea { touch-action: manipulation;
   font-size: var(--text-base); color: var(--text); outline: none;
 }
 .s-search input::placeholder { color: var(--text-subtle); }
-/* 归档行不再整行压透明度：同一个 .62 落在三种底色上是三个对比度，
-   foundation.css 顶部早就为这件事立过口径（「用不透明度代替色值就会随底色漂移」），
-   这里改成按颜色分级。 */
+/* 归档行按颜色分级降档：整行压同一个透明度会随三种底色漂出三个对比度
+   （foundation.css 顶部口径：用不透明度代替色值就会随底色漂移）。 */
 .s-archived .s-name, .s-archived .s-r2 { color: var(--text-subtle); }
 .s-archived .s-ava { filter: grayscale(.5); }
 .s-restore {
@@ -578,10 +573,8 @@ button.tool-card.open { border-style: solid; border-bottom-left-radius: 0; borde
 }
 
 /* 气泡对齐：头像盒始终占位，非组首只是看不见——这样同一组的每条气泡
-   缩进都等于「头像列宽」，不会出现连续气泡比组首多缩 12px 的错位。
-   原先靠相邻兄弟选择器 display:none 头像 + margin 43px 补缩进，工具卡、
-   typing 指示这类节点一打断 DOM 相邻性就整段丢缩进，且 43px 与真实头像列
-   宽不符；那四条规则与这里的三条 !important 覆盖已一并删除。 */
+   缩进都等于「头像列宽」，不依赖 DOM 相邻性，工具卡、typing 指示这类
+   节点插进来也不会丢缩进。 */
 .msg-ava.ava-hidden { visibility: hidden; }
 
 /* ── 设置页：卡片分组与小控件 ─────────────────────────────── */
@@ -864,9 +857,9 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
    语义，孤颗按钮撑一坨米色圆块只剩噪声——摘掉底板后它就是跟 .tts-btn 同一语言
    的裸图标钮（悬停才有底），多版本时底板照旧。 */
 .variant-bar.solo { padding: 2px 0; background: transparent; }
-/* 底部元信息行：版本条（左）与时间/速度（右）合成一行，替代原先各自一行的排法
-   （两行时气泡尾部显高）。时间贴右用 margin-left:auto 而不是 space-between——
-   只有时间没有版本条时也要贴右。内层的时间/版本条不再带自己的上边距，行距归 .msg-meta 管
+/* 底部元信息行：版本条（左）与时间/速度（右）合成一行，气泡尾部不额外增高。
+   时间贴右用 margin-left:auto 而不是 space-between——
+   只有时间没有版本条时也要贴右。内层的时间/版本条不带自己的上边距，行距归 .msg-meta 管
    （experience.css 对 .msg-time 的 2px 行距由这里继承呈现）。 */
 .msg-meta {
   display: flex; align-items: center; gap: var(--space-2);
@@ -874,7 +867,7 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
 }
 .msg-meta .variant-bar { margin-top: 0; }
 .msg-meta .msg-time { margin-left: auto; margin-top: 0; }
-/* 氛围循环：加载旋转统一 1s（原来是 0.9s 的孤值；≥1s 豁免，见映射口径） */
+/* 氛围循环：加载旋转 1s（≥1s 豁免，见映射口径） */
 .spin { animation: spin 1s linear infinite; }
 @keyframes spin { 100% { transform: rotate(360deg); } }
 
@@ -904,7 +897,7 @@ button.prof-chip {
 }
 button.prof-chip:hover { border-color: var(--border-strong); color: var(--text); }
 button.prof-chip.on {
-  /* 选中配方全站一套（theme.css --sel-*），从前这里是 10% 手调版 */
+  /* 选中配方全站一套（theme.css --sel-*） */
   border-color: var(--sel-border); color: var(--accent-ink);
   background: var(--sel-bg);
 }
@@ -994,8 +987,8 @@ button.prov-row.on { border-color: var(--border-strong); background: var(--bg-su
 }
 .prov-models-head .subhead { margin-bottom: 0; }
 .prov-models-head .btn { margin-left: auto; }
-/* 拉回来的模型清单：全量可搜、限高滚动。从前是 24 条圆片平铺 —— 剩下的够不着，
-   这 24 条长名字还把「高级参数」和保存按钮挤出弹窗。 */
+/* 拉回来的模型清单：全量可搜、限高滚动，模型再多也全部够得到，
+   不会把「高级参数」和保存按钮挤出弹窗。 */
 .model-pick { display: flex; flex-direction: column; gap: var(--space-2); margin-top: var(--space-3); }
 .model-pick .model-filter { font-size: var(--text-note); }
 .model-pick-list {
@@ -1380,7 +1373,7 @@ button.art-act.danger:hover:not(:disabled) { color: var(--danger); border-color:
 .qq-creds label { display: block; font-size: var(--text-note); color: var(--text-muted); }
 .qq-creds label > input { display: block; width: 100%; margin-top: var(--space-2); }
 /* 绑定码要能整串选中、能复制：等宽 + 可选，别让它跟着行高被截断。
-   在「正在绑定」强调框里它是要盯着的两个字，比从前的行内小字大一号、居中。 */
+   在「正在绑定」强调框里它是要盯着的两个字：大一号、居中。 */
 .qq-code {
   flex: 0 1 auto; min-width: 96px; padding: 10px 20px; border-radius: var(--radius-md);
   background: var(--bg-elevated); border: 1px solid var(--border); color: var(--text);
@@ -1534,7 +1527,7 @@ button.adv-chip {
 }
 button.adv-chip:hover { border-color: var(--border-strong); color: var(--text); }
 button.adv-chip.on {
-  /* 选中配方全站一套（theme.css --sel-*），从前这里是 10% 手调版 */
+  /* 选中配方全站一套（theme.css --sel-*） */
   border-color: var(--sel-border); color: var(--accent-ink);
   background: var(--sel-bg);
 }
@@ -1936,8 +1929,8 @@ button.asst-perm-option:disabled { opacity: var(--alpha-disabled); cursor: wait;
 }
 .ws-modal-head button:hover { color: var(--text); }
 .ws-del-name { display: block; font-size: var(--text-aux); color: var(--text-muted); line-height: 1.7; }
-/* 浅底 + 语义色字 + 语义色描边。原来白字压 #d08b81 只有 2.73:1——最需要
-   看清的危险按钮反而最看不清；菜单侧早已定了「不用实心填充」的口径，这里补齐。 */
+/* 浅底 + 语义色字 + 语义色描边：危险动作不做实心填充底，
+   明暗两主题下都保得住对比度（foundation.css 的 .del-row button.danger 同口径）。 */
 button.primary.danger,
 button.primary.danger:hover:not(:disabled) {
   background: var(--danger-soft); border-color: var(--danger); color: var(--danger);
@@ -1964,12 +1957,11 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   .asst-head { cursor: default; }  /* 手机上没有拖窗口这回事 */
 }
 
-/* 窄屏助手入口已并入底部导航，不再渲染悬浮球：它原来的右下定位会盖住表单和筛选控件。 */
+/* 窄屏的助手入口收在底部导航，右下角不摆悬浮控件——那里要露出表单和筛选控件。 */
 
 /* ── 陪伴能力卡（资料页）──────────────────────────────
-   这一组原先写的是 --bg-1 / --line / --text-2 之类本项目根本不存在的令牌名，
-   永远吃到 fallback 的 #fff / rgba(0,0,0,.x)：暗色下输入框刷白，标签灰到看不清。
-   一律换成主题真令牌，取值口径对齐 .pf-editor。 */
+   令牌一律用主题真令牌（不走 fallback），取值口径对齐 .pf-editor，
+   明暗两主题下都成立。 */
 .pf-comp { display: flex; flex-direction: column; gap: var(--space-5); }
 .pf-comp-note {
   font-size: var(--text-aux); color: var(--text-subtle);
@@ -1992,7 +1984,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   background: var(--bg-sunken); border: 1px solid var(--border); border-radius: 999px;
   padding: 2px var(--space-3);
 }
-/* 联系人工具卡已无独立总闸（全关并入档位轴），总开关的占位样式随之移除 */
+/* 联系人工具卡没有独立总闸：「全关」档即整组关闭（档位轴见 ToolOverviewSection） */
 /* 总闸关着（档位=全关）时，单工具清单整块降透明度：能看见还有什么、但明确不可操作 */
 .pf-comp-off { opacity: var(--alpha-disabled, 0.55); }
 .pf-comp-off input[type="checkbox"] { cursor: not-allowed; }
@@ -2042,8 +2034,8 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
    只读卡片 + 顶部提醒条。两列自适应：单列时长值一行读不完，
    三列时「近 24 小时」这类会被压成竖排。 */
 .ov-head { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-5); flex-wrap: wrap; }
-/* 从前这条只重置了 margin，字号落在浏览器默认的 22.5px/700——比全站任何一级
-   区块标题都大还很黑。收进刻度：与设置分区同级（20px/600）。 */
+/* h2 字号收进刻度：与设置分区同级（20px/600）；不写的话会落浏览器默认的
+   22.5px/700，比全站任何一级区块标题都大还很黑。 */
 .ov-head h2 { margin: 0; font-size: var(--text-2xl); font-weight: 600; }
 .ov-head .actions { margin-top: 0; flex: 1 1 auto; justify-content: flex-end; }
 /* 连通测试结果要整行才读得下，跟在按钮后面换行 */
@@ -2056,7 +2048,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 .ov-card-h { display: flex; align-items: center; gap: var(--space-3); margin-bottom: var(--space-3); }
 .ov-card-h .t { font-size: var(--text-note); font-weight: 600; letter-spacing: .02em; color: var(--text-muted); }
 
-/* 体检行的红绿灯原来只写在 .check 里，卡片标题与提醒条用的是同一个记号 */
+/* 体检行的红绿灯记号：卡片标题与提醒条也复用同一枚 .led */
 .led { flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--text-subtle); }
 .led.ok { background: var(--success); }
 .led.warn { background: var(--warning); }
@@ -2091,9 +2083,8 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 /* 体检行同时是复选框行的类名，卡片里的这些行不可点，别带上手型 */
 .ov-card .check { cursor: default; }
 
-/* 减弱动效总闸。此前只有 .typing / .msgmenu / .toast / #side 四处做了退让，
-   漏下的 .rec-dot 与 .dot.typing 是 1Hz 级无限闪烁 —— 对光敏敏感用户是
-   实质风险（WCAG 2.2.2），不只是审美问题。 */
+/* 减弱动效总闸：循环/闪烁动画一律退让 —— .rec-dot、.dot.typing 这类
+   1Hz 级无限闪烁对光敏用户是实质风险（WCAG 2.2.2），不只是审美问题。 */
 @media (prefers-reduced-motion: reduce) {
   .tab-panel.active, .chat-map, .chat-map.closing { animation: none; }
   .chat-map-bubble { transition: none; }
@@ -2102,7 +2093,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   .rec-dot { opacity: 1; }
   /* .spin 单独领一条退让。旋转该停（前庭刺激，WCAG 2.3.3），但不能整条按死：
      Windows 关掉「动画效果」后 Chromium 就报 reduce，Loader2 被钉在半道不动，
-     看着像转圈卡住而不是"活儿还在跑"。改成透明度慢呼吸 —— 不转、不闪
+     看着像转圈卡住而不是"活儿还在跑"。这里用透明度慢呼吸 —— 不转、不闪
      （1.4s 一拍，远低于 3Hz 闪光阈值）， busy 状态照样看得见。
      端点压到 .25 是因为这几个钮测试中都是 disabled（--alpha-disabled .55），
      两个 opacity 相乘，不给够摆幅就看不出在动。 */
@@ -2114,8 +2105,7 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 @keyframes spin-fade { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
 
 /* 空态文字口径：字号与颜色收这一处，盒子的留白（padding/line-height）在 foundation.css
-   那一组同名规则里。两份以前各写一套 padding、`.empty` 还在 legacy 里定义了两遍，
-   现在只剩一条真源。 */
+   那一组同名规则里——一条真源，两边分工。 */
 .empty, .empty-state, .s-empty, .switch-empty, .ml-empty {
   font-size: var(--text-note); color: var(--text-subtle);
   text-align: center; line-height: 1.7;
@@ -2264,10 +2254,9 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
 .model-trigger > svg:last-child { flex: none; transition: transform var(--dur-fast) var(--ease-out); }
 
 .model-pop {
-  /* 用 --z-chat-pop(90)：浮层会伸进左栏，中栏搜索框是 sticky + z 50 会压在它上面
-     （真实现过：模型列表被联系人列表盖住半边）；更要紧的是它也会从设置助手弹窗里
-     召唤，而弹窗在 --z-dialog(79)——原来的 --z-subpop(65) 会被整片压住、只在弹窗
-     边缘露一截。portal 到 body 的浮层不与宿主共享层叠上下文，档位得按全局最高宿主
+  /* 用 --z-chat-pop(90)：浮层会伸进左栏，中栏搜索框是 sticky + z 50，档位必须压过它；
+     它也会从设置助手弹窗（--z-dialog 79）里召唤，档位同样要压过弹窗。
+     portal 到 body 的浮层不与宿主共享层叠上下文，档位得按全局最高宿主
      取值（与 .ctx-pop / .asst-perm-pop 同档）。 */
   position: fixed; right: auto; bottom: 0; z-index: var(--z-chat-pop);
   display: flex; flex-direction: column;
@@ -2646,8 +2635,8 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .qq-conv-menu-danger button:disabled { cursor: default; opacity: .45; background: transparent; }
 .qq-conv-trigger-seg { margin-bottom: 0; }
 .qq-conv-trigger-seg button { padding: 4px 10px; font-size: var(--text-note); }
-/* 旧手写滑块 .qq-conv-switch（轨道/滑块私有一套）已整体换成全站统一的
-   .toggle-switch，这里只保留本卡特有的语义：状态词随开关态染色（收件中=成功绿）。 */
+/* 开关走全站统一的 .toggle-switch；这里只保留本卡特有的语义：
+   状态词随开关态染色（收件中=成功绿）。 */
 .qq-conv-actions .toggle-switch[aria-checked="true"] .toggle-switch-text b { color: var(--success); }
 .qq-conv-rename {
   display: flex; flex-direction: column; gap: var(--space-3); width: 100%;
@@ -2797,16 +2786,16 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 
 
 /* ── 温度计行的亲密度数字框（ProfileView → NumField） ──
-   亲密度从裸 input 改走 NumField（失焦才夹紧，不再吃掉打到一半的数字）后，
-   外面多了一层 .pf-custom 包装 label。默认它不参与 .pf-bond-row 的弹性分配，
-   且 .pf-custom input 的 62px 定宽会盖掉原 .pf-comp-tiny 的 76px——
-   这里让包装层接管原输入框的 flex:1 占位、输入框在包装内撑满，行内三格的宽度关系不变。 */
+   数字框外包一层 .pf-custom 包装 label（NumField 失焦才夹紧，打到一半的数字不受影响）。
+   包装层默认不参与 .pf-bond-row 的弹性分配，且 .pf-custom input 自带 62px 定宽，
+   会压住 .pf-comp-tiny 的 76px 档——这里让包装层接管 flex:1 占位、
+   输入框在包装内撑满，行内三格的宽度关系不变。 */
 .pf-bond-row .pf-custom { flex: 1; min-width: 0; }
 .pf-bond-row .pf-custom input { width: 100%; }
 
 /* ── 录音实时波形（ChatView 的 RecWaveMeter）──
-   与「N 秒 + 红点」并存：rec-state 从前 flex:1 独占一行（.rec-state 0,1,0 的规则在上方），
-   这里用更高特异度只把录音态的它收成内容宽，腾出的空间全部给波形条——
+   与「N 秒 + 红点」并存：.rec-state 的基础规则（0,1,0，在上方）给它 flex:1，
+   这里用更高特异度只把录音态收成内容宽，腾出的空间全部给波形条——
    宽度自适应剩余空间，历史向左渐隐，最新一帧恒在最右。 */
 .composer-bar.recording .rec-state { flex: 0 0 auto; }
 .rec-wave { flex: 1 1 24px; min-width: 40px; height: 22px; align-self: center; }
@@ -2890,13 +2879,9 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .emote-wrap { display: contents; }
 
 /* ── ToggleSwitch：全站唯一的滑块开关 ─────────────────────────────
-   为什么收敛成滑块：历史上「开启某功能」有三种互斥形态并存——
-   ① 旧 Switch.tsx 名叫 Switch，实际是「关闭/开启」双按钮分段（aria-pressed）；
-   ② QQSection 手写的 role="switch" 轨道滑块（.qq-conv-switch，样式私有）；
-   ③ 十来处原生 checkbox 直接当开关用。同一个界面里换一个地方开个功能
-      就要重新认一种控件，比哪种形态「好不好看」更伤害一致性。
-   分段按钮的语义是「在两个选项里选一个」，滑块的语义是「这个功能开着/关着」；
-   这里所有场景都是后者，所以统一到滑块，轨道+滑块只此一套。
+   「开启某功能」统一用滑块一种形态，轨道+滑块只此一套：
+   分段按钮的语义是「在两个选项里选一个」，滑块的语义是「这个功能开着/关着」，
+   这里的开关场景全是后者——控件语义一致，比形态好不好看更要紧。
    保留 checkbox 的场景：多选（批量清理、批量选素材）、勾选确认（导出带不带密钥）
    ——那些是「在集合里挑」，不是「开关」。 */
 .toggle-switch {
@@ -2939,7 +2924,7 @@ input[type="range"]:focus-visible { outline: 2px solid var(--focus-ring); outlin
 .toggle-switch-text span { color: var(--text-muted); font-size: var(--text-note); line-height: 1.45; }
 
 /* 玻璃模式覆写：off 态的实底 --bg-sunken 轨道压在壁纸上会变成一块不透气的塑料片，
-   沿 .pf-gender-btn 一带的配方换成透光底；on 态保持 --accent 实色——
+   走 .pf-gender-btn 一带的透光底配方；on 态保持 --accent 实色——
    accent 与 accent-text 的对比度承诺建立在实色上，掺透会砸掉可读性。 */
 html[data-glass="on"] .toggle-switch[aria-checked="false"] .toggle-switch-track {
   border-color: var(--glass-edge-soft);

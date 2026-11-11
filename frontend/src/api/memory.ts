@@ -18,8 +18,7 @@ export function fetchMemoryStats(cid?: string): Promise<MemoryStats> {
   return getJson(cq("/api/memory/stats", cid));
 }
 
-/** 每页条数由调用方给（走「界面 → 列表每页」那一档）：从前这里写死 200，
- *  与后端默认 100、上限 500 是三套口径。 */
+/** 每页条数由调用方给（走「界面 → 列表每页」那一档）。 */
 export function fetchMemoryEvents(kind: string, offset = 0, limit = 25, cid?: string, space?: MemorySpaceSelection): Promise<{ events: MemoryEvent[]; total: number }> {
   const url = cq("/api/memory/events?limit=" + limit + "&offset=" + offset + (kind ? "&kind=" + encodeURIComponent(kind) : "") + spaceQuery(space), cid);
   return getJson(url);

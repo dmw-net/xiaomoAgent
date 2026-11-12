@@ -312,7 +312,7 @@ input, textarea {
   /* 信纸本身就有边，硬描一圈反而像裁切残留；发丝线只负责收口 */
   border-color: color-mix(in srgb, var(--border) 55%, transparent);
 }
-/* 主动消息用她的常规气泡；--bubble-proactive 令牌保留给真正的系统提示 */
+/* 主动消息用她的常规气泡，不挂来源标签——她主动开口这件事，让内容自己说。 */
 /* 微信式气泡小尾巴：45° 方块盖住气泡边缘，朝向各自的头像 */
 .msg-row.contact .bubble::before {
   content: ""; position: absolute; top: 12px; left: -5px; width: 9px; height: 9px;
@@ -326,16 +326,9 @@ input, textarea {
   background: var(--bubble-mine);
   transform: rotate(45deg);
 }
-/* 「主动」小徽标：挂在行左上角，说明来源但不抢戏 */
-.msg-row.contact.proactive { margin-top: var(--space-7); }
-.msg-row.contact.proactive::before {
-  content: "主动";
-  position: absolute; top: -9px; left: 45px; z-index: var(--z-proactive-badge);
-  font-size: var(--text-xs); letter-spacing: .05em; line-height: 14px;
-  color: var(--text-subtle);
-  background: var(--bg); border: 1px solid var(--border);
-  border-radius: var(--radius-sm); padding: 0 var(--space-2);
-}
+/* 主动消息不挂「主动」徽标：那是系统注解，不是她的话。她主动开口这件事，
+   让消息内容自己说——每条都贴标签反而把惊喜磨平。 */
+.msg-row.contact.proactive { margin-top: var(--space-5); }
 
 /* 分隔与系统提示：居中、极小、灰色，不抢戏 */
 .daysep {
@@ -351,7 +344,7 @@ input, textarea {
 /* 时间落在气泡右下角，跟随气泡文字色、淡化处理 */
 .msg-time {
   text-align: right;
-  font-size: var(--text-xs);
+  font-size: var(--text-cap);
   line-height: 1.2;
   margin-top: 3px;
   color: var(--msg-time);
@@ -416,7 +409,7 @@ input, textarea {
   color: var(--text-muted); font-size: var(--text-md); line-height: 1.9;
 }
 #intro .hi { font-size: var(--text-2xl); color: var(--text); font-weight: 600; margin-bottom: var(--space-2); }
-#intro .chips { display: flex; flex-wrap: wrap; gap: var(--space-3); justify-content: center; margin-top: var(--space-10); }
+#intro .chips { display: flex; flex-wrap: wrap; gap: var(--space-3); justify-content: center; margin-top: var(--space-8); }
 .chip {
   padding: var(--space-3) var(--space-6); border-radius: var(--radius-full);
   border: 1px solid var(--border); background: var(--bg-elevated);
@@ -476,6 +469,7 @@ input, textarea {
 .composer-bar .tip { font-size: var(--text-sm); color: var(--text-subtle); }
 #send {
   flex: none;
+  display: inline-flex; align-items: center; justify-content: center; gap: var(--space-2);
   padding: var(--space-2) var(--space-8); border-radius: var(--radius-sm);
   background: linear-gradient(180deg, color-mix(in srgb, var(--accent) 92%, var(--accent-lift)) 0%, var(--accent) 100%);
   color: var(--accent-text);
@@ -570,7 +564,14 @@ input, textarea {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-menu-dark);
 }
-.msgmenu.dark button { flex-direction: row; align-items: center; padding: var(--space-3) var(--space-6); }
+/* 标签与说明保持上下两行（与浅色菜单同构）。曾经改成 row 且无 gap，
+   「复制」「复制这条消息」挤成一句病句——这里是第一屏动作，别为省高度牺牲可读性。 */
+.msgmenu.dark button {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  padding: var(--space-3) var(--space-5);
+}
 /* 例外（有意为之）：消息菜单是恒深色浮层，明暗两主题都不跟随，
    所以这里用白叠加而不是 --bg-hover。别在下一轮统一掉。 */
 .msgmenu.dark button:hover { background: rgba(255, 255, 255, .14); }
@@ -942,6 +943,9 @@ input, textarea {
     inset 2px 0 0 var(--accent),
     inset 0 0 0 1px color-mix(in srgb, var(--accent) 14%, transparent);
 }
+/* 规范里的列表选中态是三件套：accent-soft 底 + 左条 + accent-ink 字。
+   只做前两件时，扫视靠的是「哪块底色不一样」，弱视/低对比屏上几乎看不出来。 */
+.s-item.active .s-name { color: var(--accent-ink); }
 
 /* 未读数字角标：微信式红底白字胶囊，钉在会话行右侧（替代早先头像角上的无数字小圆点） */
 .s-badge {

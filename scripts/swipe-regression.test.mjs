@@ -74,6 +74,8 @@ assert(/\(a\.variant_index \?\? 0\) === \(b\.variant_index \?\? 0\)/.test(viewSr
   "sameRow 必须比较版本字段，否则切换后 memo 挡住不重绘");
 assert(/旧版本保留可切换/.test(menuSrc), "菜单提示要说清旧版本会保留");
 assert(/\.variant-bar/.test(cssSrc), "切换条要有样式");
+assert(cssSrc.includes("(hover: hover) and (pointer: fine) and (min-width: 761px)"),
+  "单版本 ↻ 的悬停收起只许在桌面宽布局（≥761px）生效：移动布局（≤760px）没有可靠悬停，重新生成入口必须常驻");
 assert(/variant_count\?/.test(contractSrc), "前后端契约要有版本字段");
 
 // ── 行为断言：真库驱动 ────────────────────────────────────────

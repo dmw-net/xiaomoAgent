@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Search, Plus, Pencil, FileDown, Archive, ArchiveRestore, FileUp, ChevronDown, ChevronRight, Trash2, SearchX, UserPlus, X } from "lucide-react";
 import { contactsApi, searchApi } from "../api";
 import EmptyState from "./EmptyState";
+import Avatar from "./Avatar";
 import type { MessageHit, MemoryHit } from "../types/search";
 import { getCachedContacts, isContactsLoaded, refreshContacts, subscribeContacts } from "../lib/contactsStore";
 import { exportPersonaMd, parseMd, parseNameFromMd } from "../lib/persona-doc";
@@ -238,9 +239,7 @@ export default function Sidebar({ current, currentConversation, onPick, onLeaveC
         onKeyDown={(e) => { if (!isArchived && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); open(); } }}
         onContextMenu={isArchived ? undefined : (e) => { e.preventDefault(); setMenu({ contact: c, x: e.clientX, y: e.clientY }); }}
       >
-        <div className={"s-ava" + (c.avatar ? " has-img" : "")} style={avatarToneStyle(c.name)} title={isArchived ? "已归档" : c.name}>
-          {c.avatar ? <img src={c.avatar} alt={c.name + "的头像"} /> : (c.name || "?").slice(0, 1)}
-        </div>
+        <Avatar className="s-ava" src={c.avatar || undefined} name={c.name} title={isArchived ? "已归档" : c.name} style={avatarToneStyle(c.name)} />
         <div className="s-meta">
           <div className="s-r1">
             <span className="s-name">{c.name}</span>

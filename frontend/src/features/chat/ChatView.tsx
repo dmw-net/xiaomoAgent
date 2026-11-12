@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
-import { AlertTriangle, ArrowDown, BellRing, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MapPinned as MapIcon, Mic, MoreHorizontal, Palette, Pencil, RotateCcw, Search, Smile, Square, X } from "lucide-react";
+import { AlertTriangle, ArrowDown, Archive, BookOpen, CalendarCheck, Check, ChevronDown, ChevronLeft, ChevronUp, Cpu, FileDown, ImagePlus, Loader2, MessageCircleHeart, Mic, MoreHorizontal, Palette, Pencil, RotateCcw, Route, Search, Send, Smile, Square, X } from "lucide-react";
 import { ApiError, chatApi, contactsApi, memoryApi, proactiveApi, settingsApi } from "../../api";
 import { refreshContacts } from "../../lib/contactsStore";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
@@ -2931,11 +2931,7 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           ) : (
             <div>发第一条消息开始，聊过的联系人都会记得。</div>
           )}
-          {!onboardingDone && (
-            <OnboardingChecklist ownerName={ownerName} modelReady={modelReady === true} caps={caps}
-              personaIsDefault={personaIsDefault} onOpen={onOpenOnboarding}
-              onFinished={() => setOnboardingDone(true)} />
-          )}
+          {/* 先给一句能开口的话；首次设置清单收在下面，别让待办占满第一屏。 */}
           <div className="chips">
             {(cid
               ? [introChip ?? "怎么开始用？", "我还需要设置什么？", "给新联系人配好模型"]
@@ -2945,6 +2941,11 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 onClick={() => { setDraft(chip); iptRef.current?.focus(); }}>{chip}</button>
             ))}
           </div>
+          {!onboardingDone && (
+            <OnboardingChecklist ownerName={ownerName} modelReady={modelReady === true} caps={caps}
+              personaIsDefault={personaIsDefault} onOpen={onOpenOnboarding}
+              onFinished={() => setOnboardingDone(true)} />
+          )}
           {!cid && onOpenSection && (
             <div className="linkline">
               <button type="button" onClick={() => onOpenSection("memory")}>查看记忆 →</button>
@@ -3098,16 +3099,21 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
           </div>
         </div>
         <div className="right">
+          {/* 搜索是对话页最高频动作，给一级入口；别再要求先开地图再点放大镜。 */}
+          <button type="button" className="bar-btn chat-search-toggle" aria-label="搜索当前会话" title="搜索当前会话"
+            onClick={() => { setMapOpen(false); setSearchOpen(true); }}>
+            <Search size={16} strokeWidth={2} />
+          </button>
           <button type="button" className="bar-btn chat-map-toggle" aria-label="对话地图" title="对话地图"
             onClick={() => { setSearchOpen(false); setMapOpen(true); }}>
-            <MapIcon size={17} />
+            <Route size={17} />
           </button>
           {!cid && (
             <button type="button" className="bar-btn" id="proactiveBtn" disabled={proactiveBusy} aria-busy={proactiveBusy}
               aria-label="看看要不要主动开口"
               title={proactiveBusy ? "正在看…" : `现在让${characterName}看看要不要主动开口`}
               onClick={runProactive}>
-              {proactiveBusy ? <Loader2 size={15} className="spin" /> : <BellRing size={15} />}
+              {proactiveBusy ? <Loader2 size={15} className="spin" /> : <MessageCircleHeart size={15} />}
             </button>
           )}
         {onEditProfile && (
@@ -3708,7 +3714,9 @@ export default function ChatView({ characterName, ownerName, ownerAvatar, contac
                 <button type="button" id="send" title={busy ? "有别的操作还在收尾，稍等一下" : "发送"}
                   disabled={busy || transcribing || voiceBusy}
                   className={busy ? "busy" : ""} onClick={submitDraft}>
-                  {busy ? <Loader2 size={16} className="spin" aria-hidden /> : "发送"}
+                  {busy ? <Loader2 size={16} className="spin" aria-hidden /> : (
+                    <><Send size={16} className="send-ico" aria-hidden /><span className="send-txt">发送</span></>
+                  )}
                 </button>
               )}
             </div>

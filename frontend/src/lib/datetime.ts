@@ -26,9 +26,16 @@ export function clockOf(ts: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-/** 日分隔条带首条消息的具体时刻：今天 11:30 / 10 月 18 日 周日 11:30。 */
+/** 日分隔条带首条消息的具体时刻：今天 11:30 / 昨天 22:10 / 10 月 18 日。
+ *  近期只显示时间，跨天才显示日期——日期+星期+时刻塞一颗胶囊是消息流里最长的一行。 */
 export function dayTimeLabel(ts: number): string {
-  return `${dayLabel(ts)} ${clockOf(ts)}`;
+  const day = dayOf(ts);
+  const today = dayOf(Date.now());
+  if (day === today) return `今天 ${clockOf(ts)}`;
+  const yest = dayOf(Date.now() - 86_400_000);
+  if (day === yest) return `昨天 ${clockOf(ts)}`;
+  const d = new Date(ts);
+  return `${d.getMonth() + 1} 月 ${d.getDate()} 日`;
 }
 
 /** 相对时间：刚刚 / N 分钟前 / N 小时前 / N 天前。 */

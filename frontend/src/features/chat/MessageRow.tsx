@@ -1,5 +1,5 @@
-import { memo, useMemo, useState, type CSSProperties } from "react";
-import { ChevronLeft, ChevronRight, RefreshCw, Volume2, Loader2 } from "lucide-react";
+import { memo, useEffect, useMemo, useState, type CSSProperties } from "react";
+import { ChevronLeft, ChevronRight, ImageOff, RefreshCw, Volume2, Loader2 } from "lucide-react";
 import Avatar from "../../components/Avatar";
 import VoiceMessageBubble from "../../components/VoiceMessageBubble";
 import { useLongPress } from "../../hooks/useLongPress";
@@ -8,6 +8,37 @@ import LinkPreviewCard from "./LinkPreviewCard";
 import ThinkingBlock from "./ThinkingBlock";
 import { avatarToneStyle } from "../../lib/avatar-tone";
 import type { MessageAttachmentMeta, MessageRow } from "../../types";
+
+/** 气泡内图片：加载失败退成一块可重试的占位卡，而不是把 alt 文案晾在破图框里。 */
+function MsgImage({ url, alt, onClick, onContextMenu }: {
+  url: string;
+  alt: string;
+  onClick: (e: React.MouseEvent<HTMLImageElement>) => void;
+  onContextMenu: (e: React.MouseEvent<HTMLImageElement>) => void;
+}): JSX.Element {
+  const [failed, setFailed] = useState(false);
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => { setFailed(false); setAttempt(0); }, [url]);
+  if (failed) {
+    return (
+      <button type="button" className="msg-img-fail"
+        aria-label={alt + "·加载失败，点按重试"} title="点按重试"
+        onClick={(e) => {
+          e.stopPropagation();
+          setAttempt((n) => n + 1);
+          setFailed(false);
+        }}>
+        <ImageOff size={18} strokeWidth={1.8} aria-hidden="true" />
+        <span>图片加载失败 · 点按重试</span>
+      </button>
+    );
+  }
+  return (
+    <img key={attempt} src={url} alt={alt} loading="lazy"
+      onClick={onClick} onContextMenu={onContextMenu}
+      onError={() => setFailed(true)} />
+  );
+}
 
 /** 一条普通消息气泡（含撤回态）。编辑态不走这里——它需要编辑器状态，留在 ChatView。 */
 function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, contactAvatar, onContextMenu, onLongPress, onImageClick, failed, onRetry, ttsOn, ttsPlaying, ttsBusy, onPlayTts, showThinking = true, thinkingOpen, onThinkingOpenChange, showSenderName = true, enter = false, enterDelay = 0, variantCount = 0, variantIndex = 0, onVariantChange, onVariantGenerate, demo = false, showSpeed = true, highlight = "" }: {
@@ -159,7 +190,8 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
         <>
           <div className={"msg-imgs" + (shownImgs.length === 1 ? " single" : "")}>
             {shownImgs.map((url) => (
-              <img key={url} src={url} alt={m.role === "user" ? "我发送的图片" : characterName + "发来的图片"} loading="lazy"
+              <MsgImage key={url} url={url}
+                alt={m.role === "user" ? "我发送的图片" : characterName + "发来的图片"}
                 onClick={(e) => {
                   e.stopPropagation();
                   // 折叠态点图先展开，展开后才走灯箱放大。
@@ -215,7 +247,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   return (
     <div className={cls} data-id={m.id} style={enterStyle} {...handlers}>
       {failMark}
-      {/* 主动消息也是"联系人说的话：给头像、用常规气泡，只在角落挂一个「主动」小徽标。 */}
+      {/* 主动消息也是"联系人说的话：给头像、用常规气泡，不挂来源标签——她主动开口这件事，让内容自己说。 */}
       {m.role !== "user" && (
         <Avatar className={"msg-ava" + (gap ? "" : " ava-hidden")} src={contactAvatar || undefined} name={characterName}
           style={avatarToneStyle(characterName)} />

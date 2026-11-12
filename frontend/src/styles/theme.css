@@ -77,9 +77,7 @@
   /* 自己气泡内的时间戳压在 accent 实底上：74% 时暗色档（墨字压 #df8260）实测只有
      约 2.7:1。88% 在明暗两档的默认赤陶上都 ≥4:1，自定义强调色由 index.html 的
      adapt() 按 WCAG 再往上顶，保证任何色感都不跌破。 */
-  --msg-time-mine: color-mix(in srgb, var(--accent-text) 88%, transparent);
-  --bubble-proactive: #faf5ec;
-  --bubble-proactive-border: #eadbc3;
+  --msg-time-mine: color-mix(in srgb, var(--accent-text) 92%, transparent);
 
   --col: 960px;
   --chat-col: clamp(720px, 64vw, 860px);
@@ -136,7 +134,6 @@
   --space-10: 24px;
   --space-12: 32px;
 
-  --z-proactive-badge: 1;
   --z-dock: 6;
   --z-splitter: 30;
   --z-backdrop: 40;
@@ -239,9 +236,7 @@
   --ava-c6: #8296b8;
 
   --msg-time:      #b6aa99;
-  --msg-time-mine: color-mix(in srgb, var(--accent-text) 88%, transparent);
-  --bubble-proactive: #231c14;
-  --bubble-proactive-border: #3d3122;
+  --msg-time-mine: color-mix(in srgb, var(--accent-text) 92%, transparent);
 
   --shadow-tint: 0 0 0;
   --shadow-sm: 0 1px 2px rgb(0 0 0 / .35), 0 1px 3px rgb(0 0 0 / .20);

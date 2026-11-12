@@ -378,19 +378,28 @@ select {
 }
 
 /* 思考过程：回答前的次级信息，不抢正文。折叠时是一行状态，展开后独立滚动。
-   参考主流模型的“Thought for …”交互：默认低干扰，需要时再读。 */
+   参考主流模型的“Thought for …”交互：默认低干扰，需要时再读。
+   默认态刻意去掉描边和底色——历史消息里它只是正文上方的一行注脚；
+   只有 streaming（.is-live）和用户主动展开（.is-open）时才升成一张卡。 */
 .think {
   width: 100%;
-  margin: 0 0 10px;
+  margin: 0 0 6px;
   scroll-margin-block: 12px;
   overflow: hidden;
-  border: 1px solid color-mix(in srgb, var(--border) 78%, transparent);
+  border: 1px solid transparent;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--bg-sunken) 46%, transparent);
+  background: transparent;
   transition: border-color var(--dur-fast) var(--ease-out), background-color var(--dur-fast) var(--ease-out);
 }
-.think:hover,
-.think.is-open {
+.think:hover {
+  background: color-mix(in srgb, var(--bg-sunken) 42%, transparent);
+}
+.think.is-open,
+.think.is-live {
+  border-color: color-mix(in srgb, var(--border) 78%, transparent);
+  background: color-mix(in srgb, var(--bg-sunken) 52%, transparent);
+}
+.think.is-open:hover {
   border-color: color-mix(in srgb, var(--border-strong) 58%, var(--border));
   background: color-mix(in srgb, var(--bg-sunken) 68%, transparent);
 }
@@ -417,20 +426,33 @@ select {
 }
 .think-icon {
   display: grid;
-  width: 23px;
-  height: 23px;
+  width: 20px;
+  height: 20px;
   place-items: center;
   flex: none;
   border-radius: 7px;
+  background: transparent;
+  color: var(--text-subtle);
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.think.is-live .think-icon,
+.think.is-open .think-icon {
+  width: 23px;
+  height: 23px;
   background: color-mix(in srgb, var(--accent) 11%, transparent);
   color: var(--accent-ink);
 }
 .think-title {
-  color: var(--text-muted);
+  color: var(--text-subtle);
   font-size: var(--text-aux);
-  font-weight: 600;
+  font-weight: 500;
   line-height: 1.25;
   white-space: nowrap;
+}
+.think.is-live .think-title,
+.think.is-open .think-title {
+  color: var(--text-muted);
+  font-weight: 600;
 }
 .think-state {
   display: inline-flex;
@@ -593,14 +615,7 @@ select {
   display: none;
 }
 
-.msg-row.contact.proactive::before {
-  left: 44px;
-  top: -8px;
-  font-size: var(--text-xs);
-  letter-spacing: .08em;
-  border-radius: 4px;
-  background: var(--bg);
-}
+/* 主动消息不再有「主动」徽标（已删除）。保留 .proactive 类供气泡尾巴方向判定。 */
 
 .daysep {
   margin: 28px 0 12px;
@@ -612,7 +627,7 @@ select {
 
 .msg-time {
   margin-top: 2px;
-  font-size: var(--text-xs);
+  font-size: var(--text-cap);
 }
 /* 演示模式的回复气泡：一条说明，避免首启用户以为已经接上模型。 */
 .msg-demo-tag { margin-top: var(--space-2); font-size: var(--text-note); color: var(--text-subtle); }
@@ -651,6 +666,8 @@ button.tool-btn {
 }
 
 .composer-bar .tip {
+  flex: none;
+  white-space: nowrap;
   font-size: var(--text-sm);
 }
 
@@ -2686,7 +2703,6 @@ a.btn:hover {
     min-height: 38px;
     padding-inline: 16px;
   }
-
   #settings {
     max-width: none;
     padding: 20px 14px 64px;
@@ -4477,8 +4493,9 @@ button.outbound-stat.on span { color: var(--accent-ink); }
   margin-right: 5px;
   padding: 1px 6px;
   border-radius: var(--radius-full);
-  background: var(--accent-soft);
-  color: var(--accent-ink);
+  /* 主动性提示不再用 accent：和「选中会话」共用一套语义色会让人误以为那一行被选中。 */
+  background: var(--warning-soft);
+  color: var(--warning);
   font-size: var(--text-cap);
   font-weight: 500;
 }
@@ -5590,3 +5607,21 @@ button.outbound-stat.on span { color: var(--accent-ink); }
 .load-earlier:hover:not(:disabled) { border-color: var(--border-strong); color: var(--text); background: var(--bg-hover); }
 .load-earlier:active:not(:disabled) { scale: .98; }
 .load-earlier:disabled { opacity: var(--alpha-disabled); cursor: wait; }
+
+/* ── 窄屏 composer 保一行 ──
+   390px 实测：工具 188 + 模型 42 + 上下文 57 + 发送 60 + 间距 24 = 371 > 348，
+   发送键折到第二行、输入卡片从 118px 涨到 157px。发送收成 44×44 图标（拇指区
+   固定右下角）+ 隐藏百分比文字，整行回到 342px；图标按钮的 aria-label 仍在。 */
+#send .send-ico { display: none; }
+@media (max-width: 560px) {
+  .ctx-pct { display: none; }
+  #send { width: var(--tap-min); min-height: var(--tap-min); padding: 0; }
+  #send .send-ico { display: block; }
+  #send .send-txt { display: none; }
+  /* 390 顶栏实测：返回 + 名字 + 搜索/地图/主动/更多 4 个图标 = 409 > 362，
+     图标直接压在「在线 · 8人群聊」上。地图是桌面向的时间轴面板，手机上让位；
+     会话来源切换同样先收进返回列表，别让状态行溢出盖住图标。 */
+  #bar .right .chat-map-toggle { display: none; }
+  #bar .sub-sep,
+  #bar .conv-switch-wrap { display: none; }
+}

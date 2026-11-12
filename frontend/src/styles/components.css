@@ -747,6 +747,21 @@ button.btn.ghost:hover:not(:disabled) { border-color: var(--border); color: var(
   cursor: zoom-in; background: var(--bg-sunken);
 }
 .bubble .msg-imgs.single img { height: auto; max-height: 260px; }
+/* 加载失败的图片位：保留原图卡尺寸，不让气泡塌成一条线，也不把 alt 文案晾在破图框里。
+   点按整块重试（同一 URL 重新挂载 img）。 */
+.bubble .msg-img-fail {
+  display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: var(--space-2);
+  width: 100%; height: 110px; padding: var(--space-3);
+  border: 0; border-radius: var(--radius-xs);
+  background: var(--bg-sunken); color: var(--text-subtle);
+  font: inherit; font-size: var(--text-aux); line-height: 1.3; text-align: center;
+  cursor: pointer;
+  transition: background-color var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out);
+}
+.bubble .msg-img-fail:hover { background: var(--bg-hover); color: var(--text-muted); }
+.bubble .msg-img-fail:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: -2px; }
+.bubble .msg-imgs.single .msg-img-fail { height: 110px; }
 .bubble.img-only { padding: var(--space-1); background: var(--bubble-theirs); }
 .msg-row.me .bubble.img-only { background: transparent; }
 .bubble.img-only::before { display: none; }
@@ -857,6 +872,15 @@ button.tool-btn[aria-pressed="true"] { background: var(--accent-soft); color: va
    语义，孤颗按钮撑一坨米色圆块只剩噪声——摘掉底板后它就是跟 .tts-btn 同一语言
    的裸图标钮（悬停才有底），多版本时底板照旧。 */
 .variant-bar.solo { padding: 2px 0; background: transparent; }
+/* 单版本的 ↻ 是低频动作，点下去会立刻重答、没有二次确认：桌面宽布局里平时收起来，
+   指针悬停或键盘 Tab 进这一行时才露出。移动布局（≤760px，手机与窄窗口 alike）
+   没有可靠的悬停——调窄的桌面窗口同样是 hover:hover + pointer:fine，只按指针类型
+   判断会把移动布局里的按钮藏掉，所以收起行为必须再叠加宽度档位，移动布局常驻。 */
+@media (hover: hover) and (pointer: fine) and (min-width: 761px) {
+  .msg-row .variant-bar.solo { opacity: 0; pointer-events: none; }
+  .msg-row:hover .variant-bar.solo,
+  .msg-row:focus-within .variant-bar.solo { opacity: 1; pointer-events: auto; }
+}
 /* 底部元信息行：版本条（左）与时间/速度（右）合成一行，气泡尾部不额外增高。
    时间贴右用 margin-left:auto 而不是 space-between——
    只有时间没有版本条时也要贴右。内层的时间/版本条不带自己的上边距，行距归 .msg-meta 管
@@ -2227,18 +2251,20 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   margin-top: var(--space-8); padding-top: var(--space-4); border-top: 1px solid var(--border);
 }
 .onb-list {
-  width: min(360px, 100%); margin: var(--space-10) auto 0; padding: var(--space-8);
+  /* 空态第一眼是「和她说话」：清单收成一张矮卡，跟在开场 chips 后面，不抢主内容。 */
+  width: min(340px, 100%); margin: var(--space-6) auto 0; padding: var(--space-4) var(--space-5);
   text-align: left; border: 1px solid var(--border); border-radius: var(--radius-lg);
-  background: var(--bg-elevated); color: var(--text-muted); font-size: var(--text-base);
+  background: color-mix(in srgb, var(--bg-elevated) 78%, transparent);
+  color: var(--text-muted); font-size: var(--text-sm);
 }
-.onb-list-h { margin-bottom: var(--space-4); color: var(--text-subtle); font-size: var(--text-note); }
-.onb-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-2) var(--space-4); padding: var(--space-2) 0; }
+.onb-list-h { margin-bottom: var(--space-2); color: var(--text-subtle); font-size: var(--text-note); }
+.onb-row { display: flex; align-items: baseline; flex-wrap: wrap; gap: var(--space-1) var(--space-3); padding: 2px 0; }
 .onb-row b { color: var(--text-subtle); }
 .onb-row.on b, .onb-row.done b { color: var(--accent-ink); }
 .onb-row-t { color: var(--text); }
 .onb-row.done .onb-row-t { color: var(--text-subtle); }
 .onb-row-h { margin-left: auto; color: var(--text-subtle); font-size: var(--text-note); text-align: right; }
-.onb-list-f { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-4); }
+.onb-list-f { display: flex; justify-content: flex-end; gap: var(--space-3); margin-top: var(--space-2); }
 
 /* 跨设备数据迁移：应用内进度条。系统/浏览器下载器自身也会显示导出下载进度。 */
 .transfer-progress {
@@ -2415,6 +2441,13 @@ button.btn.danger:hover:not(:disabled) { background: var(--danger-soft); border-
   .model-wrap { max-width: 190px; }
   .model-trigger-think { display: none; }
   .ctx-pct { display: none; }
+}
+/* 981–1180：档名 + 长档名 + 提示 + 圆环 + 发送同排时，提示会被压成两行
+   （1024 实测 120×41，模型名同时截断）。辅助信息先退场，把宽度还给模型名。 */
+@media (min-width: 981px) and (max-width: 1180px) {
+  .composer-bar .tip { display: none; }
+  /* 推理档位 chip 也先收掉：省下的宽度正好够档名显示全，不再截成 “Agnes · a…” */
+  .model-trigger-think { display: none; }
 }
 @media (max-width: 760px), (max-height: 520px) {
   .model-wrap { max-width: 168px; }

@@ -34,6 +34,7 @@ const KV_PROFILES = "settings.model.profiles";
 const KV_PROVIDER_NAMES = "settings.model.providerNames";
 const KV_CAPABILITY_PREFIX = "settings.capability.";
 const KV_ONBOARDING = "settings.onboarding";
+const KV_PET = "settings.pet";
 
 // ── 类型 ────────────────────────────────────────────────────
 
@@ -476,6 +477,87 @@ export type CapabilitySettings = {
   voice: string;
 };
 
+/** 桌宠设置：桌面透明小窗里的陪伴形象。位置是逻辑像素，缺省由外壳放到右下角。 */
+export type PetSettings = {
+  enabled: boolean;
+  /** 显示方式：desktop = 独立桌面透明小窗；in-app = 主界面内的陪伴浮层（随主窗口关掉而消失）。 */
+  displayMode: "desktop" | "in-app";
+  /** 桌宠窗口的宽度（逻辑像素），高度按裁剪比例换算（与前端 petAssets.PET_HEIGHT_RATIO 对齐，由素材包围盒推导，别在这里硬编码数值）。 */
+  size: number;
+  alwaysOnTop: boolean;
+  randomActions: boolean;
+  chatter: boolean;
+  /** 消息联动：小茉回复时进工作状态、联系人来消息时提示并可口跳转。 */
+  linkContacts: boolean;
+  /** 戳桌宠的点击音效。 */
+  sound: boolean;
+  /** 锁定位置：桌宠不可拖动（点击反应保留）。 */
+  lockPosition: boolean;
+  /** 桌宠整体不透明度（30-100，100 = 不透明）。 */
+  opacity: number;
+  /** 桌宠语音：碎碎念/戳它时用语音合成把话念出来（需语音合成能力卡）。 */
+  voice: boolean;
+  /** 上次拖到的屏幕位置（逻辑像素，仅桌面模式用）。缺省 = 没存过，由外壳放默认位。 */
+  x?: number;
+  y?: number;
+  /** 内嵌模式在主窗口视口内的位置（逻辑像素）。与 x/y 分开存：视口坐标 ≠ 屏幕坐标。 */
+  inlineX?: number;
+  inlineY?: number;
+};
+
+export const DEFAULT_PET_SETTINGS: PetSettings = {
+  enabled: true,
+  displayMode: "desktop",
+  // 160 = 角色本体宽，对齐 dsh-pet 默认观感（其窗口 462px、角色约占画幅 35% → 视觉约 160px）。
+  size: 180,
+  alwaysOnTop: true,
+  randomActions: true,
+  chatter: true,
+  linkContacts: true,
+  sound: true,
+  lockPosition: false,
+  opacity: 100,
+  voice: false,
+};
+
+export function sanitizePetSettings(input: unknown): PetSettings {
+  const base = DEFAULT_PET_SETTINGS;
+  if (typeof input !== "object" || input === null) return { ...base };
+  const raw = input as Record<string, unknown>;
+  const size = Number(raw.size);
+  return {
+    enabled: typeof raw.enabled === "boolean" ? raw.enabled : base.enabled,
+    // 旧库存档没有这个字段：回落独立桌面模式，保持升级前观感。
+    displayMode: raw.displayMode === "in-app" ? "in-app" : base.displayMode,
+    // 下限 160：再小视频里的角色就看不清；上限 480：再大透明窗会盖住太多桌面。
+    size: Number.isFinite(size) ? Math.min(480, Math.max(160, Math.round(size))) : base.size,
+    alwaysOnTop: typeof raw.alwaysOnTop === "boolean" ? raw.alwaysOnTop : base.alwaysOnTop,
+    randomActions: typeof raw.randomActions === "boolean" ? raw.randomActions : base.randomActions,
+    chatter: typeof raw.chatter === "boolean" ? raw.chatter : base.chatter,
+    linkContacts: typeof raw.linkContacts === "boolean" ? raw.linkContacts : base.linkContacts,
+    sound: typeof raw.sound === "boolean" ? raw.sound : base.sound,
+    lockPosition: typeof raw.lockPosition === "boolean" ? raw.lockPosition : base.lockPosition,
+    // 30-100：低于 30 的桌宠基本看不见，不如直接关掉。
+    opacity: Number.isFinite(Number(raw.opacity)) ? Math.min(100, Math.max(30, Math.round(Number(raw.opacity)))) : base.opacity,
+    voice: typeof raw.voice === "boolean" ? raw.voice : base.voice,
+    x: typeof raw.x === "number" && Number.isFinite(raw.x) ? raw.x : undefined,
+    y: typeof raw.y === "number" && Number.isFinite(raw.y) ? raw.y : undefined,
+    inlineX: typeof raw.inlineX === "number" && Number.isFinite(raw.inlineX) ? raw.inlineX : undefined,
+    inlineY: typeof raw.inlineY === "number" && Number.isFinite(raw.inlineY) ? raw.inlineY : undefined,
+  };
+}
+
+export function petConfig(): PetSettings {
+  const raw = readJson<Record<string, unknown>>(KV_PET);
+  return sanitizePetSettings(raw);
+}
+
+export function updatePetSettings(patch: Partial<PetSettings> | Record<string, unknown>): PetSettings {
+  const next = sanitizePetSettings({ ...petConfig(), ...patch });
+  writeJson(KV_PET, next);
+  return next;
+}
+
 export type SettingsSnapshot = {
   model: ModelSettings;
   persona: PersonaSettings;
@@ -515,6 +597,8 @@ export type SettingsSnapshot = {
   dataDir: string;
   /** 桌面外壳的两项偏好（开机自启 / 关窗留托盘）。非桌面版是 null，界面据此整卡不显示。 */
   desktop: DesktopPrefs | null;
+  /** 桌宠设置。 */
+  pet: PetSettings;
 };
 
 // ── 默认值（与 .env 对齐）────────────────────────────────────
@@ -723,7 +807,7 @@ export function resetAll(): void {
   writeJson(KV_MODEL, {});
   writeJson(KV_PERSONA, {});
   // 全局 agent 行为也属于“恢复默认”的一部分；只重置当前生效值，不动模型/能力端点收藏。
-  db.prepare("DELETE FROM kv WHERE k IN (?, ?)").run(KV_TOOL_LOOP_TURNS, KV_EMOTE_FREQUENCY);
+  db.prepare("DELETE FROM kv WHERE k IN (?, ?, ?)").run(KV_TOOL_LOOP_TURNS, KV_EMOTE_FREQUENCY, KV_PET);
   // 能力回到「没有生效档」= 语音/绘图未配置、视觉与记忆提取跟随主力。
   for (const name of CAPABILITY_NAMES) kvSet(capActiveOf(name), "");
   // 注意：**不动 profiles，也不动能力端点档**。它们是用户存下来的接口收藏，
@@ -1467,6 +1551,7 @@ export function settingsSnapshot(): SettingsSnapshot {
     capabilitiesReady: capabilitiesStatus(),
     dataDir: config.dataDir || dirname(resolve(config.dbPath)),
     desktop: desktopPrefsSnapshot(),
+    pet: petConfig(),
   };
 }
 

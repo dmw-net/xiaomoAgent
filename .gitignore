@@ -15,6 +15,7 @@ _probe/
 *.tmp.cjs
 *.tmp.mjs
 git_status_out.txt
+smoke-out.txt
 
 # 构建产物（都可再生成）
 frontend/dist/
@@ -38,3 +39,8 @@ graft/
 .gstack/
 .workbuddy/
 .workbuddy-screens/
+
+# 未入库的本地文档与验收截图
+AGENTS.md
+src/README.md
+docs/screenshots/

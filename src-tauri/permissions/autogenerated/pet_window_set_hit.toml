@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pet-window-set-hit"
+description = "Enables the pet_window_set_hit command without any pre-configured scope."
+commands.allow = ["pet_window_set_hit"]
+
+[[permission]]
+identifier = "deny-pet-window-set-hit"
+description = "Denies the pet_window_set_hit command without any pre-configured scope."
+commands.deny = ["pet_window_set_hit"]

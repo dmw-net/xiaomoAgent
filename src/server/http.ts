@@ -138,6 +138,8 @@ const DIST_MIME: Record<string, string> = {
   ".html": "text/html; charset=utf-8",
   ".svg": "image/svg+xml",
   ".png": "image/png",
+  ".webm": "video/webm",
+  ".gif": "image/gif",
   ".json": "application/json",
   ".map": "application/json",
   ".woff2": "font/woff2",
@@ -229,6 +231,19 @@ function linkPreloadHeader(html: Buffer): Record<string, string> {
   return links.length > 0 ? { link: links.join(", ") } : {};
 }
 
+/**
+ * 只压文本类 MIME：视频/音频/图片/字体本身已是压缩格式，再包一层 brotli/gzip
+ * 省不了字节，还会弄坏 Chromium 的媒体栈——`<video>` 收到 content-encoding: br
+ * 的响应会永远停在 readyState 0、连 error 事件都不发（桌宠透明动画曾因此静默消失）。
+ * 图片里单独豁免 svg：它是文本，压得上。
+ */
+function isCompressibleMime(mime: string): boolean {
+  return mime.startsWith("text/")
+    || mime === "application/javascript"
+    || mime === "application/json"
+    || mime === "image/svg+xml";
+}
+
 export function sendFile(request: IncomingMessage, response: ServerResponse, file: string, mime: string, cacheControl = NO_STORE): void {
   let statSize = 0;
   let statMtimeMs = 0;
@@ -261,8 +276,9 @@ export function sendFile(request: IncomingMessage, response: ServerResponse, fil
   }
   let buf = body;
   let encoding: string | null = null;
-  // 编码优先级：brotli > gzip > 原文。图片等已压缩的内容压不赢就发原文（xxxOf 里「null 兜底」）。
-  if (body.length >= GZIP_MIN_BYTES) {
+  // 编码优先级：brotli > gzip > 原文。媒体/字体等已压缩格式在 isCompressibleMime 处拦下，
+  // 压不赢的走 xxxOf 的「null 兜底」发原文。
+  if (body.length >= GZIP_MIN_BYTES && isCompressibleMime(mime)) {
     const enc = acceptsEncoding(response);
     const entry = compEntryOf(file, statSize, statMtimeMs);
     if (enc.br && body.length <= BROTLI_MAX_BYTES) {
@@ -279,6 +295,9 @@ export function sendFile(request: IncomingMessage, response: ServerResponse, fil
     "cache-control": cacheControl,
     "x-content-type-options": "nosniff",
     etag,
+    // 正文已整段在手：显式给 content-length，别走 chunked——媒体元素依赖它判断
+    // 数据完整（无长度的响应会让 <video> 迟迟不敢进入可播状态）。
+    "content-length": String(buf.length),
     ...(mime.startsWith("text/html") ? { ...HTML_SECURITY_HEADERS, ...linkPreloadHeader(body) } : {}),
     ...encodingHeaders(encoding),
   });

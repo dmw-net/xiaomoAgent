@@ -68,6 +68,35 @@ const genderedCopy = frontendSources.filter((path) =>
   /她|(?<!其)他(?!人)/u.test(readFileSync(path, "utf8")));
 assert.equal(genderedCopy.length, 0, `用户端源码不应再出现固定性别指代：${genderedCopy.join(", ")}`);
 
+// 桌宠交互契约：命中标志必须随单击交还（残留会让整个透明窗永久可交互——点空白
+// 也触发反应、挡住底下应用）；兜底定时器只在素材回退成 SVG 时才兜底（固定时长
+// 会把比它长的片段拦腰砍断）；联动接线必须在 PetView 里（窗口/内嵌两种形态共用）。
+const petViewSource = readFileSync("frontend/src/features/pet/PetView.tsx", "utf8");
+assert(petViewSource.includes("startPetLink("), "桌宠必须接线 petLink 联动（PetApp/PetHost 两形态共用）");
+assert(
+  /const scheduleStateBack = useCallback\(\(ms: number, from: PetMode\): void => \{\s*\n\s*if \(!videoFailed\) return;/u.test(petViewSource),
+  "兜底定时器必须先判 videoFailed：视频路径由 onEnded 接续，固定时长会砍断长片段",
+);
+assert(petViewSource.includes(".pet-hit"), "交互必须挂在角色矩形命中层（.pet-hit），不能铺满整个窗口");
+assert(petViewSource.includes("linkContacts"), "联动必须受 pet.linkContacts 设置开关控制");
+
+// 桌宠借鉴功能契约：A/B 双缓冲（换动作零黑帧）、按压动作原点随素材推导、
+// 找小茉聊聊的跨窗通道（CustomEvent 不跨窗，独立桌宠窗口必须走 Tauri emitTo）。
+const petMascotSource = readFileSync("frontend/src/features/pet/PetMascot.tsx", "utf8");
+assert(petMascotSource.includes("is-back"), "桌宠动画必须 A/B 双缓冲（BACK 层交叉淡入），单 video 重挂会闪黑帧");
+const squashSource = readFileSync("frontend/src/features/pet/motion.ts", "utf8");
+assert(squashSource.includes("squashScale") && squashSource.includes("SQ_DURATION_MS = 220"),
+  "挤压曲线必须带回弹过冲（220ms 两段式），静态 scale 没有下蹲手感");
+assert(petViewSource.includes("PET_PRESS_ORIGIN") === false && petViewSource.includes("squashNow"),
+  "点击按压必须走 Q 弹挤压驱动（squashNow→motion.ts 的 rAF 曲线），不是按住压扁的静态 transform");
+const petWindowSource = readFileSync("frontend/src/lib/pet-window.ts", "utf8");
+assert(petWindowSource.includes("emitTo"), "独立桌宠窗口跨窗信号必须走 Tauri emitTo（core:event 已授权，无需新命令）");
+assert(/listen<\{ settings\?: boolean \}>\("xiaomo:open-assistant"/u.test(readFileSync("frontend/src/App.tsx", "utf8")),
+  "主窗必须监听 Tauri 版 xiaomo:open-assistant（桌宠窗口的「找小茉聊聊」）");
+assert(!petViewSource.includes("onDoubleClick"), "双击睡觉不得回归：原版睡觉只在右键菜单里，连点两下就是两次点击");
+assert(petViewSource.includes("SLEEP_REFUSE_TEXTS") && petViewSource.includes("play-anim"),
+  "右键菜单必须有睡觉拒绝台词与动作点播子菜单（对齐原版 menu-actions）");
+
 assert(!rowSource.includes('<details className="think">'), "思考过程不应再使用原生 details 的旧样式");
 assert(/<ThinkingBlock\s+reasoning=\{m\.reasoning\}/.test(rowSource), "她的消息应通过 ThinkingBlock 渲染 reasoning");
 assert(/aria-expanded=\{expanded\}/.test(thinkingSource), "思考过程必须暴露展开/收起状态");

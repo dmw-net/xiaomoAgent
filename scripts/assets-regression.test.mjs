@@ -15,6 +15,8 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+// http.ts 只依赖 node 内置模块，可以单测直驱 sendFile（静态资源通道的行为锁在下面第 10 节）。
+import { markGzip, sendFile } from "../src/server/http.ts";
 
 // 自带隔离：不靠调用方传 env（裸跑时会写进开发库），也不留上一次的库——
 // 下面的计数断言（「表情包」正好两张）只有在干净库上才成立。
@@ -276,5 +278,37 @@ assert.strictEqual(assets.getAssetByUrl(dupB).source, "avatar", "来源记账不
 // 没有反复清理的空转：已经只剩一行持有时，再让位是 0 行。
 assert.strictEqual(assets.releaseAssetOriginRef("qq:10001", dupC), 0, "只剩它自己时无事可做");
 assert.strictEqual(assets.releaseAssetOriginRef("", dupC), 0, "空凭据不碰任何行");
+
+// ── 10) 静态资源通道 sendFile：媒体原样发、显式 content-length ────────────
+// Chromium 的媒体栈不解 brotli：<video> 收到 content-encoding: br 的响应会永远停在
+// readyState 0、连 error 事件都不发——桌宠透明动画曾因此整窗静默消失。这条把
+// 「媒体/字体不压」与「正文带长度（不走 chunked）」锁死，谁改 sendFile 谁翻车。
+const staticDir = mkdtempSync(join(tmpdir(), "assets-sendfile-"));
+const webmBuf = Buffer.alloc(2048, 7);
+writeFileSync(join(staticDir, "pet.webm"), webmBuf);
+writeFileSync(join(staticDir, "app.js"), Buffer.from("console.log(" + "x".repeat(2048) + ");"));
+
+function serveFile(file, mime, acceptEncoding) {
+  const req = { headers: acceptEncoding === undefined ? {} : { "accept-encoding": acceptEncoding } };
+  const res = { status: 0, headers: null, body: null, writeHead(status, headers) { this.status = status; this.headers = headers; }, end(buf) { this.body = buf; } };
+  // 真实调用序：分发层先用 markGzip 把协商结果打在 response 上，sendFile 再读。
+  markGzip(req, res);
+  sendFile(req, res, file, mime);
+  return res;
+}
+
+const webmRes = serveFile(join(staticDir, "pet.webm"), "video/webm", "gzip, deflate, br, zstd");
+assert.strictEqual(webmRes.status, 200, "媒体文件正常 200");
+assert.strictEqual(webmRes.headers["content-encoding"], undefined, "video/webm 不得包 content-encoding——媒体栈不认 br，画面会静默消失");
+assert.strictEqual(webmRes.headers["content-length"], String(webmBuf.length), "正文带显式 content-length，媒体元素才能确认数据完整");
+assert.strictEqual(webmRes.body.length, webmBuf.length, "媒体字节原样直达，一个不差");
+
+const jsRes = serveFile(join(staticDir, "app.js"), "text/javascript; charset=utf-8", "gzip, deflate, br, zstd");
+assert.strictEqual(jsRes.headers["content-encoding"], "br", "文本类照常 brotli 压缩");
+assert.strictEqual(jsRes.headers["content-length"], String(jsRes.body.length), "压缩后的 content-length 必须是压缩字节的长度");
+
+const noEncRes = serveFile(join(staticDir, "pet.webm"), "video/webm");
+assert.strictEqual(noEncRes.headers["content-encoding"], undefined, "不带 Accept-Encoding 时本就发原文");
+rmSync(staticDir, { recursive: true, force: true });
 
 console.log("资产注册表回归：全部通过");

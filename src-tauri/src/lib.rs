@@ -262,6 +262,15 @@ pub fn run() {
 
             Ok(())
         })
+        .invoke_handler(tauri::generate_handler![
+            pet_window_show,
+            pet_window_hide,
+            pet_window_move,
+            pet_window_resize,
+            pet_window_set_always_on_top,
+            pet_window_set_hit,
+            pet_window_show_main,
+        ])
         .build(tauri::generate_context!())
         .expect("构建 Tauri 应用失败")
         .run(|app, event| {
@@ -958,6 +967,345 @@ fn save_window_state_throttled(app: &tauri::AppHandle) {
         *last = now;
     }
     save_window_state(app);
+}
+
+// ── 桌宠透明窗口（桌面）────────────────────────────────────
+
+/// 桌宠命令为什么全是 async：同步命令跑在主线程上，而 WebView2 的控制器初始化、
+/// navigate 都要靠主线程的事件循环来推进——在主线程里同步调 navigate 会把
+/// 事件循环卡死（窗口建出来了、页面永远加载不了、之后所有 IPC 都不响应），
+/// 和 setup 里主窗口导航「不能阻塞等待」是同一条教训。async 命令跑在
+/// 异步运行时上，这些调用经由事件循环代理安全落地。
+
+/// 新建窗口后的兜底导航：build() 返回不代表 WebView2 控制器就绪，
+/// 初始 URL 的自动加载偶尔不生效（透明窗尤其明显）。放到阻塞线程里
+/// 轮询重试——url() 到达 http 目标就停；事件循环照常运转，主线程不受阻。
+fn schedule_pet_navigation(window: tauri::WebviewWindow, target: tauri::Url) {
+    tauri::async_runtime::spawn_blocking(move || {
+        for _ in 0..40 {
+            if window
+                .url()
+                .map(|u| u.as_str().starts_with("http"))
+                .unwrap_or(false)
+            {
+                return;
+            }
+            let _ = window.navigate(target.clone());
+            std::thread::sleep(std::time::Duration::from_millis(250));
+        }
+        eprintln!("[pet] 桌宠窗口页面 10s 内未加载完成，放弃兜底导航");
+    });
+}
+
+/// 显示桌宠窗口。已存在时只更新地址/尺寸/位置并显示，避免重复建窗。
+#[tauri::command]
+async fn pet_window_show(
+    app: tauri::AppHandle,
+    url: String,
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+    always_on_top: bool,
+) -> Result<(), String> {
+    let parsed: tauri::Url = url
+        .parse()
+        .map_err(|e| format!("桌宠地址无效：{e}"))?;
+    if let Some(window) = app.get_webview_window("pet") {
+        window
+            .navigate(parsed.clone())
+            .map_err(|e| format!("桌宠窗口导航失败：{e}"))?;
+        schedule_pet_navigation(window.clone(), parsed);
+        window
+            .set_always_on_top(always_on_top)
+            .map_err(|e| format!("桌宠窗口置顶失败：{e}"))?;
+        window
+            .set_ignore_cursor_events(false)
+            .map_err(|e| format!("桌宠窗口点击恢复失败：{e}"))?;
+        // 无边框窗默认带阴影时 Windows 会保留 DWM 边框带与圆角——桌宠四周一圈白边
+        // 就是它。旧窗口可能是在没有这行时建的，show 路径幂等重申一次。
+        let _ = window.set_shadow(false);
+        window
+            .show()
+            .map_err(|e| format!("桌宠窗口显示失败：{e}"))?;
+        // hide/show 循环后 WebView2 会丢掉透明背景配置（回退成不透明白底，
+        // Win11 还会给它套圆角——看起来就是一张白卡片）。show 时重申一次。
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+        // 透明窗在 show/hide 循环后偶发内容停止重合成：show 之后再改一次
+        // 尺寸/位置，逼 WebView2 重新出画面（与新建窗口路径同一手法）。
+        window
+            .set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+            .map_err(|e| format!("桌宠窗口改尺寸失败：{e}"))?;
+        window
+            .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .map_err(|e| format!("桌宠窗口移动失败：{e}"))?;
+        return Ok(());
+    }
+
+    let window = WebviewWindowBuilder::new(&app, "pet", WebviewUrl::External(parsed.clone()))
+        .title("小茉桌宠")
+        .decorations(false)
+        .transparent(true)
+        .background_color(tauri::window::Color(0, 0, 0, 0))
+        // 无边框窗若保留阴影，Windows 的 DWM 会画出边框带 + 圆角——透明桌宠
+        // 周围那圈白边就是它；关掉阴影才得到真正只剩像素内容的窗口。
+        .shadow(false)
+        .always_on_top(always_on_top)
+        .skip_taskbar(true)
+        .resizable(false)
+        .visible(true)
+        .inner_size(width, height)
+        .position(x, y)
+        .build()
+        .map_err(|e| format!("桌宠窗口创建失败：{e}"))?;
+    window
+        .set_ignore_cursor_events(false)
+        .map_err(|e| format!("桌宠窗口点击恢复失败：{e}"))?;
+    window
+        .show()
+        .map_err(|e| format!("桌宠窗口显示失败：{e}"))?;
+    // WebView2 对未激活的透明窗口可能不加载页面；先激活一次让首帧渲染起来。
+    let _ = window.set_focus();
+    // 透明窗口的背景色要显式给成全透明，否则 WebView2 可能保留一层不透明的默认底色。
+    let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    // 透明窗口在 Windows 上有时要等首帧显示后再改一次尺寸/位置，WebView 才会真正渲染。
+    window
+        .set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+        .map_err(|e| format!("桌宠窗口改尺寸失败：{e}"))?;
+    window
+        .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+        .map_err(|e| format!("桌宠窗口移动失败：{e}"))?;
+    // 初始 URL 靠 builder 自动加载；不生效时由兜底任务补 navigate（见函数注释）。
+    schedule_pet_navigation(window, parsed);
+    Ok(())
+}
+
+#[tauri::command]
+async fn pet_window_hide(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pet") {
+        window
+            .hide()
+            .map_err(|e| format!("桌宠窗口隐藏失败：{e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn pet_window_move(app: tauri::AppHandle, x: f64, y: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pet") {
+        window
+            .set_position(tauri::Position::Logical(tauri::LogicalPosition::new(x, y)))
+            .map_err(|e| format!("桌宠窗口移动失败：{e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn pet_window_resize(app: tauri::AppHandle, width: f64, height: f64) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pet") {
+        window
+            .set_size(tauri::Size::Logical(tauri::LogicalSize::new(width, height)))
+            .map_err(|e| format!("桌宠窗口改尺寸失败：{e}"))?;
+        // 改尺寸会触发重合成，顺手重申透明背景（丢一次就是白底圆角卡）。
+        let _ = window.set_background_color(Some(tauri::window::Color(0, 0, 0, 0)));
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn pet_window_set_always_on_top(app: tauri::AppHandle, always_on_top: bool) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("pet") {
+        window
+            .set_always_on_top(always_on_top)
+            .map_err(|e| format!("桌宠窗口置顶失败：{e}"))?;
+    }
+    Ok(())
+}
+
+#[tauri::command]
+async fn pet_window_show_main(app: tauri::AppHandle) -> Result<(), String> {
+    if let Some(window) = app.get_webview_window("main") {
+        window
+            .show()
+            .map_err(|e| format!("主界面显示失败：{e}"))?;
+        window
+            .unminimize()
+            .map_err(|e| format!("主界面还原失败：{e}"))?;
+    }
+    Ok(())
+}
+
+// ── 桌宠点击穿透（Windows）────────────────────────────────
+// 贴合窗口在角色头顶上方仍留了一条气泡区，加上轮廓的矩形包围盒本就有空角——
+// 这些透明区不该挡住下面的应用。做法：全局低级鼠标钩子全程拿光标位置，
+// 落在角色命中区里就把窗口设回可交互，落在外头就设成点击穿透（WS_EX_TRANSPARENT）。
+// 不用 Electron 的 forward 方案（Tauri 没有），也不逐像素命中（要抓帧），
+// 矩形命中对 Q 版角色足够；切换只在状态变化时发生，不会每次移动都打一轮 IPC。
+
+const WH_MOUSE_LL: i32 = 14;
+const WM_MOUSEMOVE: usize = 0x0200;
+
+#[repr(C)]
+struct PetMsg {
+    hwnd: isize,
+    message: u32,
+    wparam: usize,
+    lparam: isize,
+    time: u32,
+    ptx: i32,
+    pty: i32,
+}
+
+#[repr(C)]
+struct MsllHookStruct {
+    ptx: i32,
+    pty: i32,
+    mouse_data: u32,
+    flags: u32,
+    time: u32,
+    extra_info: usize,
+}
+
+/// 角色头顶占窗口宽的比例（命中区 = 窗口内、该比例以下）。由前端按形象几何上报。
+static PET_HIT_TOP: Mutex<f64> = Mutex::new(0.0);
+/// 拖拽中 = true：钩子不介入，窗口保持可交互（否则指针拖出包围盒的一瞬窗口会失焦断拖）。
+static PET_HIT_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 钩子回调算出的期望穿透态：0 = 可交互，1 = 穿透。回调里只写这个原子量——
+/// LL 钩子回调超过系统超时（默认 ~300ms）会被 Windows 静默摘除，
+/// 所以绝不能在回调里同步等 set_ignore_cursor_events，由独立线程轮询落地。
+static PET_WANT_IGNORE: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(1);
+static PET_HOOK_APP: Mutex<Option<tauri::AppHandle>> = Mutex::new(None);
+static PET_HOOK_STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PET_HOOK_HWND: Mutex<isize> = Mutex::new(0);
+
+#[link(name = "user32")]
+extern "system" {
+    fn SetWindowsHookExW(idhook: i32, lpfn: unsafe extern "system" fn(i32, usize, isize) -> isize, hmod: isize, threadid: u32) -> isize;
+    fn UnhookWindowsHookEx(hhk: isize) -> i32;
+    fn CallNextHookEx(hhk: isize, ncode: i32, wparam: usize, lparam: isize) -> isize;
+    fn GetMessageW(msg: *mut PetMsg, hwnd: isize, min: u32, max: u32) -> i32;
+    fn GetWindowRect(hwnd: isize, rect: *mut PetRect) -> i32;
+}
+
+#[repr(C)]
+struct PetRect {
+    left: i32,
+    top: i32,
+    right: i32,
+    bottom: i32,
+}
+
+fn pet_hook_log(message: &str) {
+    // stderr 在打包壳里没人看，穿透诊断落到文件，排障直接看这里。
+    use std::io::Write;
+    let path = std::env::temp_dir().join("xiaomo-pet-hook.log");
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "[{}] {}", std::process::id(), message);
+    }
+}
+
+static PET_HOOK_SEEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+static PET_HOOK_LAST_WANT: std::sync::atomic::AtomicI8 = std::sync::atomic::AtomicI8::new(-1);
+
+unsafe extern "system" fn pet_mouse_hook(ncode: i32, wparam: usize, lparam: isize) -> isize {
+    if !PET_HOOK_SEEN.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        pet_hook_log("钩子首次回调触发");
+    }
+    if ncode >= 0 && wparam == WM_MOUSEMOVE {
+        let hs = lparam as *const MsllHookStruct;
+        if !hs.is_null() {
+            let px = (*hs).ptx;
+            let py = (*hs).pty;
+            let hwnd = PET_HOOK_HWND.lock().map(|g| *g).unwrap_or(0);
+            if hwnd != 0 {
+                let mut rect = PetRect { left: 0, top: 0, right: 0, bottom: 0 };
+                if GetWindowRect(hwnd, &mut rect) != 0 {
+                    // pt 与 GetWindowRect 同坐标系（同为当前进程视角的屏幕坐标），
+                    // 直接比较，不做任何 DPI 换算。
+                    let width = (rect.right - rect.left).max(1) as f64;
+                    let top = PET_HIT_TOP.lock().map(|g| *g).unwrap_or(0.0);
+                    let char_top = rect.top as f64 + top * width;
+                    let inside = px >= rect.left && px <= rect.right && (py as f64) >= char_top && py <= rect.bottom;
+                    let active = PET_HIT_ACTIVE.load(std::sync::atomic::Ordering::SeqCst);
+                    let want = if active || inside { 0i8 } else { 1i8 };
+                    let prev = PET_HOOK_LAST_WANT.swap(want, std::sync::atomic::Ordering::SeqCst);
+                    if prev != want {
+                        pet_hook_log(&format!("判定 want={want} at ({px},{py}) win=({},{})-({},{}) active={active}", rect.left, rect.top, rect.right, rect.bottom));
+                    }
+                    PET_WANT_IGNORE.store(want, std::sync::atomic::Ordering::SeqCst);
+                }
+            }
+        }
+    }
+    CallNextHookEx(0, ncode, wparam, lparam)
+}
+
+/// 装全局鼠标钩子（只装一次，线程自带消息泵，随进程退出回收）。
+/// 另起一个轮询线程把期望穿透态落成 set_ignore_cursor_events——
+/// 钩子回调保持微秒级返回，避开 Windows 对 LL 钩子的超时摘除。
+fn ensure_pet_mouse_hook(app: tauri::AppHandle, hwnd: isize) {
+    if let Ok(mut guard) = PET_HOOK_HWND.lock() {
+        *guard = hwnd;
+    }
+    if let Ok(mut guard) = PET_HOOK_APP.lock() {
+        *guard = Some(app);
+    }
+    if PET_HOOK_STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(|| unsafe {
+        let hook = SetWindowsHookExW(WH_MOUSE_LL, pet_mouse_hook, 0, 0);
+        if hook == 0 {
+            pet_hook_log("鼠标钩子安装失败（点击穿透不可用，桌宠照常）");
+            return;
+        }
+        pet_hook_log("鼠标钩子已安装");
+        let mut msg = PetMsg { hwnd: 0, message: 0, wparam: 0, lparam: 0, time: 0, ptx: 0, pty: 0 };
+        while GetMessageW(&mut msg, 0, 0, 0) > 0 {}
+        UnhookWindowsHookEx(hook);
+        pet_hook_log("鼠标钩子已卸载");
+    });
+    std::thread::spawn(|| {
+        let mut applied: Option<bool> = None;
+        loop {
+            let want = PET_WANT_IGNORE.load(std::sync::atomic::Ordering::SeqCst) != 0;
+            if applied != Some(want) {
+                let app = PET_HOOK_APP.lock().ok().and_then(|g| g.clone());
+                if let Some(app) = app {
+                    if let Some(window) = app.get_webview_window("pet") {
+                        match window.set_ignore_cursor_events(want) {
+                            Ok(()) => {
+                                applied = Some(want);
+                                pet_hook_log(if want { "点击穿透 = true（透明区放行）" } else { "点击穿透 = false（角色可交互）" });
+                            }
+                            Err(e) => pet_hook_log(&format!("set_ignore_cursor_events 失败：{e}")),
+                        }
+                    }
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(40));
+        }
+    });
+}
+
+/// 前端上报角色头顶占比 + 是否交互中（拖拽）。命中判定在钩子里按窗口矩形现场算，
+/// 坐标系天然一致（pt 与 GetWindowRect 同源），不再跨进程传绝对像素。
+#[tauri::command]
+async fn pet_window_set_hit(
+    app: tauri::AppHandle,
+    top_frac: f64,
+    active: bool,
+) -> Result<(), String> {
+    if let Ok(mut guard) = PET_HIT_TOP.lock() {
+        *guard = top_frac;
+    }
+    PET_HIT_ACTIVE.store(active, std::sync::atomic::Ordering::SeqCst);
+    // 记住桌宠窗口句柄，供钩子查窗口矩形。
+    if let Some(window) = app.get_webview_window("pet") {
+        let hwnd = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+        ensure_pet_mouse_hook(app, hwnd);
+    }
+    Ok(())
 }
 
 // ── 托盘与开机自启（桌面）────────────────────────────────

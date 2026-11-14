@@ -36,6 +36,7 @@ import {
   TOOL_LOOP_TURN_LIMITS,
   updateModel,
   updatePersona,
+  updatePetSettings,
   validateCapabilityProfile,
   validateModel,
   validatePersona,
@@ -118,6 +119,7 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
     recentTurnsPct?: unknown;
     toolLoopTurns?: unknown;
     emoteFrequency?: unknown;
+    pet?: Record<string, unknown>;
     reset?: unknown;
     onboarding?: { completed?: boolean };
   }>(req, MAX_CARD_BODY_BYTES);
@@ -174,6 +176,7 @@ export const settingsPostRoute: Route = async ({ req, res, path, method }) => {
   if (body.model !== undefined) updateModel(normalizeModelPatch(body.model));
   if (body.toolLoopTurns !== undefined) setGlobalToolLoopTurns(body.toolLoopTurns);
   if (body.emoteFrequency !== undefined) setGlobalEmoteFrequency(body.emoteFrequency);
+  if (body.pet !== undefined) updatePetSettings(body.pet);
   if (body.character !== undefined || body.owner !== undefined || body.recentTurns !== undefined || body.recentTurnsPct !== undefined) {
     updatePersona({
       character: personaPatch.character,

@@ -1,0 +1,11 @@
+# Automatically generated - DO NOT EDIT!
+
+[[permission]]
+identifier = "allow-pet-window-hide"
+description = "Enables the pet_window_hide command without any pre-configured scope."
+commands.allow = ["pet_window_hide"]
+
+[[permission]]
+identifier = "deny-pet-window-hide"
+description = "Denies the pet_window_hide command without any pre-configured scope."
+commands.deny = ["pet_window_hide"]

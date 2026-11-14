@@ -1598,6 +1598,46 @@ try {
     void idInA;
   }
 
+  // 事件总线（SSE）·message 帧必须带 role/channel：桌宠联动靠这两个元数据区分
+  // 「联系人来的」（qq 等通道 + user）与「主人自己发的」（web + user，不反应）。
+  // 载荷仍是元数据提示，不搬正文；谁把字段删了，桌宠就会对着主人自己的消息大惊小怪。
+  {
+    const http = await import("node:http");
+    const port = Number(new URL(BASE).port);
+    const newContact = async (name: string): Promise<string> =>
+      (await (await fetch(`${BASE}/api/contacts`, {
+        method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }),
+      })).json()).contact.id as string;
+    const cid = await newContact("SSE 帧联测");
+    const frame = await new Promise<string>((resolve) => {
+      let buf = "";
+      const req = http.request({
+        host: new URL(BASE).hostname, port, path: "/api/events", method: "GET",
+        headers: { accept: "text/event-stream" },
+      }, (res) => {
+        res.on("data", (chunk: Buffer) => {
+          buf += chunk.toString("utf8");
+          const m = /data: (\{.*"type":"message".*\})/.exec(buf);
+          if (m) { req.destroy(); resolve(m[1] ?? "{}"); }
+        });
+        res.on("error", () => resolve(buf));
+      });
+      req.on("error", () => resolve(buf));
+      req.end();
+      // 连接就绪后说一句：用户行落库即推 message 帧（echo 模式，秒回）。
+      setTimeout(() => {
+        void fetch(`${BASE}/api/say`, {
+          method: "POST", headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: "SSE message 帧联测", contactId: cid }),
+        }).catch(() => undefined);
+      }, 300);
+      // 兜底收摊：没等到帧就让 check 拿着已收内容失败。
+      setTimeout(() => { req.destroy(); resolve(buf); }, 8000);
+    });
+    check("SSE message 帧带 role/channel（桌宠联动的分流依据）",
+      frame.includes('"role":"user"') && frame.includes('"channel":"web"'), frame.slice(0, 160));
+  }
+
   console.log("\n[20] 模型配置档：多份 OpenAI 兼容配置，一键切换");
 
   const settings = () => fetch(`${BASE}/api/settings`).then((r) => r.json());

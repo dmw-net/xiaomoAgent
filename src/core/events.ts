@@ -14,7 +14,17 @@
 
 export type BusEvent =
   | { type: "sync"; at: number }
-  | { type: "message"; contactId: string; conversationId: string; messageId: number; at: number }
+  | {
+      type: "message";
+      contactId: string;
+      conversationId: string;
+      messageId: number;
+      /** 行的发送方（user/assistant）与来源通道（web/qq/…）：订阅方用它区分
+       *  「联系人来的」与「主人自己发的」，不必为每条事件回查库。 */
+      role: string;
+      channel: string;
+      at: number;
+    }
   | { type: "turn"; contactId: string; conversationId: string; turnId: string; status: string; at: number }
   | { type: "activity"; contactId: string; at: number }
   /**
@@ -56,9 +66,10 @@ export function emit(event: BusEvent): void {
   }
 }
 
-/** 新消息落库（kind=chat/proactive 的行）：界面增量拉取 / 未读数变化的信号。 */
-export function emitMessage(contactId: string, conversationId: string, messageId: number): void {
-  emit({ type: "message", contactId, conversationId, messageId, at: Date.now() });
+/** 新消息落库（kind=chat/proactive 的行）：界面增量拉取 / 未读数变化的信号。
+ *  role/channel 是落库时就手头的元数据，带上让订阅方免回查即可分流。 */
+export function emitMessage(contactId: string, conversationId: string, messageId: number, role: string, channel: string): void {
+  emit({ type: "message", contactId, conversationId, messageId, role, channel, at: Date.now() });
 }
 
 /** 处理单状态翻转（queued→running→done/failed/cancelled）：watch 可以立刻收尾。 */

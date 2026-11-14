@@ -134,8 +134,9 @@ export function insertMessage(input: {
     );
   touchConversation(conversationId, now);
   // 事件总线：新行落库（气泡 / 工具卡）立刻推给在线订阅者，前端不必等轮询。
-  // 提示通道：事件只说「有行落了」，正文由前端走 /api/messages?since= 取。
-  emitMessage(input.contactId, conversationId, Number(result.lastInsertRowid));
+  // 提示通道：事件只说「有行落了」（外加发送方/来源两个元数据，订阅方据此分流），
+  // 正文由前端走 /api/messages?since= 取。
+  emitMessage(input.contactId, conversationId, Number(result.lastInsertRowid), input.role, input.channel);
   // 会话有新动静（供侧栏未读 / 10s 轮询退避到活跃档），与 message 成对发出。
   emitActivity(input.contactId);
   return Number(result.lastInsertRowid);
@@ -355,7 +356,7 @@ export function setTurnVariant(turnId: string, index: number): { applied: boolea
     }
   }
   q(`UPDATE turns SET reply = ?, variant_index = ? WHERE id = ?`).run(joined, index, turnId);
-  emitMessage(contactId, conversationId, first.id);
+  emitMessage(contactId, conversationId, first.id, "assistant", turn.channel);
   return { applied: true };
   });
 }

@@ -65,7 +65,18 @@ fn main() {
     let obfuscated: String = key.bytes().map(|b| format!("{:02x}", b ^ 0xA5)).collect();
     println!("cargo:rustc-env=XIAOMO_ASSET_KEY_OBF={obfuscated}");
 
-    tauri_build::build()
+    let attributes = tauri_build::Attributes::new().app_manifest(
+        tauri_build::AppManifest::new().commands(&[
+            "pet_window_show",
+            "pet_window_hide",
+            "pet_window_move",
+            "pet_window_resize",
+            "pet_window_set_always_on_top",
+            "pet_window_set_hit",
+            "pet_window_show_main",
+        ]),
+    );
+    tauri_build::try_build(attributes).expect("failed to run tauri-build");
 }
 
 /// 宽松校验 base64 长度：4 字符 ≈ 3 字节，32 字节密钥 ≈ 44 字符。

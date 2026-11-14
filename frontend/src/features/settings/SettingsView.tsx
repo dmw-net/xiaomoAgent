@@ -52,6 +52,15 @@ const GROUPS: GroupDef[] = [
   { key: "about", label: "关于", hint: "版本、许可与项目信息", icon: Info },
 ];
 
+/** 侧栏的段标题：只做视觉分区，不引入第二层导航（点击仍直达分组）。
+ *  按改动频率排：常看 → 常改 → 低频且含危险操作，与底部「系统区」文案呼应。 */
+const NAV_SECTIONS: Array<{ label: string; keys: Array<SettingsGroup> }> = [
+  { label: "通用", keys: ["owner", "experience"] },
+  { label: "能力", keys: ["model", "tools", "media", "pet"] },
+  { label: "系统", keys: ["system", "about"] },
+];
+const GROUP_BY_KEY = new Map(GROUPS.map((item) => [item.key, item] as const));
+
 const MODEL_TABS: Array<{ key: ModelTab; label: string }> = [
   { key: "model", label: "主对话模型" },
   { key: "capability", label: "能力模型" },
@@ -326,21 +335,25 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
       {searchBox}
       {query.trim() !== "" ? searchList : (
         <>
-          <div className="settings-nav-label">按用途</div>
-          <nav className="settings-nav-list">
-            {GROUPS.map((item) => {
-              const Icon = item.icon;
-              return (
-                <button key={item.key} type="button" aria-current={group === item.key ? "page" : undefined}
-                  className={"settings-nav-item" + (group === item.key ? " on" : "")}
-                  onClick={() => goToGroup(item.key)}>
-                  <span className="settings-nav-icon" aria-hidden="true"><Icon size={16} strokeWidth={1.8} /></span>
-                  <span className="settings-nav-copy"><b>{item.label}</b><small>{item.hint}</small></span>
-                  <ChevronRight className="settings-nav-arrow" size={14} aria-hidden="true" />
-                </button>
-              );
-            })}
-          </nav>
+          {NAV_SECTIONS.flatMap((section) => [
+            <div className="settings-nav-label" key={"label-" + section.label}>{section.label}</div>,
+            <nav className="settings-nav-list" aria-label={section.label} key={"list-" + section.label}>
+              {section.keys.map((key) => {
+                const item = GROUP_BY_KEY.get(key);
+                if (!item) return null;
+                const Icon = item.icon;
+                return (
+                  <button key={item.key} type="button" aria-current={group === item.key ? "page" : undefined}
+                    className={"settings-nav-item" + (group === item.key ? " on" : "")}
+                    onClick={() => goToGroup(item.key)}>
+                    <span className="settings-nav-icon" aria-hidden="true"><Icon size={16} strokeWidth={1.8} /></span>
+                    <span className="settings-nav-copy"><b>{item.label}</b><small>{item.hint}</small></span>
+                    <ChevronRight className="settings-nav-arrow" size={14} aria-hidden="true" />
+                  </button>
+                );
+              })}
+            </nav>,
+          ])}
           <p className="settings-nav-foot">常用项都已前置；密钥、备份与危险操作集中在系统区。</p>
         </>
       )}
@@ -414,17 +427,21 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
           <div className="settings-hub-search">{searchBox}{searchList}</div>
           {query.trim() === "" && (
             <div className="settings-hub-list">
-              <div className="settings-nav-label">按用途</div>
-              {GROUPS.map((item) => {
-                const Icon = item.icon;
-                return (
-                  <button key={item.key} type="button" className="settings-hub-item" onClick={() => goToGroup(item.key)}>
-                    <span className="settings-nav-icon" aria-hidden="true"><Icon size={18} strokeWidth={1.8} /></span>
-                    <span className="settings-nav-copy"><b>{item.label}</b><small>{item.hint}</small></span>
-                    <ChevronRight size={16} aria-hidden="true" />
-                  </button>
-                );
-              })}
+              {NAV_SECTIONS.flatMap((section) => [
+                <div className="settings-nav-label" key={"hub-label-" + section.label}>{section.label}</div>,
+                section.keys.map((key) => {
+                  const item = GROUP_BY_KEY.get(key);
+                  if (!item) return null;
+                  const Icon = item.icon;
+                  return (
+                    <button key={"hub-" + item.key} type="button" className="settings-hub-item" onClick={() => goToGroup(item.key)}>
+                      <span className="settings-nav-icon" aria-hidden="true"><Icon size={18} strokeWidth={1.8} /></span>
+                      <span className="settings-nav-copy"><b>{item.label}</b><small>{item.hint}</small></span>
+                      <ChevronRight size={16} aria-hidden="true" />
+                    </button>
+                  );
+                }),
+              ])}
               <p className="settings-hub-note">先在分类里找到要改的事；进入后只显示这一组设置。</p>
             </div>
           )}

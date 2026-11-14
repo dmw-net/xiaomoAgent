@@ -3212,7 +3212,8 @@ a.btn:hover {
   box-shadow: var(--shadow-xs);
 }
 
-.settings-hub-list > .settings-nav-label {
+/* 段标题分节后只有紧贴列表顶的第一条收拢上边距，其余段保持基础 16px 作分节间距。 */
+.settings-hub-list > .settings-nav-label:first-child {
   margin-top: 3px;
 }
 

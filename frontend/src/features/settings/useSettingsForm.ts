@@ -2,7 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { settingsApi, storageApi } from "../../api";
 import { DATA_WIPED_EVENT, SETTINGS_CHANGED_EVENT } from "../../lib/ui-prefs";
 import { offerToast } from "../../lib/toast";
-import type { EmoteFrequency, ModelCaps, SettingsSnapshot, ThinkingModeId, ThinkingParamId } from "../../types";
+import { emitPetSettingsChanged } from "../pet/petEvents";
+import type { EmoteFrequency, ModelCaps, PetSettings, SettingsSnapshot, ThinkingModeId, ThinkingParamId } from "../../types";
 
 type Banner = { kind: string; text: string } | null;
 
@@ -70,6 +71,8 @@ export function useSettingsForm(onChanged: () => void): {
   saveToolLoopTurns: (turns: number) => Promise<number | null>;
   /** 保存全局表情使用倾向；失败已 toast 报因，返回 null 让调用方别把成功链跑下去。 */
   saveEmoteFrequency: (frequency: EmoteFrequency) => Promise<EmoteFrequency | null>;
+  /** 保存桌宠设置；失败已 toast 报因，返回 null。 */
+  savePetSettings: (patch: Partial<PetSettings>) => Promise<boolean>;
   modelList: { show: boolean; ids: string[] };
   /** 危险操作确认弹窗的状态与动作，由 SettingsView 渲染成 <Modal>。 */
   ask: { title: string; note: string; run: () => void } | null;
@@ -348,6 +351,25 @@ export function useSettingsForm(onChanged: () => void): {
     }
   };
 
+  /** 桌宠设置：保存后立刻回灌快照；外壳窗口的显示/隐藏由调用方按结果跟进。
+   *  同时广播页内事件，主界面的 PetHost（内嵌桌宠）据此重拉快照实时挂/卸。 */
+  const savePetSettings = async (patch: Partial<PetSettings>): Promise<boolean> => {
+    setBusy("pet");
+    try {
+      const d = await settingsApi.saveSettings({ pet: patch });
+      fill(d);
+      onChanged();
+      emitPetSettingsChanged();
+      offerToast("桌宠设置已保存。", "ok");
+      return true;
+    } catch (e: unknown) {
+      offerToast("桌宠设置没保存成：" + errText(e), "error");
+      return false;
+    } finally {
+      setBusy("");
+    }
+  };
+
   /**
    * 保存「我的资料」。成功/失败都走全局 toast，用户点完保存切到别的分组也看得见结果。
    * 保存成功后快照被 fill() 灌回，OwnerSection 的脏值条自然消失——放弃改动（applySnapshot）
@@ -437,7 +459,7 @@ export function useSettingsForm(onChanged: () => void): {
   return {
     saved, loadErr, busy, reload, modelBanner, setModelBanner, modelList,
     oName, setOName, oImpression, setOImpression, oNotes, setONotes, oGender, setOGender,
-    testModel, fetchModelList, resetModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode, saveToolLoopTurns, saveEmoteFrequency,
+    testModel, fetchModelList, resetModelList, saveModelProfile, applyProfile, deleteProfile, testProfile, profileTestResult, setEchoMode, saveToolLoopTurns, saveEmoteFrequency, savePetSettings,
     ask, askDangerous, acceptAsk, cancelAsk,
     applySnapshot: fill,
     saveOwner, resetAll, factoryResetAll, saveOwnerAvatar,

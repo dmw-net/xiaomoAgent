@@ -247,7 +247,7 @@ function MessageRow({ m, gap, time, characterName, ownerName, ownerAvatar, conta
   return (
     <div className={cls} data-id={m.id} style={enterStyle} {...handlers}>
       {failMark}
-      {/* 主动消息也是"联系人说的话：给头像、用常规气泡，不挂来源标签——她主动开口这件事，让内容自己说。 */}
+      {/* 主动消息也是"联系人说的话：给头像、用常规气泡，不挂来源标签——主动开口这件事，让内容自己说。 */}
       {m.role !== "user" && (
         <Avatar className={"msg-ava" + (gap ? "" : " ava-hidden")} src={contactAvatar || undefined} name={characterName}
           style={avatarToneStyle(characterName)} />

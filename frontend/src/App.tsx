@@ -11,6 +11,8 @@ import type { SettingsTab } from "./features/settings/SettingsView";
 import type { PersonaDraft } from "./lib/persona-doc";
 import ChatView from "./features/chat/ChatView";
 import AssistantDialog from "./features/assistant/AssistantDialog";
+// 桌宠宿主：显示方式 =「桌面端内」时在主界面挂内嵌浮层（独立桌面形态由 main.tsx 召唤外壳窗口）。
+import PetHost from "./features/pet/PetHost";
 // 状态 / 设置 / 资料三个视图按需加载：它们本来就是条件渲染，进聊天页没理由先付掉那几屏表单代码。
 // ChatView 与助手弹窗保持同步加载——助手弹窗常驻挂载以保住草稿，拆它省不了东西。
 const StatusView = lazy(() => import("./features/status/StatusView"));
@@ -304,11 +306,29 @@ export default function App(): JSX.Element {
     window.addEventListener("xiaomo:open-conversation", openConversation);
     window.addEventListener("xiaomo:conversation-removed", conversationRemoved);
     window.addEventListener("xiaomo:open-assistant", openAssistant);
+    // 桌宠独立窗口点「找小茉聊聊」走 Tauri 跨窗事件（CustomEvent 不跨窗）。
+    // core:event 已在 core:default 授权内；动态 import 照 dataTransfer 的既有模式。
+    let unlistenAssistant: (() => void) | null = null;
+    let assistantListenerDisposed = false;
+    void (async () => {
+      try {
+        if (!("__TAURI_INTERNALS__" in window)) return;
+        const { listen } = await import("@tauri-apps/api/event");
+        const fn = await listen<{ settings?: boolean }>("xiaomo:open-assistant", (e) => {
+          setAssistantOpen(true);
+          if (e.payload?.settings) setAssistantSettingsSeq((s) => s + 1);
+        });
+        if (assistantListenerDisposed) { fn(); return; }
+        unlistenAssistant = fn;
+      } catch { /* 非桌面环境没有 Tauri 事件总线 */ }
+    })();
     return () => {
       window.removeEventListener("xiaomo:open-contact", open);
       window.removeEventListener("xiaomo:open-conversation", openConversation);
       window.removeEventListener("xiaomo:conversation-removed", conversationRemoved);
       window.removeEventListener("xiaomo:open-assistant", openAssistant);
+      assistantListenerDisposed = true;
+      unlistenAssistant?.();
     };
   }, [navigate, pick, applyContactMeta]);
 
@@ -603,6 +623,8 @@ export default function App(): JSX.Element {
         />
       </Suspense>
     )}
+    {/* 桌宠宿主挂全局：设置里切到「桌面端内」后，主界面任何视图里都跟着。 */}
+    <PetHost />
     {/* 反悔条挂在全局而不是各视图里：它得在"刚做完事的那一眼"里看得见。
         放在记忆列表末尾时，18 张卡的窄屏上它落在 top:2810——等于没有。 */}
     <UndoBar />

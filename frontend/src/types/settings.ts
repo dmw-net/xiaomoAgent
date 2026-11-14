@@ -85,6 +85,34 @@ export type CapabilityConfig = {
   effective: { baseUrl: string; model: string; timeoutMs: number; apiKey: string; voice: string };
 };
 
+/** 桌宠设置：桌面透明小窗里的陪伴形象。与后端 src/settings/settings.ts 同源。 */
+export type PetSettings = {
+  enabled: boolean;
+  /** 显示方式：desktop = 独立桌面透明小窗；in-app = 主界面内的陪伴浮层。 */
+  displayMode: "desktop" | "in-app";
+  /** 桌宠窗口宽度（逻辑像素）。 */
+  size: number;
+  alwaysOnTop: boolean;
+  randomActions: boolean;
+  chatter: boolean;
+  /** 消息联动：小茉回复时进工作状态、联系人来消息时提示并可口跳转。 */
+  linkContacts: boolean;
+  /** 戳桌宠的点击音效。 */
+  sound: boolean;
+  /** 锁定位置：桌宠不可拖动（点击反应保留）。 */
+  lockPosition: boolean;
+  /** 桌宠整体不透明度（30-100）。 */
+  opacity: number;
+  /** 桌宠语音：碎碎念/戳它时用语音合成把话念出来（需语音合成能力卡）。 */
+  voice: boolean;
+  /** 上次拖到的屏幕位置（逻辑像素，仅桌面模式用）。 */
+  x?: number;
+  y?: number;
+  /** 内嵌模式在主窗口视口内的位置（逻辑像素）。与 x/y 分开存：视口坐标 ≠ 屏幕坐标。 */
+  inlineX?: number;
+  inlineY?: number;
+};
+
 export type SettingsSnapshot = {
   model: ModelSettings;
   persona: {
@@ -126,6 +154,8 @@ export type SettingsSnapshot = {
   dataDir?: string;
   /** 桌面外壳的偏好（开机自启 / 关窗留托盘）。非桌面版没有配置文件，后端回 null。 */
   desktop?: { autostart: boolean; tray: boolean } | null;
+  /** 桌宠设置。 */
+  pet: PetSettings;
 };
 
 /** 技能行与后端同源（磁盘目录的扫描结果，不是数据库行）：见仓库根 shared/api.ts。 */

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowLeft, Blocks, ChevronRight, Database, Images, Info, Palette, Search, SearchX, Sparkles, UserRound, X, type LucideIcon } from "lucide-react";
+import { ArrowLeft, Blocks, ChevronRight, Database, Images, Info, Palette, PawPrint, Search, SearchX, Sparkles, UserRound, X, type LucideIcon } from "lucide-react";
 import Tabs, { panelAria } from "../../components/Tabs";
 import TabPanel from "../../components/TabPanel";
 import Modal from "../../components/Modal";
@@ -11,6 +11,7 @@ import ToolsWorkbench from "./ToolsWorkbench";
 import MediaSection from "./MediaSection";
 import OwnerSection from "./OwnerSection";
 import AppearanceSection from "./AppearanceSection";
+import PetSection from "./PetSection";
 import { useSettingsForm } from "./useSettingsForm";
 import { useNarrow } from "../../hooks/useNarrow";
 
@@ -23,12 +24,13 @@ export type SettingsTab =
   | "skill"
   | "tools"
   | "media"
+  | "pet"
   | "appearance"
   | "about"
   | "experience"
   | "system";
 
-type SettingsGroup = "owner" | "model" | "tools" | "media" | "experience" | "system" | "about";
+type SettingsGroup = "owner" | "model" | "tools" | "media" | "pet" | "experience" | "system" | "about";
 type ModelTab = "model" | "capability";
 
 type GroupDef = {
@@ -44,6 +46,7 @@ const GROUPS: GroupDef[] = [
   { key: "model", label: "模型与能力", hint: "主对话模型、专项能力端点", icon: Sparkles },
   { key: "tools", label: "工具与扩展", hint: "开关总览、技能、扩展与 MCP", icon: Blocks },
   { key: "media", label: "媒体与表情", hint: "图片、视频、语音，以及表情包", icon: Images },
+  { key: "pet", label: "桌宠", hint: "桌面透明小窗、互动与显示位置", icon: PawPrint },
   { key: "experience", label: "体验与提醒", hint: "外观、聊天显示与通知", icon: Palette },
   { key: "system", label: "系统与数据", hint: "存储、备份、访问与启动", icon: Database },
   { key: "about", label: "关于", hint: "版本、许可与项目信息", icon: Info },
@@ -89,6 +92,7 @@ const SEARCH_ENTRIES: SearchEntry[] = [
   { group: "system", title: "备份与恢复", meta: "导出、下载与导入备份", anchor: "settings-backup", keywords: "备份 恢复 导出 导入 迁移 恢复" },
   { group: "system", title: "手机与远程访问", meta: "局域网、访问码、隧道域名", anchor: "settings-lan", keywords: "手机 局域网 wifi 远程 隧道 二维码 访问码 端口" },
   { group: "system", title: "启动与关窗", meta: "开机自启、托盘常驻", anchor: "settings-desktop", keywords: "启动 开机 托盘 关窗 后台" },
+  { group: "pet", title: "桌宠", meta: "显示、体型、随机动作与碎碎念", anchor: "settings-pet", keywords: "桌宠 宠物 透明 桌面 拖动 交互" },
   { group: "about", title: "关于小茉", meta: "版本、许可与项目信息", anchor: "settings-about", keywords: "版本 更新 许可 license 项目 关于" },
 ];
 
@@ -98,6 +102,7 @@ function groupOf(tab: SettingsTab): SettingsGroup {
   // 旧的 "skill" 目的地仍落到新的一级分组：状态页 / 助手那些跳转不用跟着改。
   if (tab === "tools" || tab === "skill") return "tools";
   if (tab === "media") return "media";
+  if (tab === "pet") return "pet";
   if (tab === "appearance" || tab === "experience") return "experience";
   if (tab === "system") return "system";
   return "about";
@@ -436,6 +441,10 @@ export default function SettingsView({ onChanged, initialTab, navSeq = 0, reveal
 
             {(visitedGroups.has("media") || group === "media") && groupPanel("media",
               <MediaSection active={group === "media"} form={form} />,
+            )}
+
+            {(visitedGroups.has("pet") || group === "pet") && groupPanel("pet",
+              <PetSection pet={form.saved?.pet} busy={form.busy} onSave={form.savePetSettings} />,
             )}
 
             {(visitedGroups.has("experience") || group === "experience") && groupPanel("experience",

@@ -14,7 +14,16 @@
 
 export type BusEvent =
   | { type: "sync"; at: number }
-  | { type: "message"; contactId: string; conversationId: string; messageId: number; at: number }
+  | {
+      type: "message";
+      contactId: string;
+      conversationId: string;
+      messageId: number;
+      /** 发送方（user/assistant）与来源通道（web/qq/…）：订阅方据此分流，免回查库。 */
+      role: string;
+      channel: string;
+      at: number;
+    }
   | { type: "turn"; contactId: string; conversationId: string; turnId: string; status: string; at: number }
   | { type: "activity"; contactId: string; at: number }
   /**

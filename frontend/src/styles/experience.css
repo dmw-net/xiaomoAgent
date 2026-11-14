@@ -5625,3 +5625,24 @@ button.outbound-stat.on span { color: var(--accent-ink); }
   #bar .sub-sep,
   #bar .conv-switch-wrap { display: none; }
 }
+
+
+/* 桌宠设置：体型滑杆与读数。 */
+.pet-size-row {
+  display: flex;
+  align-items: center;
+  gap: var(--space-4);
+  min-width: 240px;
+}
+
+.pet-size-row input[type="range"] {
+  flex: 1;
+  min-width: 120px;
+}
+
+.pet-size-row output {
+  min-width: 48px;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
